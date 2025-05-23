@@ -22,6 +22,30 @@ Whether you must squirrel away OAuth tokens in a fintech app or remember the las
 
 * **Performance** Suspend API keeps the UI thread free; direct API is there when you need blocking simplicity.
 
+
+
+
+## How encryption works under the hood
+
+As already mentioned, KVault handles seamless encrypted persistence using DataStore Preferences.  But how it handles encryption?
+
+##### Android
+* **Cipher:** AES‑256‑GCM via `dev.whyoleg.cryptography`
+* **Key Storage:** Default: symmetric key is Base64‑encoded inside the same DataStore file.
+
+##### iOS
+* **Cipher:** AES‑256‑GCM via the OpenSSL-3 provider compiled in Kotlin/Native
+* **Key Storage:** Symmetric key Base64‑encoded next to the ciphertext in a DataStore file located in the app’s Documents directory.
+
+##### Flow
+
+* **Serialize value → plaintext bytes** using kotlinx.serialization.
+* **Load (or generate) a random 256‑bit AES key*** scoped to that preference.
+* **Encrypt with AES‑GCM** (nonce + auth‑tag included).
+* **Persist Base64(ciphertext)** under `encrypted_<key>` and Base64(key) under `symmetric_<key>`.
+
+Because GCM carries its own authentication tag, any tampering with data is detected on decryption. Deleting a symmetric_* entry transparently rotates the key on the next write.
+
 ***
 
 ## Setup ⚙️
@@ -61,11 +85,7 @@ plugins {
 }
 ```
 
-
-
 *** 
-
-
 
 #### Library Instantiation with Koin
 
@@ -202,3 +222,6 @@ class CounterViewModel(kvault: KVault) : ViewModel() {
     }
 }
 ```
+
+
+
