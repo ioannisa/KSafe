@@ -1,0 +1,44 @@
+[versions]
+agp = "8.10.0"
+kotlin = "2.1.20"
+android-minSdk = "21"
+android-compileSdk = "34"
+
+datastorePreferences = "1.1.7"
+kotlinxCoroutinesCore = "1.10.2"
+kotlinxSerializationJson = "1.8.1"
+kotlinxSerialization = "2.1.21"
+kotlinStdlib = "2.1.21"
+runner = "1.6.2"
+core = "1.6.1"
+junit = "1.2.1"
+runtime = "1.7.3"
+
+[libraries]
+kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
+
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutinesCore" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
+kotlin-stdlib = { group = "org.jetbrains.kotlin", name = "kotlin-stdlib", version.ref = "kotlinStdlib" }
+androidx-runner = { group = "androidx.test", name = "runner", version.ref = "runner" }
+androidx-core = { group = "androidx.test", name = "core", version.ref = "core" }
+androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junit" }
+
+# DataStore Preferences
+androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastorePreferences" }
+androidx-datastore-preferences-core = { module = "androidx.datastore:datastore-preferences-core", version.ref = "datastorePreferences" }
+
+
+# Compose
+runtime = { module = "org.jetbrains.compose.runtime:runtime", version.ref = "runtime" }
+#runtime-saveable = { module = "org.jetbrains.compose.runtime:runtime-saveable", version.ref = "runtime" }
+
+[plugins]
+androidLibrary = { id = "com.android.library", version.ref = "agp" }
+kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+vanniktech-mavenPublish = { id = "com.vanniktech.maven.publish", version = "0.32.0" }
+
+
+# Serialization
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlinxSerialization" }
+android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }
