@@ -34,8 +34,8 @@ Add the Reanimator dependency to your `build.gradle.kts` (or `build.gradle`) fil
 #### 1 - Add the Dependency
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:kvault:1.0.1")
-implementation("eu.anifantakis:kvault-compose:1.0.1") // ← Compose state (optional)
+implementation("eu.anifantakis:kvault:1.0.2")
+implementation("eu.anifantakis:kvault-compose:1.0.2") // ← Compose state (optional)
 ```
 
 > Skip `kvault-compose` if your project doesn’t use Jetpack Compose.
