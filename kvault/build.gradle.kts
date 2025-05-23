@@ -12,7 +12,7 @@ plugins {
 }
 
 group = "eu.anifantakis"
-version = "1.0.0"
+version = "1.0.1"
 
 kotlin {
     androidTarget {
@@ -105,7 +105,7 @@ mavenPublishing {
         name = "KVault MultiPlatform Encrypted Persistence"
         description = "Library to allow for multiplatform seamless encrypted persistence using DataStore Preferences"
         inceptionYear = "2025"
-        url = "https://github.com/ioannisa/reanimator"
+        url = "https://github.com/ioannisa/kvault"
         licenses {
             license {
                 name = "MIT"
@@ -121,9 +121,9 @@ mavenPublishing {
             }
         }
         scm {
-            url = "https://github.com/ioannisa/reanimator"
-            connection = "scm:git:https://github.com/ioannisa/reanimator.git"
-            developerConnection = "scm:git:ssh://git@github.com/ioannisa/reanimator.git"
+            url = "https://github.com/ioannisa/kvault"
+            connection = "scm:git:https://github.com/ioannisa/kvault.git"
+            developerConnection = "scm:git:ssh://git@github.com/ioannisa/kvault.git"
         }
     }
 }

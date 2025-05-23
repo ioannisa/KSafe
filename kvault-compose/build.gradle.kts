@@ -11,7 +11,7 @@ plugins {
 
 // Set the same group and version as your main library
 group = "eu.anifantakis"
-version = "1.0.0"
+version = "1.0.1"
 
 kotlin {
     androidLibrary {
@@ -115,7 +115,7 @@ mavenPublishing {
         name = "KVault Compose - Jetpack Compose Extensions"
         description = "Jetpack Compose extensions for KVault MultiPlatform Encrypted Persistence library"
         inceptionYear = "2025"
-        url = "https://github.com/ioannisa/reanimator"
+        url = "https://github.com/ioannisa/kvault"
         licenses {
             license {
                 name = "MIT"
@@ -131,9 +131,9 @@ mavenPublishing {
             }
         }
         scm {
-            url = "https://github.com/ioannisa/reanimator"
-            connection = "scm:git:https://github.com/ioannisa/reanimator.git"
-            developerConnection = "scm:git:ssh://git@github.com/ioannisa/reanimator.git"
+            url = "https://github.com/ioannisa/kvault"
+            connection = "scm:git:https://github.com/ioannisa/kvault.git"
+            developerConnection = "scm:git:ssh://git@github.com/ioannisa/kvault.git"
         }
     }
 }
