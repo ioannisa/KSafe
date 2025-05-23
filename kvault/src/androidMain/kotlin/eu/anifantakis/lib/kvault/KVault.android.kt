@@ -169,7 +169,8 @@ actual class KVault(private val context: Context) {
 
     suspend inline fun <reified T> putEncrypted(key: String, value: T) {
         // Serialize the value to JSON and get plaintext bytes.
-        val jsonString = json.encodeToString(value)
+        //val jsonString = json.encodeToString(value)
+        val jsonString = json.encodeToString(serializer<T>(), value)
         val plaintext = jsonString.encodeToByteArray()
 
         val provider = CryptographyProvider.Default

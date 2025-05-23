@@ -19,6 +19,7 @@ import kotlin.reflect.KProperty
  */
 inline operator fun <reified T> KVault.invoke(
     defaultValue: T,
+    key: String? = null,
     encrypted: Boolean = true
 ): ReadWriteProperty<Any?, T> {
     // 'this' inside this inline function refers to the eu.anifantakis.kvault.KVault instance
@@ -29,12 +30,12 @@ inline operator fun <reified T> KVault.invoke(
         override fun getValue(thisRef: Any?, property: KProperty<*>): T {
             // Because this object expression is inside an inline function with reified T,
             // T is reified here. We explicitly pass it to getDirect.
-            return kvaultInstance.getDirect<T>(property.name, defaultValue, encrypted)
+            return kvaultInstance.getDirect<T>(key = key ?: property.name, defaultValue, encrypted)
         }
 
         override fun setValue(thisRef: Any?, property: KProperty<*>, value: T) {
             // Similarly, T is reified here. We explicitly pass it to putDirect.
-            kvaultInstance.putDirect<T>(property.name, value, encrypted)
+            kvaultInstance.putDirect<T>(key = key ?:property.name, value, encrypted)
         }
     }
 }
