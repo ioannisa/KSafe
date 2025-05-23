@@ -55,11 +55,6 @@ kotlin {
         iosMain.dependencies {
             implementation(cryptographyLibs.provider.openssl3.prebuilt)
         }
-        val commonTest by getting {
-            dependencies {
-                implementation(libs.kotlin.test)
-            }
-        }
 
         compilerOptions {
             freeCompilerArgs.add("-Xexpect-actual-classes")
