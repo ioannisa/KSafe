@@ -53,7 +53,7 @@ Because GCM carries its own authentication tag, any tampering with data is detec
 ***
 
 ## Setup ⚙️
-Add the Reanimator dependency to your `build.gradle.kts` (or `build.gradle`) file.
+Add the KVault dependency to your `build.gradle.kts` (or `build.gradle`) file.
 
 ### Library Installation
 
