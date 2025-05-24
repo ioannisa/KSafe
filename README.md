@@ -6,6 +6,8 @@ _**Effortless Enterprise-Grade Encrypted Persistence for Android and Kotlin Mult
 [![Maven Central](https://img.shields.io/maven-central/v/eu.anifantakis/kvault.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/eu.anifantakis/kvault)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
+![image](https://github.com/user-attachments/assets/5a4736ec-0e08-444e-90d7-f15fe85d5baa)
+
 [Demo CMP App Using KVault](https://github.com/ioannisa/KVaultDemo)
 
 Whether you must squirrel away OAuth tokens in a fintech app or remember the last‑visited screen of your game, KVault stores the data encrypted with platform-specific secure key storage and hands it back to you like a normal variable.
