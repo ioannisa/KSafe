@@ -1,6 +1,10 @@
 package eu.anifantakis.lib.kvault
 
 import android.content.Context
+import android.os.Build
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import androidx.annotation.RequiresApi
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
@@ -12,8 +16,6 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStoreFile
-import dev.whyoleg.cryptography.CryptographyProvider
-import dev.whyoleg.cryptography.algorithms.AES
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -23,6 +25,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
+import java.security.KeyStore
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -36,6 +43,12 @@ actual class KVault(private val context: Context) {
 
     @PublishedApi
     internal val json = Json { ignoreUnknownKeys = true }
+
+    companion object {
+        private const val ANDROID_KEYSTORE = "AndroidKeyStore"
+        const val KEY_ALIAS_PREFIX = "eu.anifantakis.kvault."
+        private const val GCM_TAG_LENGTH = 128
+    }
 
     // Create a DataStore for our preferences.
     @PublishedApi
@@ -128,29 +141,71 @@ actual class KVault(private val context: Context) {
         }
     }
 
-    // ----- Encrypted Storage Helpers -----
-    // We store the symmetric key and encrypted ciphertext as Base64 strings.
-    private fun symmetricPrefKey(id: String) = stringPreferencesKey("symmetric_$id")
+    // ----- Android Keystore Encryption Helpers -----
+
     private fun encryptedPrefKey(key: String) = stringPreferencesKey("encrypted_$key")
 
-    // Retrieve an existing symmetric key or generate a new one.
-    // In production you’d use the Android Keystore, but here we persist it in DataStore.
-    suspend fun getOrCreateSymmetricKey(id: String, aesGcm: AES.GCM): AES.GCM.Key {
-        val storedKeyBase64: String? = dataStore.data.map { it[symmetricPrefKey(id)] }.first()
-        return if (storedKeyBase64 != null) {
-            val encoded = decodeBase64(storedKeyBase64)
-            aesGcm.keyDecoder().decodeFromByteArray(AES.Key.Format.RAW, encoded)
-        } else {
-            val newKey = aesGcm.keyGenerator(AES.Key.Size.B256).generateKey()
-            val newKeyEncoded = newKey.encodeToByteArray(AES.Key.Format.RAW)
-            val encodedKeyBase64 = encodeBase64(newKeyEncoded)
-            dataStore.updateData { preferences ->
-                preferences.toMutablePreferences().apply {
-                    this[symmetricPrefKey(id)] = encodedKeyBase64
-                }
-            }
-            newKey
+    /**
+     * Gets or creates a secret key in Android Keystore
+     */
+    @RequiresApi(Build.VERSION_CODES.M)
+    private fun getOrCreateSecretKey(keyAlias: String): SecretKey {
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply {
+            load(null)
         }
+
+        // Check if key already exists
+        if (keyStore.containsAlias(keyAlias)) {
+            return keyStore.getKey(keyAlias, null) as SecretKey
+        }
+
+        // Generate new key
+        val keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
+        val keyGenParameterSpec = KeyGenParameterSpec.Builder(
+            keyAlias,
+            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+        )
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setKeySize(256)
+            .build()
+
+        keyGenerator.init(keyGenParameterSpec)
+        return keyGenerator.generateKey()
+    }
+
+    /**
+     * Encrypts data using Android Keystore
+     */
+    @RequiresApi(Build.VERSION_CODES.M)
+    fun encryptWithKeystore(keyAlias: String, plaintext: ByteArray): ByteArray {
+        val secretKey = getOrCreateSecretKey(keyAlias)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+
+        val iv = cipher.iv
+        val ciphertext = cipher.doFinal(plaintext)
+
+        // Combine IV and ciphertext
+        return iv + ciphertext
+    }
+
+    /**
+     * Decrypts data using Android Keystore
+     */
+    @RequiresApi(Build.VERSION_CODES.M)
+    fun decryptWithKeystore(keyAlias: String, encryptedData: ByteArray): ByteArray {
+        val secretKey = getOrCreateSecretKey(keyAlias)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+
+        // Extract IV and ciphertext
+        val iv = encryptedData.sliceArray(0..11)
+        val ciphertext = encryptedData.sliceArray(12 until encryptedData.size)
+
+        val spec = GCMParameterSpec(GCM_TAG_LENGTH, iv)
+        cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)
+
+        return cipher.doFinal(ciphertext)
     }
 
     suspend fun storeEncryptedData(key: String, data: ByteArray) {
@@ -167,31 +222,33 @@ actual class KVault(private val context: Context) {
         return stored?.let { decodeBase64(it) }
     }
 
+    @RequiresApi(Build.VERSION_CODES.M)
     suspend inline fun <reified T> putEncrypted(key: String, value: T) {
         // Serialize the value to JSON and get plaintext bytes.
-        //val jsonString = json.encodeToString(value)
         val jsonString = json.encodeToString(serializer<T>(), value)
         val plaintext = jsonString.encodeToByteArray()
 
-        val provider = CryptographyProvider.Default
-        val aesGcm = provider.get(AES.GCM)
-        val symmetricKey = getOrCreateSymmetricKey(key, aesGcm)
-        val cipher = symmetricKey.cipher()
-        // Encrypting returns a byte array that includes the nonce.
-        val ciphertext = cipher.encrypt(plaintext = plaintext)
+        // Use Android Keystore for encryption
+        val keyAlias = KEY_ALIAS_PREFIX + key
+        val ciphertext = encryptWithKeystore(keyAlias, plaintext)
 
         storeEncryptedData(key, ciphertext)
     }
 
+    @RequiresApi(Build.VERSION_CODES.M)
     suspend inline fun <reified T> getEncrypted(key: String, defaultValue: T): T {
         val ciphertext = loadEncryptedData(key) ?: return defaultValue
-        val provider = CryptographyProvider.Default
-        val aesGcm = provider.get(AES.GCM)
-        val symmetricKey = getOrCreateSymmetricKey(key, aesGcm)
-        val cipher = symmetricKey.cipher()
-        val decryptedBytes = cipher.decrypt(ciphertext = ciphertext)
-        val jsonString = decryptedBytes.decodeToString()
-        return json.decodeFromString(serializer<T>(), jsonString)
+
+        return try {
+            // Use Android Keystore for decryption
+            val keyAlias = KEY_ALIAS_PREFIX + key
+            val decryptedBytes = decryptWithKeystore(keyAlias, ciphertext)
+            val jsonString = decryptedBytes.decodeToString()
+            json.decodeFromString(serializer<T>(), jsonString)
+        } catch (e: Exception) {
+            // If decryption fails (e.g., key was deleted), return default value
+            defaultValue
+        }
     }
 
     actual suspend inline fun <reified T> get(key: String, defaultValue: T, encrypted: Boolean): T {
@@ -232,6 +289,19 @@ actual class KVault(private val context: Context) {
         dataStore.edit { preferences ->
             preferences.remove(dataKey)
         }
+
+        // Also try to delete the corresponding encryption key from Keystore
+        try {
+            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply {
+                load(null)
+            }
+            val keyAlias = KEY_ALIAS_PREFIX + key
+            if (keyStore.containsAlias(keyAlias)) {
+                keyStore.deleteEntry(keyAlias)
+            }
+        } catch (e: Exception) {
+            // Ignore errors when deleting from keystore
+        }
     }
 
     /**
@@ -243,6 +313,43 @@ actual class KVault(private val context: Context) {
     actual fun deleteDirect(key: String) {
         CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
             delete(key)
+        }
+    }
+
+    /**
+     * Clear all data including Keystore entries.
+     * Useful for complete cleanup or testing.
+     * Note: On Android, Keystore entries are automatically deleted on app uninstall.
+     */
+    suspend fun clearAll() {
+        // Get all encrypted keys before clearing
+        val encryptedKeys = mutableSetOf<String>()
+        val preferences = dataStore.data.first()
+
+        preferences.asMap().forEach { (key, _) ->
+            if (key.name.startsWith("encrypted_")) {
+                val keyId = key.name.removePrefix("encrypted_")
+                encryptedKeys.add(keyId)
+            }
+        }
+
+        // Clear all DataStore preferences
+        dataStore.edit { it.clear() }
+
+        // Delete all associated Keystore entries
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply {
+            load(null)
+        }
+
+        encryptedKeys.forEach { keyId ->
+            val keyAlias = KEY_ALIAS_PREFIX + keyId
+            try {
+                if (keyStore.containsAlias(keyAlias)) {
+                    keyStore.deleteEntry(keyAlias)
+                }
+            } catch (e: Exception) {
+                // Ignore errors when deleting from keystore
+            }
         }
     }
 }

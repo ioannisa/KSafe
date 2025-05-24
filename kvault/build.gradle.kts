@@ -12,7 +12,7 @@ plugins {
 }
 
 group = "eu.anifantakis"
-version = "1.0.2"
+version = "1.1.0"
 
 kotlin {
     androidTarget {
@@ -32,6 +32,14 @@ kotlin {
             isStatic = true
         }
     }
+
+//    targets
+//        .withType<org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget>()
+//        .configureEach {
+//            binaries.all {
+//                binaryOptions["memoryModel"] = "strict"
+//            }
+//        }
 
     sourceSets {
         androidMain.dependencies {

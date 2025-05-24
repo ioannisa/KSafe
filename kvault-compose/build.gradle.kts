@@ -11,7 +11,7 @@ plugins {
 
 // Set the same group and version as your main library
 group = "eu.anifantakis"
-version = "1.0.2"
+version = "1.1.0"
 
 kotlin {
     androidLibrary {
