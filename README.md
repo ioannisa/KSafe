@@ -1,6 +1,6 @@
 # KVault — Secure Persist Library for Kotlin Multiplatform
 
-_**Effortless Enterprise-Grade Encrypted Persistence for Android and Kotlin Multiplatform with Hardware-Backed Security.**_
+_**Effortless Enterprise-Grade Encrypted Persistence for Kotlin Multiplatform and Native Android with Hardware-Backed Security.**_
 
 
 [![Maven Central](https://img.shields.io/maven-central/v/eu.anifantakis/kvault.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/eu.anifantakis/kvault)
