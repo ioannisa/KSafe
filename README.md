@@ -1,31 +1,32 @@
-# KVault — Secure Persist Library for Kotlin Multiplatform
+# KSafe — Secure Persist Library for Kotlin Multiplatform
 
 _**Effortless Enterprise-Grade Encrypted Persistence for Kotlin Multiplatform and Native Android with Hardware-Backed Security.**_
 
 
-[![Maven Central](https://img.shields.io/maven-central/v/eu.anifantakis/kvault.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/eu.anifantakis/kvault)
+[![Maven Central](https://img.shields.io/maven-central/v/eu.anifantakis/ksafe.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/eu.anifantakis/ksafe)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-![image](https://github.com/user-attachments/assets/5a4736ec-0e08-444e-90d7-f15fe85d5baa)
 
-[Demo CMP App Using KVault](https://github.com/ioannisa/KVaultDemo)
+![image](https://github.com/user-attachments/assets/692d9066-e953-4f13-9642-87661c5bc248)
 
-Whether you must squirrel away OAuth tokens in a fintech app or remember the last‑visited screen of your game, KVault stores the data encrypted with platform-specific secure key storage and hands it back to you like a normal variable.
+[Demo CMP App Using KSafe](https://github.com/ioannisa/KSafeDemo)
+
+Whether you must squirrel away OAuth tokens in a fintech app or remember the last‑visited screen of your game, KSafe stores the data encrypted with platform-specific secure key storage and hands it back to you like a normal variable.
 
 ***
 
-## Why use KVault?
+## Why use KSafe?
 
 * **Hardware-backed security** 🔐 AES‑256‑GCM with keys stored in Android Keystore or iOS Keychain for maximum protection.
 * **Clean reinstalls** 🧹 Automatic cleanup ensures fresh starts after app reinstallation on both platforms.
 * **One code path** No expect/actual juggling—your common code owns the vault.
-* **Ease of use** `var launchCount by kvault(0)` —that is literally it.
+* **Ease of use** `var launchCount by ksafe(0)` —that is literally it.
 * **Versatility** Primitives, data classes, sealed hierarchies, lists, sets; all accepted.
 * **Performance** Suspend API keeps the UI thread free; direct API is there when you need blocking simplicity.
 
 ## How encryption works under the hood
 
-KVault provides enterprise-grade encrypted persistence using DataStore Preferences with platform-specific secure key storage.
+KSafe provides enterprise-grade encrypted persistence using DataStore Preferences with platform-specific secure key storage.
 
 ##### Android
 * **Cipher:** AES‑256‑GCM
@@ -53,26 +54,26 @@ Because GCM carries its own authentication tag, any tampering with data is detec
 ***
 
 ## Setup ⚙️
-Add the KVault dependency to your `build.gradle.kts` (or `build.gradle`) file.
+Add the KSafe dependency to your `build.gradle.kts` (or `build.gradle`) file.
 
 ### Library Installation
 
-[![Maven Central](https://img.shields.io/maven-central/v/eu.anifantakis/kvault.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/eu.anifantakis/kvault)
+[![Maven Central](https://img.shields.io/maven-central/v/eu.anifantakis/ksafe.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/eu.anifantakis/ksafe)
 
 #### 1 - Add the Dependency
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:kvault:1.1.0")
-implementation("eu.anifantakis:kvault-compose:1.1.0") // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe:1.0.0")
+implementation("eu.anifantakis:ksafe-compose:1.0.0") // ← Compose state (optional)
 ```
 
-> Skip `kvault-compose` if your project doesn’t use Jetpack Compose, or if you don't intend to use the library's `mutableStateOf` persistance option
+> Skip `ksafe-compose` if your project doesn’t use Jetpack Compose, or if you don't intend to use the library's `mutableStateOf` persistance option
 
 #### 2 - Apply the kotlinx‑serialization plugin
 
 If you want to use the library with data classes, you need to enable Serialization at your project.
 
-Add Serialization definition to your `plugins` section of your `libs.versions.toml` 
+Add Serialization definition to your `plugins` section of your `libs.versions.toml`
 ```toml
 [versions]
 kotlin = "2.1.21"
@@ -84,7 +85,7 @@ kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", versi
 and apply it at the same section of your `build.gradle.kts` file.
 ```Kotlin
 plugins {
-    ...
+    //...
     alias(libs.plugins.kotlin.serialization)
 }
 ```
@@ -93,7 +94,7 @@ plugins {
 
 #### Library Instantiation with Koin
 
-Koin is the defacto DI solution for Kotlin Multiplatform, and is the ideal tool to provde as a singleton the KVault library. 
+Koin is the defacto DI solution for Kotlin Multiplatform, and is the ideal tool to provde as a singleton the KSafe library.
 
 ```Kotlin
 // common
@@ -101,36 +102,36 @@ expect val platformModule: Module
 
 // Android
 actual val platformModule get() = module {
-    single { KVault(androidApplication()) }
+    single { KSafe(androidApplication()) }
 }
 
 // iOS
 actual val platformModule get() = module {
-    single { KVault() }
+    single { KSafe() }
 }
 ```
 
-And now you're ready to inject KVault to your ViewModels :)
+And now you're ready to inject KSafe to your ViewModels :)
 
 *** 
 
 ### Usage 🚀
 
 ##### Quick Start (One Liner)
-`var counter by kvault(0)`
+`var counter by ksafe(0)`
 
 params:
 * `defaultValue` must be declared (type is infered by it)
 * `key` if not set the variable name is used as a key
 * `encrypted` by default is set to true (uses Keystore/Keychain)
 
-The above wat is easiest to utilize the library with property delegation, that provides out of the box, intuitive way to encrypted persisted values.  All you need is `by kvault(x)`
+The above wat is easiest to utilize the library with property delegation, that provides out of the box, intuitive way to encrypted persisted values.  All you need is `by ksafe(x)`
 
 ```Kotlin
-import eu.anifantakis.lib.kvault.KVault
+import eu.anifantakis.lib.ksafe.KSafe
 
-class MyViewModel(kvault: KVault): ViewModel() {
-    var counter by kvault(0)
+class MyViewModel(ksafe: KSafe): ViewModel() {
+    var counter by ksafe(0)
 
     init {
         // then just use it as a regular variable
@@ -140,17 +141,17 @@ class MyViewModel(kvault: KVault): ViewModel() {
 ```
 
 ##### Composable State (One Liner)
-`var counter by kvault.mutableStateOf(0))`
+`var counter by ksafe.mutableStateOf(0))`
 
 Recomposition‑proof and survives process death with zero boilerplate.
 
 That is a composable state, but to make use of it you need to have imported the second dependency in our installation guide that includes compose.
 
 ```Kotlin
-import eu.anifantakis.lib.kvault.KVault
+import eu.anifantakis.lib.ksafe.KSafe
 
-class MyViewModel(kvault: KVault): ViewModel() {
-    var counter by kvault.mutableStateOf(0)
+class MyViewModel(ksafe: KSafe): ViewModel() {
+    var counter by ksafe.mutableStateOf(0)
         private set
 
     init {
@@ -170,7 +171,7 @@ data class AuthInfo(
     val expiresIn: Long = 0L
 )
 
-var authInfo by kvault(AuthInfo())   // encryption + JSON automatically
+var authInfo by ksafe(AuthInfo())   // encryption + JSON automatically
 
 // Update
 authInfo = authInfo.copy(accessToken = "newToken")
@@ -182,44 +183,44 @@ Add `@Serializable` and make sure you have added Serialization plugin to your ap
 
 ```Kotlin
 // inside coroutine / suspend fn
-kvault.put("profile", userProfile)          // encrypt & persist
-val cached: User = kvault.get("profile", User())
+ksafe.put("profile", userProfile)          // encrypt & persist
+val cached: User = ksafe.get("profile", User())
 ```
 
 #### Direct API (Good for Tests)
 ```Kotlin
-kvault.putDirect("counter", 42)
-val n = kvault.getDirect("counter", 0)
+ksafe.putDirect("counter", 42)
+val n = ksafe.getDirect("counter", 0)
 ```
 
-#### Jetpack Compose ♥ KVault (optional module)
+#### Jetpack Compose ♥ KSafe (optional module)
 as already mentioned above, Recomposition‑proof and survives process death with zero boilerplate.
 ```Kotlin
-var clicks by kvault.mutableStateOf(0)  // encrypted backing storage
+var clicks by ksafe.mutableStateOf(0)  // encrypted backing storage
 actionButton { clicks++ }
 ```
 
 #### Deleting data
 ```Kotlin
-kvault.delete("profile")       // suspend (non‑blocking)
-kvault.deleteDirect("profile") // blocking
+ksafe.delete("profile")       // suspend (non‑blocking)
+ksafe.deleteDirect("profile") // blocking
 ```
 
 When you delete a value, both the data and its associated encryption key are removed from the secure storage (Keystore/Keychain).
 
 #### Full ViewModel example
 ```Kotlin
-class CounterViewModel(kvault: KVault) : ViewModel() {
+class CounterViewModel(ksafe: KSafe) : ViewModel() {
     // regular Compose state (not persisted)
     var volatile by mutableStateOf(0)
         private set
 
     // persisted Compose state (AES encrypted)
-    var persisted by kvault.mutableStateOf(100)
+    var persisted by ksafe.mutableStateOf(100)
         private set
 
     // plain property‑delegate preference
-    var hits by kvault(0)
+    var hits by ksafe(0)
 
     fun inc() {
         volatile++
@@ -247,10 +248,10 @@ class CounterViewModel(kvault: KVault) : ViewModel() {
 * Automatic cleanup of orphaned keys on first app use after reinstall
 
 ### Error Handling
-If decryption fails (e.g., corrupted data or missing key), KVault gracefully returns the default value, ensuring your app continues to function.
+If decryption fails (e.g., corrupted data or missing key), KSafe gracefully returns the default value, ensuring your app continues to function.
 
 ### Reinstall Behavior
-KVault ensures clean reinstalls on both platforms:
+KSafe ensures clean reinstalls on both platforms:
 * **Android:** Keystore entries automatically deleted on uninstall
 * **iOS:** Orphaned Keychain entries detected and cleaned on first use after reinstall
 
@@ -259,7 +260,7 @@ This means users always get a fresh start when reinstalling your app, with no li
 ### Technical Details
 
 #### iOS Keychain Cleanup Mechanism
-On iOS, KVault uses a smart detection system:
+On iOS, KSafe uses a smart detection system:
 
 * **Installation ID:** Each app install gets a unique ID stored in DataStore
 * **First Access:** On first get/put operation after install, cleanup runs
@@ -276,7 +277,7 @@ On iOS, KVault uses a smart detection system:
 
 ## Licence
 
-Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. 
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License.
 
 You may obtain a copy of the License at
 http://www.apache.org/licenses/LICENSE-2.0

@@ -19,6 +19,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "kvault"
-include(":kvault")
-include(":kvault-compose")
+rootProject.name = "ksafe"
+include(":ksafe")
+include(":ksafe-compose")
