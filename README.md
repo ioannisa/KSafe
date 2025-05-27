@@ -11,6 +11,8 @@ _**Effortless Enterprise-Grade Encrypted Persistence for Kotlin Multiplatform an
 
 [Demo CMP App Using KSafe](https://github.com/ioannisa/KSafeDemo)
 
+[YouTube Demo](https://youtu.be/mFKGx0DMZEA)
+
 Whether you must squirrel away OAuth tokens in a fintech app or remember the last‑visited screen of your game, KSafe stores the data encrypted with platform-specific secure key storage and hands it back to you like a normal variable.
 
 ***
