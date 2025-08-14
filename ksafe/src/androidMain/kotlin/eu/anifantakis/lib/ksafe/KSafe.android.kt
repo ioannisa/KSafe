@@ -1,10 +1,8 @@
 package eu.anifantakis.lib.ksafe
 
 import android.content.Context
-import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-import androidx.annotation.RequiresApi
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
@@ -18,9 +16,13 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStoreFile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -37,14 +39,25 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 private fun encodeBase64(bytes: ByteArray): String = Base64.encode(bytes)
 
 @OptIn(ExperimentalEncodingApi::class)
-private fun decodeBase64(encoded: String): ByteArray = Base64.decode(encoded)
+@PublishedApi
+internal fun decodeBase64(encoded: String): ByteArray = Base64.decode(encoded)
 
-actual class KSafe(private val context: Context) {
+actual class KSafe(private val context: Context, val fileName: String? = null) {
+
+    init {
+        if (fileName != null) {
+            if (!fileName.matches(fileNameRegex)) {
+                throw IllegalArgumentException("File name must contain only letters, numbers, and underscores")
+            }
+        }
+    }
 
     @PublishedApi
     internal val json = Json { ignoreUnknownKeys = true }
 
     companion object Companion {
+        // we intentionally don't allow "." to avoid path traversal vulnerabilities
+        private val fileNameRegex = Regex("[a-zA-Z0-9_]+")
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val KEY_ALIAS_PREFIX = "eu.anifantakis.ksafe."
         private const val GCM_TAG_LENGTH = 128
@@ -54,11 +67,12 @@ actual class KSafe(private val context: Context) {
     @PublishedApi
     internal val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
-        produceFile = { context.preferencesDataStoreFile("eu_anifantakis_ksafe_datastore") }
+        produceFile = { context.preferencesDataStoreFile(fileName ?: "eu_anifantakis_ksafe_datastore") }
     )
 
     // ----- Unencrypted Storage Helpers -----
 
+    @Suppress("UNCHECKED_CAST")
     @PublishedApi
     internal suspend inline fun <reified T> getUnencrypted(key: String, defaultValue: T): T {
         val preferencesKey: Preferences.Key<Any> = when (defaultValue) {
@@ -96,7 +110,7 @@ actual class KSafe(private val context: Context) {
                     val jsonString = storedValue as? String ?: return@map defaultValue
                     try {
                         json.decodeFromString(serializer<T>(), jsonString)
-                    } catch (e: Exception) {
+                    } catch (_: Exception) {
                         defaultValue
                     }
                 }
@@ -104,6 +118,7 @@ actual class KSafe(private val context: Context) {
         }.first()
     }
 
+    @Suppress("UNCHECKED_CAST")
     @PublishedApi
     internal suspend inline fun <reified T> putUnencrypted(key: String, value: T) {
         val preferencesKey: Preferences.Key<Any> = when (value) {
@@ -142,13 +157,12 @@ actual class KSafe(private val context: Context) {
     }
 
     // ----- Android Keystore Encryption Helpers -----
-
-    private fun encryptedPrefKey(key: String) = stringPreferencesKey("encrypted_$key")
+    @PublishedApi
+    internal fun encryptedPrefKey(key: String) = stringPreferencesKey("encrypted_$key")
 
     /**
      * Gets or creates a secret key in Android Keystore
      */
-    @RequiresApi(Build.VERSION_CODES.M)
     private fun getOrCreateSecretKey(keyAlias: String): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply {
             load(null)
@@ -177,7 +191,6 @@ actual class KSafe(private val context: Context) {
     /**
      * Encrypts data using Android Keystore
      */
-    @RequiresApi(Build.VERSION_CODES.M)
     fun encryptWithKeystore(keyAlias: String, plaintext: ByteArray): ByteArray {
         val secretKey = getOrCreateSecretKey(keyAlias)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -193,7 +206,6 @@ actual class KSafe(private val context: Context) {
     /**
      * Decrypts data using Android Keystore
      */
-    @RequiresApi(Build.VERSION_CODES.M)
     fun decryptWithKeystore(keyAlias: String, encryptedData: ByteArray): ByteArray {
         val secretKey = getOrCreateSecretKey(keyAlias)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -222,7 +234,6 @@ actual class KSafe(private val context: Context) {
         return stored?.let { decodeBase64(it) }
     }
 
-    @RequiresApi(Build.VERSION_CODES.M)
     suspend inline fun <reified T> putEncrypted(key: String, value: T) {
         // Serialize the value to JSON and get plaintext bytes.
         val jsonString = json.encodeToString(serializer<T>(), value)
@@ -235,7 +246,6 @@ actual class KSafe(private val context: Context) {
         storeEncryptedData(key, ciphertext)
     }
 
-    @RequiresApi(Build.VERSION_CODES.M)
     suspend inline fun <reified T> getEncrypted(key: String, defaultValue: T): T {
         val ciphertext = loadEncryptedData(key) ?: return defaultValue
 
@@ -245,7 +255,7 @@ actual class KSafe(private val context: Context) {
             val decryptedBytes = decryptWithKeystore(keyAlias, ciphertext)
             val jsonString = decryptedBytes.decodeToString()
             json.decodeFromString(serializer<T>(), jsonString)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             // If decryption fails (e.g., key was deleted), return default value
             defaultValue
         }
@@ -259,9 +269,86 @@ actual class KSafe(private val context: Context) {
         }
     }
 
+    @Suppress("UNCHECKED_CAST")
+    @PublishedApi
+    internal inline fun <reified T> getUnencryptedFlow(key: String, defaultValue: T): Flow<T> {
+        val preferencesKey: Preferences.Key<Any> = when (defaultValue) {
+            is Boolean -> booleanPreferencesKey(key)
+            is Int -> intPreferencesKey(key)
+            is Float -> floatPreferencesKey(key)
+            is Long -> longPreferencesKey(key)
+            is String -> stringPreferencesKey(key)
+            is Double -> doublePreferencesKey(key)
+            else -> stringPreferencesKey(key)
+        } as Preferences.Key<Any>
+
+        return dataStore.data.map { preferences ->
+            val storedValue = preferences[preferencesKey]
+            when (defaultValue) {
+                is Boolean -> (storedValue as? Boolean ?: defaultValue) as T
+                is Int -> {
+                    when (storedValue) {
+                        is Int -> storedValue as T
+                        is Long -> if (storedValue in Int.MIN_VALUE..Int.MAX_VALUE) storedValue.toInt() as T else defaultValue
+                        else -> defaultValue
+                    }
+                }
+                is Long -> {
+                    when (storedValue) {
+                        is Long -> storedValue as T
+                        is Int -> storedValue.toLong() as T
+                        else -> defaultValue
+                    }
+                }
+                is Float -> (storedValue as? Float ?: defaultValue) as T
+                is String -> (storedValue as? String ?: defaultValue) as T
+                is Double -> (storedValue as? Double ?: defaultValue) as T
+                else -> {
+                    val jsonString = storedValue as? String ?: return@map defaultValue
+                    try {
+                        json.decodeFromString(serializer<T>(), jsonString)
+                    } catch (_: Exception) {
+                        defaultValue
+                    }
+                }
+            }
+        }.distinctUntilChanged()
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @PublishedApi
+    internal inline fun <reified T> getEncryptedFlow(key: String, defaultValue: T): Flow<T> {
+        return dataStore.data.mapLatest {
+            it[encryptedPrefKey(key)]
+        }.distinctUntilChanged().mapLatest { it?.let { decodeBase64(it) } }
+            .distinctUntilChanged().mapLatest {
+                it?.let { ciphertext ->
+                    try {
+                        val keyAlias = KEY_ALIAS_PREFIX + key
+                        val decryptedBytes = decryptWithKeystore(keyAlias, ciphertext)
+                        val jsonString = decryptedBytes.decodeToString()
+                        json.decodeFromString(serializer<T>(), jsonString)
+                    } catch (_: Exception) {
+                        // If decryption fails (e.g., key was deleted), return default value
+                        defaultValue
+                    }
+                } ?: defaultValue
+            }.distinctUntilChanged()
+
+    }
+
     actual inline fun <reified T> getDirect(key: String, defaultValue: T, encrypted: Boolean): T {
         return runBlocking {
             get(key, defaultValue, encrypted)
+        }
+    }
+
+    @Suppress("unused")
+    actual inline fun <reified T> getFlow(key: String, defaultValue: T, encrypted: Boolean): Flow<T> {
+        return if (encrypted) {
+            getEncryptedFlow(key, defaultValue)
+        } else {
+            getUnencryptedFlow(key, defaultValue)
         }
     }
 
@@ -278,6 +365,7 @@ actual class KSafe(private val context: Context) {
             put(key, value, encrypted)
         }
     }
+
 
     /**
      * Deletes a value from DataStore.
@@ -299,7 +387,7 @@ actual class KSafe(private val context: Context) {
             if (keyStore.containsAlias(keyAlias)) {
                 keyStore.deleteEntry(keyAlias)
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             // Ignore errors when deleting from keystore
         }
     }
@@ -310,6 +398,7 @@ actual class KSafe(private val context: Context) {
      *
      * @param key The key of the value to delete.
      */
+    @Suppress("unused")
     actual fun deleteDirect(key: String) {
         CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
             delete(key)
@@ -321,6 +410,7 @@ actual class KSafe(private val context: Context) {
      * Useful for complete cleanup or testing.
      * Note: On Android, Keystore entries are automatically deleted on app uninstall.
      */
+    @Suppress("unused")
     suspend fun clearAll() {
         // Get all encrypted keys before clearing
         val encryptedKeys = mutableSetOf<String>()
@@ -347,7 +437,7 @@ actual class KSafe(private val context: Context) {
                 if (keyStore.containsAlias(keyAlias)) {
                     keyStore.deleteEntry(keyAlias)
                 }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 // Ignore errors when deleting from keystore
             }
         }

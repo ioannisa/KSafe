@@ -12,22 +12,64 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import dev.whyoleg.cryptography.CryptographyProvider
 import dev.whyoleg.cryptography.algorithms.AES
-import dev.whyoleg.cryptography.providers.openssl3.Openssl3
-import kotlinx.cinterop.*
+import dev.whyoleg.cryptography.providers.cryptokit.CryptoKit
+import kotlinx.cinterop.BetaInteropApi
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.ptr
+import kotlinx.cinterop.refTo
+import kotlinx.cinterop.usePinned
+import kotlinx.cinterop.value
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 import okio.Path.Companion.toPath
-import platform.CoreFoundation.*
-import platform.Foundation.*
-import platform.Security.*
+import platform.CoreFoundation.CFDictionaryCreateMutable
+import platform.CoreFoundation.CFDictionarySetValue
+import platform.CoreFoundation.CFRelease
+import platform.CoreFoundation.CFTypeRef
+import platform.CoreFoundation.CFTypeRefVar
+import platform.CoreFoundation.kCFAllocatorDefault
+import platform.CoreFoundation.kCFBooleanTrue
+import platform.Foundation.CFBridgingRelease
+import platform.Foundation.CFBridgingRetain
+import platform.Foundation.NSArray
+import platform.Foundation.NSData
+import platform.Foundation.NSDictionary
+import platform.Foundation.NSDocumentDirectory
+import platform.Foundation.NSFileManager
+import platform.Foundation.NSURL
+import platform.Foundation.NSUserDomainMask
+import platform.Foundation.create
+import platform.Security.SecItemAdd
+import platform.Security.SecItemCopyMatching
+import platform.Security.SecItemDelete
+import platform.Security.errSecSuccess
+import platform.Security.kSecAttrAccessible
+import platform.Security.kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+import platform.Security.kSecAttrAccount
+import platform.Security.kSecAttrService
+import platform.Security.kSecClass
+import platform.Security.kSecClassGenericPassword
+import platform.Security.kSecMatchLimit
+import platform.Security.kSecMatchLimitAll
+import platform.Security.kSecMatchLimitOne
+import platform.Security.kSecReturnAttributes
+import platform.Security.kSecReturnData
+import platform.Security.kSecValueData
 import platform.posix.memcpy
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
@@ -36,16 +78,27 @@ import kotlin.random.Random
 @OptIn(ExperimentalEncodingApi::class)
 private fun encodeBase64(bytes: ByteArray): String = Base64.encode(bytes)
 
+@PublishedApi
 @OptIn(ExperimentalEncodingApi::class)
-private fun decodeBase64(encoded: String): ByteArray = Base64.decode(encoded)
+internal fun decodeBase64(encoded: String): ByteArray = Base64.decode(encoded)
 
-actual class KSafe {
+actual class KSafe(val fileName: String? = null) {
 
     companion object Companion {
+        // we intentionally don't allow "." to avoid path traversal vulnerabilities
+        private val fileNameRegex = Regex("[a-zA-Z0-9_]+")
         private const val KEY_SIZE = 32 // 256 bits for AES-256
         private const val SERVICE_NAME = "eu.anifantakis.ksafe"
         private const val KEY_PREFIX = "eu.anifantakis.ksafe."
         private const val INSTALLATION_ID_KEY = "ksafe_installation_id"
+    }
+
+    init {
+        if (fileName != null) {
+            if (!fileName.matches(fileNameRegex)) {
+                throw IllegalArgumentException("File name must contain only letters, numbers, and underscores")
+            }
+        }
     }
 
     @PublishedApi
@@ -64,7 +117,8 @@ actual class KSafe {
                 create = false,
                 error = null
             )
-            requireNotNull(docDir).path.plus("/eu_anifantakis_ksafe_datastore.preferences_pb").toPath()
+            requireNotNull(docDir).path.plus(fileName?.let { "/$it" }
+                ?: "/eu_anifantakis_ksafe_datastore.preferences_pb").toPath()
         }
     )
 
@@ -79,12 +133,12 @@ actual class KSafe {
 
     private fun registerAppleProvider() {
         // This explicitly registers the Apple provider with the default CryptographyProvider.
-        CryptographyProvider.Openssl3
+        CryptographyProvider.CryptoKit
     }
 
     private fun forceAesGcmRegistration() {
         // Dummy reference to ensure AES.GCM is not stripped.
-        @Suppress("UNUSED_VARIABLE")
+        @Suppress("UNUSED_VARIABLE", "unused")
         val dummy = AES.GCM
     }
 
@@ -133,6 +187,7 @@ actual class KSafe {
      * Clean up orphaned Keychain entries from previous installations
      */
     private suspend fun cleanupOrphanedKeychainEntries() {
+        @Suppress("UnusedVariable", "unused")
         val installationId = getOrCreateInstallationId()
 
         // Get all keys that have markers in DataStore
@@ -140,8 +195,8 @@ actual class KSafe {
         val preferences = dataStore.data.first()
 
         preferences.asMap().forEach { (key, _) ->
-            if (key.name.startsWith("encrypted_")) {
-                val keyId = key.name.removePrefix("encrypted_")
+            if (key.name.startsWith(fileName?.let {"${fileName}_"} ?: "encrypted_")) {
+                val keyId = key.name.removePrefix(fileName?.let {"${fileName}_"} ?: "encrypted_")
                 validKeys.add(keyId)
             }
         }
@@ -190,6 +245,7 @@ actual class KSafe {
     }
 
     // ----- Unencrypted Storage Functions -----
+    @Suppress("UNCHECKED_CAST")
     @PublishedApi
     internal suspend inline fun <reified T> getUnencrypted(key: String, defaultValue: T): T {
         // Ensure cleanup on first access
@@ -232,7 +288,7 @@ actual class KSafe {
                     val jsonString = storedValue as? String ?: return@map defaultValue
                     try {
                         json.decodeFromString(serializer<T>(), jsonString)
-                    } catch (e: Exception) {
+                    } catch (_: Exception) {
                         defaultValue
                     }
                 }
@@ -240,6 +296,7 @@ actual class KSafe {
         }.first()
     }
 
+    @Suppress("UNCHECKED_CAST")
     @PublishedApi
     internal suspend inline fun <reified T> putUnencrypted(key: String, value: T) {
         // Ensure cleanup on first access
@@ -251,12 +308,14 @@ actual class KSafe {
                 when {
                     value is Int || (value is Long && value in Int.MIN_VALUE..Int.MAX_VALUE) ->
                         intPreferencesKey(key)
+
                     value is Long -> longPreferencesKey(key)
                     value is Float -> floatPreferencesKey(key)
                     value is Double -> doublePreferencesKey(key)
                     else -> stringPreferencesKey(key)
                 }
             }
+
             is String -> stringPreferencesKey(key)
             else -> stringPreferencesKey(key)
         } as Preferences.Key<Any>
@@ -269,6 +328,7 @@ actual class KSafe {
                     else -> value
                 }
             }
+
             is String -> value
             else -> json.encodeToString(serializer<T>(), value)
         }
@@ -282,7 +342,9 @@ actual class KSafe {
 
     // ----- iOS Keychain Encryption Functions -----
 
-    private fun encryptedPrefKey(key: String) = stringPreferencesKey("encrypted_$key")
+    @PublishedApi
+    internal fun encryptedPrefKey(key: String) =
+        stringPreferencesKey(fileName?.let { "${fileName}_$key" } ?: "encrypted_$key")
 
     /**
      * Gets or creates an encryption key from iOS Keychain
@@ -338,7 +400,11 @@ actual class KSafe {
                 CFDictionarySetValue(this, kSecAttrService, CFBridgingRetain(SERVICE_NAME))
                 CFDictionarySetValue(this, kSecAttrAccount, CFBridgingRetain(account))
                 CFDictionarySetValue(this, kSecValueData, CFBridgingRetain(keyData))
-                CFDictionarySetValue(this, kSecAttrAccessible, kSecAttrAccessibleWhenUnlockedThisDeviceOnly)
+                CFDictionarySetValue(
+                    this,
+                    kSecAttrAccessible,
+                    kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+                )
             }
 
             SecItemAdd(addQuery, null)
@@ -430,12 +496,13 @@ actual class KSafe {
 
             // Use whyoleg cryptography with the Keychain key
             val aesGcm = obtainAesGcm()
-            val symmetricKey = aesGcm.keyDecoder().decodeFromByteArray(AES.Key.Format.RAW, keychainKey)
+            val symmetricKey =
+                aesGcm.keyDecoder().decodeFromByteArray(AES.Key.Format.RAW, keychainKey)
             val cipher = symmetricKey.cipher()
             val decryptedBytes = cipher.decrypt(ciphertext = ciphertext)
             val jsonString = decryptedBytes.decodeToString()
             json.decodeFromString(serializer<T>(), jsonString)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             // If decryption fails, return default value
             defaultValue
         }
@@ -444,8 +511,7 @@ actual class KSafe {
     actual suspend inline fun <reified T> get(key: String, defaultValue: T, encrypted: Boolean): T {
         return if (encrypted) {
             getEncrypted(key, defaultValue)
-        }
-        else {
+        } else {
             getUnencrypted(key, defaultValue)
         }
     }
@@ -453,6 +519,107 @@ actual class KSafe {
     actual inline fun <reified T> getDirect(key: String, defaultValue: T, encrypted: Boolean): T {
         return runBlocking {
             get(key, defaultValue, encrypted)
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @PublishedApi
+    internal inline fun <reified T> getUnencryptedFlow(key: String, defaultValue: T): Flow<T> {
+        // Ensure cleanup on first access
+        CoroutineScope(Dispatchers.Default + SupervisorJob()).launch {
+            ensureCleanupPerformed()
+        }
+
+        val preferencesKey: Preferences.Key<Any> = when (defaultValue) {
+            is Boolean -> booleanPreferencesKey(key)
+            is Int -> intPreferencesKey(key)
+            is Float -> floatPreferencesKey(key)
+            is Long -> longPreferencesKey(key)
+            is String -> stringPreferencesKey(key)
+            is Double -> doublePreferencesKey(key)
+            else -> stringPreferencesKey(key)
+        } as Preferences.Key<Any>
+
+        return dataStore.data.mapLatest { preferences ->
+            val storedValue = preferences[preferencesKey]
+            when (defaultValue) {
+                is Boolean -> (storedValue as? Boolean ?: defaultValue) as T
+                is Int -> {
+                    when (storedValue) {
+                        is Int -> storedValue as T
+                        is Long -> if (storedValue in Int.MIN_VALUE..Int.MAX_VALUE) storedValue.toInt() as T else defaultValue
+                        else -> defaultValue
+                    }
+                }
+
+                is Long -> {
+                    when (storedValue) {
+                        is Long -> storedValue as T
+                        is Int -> storedValue.toLong() as T
+                        else -> defaultValue
+                    }
+                }
+
+                is Float -> (storedValue as? Float ?: defaultValue) as T
+                is String -> (storedValue as? String ?: defaultValue) as T
+                is Double -> (storedValue as? Double ?: defaultValue) as T
+                else -> {
+                    val jsonString = storedValue as? String ?: return@mapLatest defaultValue
+                    try {
+                        json.decodeFromString(serializer<T>(), jsonString)
+                    } catch (_: Exception) {
+                        defaultValue
+                    }
+                }
+            }
+        }.distinctUntilChanged()
+    }
+
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @PublishedApi
+    internal inline fun <reified T> getEncryptedFlow(key: String, defaultValue: T): Flow<T> {
+        // Ensure cleanup on first access
+        CoroutineScope(Dispatchers.Default + SupervisorJob()).launch {
+            ensureCleanupPerformed()
+        }
+
+        return dataStore.data.mapLatest { it[encryptedPrefKey(key)] }.distinctUntilChanged()
+            .mapLatest {
+                it?.let { decodeBase64(it) }
+            }.distinctUntilChanged().mapLatest {
+                it?.let { ciphertext ->
+                    try {
+                        // Get key from Keychain
+                        val keychainKey = getOrCreateKeychainKey(key)
+
+                        // Use whyoleg cryptography with the Keychain key
+                        val aesGcm = obtainAesGcm()
+                        val symmetricKey =
+                            aesGcm.keyDecoder().decodeFromByteArray(AES.Key.Format.RAW, keychainKey)
+                        val cipher = symmetricKey.cipher()
+                        val decryptedBytes = cipher.decrypt(ciphertext = ciphertext)
+                        val jsonString = decryptedBytes.decodeToString()
+                        json.decodeFromString(serializer<T>(), jsonString)
+                    } catch (_: Exception) {
+                        // If decryption fails, return default value
+                        defaultValue
+                    }
+                } ?: defaultValue
+            }.distinctUntilChanged()
+    }
+
+    @Suppress("unused")
+    actual inline fun <reified T> getFlow(
+        key: String,
+        defaultValue: T,
+        encrypted: Boolean
+    ): Flow<T> {
+        return if (encrypted) {
+            getEncryptedFlow(key, defaultValue)
+        } else {
+            getUnencryptedFlow(key, defaultValue)
         }
     }
 
@@ -464,7 +631,7 @@ actual class KSafe {
         }
     }
 
-    actual inline fun <reified T> putDirect(key: String, value: T, encrypted: Boolean): Unit {
+    actual inline fun <reified T> putDirect(key: String, value: T, encrypted: Boolean) {
         CoroutineScope(Dispatchers.Default + SupervisorJob()).launch {
             put(key, value, encrypted)
         }
@@ -491,6 +658,7 @@ actual class KSafe {
      *
      * @param key The key of the value to delete.
      */
+    @Suppress("unused")
     actual fun deleteDirect(key: String) {
         CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
             delete(key)
@@ -501,14 +669,15 @@ actual class KSafe {
      * Clear all data including Keychain entries.
      * Useful for complete cleanup or testing.
      */
+    @Suppress("unused")
     suspend fun clearAll() {
         // Get all encrypted keys before clearing
         val encryptedKeys = mutableSetOf<String>()
         val preferences = dataStore.data.first()
 
         preferences.asMap().forEach { (key, _) ->
-            if (key.name.startsWith("encrypted_")) {
-                val keyId = key.name.removePrefix("encrypted_")
+            if (key.name.startsWith(fileName?.let { "${fileName}_" } ?: "encrypted_")) {
+                val keyId = key.name.removePrefix(fileName?.let { "${fileName}_" } ?: "encrypted_")
                 encryptedKeys.add(keyId)
             }
         }
@@ -525,5 +694,5 @@ actual class KSafe {
 
 // iOS: non-inline helper to get the AES-GCM algorithm instance.
 fun obtainAesGcm(): AES.GCM {
-    return CryptographyProvider.Openssl3.get(AES.GCM)
+    return CryptographyProvider.CryptoKit.get(AES.GCM)
 }

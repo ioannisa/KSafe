@@ -12,7 +12,7 @@ plugins {
 }
 
 group = "eu.anifantakis"
-version = "1.0.0"
+version = "1.0.1"
 
 kotlin {
     androidTarget {
@@ -43,25 +43,23 @@ kotlin {
 
     sourceSets {
         androidMain.dependencies {
-            // data store preferences
-            implementation(cryptographyLibs.provider.jdk)
             implementation(libs.androidx.datastore.preferences)
+            implementation(libs.cryptography.provider.jdk)
         }
+        @Suppress("unused")
         val commonMain by getting {
             dependencies {
-                //put your multiplatform dependencies here
-                //put your multiplatform dependencies here
                 implementation(libs.kotlinx.serialization.json)
                 implementation(libs.kotlinx.coroutines.core)
 
                 implementation(libs.androidx.datastore.preferences.core)
 
-                implementation(cryptographyLibs.core)
-                implementation(cryptographyLibs.provider.base)
+                implementation(libs.cryptography.core)
+                implementation(libs.cryptography.provider.base)
             }
         }
         iosMain.dependencies {
-            implementation(cryptographyLibs.provider.openssl3.prebuilt)
+            implementation(libs.cryptography.provider.cryptokit)
         }
 
         compilerOptions {
@@ -131,4 +129,5 @@ mavenPublishing {
     }
 }
 
-task("testClasses") {}
+// task() is deprecated.
+// task("testClasses") {}
