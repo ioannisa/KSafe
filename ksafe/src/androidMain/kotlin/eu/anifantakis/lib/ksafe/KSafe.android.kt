@@ -16,13 +16,11 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStoreFile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -42,12 +40,19 @@ private fun encodeBase64(bytes: ByteArray): String = Base64.encode(bytes)
 @PublishedApi
 internal fun decodeBase64(encoded: String): ByteArray = Base64.decode(encoded)
 
-actual class KSafe(private val context: Context, val fileName: String? = null) {
+actual class KSafe(private val context: Context, @PublishedApi internal val fileName: String? = null) {
+    companion object Companion {
+        // we intentionally don't allow "." to avoid path traversal vulnerabilities
+        private val fileNameRegex = Regex("[a-z]+")
+        private const val ANDROID_KEYSTORE = "AndroidKeyStore"
+        const val KEY_ALIAS_PREFIX = "eu.anifantakis.ksafe"
+        private const val GCM_TAG_LENGTH = 128
+    }
 
     init {
         if (fileName != null) {
             if (!fileName.matches(fileNameRegex)) {
-                throw IllegalArgumentException("File name must contain only letters, numbers, and underscores")
+                throw IllegalArgumentException("File name must contain only lowercase letters")
             }
         }
     }
@@ -55,19 +60,15 @@ actual class KSafe(private val context: Context, val fileName: String? = null) {
     @PublishedApi
     internal val json = Json { ignoreUnknownKeys = true }
 
-    companion object Companion {
-        // we intentionally don't allow "." to avoid path traversal vulnerabilities
-        private val fileNameRegex = Regex("[a-zA-Z0-9_]+")
-        private const val ANDROID_KEYSTORE = "AndroidKeyStore"
-        const val KEY_ALIAS_PREFIX = "eu.anifantakis.ksafe."
-        private const val GCM_TAG_LENGTH = 128
-    }
-
     // Create a DataStore for our preferences.
     @PublishedApi
     internal val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
-        produceFile = { context.preferencesDataStoreFile(fileName ?: "eu_anifantakis_ksafe_datastore") }
+        produceFile = {
+            val file =
+                fileName?.let { "eu_anifantakis_ksafe_datastore_${fileName}" } ?: "eu_anifantakis_ksafe_datastore"
+            context.preferencesDataStoreFile(file)
+        }
     )
 
     // ----- Unencrypted Storage Helpers -----
@@ -96,6 +97,7 @@ actual class KSafe(private val context: Context, val fileName: String? = null) {
                         else -> defaultValue
                     }
                 }
+
                 is Long -> {
                     when (storedValue) {
                         is Long -> storedValue as T
@@ -103,6 +105,7 @@ actual class KSafe(private val context: Context, val fileName: String? = null) {
                         else -> defaultValue
                     }
                 }
+
                 is Float -> (storedValue as? Float ?: defaultValue) as T
                 is String -> (storedValue as? String ?: defaultValue) as T
                 is Double -> (storedValue as? Double ?: defaultValue) as T
@@ -127,12 +130,14 @@ actual class KSafe(private val context: Context, val fileName: String? = null) {
                 when {
                     value is Int || (value is Long && value in Int.MIN_VALUE..Int.MAX_VALUE) ->
                         intPreferencesKey(key)
+
                     value is Long -> longPreferencesKey(key)
                     value is Float -> floatPreferencesKey(key)
                     value is Double -> doublePreferencesKey(key)
                     else -> stringPreferencesKey(key)
                 }
             }
+
             is String -> stringPreferencesKey(key)
             else -> stringPreferencesKey(key)
         } as Preferences.Key<Any>
@@ -145,14 +150,13 @@ actual class KSafe(private val context: Context, val fileName: String? = null) {
                     else -> value
                 }
             }
+
             is String -> value
             else -> json.encodeToString(serializer<T>(), value)
         }
 
-        dataStore.updateData { preferences ->
-            preferences.toMutablePreferences().apply {
-                this[preferencesKey] = storedValue
-            }
+        dataStore.edit { preferences ->
+            preferences[preferencesKey] = storedValue
         }
     }
 
@@ -174,7 +178,8 @@ actual class KSafe(private val context: Context, val fileName: String? = null) {
         }
 
         // Generate new key
-        val keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
+        val keyGenerator =
+            KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
         val keyGenParameterSpec = KeyGenParameterSpec.Builder(
             keyAlias,
             KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
@@ -222,10 +227,8 @@ actual class KSafe(private val context: Context, val fileName: String? = null) {
 
     suspend fun storeEncryptedData(key: String, data: ByteArray) {
         val encoded = encodeBase64(data)
-        dataStore.updateData { preferences ->
-            preferences.toMutablePreferences().apply {
-                this[encryptedPrefKey(key)] = encoded
-            }
+        dataStore.edit { preferences ->
+            preferences[encryptedPrefKey(key)] = encoded
         }
     }
 
@@ -240,7 +243,7 @@ actual class KSafe(private val context: Context, val fileName: String? = null) {
         val plaintext = jsonString.encodeToByteArray()
 
         // Use Android Keystore for encryption
-        val keyAlias = KEY_ALIAS_PREFIX + key
+        val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, key).joinToString(".")
         val ciphertext = encryptWithKeystore(keyAlias, plaintext)
 
         storeEncryptedData(key, ciphertext)
@@ -251,7 +254,7 @@ actual class KSafe(private val context: Context, val fileName: String? = null) {
 
         return try {
             // Use Android Keystore for decryption
-            val keyAlias = KEY_ALIAS_PREFIX + key
+            val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, key).joinToString(".")
             val decryptedBytes = decryptWithKeystore(keyAlias, ciphertext)
             val jsonString = decryptedBytes.decodeToString()
             json.decodeFromString(serializer<T>(), jsonString)
@@ -293,6 +296,7 @@ actual class KSafe(private val context: Context, val fileName: String? = null) {
                         else -> defaultValue
                     }
                 }
+
                 is Long -> {
                     when (storedValue) {
                         is Long -> storedValue as T
@@ -300,6 +304,7 @@ actual class KSafe(private val context: Context, val fileName: String? = null) {
                         else -> defaultValue
                     }
                 }
+
                 is Float -> (storedValue as? Float ?: defaultValue) as T
                 is String -> (storedValue as? String ?: defaultValue) as T
                 is Double -> (storedValue as? Double ?: defaultValue) as T
@@ -315,26 +320,28 @@ actual class KSafe(private val context: Context, val fileName: String? = null) {
         }.distinctUntilChanged()
     }
 
-    @OptIn(ExperimentalCoroutinesApi::class)
     @PublishedApi
     internal inline fun <reified T> getEncryptedFlow(key: String, defaultValue: T): Flow<T> {
-        return dataStore.data.mapLatest {
-            it[encryptedPrefKey(key)]
-        }.distinctUntilChanged().mapLatest { it?.let { decodeBase64(it) } }
-            .distinctUntilChanged().mapLatest {
-                it?.let { ciphertext ->
+        val encryptedPrefKey = encryptedPrefKey(key)
+
+        return dataStore.data
+            .map { preferences ->
+                val encryptedValue = preferences[encryptedPrefKey]
+                if (encryptedValue == null) {
+                    defaultValue
+                } else {
                     try {
+                        val ciphertext = decodeBase64(encryptedValue)
                         val keyAlias = KEY_ALIAS_PREFIX + key
                         val decryptedBytes = decryptWithKeystore(keyAlias, ciphertext)
                         val jsonString = decryptedBytes.decodeToString()
                         json.decodeFromString(serializer<T>(), jsonString)
                     } catch (_: Exception) {
-                        // If decryption fails (e.g., key was deleted), return default value
                         defaultValue
                     }
-                } ?: defaultValue
-            }.distinctUntilChanged()
-
+                }
+            }
+            .distinctUntilChanged()
     }
 
     actual inline fun <reified T> getDirect(key: String, defaultValue: T, encrypted: Boolean): T {
@@ -344,7 +351,11 @@ actual class KSafe(private val context: Context, val fileName: String? = null) {
     }
 
     @Suppress("unused")
-    actual inline fun <reified T> getFlow(key: String, defaultValue: T, encrypted: Boolean): Flow<T> {
+    actual inline fun <reified T> getFlow(
+        key: String,
+        defaultValue: T,
+        encrypted: Boolean
+    ): Flow<T> {
         return if (encrypted) {
             getEncryptedFlow(key, defaultValue)
         } else {
@@ -374,6 +385,7 @@ actual class KSafe(private val context: Context, val fileName: String? = null) {
      */
     actual suspend fun delete(key: String) {
         val dataKey = stringPreferencesKey(key)
+
         dataStore.edit { preferences ->
             preferences.remove(dataKey)
         }
@@ -383,7 +395,7 @@ actual class KSafe(private val context: Context, val fileName: String? = null) {
             val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply {
                 load(null)
             }
-            val keyAlias = KEY_ALIAS_PREFIX + key
+            val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, key).joinToString(".")
             if (keyStore.containsAlias(keyAlias)) {
                 keyStore.deleteEntry(keyAlias)
             }
@@ -432,7 +444,7 @@ actual class KSafe(private val context: Context, val fileName: String? = null) {
         }
 
         encryptedKeys.forEach { keyId ->
-            val keyAlias = KEY_ALIAS_PREFIX + keyId
+            val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, keyId).joinToString(".")
             try {
                 if (keyStore.containsAlias(keyAlias)) {
                     keyStore.deleteEntry(keyAlias)

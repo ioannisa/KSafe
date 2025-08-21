@@ -86,17 +86,17 @@ actual class KSafe(val fileName: String? = null) {
 
     companion object Companion {
         // we intentionally don't allow "." to avoid path traversal vulnerabilities
-        private val fileNameRegex = Regex("[a-zA-Z0-9_]+")
+        private val fileNameRegex = Regex("[a-z]+")
         private const val KEY_SIZE = 32 // 256 bits for AES-256
         private const val SERVICE_NAME = "eu.anifantakis.ksafe"
-        private const val KEY_PREFIX = "eu.anifantakis.ksafe."
+        private const val KEY_PREFIX = "eu.anifantakis.ksafe"
         private const val INSTALLATION_ID_KEY = "ksafe_installation_id"
     }
 
     init {
         if (fileName != null) {
             if (!fileName.matches(fileNameRegex)) {
-                throw IllegalArgumentException("File name must contain only letters, numbers, and underscores")
+                throw IllegalArgumentException("File name must contain only lowercase letters.")
             }
         }
     }
@@ -195,8 +195,8 @@ actual class KSafe(val fileName: String? = null) {
         val preferences = dataStore.data.first()
 
         preferences.asMap().forEach { (key, _) ->
-            if (key.name.startsWith(fileName?.let {"${fileName}_"} ?: "encrypted_")) {
-                val keyId = key.name.removePrefix(fileName?.let {"${fileName}_"} ?: "encrypted_")
+            if (key.name.startsWith(fileName?.let { "${fileName}_" } ?: "encrypted_")) {
+                val keyId = key.name.removePrefix(fileName?.let { "${fileName}_" } ?: "encrypted_")
                 validKeys.add(keyId)
             }
         }
@@ -234,8 +234,19 @@ actual class KSafe(val fileName: String? = null) {
                     for (i in 0 until array.count.toInt()) {
                         val dict = array.objectAtIndex(i.toULong()) as? NSDictionary
                         val account = dict?.objectForKey(kSecAttrAccount as Any) as? String
-                        if (account != null && account.startsWith(KEY_PREFIX)) {
-                            val keyId = account.removePrefix(KEY_PREFIX)
+                        if (account != null && account.startsWith(
+                                listOfNotNull(
+                                    KEY_PREFIX,
+                                    fileName
+                                ).joinToString(".")
+                            )
+                        ) {
+                            val keyId = account.removePrefix(
+                                listOfNotNull(
+                                    KEY_PREFIX,
+                                    fileName
+                                ).joinToString(".")
+                            )
                             if (keyId !in validKeys) deleteKeychainKey(keyId)
                         }
                     }
@@ -333,10 +344,8 @@ actual class KSafe(val fileName: String? = null) {
             else -> json.encodeToString(serializer<T>(), value)
         }
 
-        dataStore.updateData { preferences ->
-            preferences.toMutablePreferences().apply {
-                this[preferencesKey] = storedValue
-            }
+        dataStore.edit { preferences ->
+            preferences[preferencesKey] = storedValue
         }
     }
 
@@ -352,7 +361,7 @@ actual class KSafe(val fileName: String? = null) {
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     @PublishedApi
     internal fun getOrCreateKeychainKey(keyId: String): ByteArray {
-        val account = KEY_PREFIX + keyId
+        val account = listOfNotNull(KEY_PREFIX, fileName, keyId).joinToString(".")
 
         // First try to retrieve existing key
         memScoped {
@@ -420,7 +429,7 @@ actual class KSafe(val fileName: String? = null) {
     @OptIn(ExperimentalForeignApi::class)
     @PublishedApi
     internal fun deleteKeychainKey(keyId: String) {
-        val account = KEY_PREFIX + keyId
+        val account = listOfNotNull(KEY_PREFIX, fileName, keyId).joinToString(".")
 
         memScoped {
             val query = CFDictionaryCreateMutable(
@@ -453,10 +462,8 @@ actual class KSafe(val fileName: String? = null) {
 
     suspend fun storeEncryptedData(key: String, data: ByteArray) {
         val encoded = encodeBase64(data)
-        dataStore.updateData { preferences ->
-            preferences.toMutablePreferences().apply {
-                this[encryptedPrefKey(key)] = encoded
-            }
+        dataStore.edit { preferences ->
+            preferences[encryptedPrefKey(key)] = encoded
         }
     }
 
@@ -585,12 +592,17 @@ actual class KSafe(val fileName: String? = null) {
             ensureCleanupPerformed()
         }
 
-        return dataStore.data.mapLatest { it[encryptedPrefKey(key)] }.distinctUntilChanged()
-            .mapLatest {
-                it?.let { decodeBase64(it) }
-            }.distinctUntilChanged().mapLatest {
-                it?.let { ciphertext ->
+        val encryptedPrefKey = encryptedPrefKey(key)
+
+        return dataStore.data
+            .map { preferences ->
+                val encryptedValue = preferences[encryptedPrefKey]
+                if (encryptedValue == null) {
+                    defaultValue
+                } else {
                     try {
+                        val ciphertext = decodeBase64(encryptedValue)
+
                         // Get key from Keychain
                         val keychainKey = getOrCreateKeychainKey(key)
 
@@ -606,7 +618,7 @@ actual class KSafe(val fileName: String? = null) {
                         // If decryption fails, return default value
                         defaultValue
                     }
-                } ?: defaultValue
+                }
             }.distinctUntilChanged()
     }
 
