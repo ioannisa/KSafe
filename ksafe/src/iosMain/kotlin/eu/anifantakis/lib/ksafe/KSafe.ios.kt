@@ -82,6 +82,7 @@ private fun encodeBase64(bytes: ByteArray): String = Base64.encode(bytes)
 @OptIn(ExperimentalEncodingApi::class)
 internal fun decodeBase64(encoded: String): ByteArray = Base64.decode(encoded)
 
+
 actual class KSafe(val fileName: String? = null) {
 
     companion object Companion {
@@ -114,16 +115,19 @@ actual class KSafe(val fileName: String? = null) {
                 directory = NSDocumentDirectory,
                 inDomain = NSUserDomainMask,
                 appropriateForURL = null,
-                create = false,
+                create = true,  // Changed to true to ensure directory exists
                 error = null
             )
-            requireNotNull(docDir).path.plus(fileName?.let { "/$it" }
-                ?: "/eu_anifantakis_ksafe_datastore.preferences_pb").toPath()
+            requireNotNull(docDir).path.plus(
+                fileName?.let { "/eu_anifantakis_ksafe_datastore_${fileName}.preferences_pb" }
+                    ?: "/eu_anifantakis_ksafe_datastore.preferences_pb"
+            ).toPath()
         }
     )
 
     // Track if cleanup has been performed
-    private var cleanupPerformed = false
+    @PublishedApi
+    internal var cleanupPerformed = false
 
     init {
         // Force registration of the Apple provider.
@@ -210,6 +214,20 @@ actual class KSafe(val fileName: String? = null) {
      */
     @OptIn(ExperimentalForeignApi::class)
     private fun removeOrphanedKeychainKeys(validKeys: Set<String>) {
+        // Use mock keychain in simulator
+        if (MockKeychain.isSimulator()) {
+            val prefix = listOfNotNull(KEY_PREFIX, fileName).joinToString(".")
+            MockKeychain.getAllKeys().forEach { account ->
+                if (account.startsWith(prefix)) {
+                    val keyId = account.removePrefix("$prefix.")
+                    if (keyId !in validKeys) {
+                        MockKeychain.delete(account)
+                    }
+                }
+            }
+            return
+        }
+
         memScoped {
             // Query for all our Keychain items
             val query = CFDictionaryCreateMutable(
@@ -363,6 +381,20 @@ actual class KSafe(val fileName: String? = null) {
     internal fun getOrCreateKeychainKey(keyId: String): ByteArray {
         val account = listOfNotNull(KEY_PREFIX, fileName, keyId).joinToString(".")
 
+        // Use mock keychain in simulator
+        if (MockKeychain.isSimulator()) {
+            val existingKey = MockKeychain.retrieve(account)
+            if (existingKey != null) {
+                return existingKey
+            }
+
+            // Generate new key
+            val newKey = ByteArray(KEY_SIZE)
+            Random.nextBytes(newKey)
+            MockKeychain.store(account, newKey)
+            return newKey
+        }
+
         // First try to retrieve existing key
         memScoped {
             val query = CFDictionaryCreateMutable(
@@ -431,6 +463,12 @@ actual class KSafe(val fileName: String? = null) {
     internal fun deleteKeychainKey(keyId: String) {
         val account = listOfNotNull(KEY_PREFIX, fileName, keyId).joinToString(".")
 
+        // Use mock keychain in simulator
+        if (MockKeychain.isSimulator()) {
+            MockKeychain.delete(account)
+            return
+        }
+
         memScoped {
             val query = CFDictionaryCreateMutable(
                 kCFAllocatorDefault,
@@ -484,7 +522,8 @@ actual class KSafe(val fileName: String? = null) {
 
         // Use whyoleg cryptography with the Keychain key
         val aesGcm = obtainAesGcm()
-        val symmetricKey = aesGcm.keyDecoder().decodeFromByteArray(AES.Key.Format.RAW, keychainKey)
+        val symmetricKey =
+            aesGcm.keyDecoder().decodeFromByteArray(AES.Key.Format.RAW, keychainKey)
         val cipher = symmetricKey.cipher()
         val ciphertext = cipher.encrypt(plaintext = plaintext)
 
@@ -495,7 +534,9 @@ actual class KSafe(val fileName: String? = null) {
         // Ensure cleanup on first access
         ensureCleanupPerformed()
 
-        val ciphertext = loadEncryptedData(key) ?: return defaultValue
+        val ciphertext = loadEncryptedData(key) ?: run {
+            return defaultValue
+        }
 
         return try {
             // Get key from Keychain
@@ -515,7 +556,11 @@ actual class KSafe(val fileName: String? = null) {
         }
     }
 
-    actual suspend inline fun <reified T> get(key: String, defaultValue: T, encrypted: Boolean): T {
+    actual suspend inline fun <reified T> get(
+        key: String,
+        defaultValue: T,
+        encrypted: Boolean
+    ): T {
         return if (encrypted) {
             getEncrypted(key, defaultValue)
         } else {
@@ -587,15 +632,17 @@ actual class KSafe(val fileName: String? = null) {
     @OptIn(ExperimentalCoroutinesApi::class)
     @PublishedApi
     internal inline fun <reified T> getEncryptedFlow(key: String, defaultValue: T): Flow<T> {
-        // Ensure cleanup on first access
-        CoroutineScope(Dispatchers.Default + SupervisorJob()).launch {
-            ensureCleanupPerformed()
-        }
-
         val encryptedPrefKey = encryptedPrefKey(key)
 
         return dataStore.data
             .map { preferences ->
+                // Ensure cleanup on first access (blocking to avoid race condition)
+                if (!cleanupPerformed) {
+                    runBlocking {
+                        ensureCleanupPerformed()
+                    }
+                }
+
                 val encryptedValue = preferences[encryptedPrefKey]
                 if (encryptedValue == null) {
                     defaultValue
@@ -609,7 +656,8 @@ actual class KSafe(val fileName: String? = null) {
                         // Use whyoleg cryptography with the Keychain key
                         val aesGcm = obtainAesGcm()
                         val symmetricKey =
-                            aesGcm.keyDecoder().decodeFromByteArray(AES.Key.Format.RAW, keychainKey)
+                            aesGcm.keyDecoder()
+                                .decodeFromByteArray(AES.Key.Format.RAW, keychainKey)
                         val cipher = symmetricKey.cipher()
                         val decryptedBytes = cipher.decrypt(ciphertext = ciphertext)
                         val jsonString = decryptedBytes.decodeToString()
@@ -689,7 +737,8 @@ actual class KSafe(val fileName: String? = null) {
 
         preferences.asMap().forEach { (key, _) ->
             if (key.name.startsWith(fileName?.let { "${fileName}_" } ?: "encrypted_")) {
-                val keyId = key.name.removePrefix(fileName?.let { "${fileName}_" } ?: "encrypted_")
+                val keyId =
+                    key.name.removePrefix(fileName?.let { "${fileName}_" } ?: "encrypted_")
                 encryptedKeys.add(keyId)
             }
         }
@@ -700,6 +749,11 @@ actual class KSafe(val fileName: String? = null) {
         // Delete all associated Keychain entries
         encryptedKeys.forEach { keyId ->
             deleteKeychainKey(keyId)
+        }
+
+        // Clear mock keychain if in simulator
+        if (MockKeychain.isSimulator()) {
+            MockKeychain.clear()
         }
     }
 }

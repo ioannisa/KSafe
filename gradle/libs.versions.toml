@@ -1,21 +1,27 @@
 [versions]
-agp = "8.12.1"
-kotlin = "2.2.0"
+agp = "8.12.2"
+kotlin = "2.2.10"
 android-minSdk = "24"
 android-compileSdk = "36"
 datastorePreferences = "1.1.7"
 kotlinxCoroutinesCore = "1.10.2"
 kotlinxSerializationJson = "1.9.0"
-kotlinxSerialization = "2.2.0"
+kotlinxSerialization = "2.2.10"
 kotlinStdlib = "2.2.0"
+orchestrator = "1.6.1"
 runner = "1.7.0"
 core = "1.7.0"
 junit = "1.3.0"
 runtime = "1.8.2"
 cryptography = "0.5.0"
+turbine = "1.2.1"
+robolectric = "4.16"
 
 [libraries]
+androidx-orchestrator = { module = "androidx.test:orchestrator", version.ref = "orchestrator" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinxCoroutinesCore" }
+turbine = { module = "app.cash.turbine:turbine", version.ref = "turbine" }
 
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutinesCore" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
@@ -23,6 +29,7 @@ kotlin-stdlib = { group = "org.jetbrains.kotlin", name = "kotlin-stdlib", versio
 androidx-runner = { group = "androidx.test", name = "runner", version.ref = "runner" }
 androidx-core = { group = "androidx.test", name = "core", version.ref = "core" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junit" }
+robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
 cryptography-core = { module = "dev.whyoleg.cryptography:cryptography-core", version.ref = "cryptography" }
 cryptography-provider-base = { module = "dev.whyoleg.cryptography:cryptography-provider-base", version.ref = "cryptography" }
 cryptography-provider-jdk = { module = "dev.whyoleg.cryptography:cryptography-provider-jdk", version.ref = "cryptography" }

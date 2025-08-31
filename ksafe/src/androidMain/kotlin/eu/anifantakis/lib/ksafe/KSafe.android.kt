@@ -332,7 +332,7 @@ actual class KSafe(private val context: Context, @PublishedApi internal val file
                 } else {
                     try {
                         val ciphertext = decodeBase64(encryptedValue)
-                        val keyAlias = KEY_ALIAS_PREFIX + key
+                        val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, key).joinToString(".")
                         val decryptedBytes = decryptWithKeystore(keyAlias, ciphertext)
                         val jsonString = decryptedBytes.decodeToString()
                         json.decodeFromString(serializer<T>(), jsonString)
