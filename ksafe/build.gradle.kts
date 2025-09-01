@@ -8,11 +8,10 @@ plugins {
     alias(libs.plugins.vanniktech.mavenPublish)
 
     alias(libs.plugins.kotlin.serialization)
-    //id("maven-publish")
 }
 
 group = "eu.anifantakis"
-version = "1.0.0"
+version = "1.0.1"
 
 kotlin {
     androidTarget {
@@ -43,29 +42,54 @@ kotlin {
 
     sourceSets {
         androidMain.dependencies {
-            // data store preferences
-            implementation(cryptographyLibs.provider.jdk)
             implementation(libs.androidx.datastore.preferences)
+            implementation(libs.cryptography.provider.jdk)
         }
+        @Suppress("unused")
         val commonMain by getting {
             dependencies {
-                //put your multiplatform dependencies here
-                //put your multiplatform dependencies here
                 implementation(libs.kotlinx.serialization.json)
                 implementation(libs.kotlinx.coroutines.core)
 
                 implementation(libs.androidx.datastore.preferences.core)
 
-                implementation(cryptographyLibs.core)
-                implementation(cryptographyLibs.provider.base)
+                implementation(libs.cryptography.core)
+                implementation(libs.cryptography.provider.base)
             }
         }
         iosMain.dependencies {
-            implementation(cryptographyLibs.provider.openssl3.prebuilt)
+            implementation(libs.cryptography.provider.cryptokit)
         }
 
         compilerOptions {
             freeCompilerArgs.add("-Xexpect-actual-classes")
+        }
+        
+        commonTest.dependencies {
+            implementation(libs.kotlin.test)
+            implementation(libs.kotlinx.coroutines.test)
+            implementation(libs.turbine)
+        }
+        
+        val androidInstrumentedTest by getting {
+            dependencies {
+                implementation(libs.androidx.runner)
+                implementation(libs.androidx.core)
+                implementation(libs.androidx.junit)
+                implementation(kotlin("test"))
+                implementation(libs.kotlinx.coroutines.test)
+                implementation(libs.turbine)
+            }
+        }
+    }
+    
+    // Configure iOS tests to run sequentially
+    targets.withType<org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget>().configureEach {
+        binaries.all {
+            if (this is org.jetbrains.kotlin.gradle.plugin.mpp.TestExecutable) {
+                // Force sequential test execution
+                linkerOpts("-single_module")
+            }
         }
     }
 }
@@ -75,10 +99,24 @@ android {
     compileSdk = libs.versions.android.compileSdk.get().toInt()
     defaultConfig {
         minSdk = libs.versions.android.minSdk.get().toInt()
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunnerArguments["clearPackageData"] = "true"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
+    }
+
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+        }
+        execution = "ANDROIDX_TEST_ORCHESTRATOR"
+        animationsDisabled = true
+    }
+    
+    dependencies {
+        androidTestUtil(libs.androidx.orchestrator)
     }
 }
 
@@ -131,4 +169,8 @@ mavenPublishing {
     }
 }
 
-task("testClasses") {}
+// try and configure iOS test tasks to run sequentially
+tasks.withType<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest>().configureEach {
+    // Set environment variable to help with debugging
+    environment("KSAFE_TEST_MODE", "sequential")
+}

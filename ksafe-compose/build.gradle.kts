@@ -1,6 +1,4 @@
 import com.vanniktech.maven.publish.SonatypeHost
-import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
-import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -11,12 +9,12 @@ plugins {
 
 // Set the same group and version as your main library
 group = "eu.anifantakis"
-version = "1.0.0"
+version = "1.0.1"
 
 kotlin {
     androidLibrary {
         namespace = "eu.anifantakis.ksafe.compose"
-        compileSdk = 34
+        compileSdk = 36
         minSdk = 24
 
         withHostTestBuilder {
@@ -138,4 +136,6 @@ mavenPublishing {
     }
 }
 
-task("testClasses") {}
+
+// task() is deprecated
+// task("testClasses") {}

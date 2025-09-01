@@ -142,6 +142,8 @@ class MyViewModel(ksafe: KSafe): ViewModel() {
 }
 ```
 
+> **Important:** The property delegate can ONLY use the default KSafe instance. If you need to use multiple KSafe instances with different file names, you must use the suspend or direct APIs (see below).
+
 ##### Composable State (One Liner)
 `var counter by ksafe.mutableStateOf(0))`
 
@@ -210,6 +212,67 @@ ksafe.deleteDirect("profile") // blocking
 
 When you delete a value, both the data and its associated encryption key are removed from the secure storage (Keystore/Keychain).
 
+#### Using Multiple KSafe Instances
+
+You can create multiple KSafe instances with different file names to separate different types of data (e.g., user preferences vs. app settings vs. cache data):
+
+```Kotlin
+class MyViewModel : ViewModel() {
+    // Separate instances for different data domains
+    private val userPrefs = KSafe(fileName = "userpreferences")
+    private val appSettings = KSafe(fileName = "appsettings")
+    private val cacheData = KSafe(fileName = "cache")
+    
+    // Note: Property delegation only works with the default instance
+    // For named instances, use suspend or direct APIs:
+    
+    suspend fun saveUserToken(token: String) {
+        userPrefs.put("auth_token", token, encrypted = true)
+    }
+    
+    fun getCachedData(): String {
+        return cacheData.getDirect("last_sync", "", encrypted = false)
+    }
+    
+    suspend fun updateAppTheme(isDark: Boolean) {
+        appSettings.put("dark_mode", isDark)
+    }
+}
+```
+
+**Important Instance Management Rules:**
+- **Each KSafe instance should be a singleton** - Create once and reuse throughout your app
+- **Never create multiple instances pointing to the same file** - This can cause data inconsistency and unexpected behavior
+- Use dependency injection (like Koin) to manage instances as singletons:
+
+```Kotlin
+// ✅ Good Idea: Singleton instances via DI
+val appModule = module {
+    single { KSafe() }  // Default instance
+    single(named("user")) { KSafe(fileName = "userdata") }
+    single(named("cache")) { KSafe(fileName = "cache") }
+}
+
+// ❌ Bad Idea: Creating multiple instances for the same file
+class ScreenA {
+    val prefs = KSafe(fileName = "userdata")  // Instance 1
+}
+class ScreenB {
+    val prefs = KSafe(fileName = "userdata")  // Instance 2 - DON'T DO THIS!
+}
+```
+
+**File Name Requirements:**
+- Must contain only lowercase letters (a-z)
+- No numbers, special characters, or uppercase letters allowed
+- Examples: `"userdata"`, `"settings"`, `"cache"`
+- Invalid: `"userData"`, `"user_data"`, `"user123"`
+
+Each instance creates its own separate DataStore file and encryption keys, allowing you to:
+- Organize data by domain or feature
+- Clear specific data sets independently
+- Apply different encryption strategies per instance
+
 #### Full ViewModel example
 ```Kotlin
 class CounterViewModel(ksafe: KSafe) : ViewModel() {
@@ -274,6 +337,110 @@ On iOS, KSafe uses a smart detection system:
 * **iOS:** Keychain access requires device to be unlocked
 * **Android:** Some devices may not have hardware-backed keystore
 * **Both:** Encrypted data is lost if encryption keys are deleted (by design for security)
+
+***
+
+## Testing & Development
+
+### Running Tests
+
+KSafe includes comprehensive tests for all platforms. Here are the Gradle commands to run them:
+
+```bash
+# Run all tests across all platforms
+./gradlew allTests
+
+# Run common tests only
+./gradlew :ksafe:commonTest
+
+# Run Android unit tests (Note: May fail in Robolectric due to KeyStore limitations)
+./gradlew :ksafe:testDebugUnitTest
+
+# Run Android instrumented tests on connected device/emulator (Recommended for Android)
+./gradlew :ksafe:connectedDebugAndroidTest
+
+# Run iOS tests on simulator
+./gradlew :ksafe:iosSimulatorArm64Test
+
+# Run a specific test class
+./gradlew :ksafe:commonTest --tests "*.KSafeTest"
+```
+
+**Note:** iOS tests on simulator use a mock Keychain implementation since Keychain Services are not available in the iOS Simulator. This validates the encryption logic but not the actual Keychain integration.
+
+### Building and Running the iOS Test App
+
+The repository includes an iOS test app that demonstrates KSafe's Flow functionality. You can build and run it from the command line:
+
+#### Prerequisites
+```bash
+# Build the KSafe framework first
+./gradlew :ksafe:linkDebugFrameworkIosSimulatorArm64  # For simulator
+./gradlew :ksafe:linkDebugFrameworkIosArm64           # For physical device
+```
+
+#### Building for iOS Simulator
+```bash
+cd iosTestApp
+xcodebuild -scheme KSafeTestApp \
+           -configuration Debug \
+           -sdk iphonesimulator \
+           -arch arm64 \
+           -derivedDataPath build \
+           build
+```
+
+#### Installing and Running on Simulator
+```bash
+# Find running simulator
+xcrun simctl list devices | grep "Booted"
+
+# Install app (replace DEVICE_ID with your simulator's ID)
+xcrun simctl install DEVICE_ID build/Build/Products/Debug-iphonesimulator/KSafeTestApp.app
+
+# Launch app
+xcrun simctl launch DEVICE_ID com.example.KSafeTestApp
+```
+
+#### Building for Physical iOS Device
+```bash
+cd iosTestApp
+xcodebuild -scheme KSafeTestApp \
+           -configuration Debug \
+           -sdk iphoneos \
+           -derivedDataPath build \
+           build
+```
+
+#### Installing on Physical Device
+```bash
+# List connected devices
+xcrun devicectl list devices
+
+# Install app (replace DEVICE_ID with your device's ID)
+xcrun devicectl device install app \
+                --device DEVICE_ID \
+                build/Build/Products/Debug-iphoneos/KSafeTestApp.app
+
+# Launch app (Note: Requires trusted developer profile on device)
+xcrun devicectl device process launch \
+                --device DEVICE_ID \
+                com.example.KSafeTestApp
+```
+
+**Important Notes:**
+- **Simulator:** Tests use a mock Keychain implementation for iOS Simulator compatibility
+- **Physical Device:** Requires developer profile to be trusted in Settings → General → VPN & Device Management
+- **Framework Path:** The Xcode project automatically selects the correct framework (arm64 for device, simulatorArm64 for simulator)
+
+### Test App Features
+
+The iOS test app demonstrates:
+- Creating a KSafe instance with a custom file name
+- Observing value changes through Flow simulation (via polling)
+  - For production apps, consider using [SKIE](https://skie.touchlab.co/) or [KMP-NativeCoroutines](https://github.com/rickclephas/KMP-NativeCoroutines) for easier Flow consumption from iOS
+- Using `putDirect` to immediately update values
+- Real-time UI updates responding to value changes
 
 ***
 

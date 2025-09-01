@@ -1,15 +1,22 @@
 package eu.anifantakis.lib.ksafe
 
+import androidx.datastore.preferences.core.PreferencesSerializer.defaultValue
+import kotlinx.coroutines.NonCancellable.key
+import kotlin.js.JsFileName
 import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
 
 /**
- * Allows eu.anifantakis.ksafe.KSafe to be used with property delegation.
+ * Allows KSafe to be used with property delegation.
+ *
+ * Note: This uses runBlocking internally for synchronous behavior.
+ * For better performance in coroutines, use the suspend functions directly.
+ * You can use flows to achieve much the same behavior.
  *
  * Usage:
  * ```
- * val eu.anifantakis.ksafe.KSafe: eu.anifantakis.ksafe.KSafe = // ... obtain your eu.anifantakis.ksafe.KSafe instance
- * var mySetting: String by eu.anifantakis.ksafe.KSafe(defaultValue = "default", encrypted = true)
+ * val ksafe: KSafe = // ... obtain your KSafe instance
+ * var mySetting: String by ksafe(defaultValue = "default", encrypted = true)
  * ```
  *
  * @param T The type of the property.
@@ -22,8 +29,6 @@ inline operator fun <reified T> KSafe.invoke(
     key: String? = null,
     encrypted: Boolean = true
 ): ReadWriteProperty<Any?, T> {
-    // 'this' inside this inline function refers to the eu.anifantakis.ksafe.KSafe instance
-    // on which 'eu.anifantakis.ksafe.invoke' is called.
     val ksafeInstance = this
 
     return object : ReadWriteProperty<Any?, T> {
@@ -35,6 +40,8 @@ inline operator fun <reified T> KSafe.invoke(
 
         override fun setValue(thisRef: Any?, property: KProperty<*>, value: T) {
             // Similarly, T is reified here. We explicitly pass it to putDirect.
+            // putDirect does not use runBlocking - it's a fire-and-forget async operation.
+            // an immedicate read after a write can therefore give you stale data.
             ksafeInstance.putDirect<T>(key = key ?:property.name, value, encrypted)
         }
     }
