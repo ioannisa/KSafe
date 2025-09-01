@@ -15,7 +15,12 @@ _**Effortless Enterprise-Grade Encrypted Persistence for Kotlin Multiplatform an
 
 Whether you must squirrel away OAuth tokens in a fintech app or remember the last‑visited screen of your game, KSafe stores the data encrypted with platform-specific secure key storage and hands it back to you like a normal variable.
 
+##### Contributors
+Special thanks to [Mark Andrachek](https://github.com/mandrachek) for his contribution!
+
+
 ***
+
 
 ## Why use KSafe?
 
@@ -65,8 +70,8 @@ Add the KSafe dependency to your `build.gradle.kts` (or `build.gradle`) file.
 #### 1 - Add the Dependency
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:1.0.0")
-implementation("eu.anifantakis:ksafe-compose:1.0.0") // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe:1.1.0")
+implementation("eu.anifantakis:ksafe-compose:1.1.0") // ← Compose state (optional)
 ```
 
 > Skip `ksafe-compose` if your project doesn’t use Jetpack Compose, or if you don't intend to use the library's `mutableStateOf` persistance option
@@ -87,8 +92,8 @@ kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", versi
 and apply it at the same section of your `build.gradle.kts` file.
 ```Kotlin
 plugins {
-    //...
-    alias(libs.plugins.kotlin.serialization)
+  //...
+  alias(libs.plugins.kotlin.serialization)
 }
 ```
 
@@ -103,13 +108,13 @@ Koin is the defacto DI solution for Kotlin Multiplatform, and is the ideal tool 
 expect val platformModule: Module
 
 // Android
-actual val platformModule get() = module {
-    single { KSafe(androidApplication()) }
+actual val platformModule = module {
+  single { KSafe(androidApplication()) }
 }
 
 // iOS
-actual val platformModule get() = module {
-    single { KSafe() }
+actual val platformModule = module {
+  single { KSafe() }
 }
 ```
 
@@ -133,12 +138,12 @@ The above wat is easiest to utilize the library with property delegation, that p
 import eu.anifantakis.lib.ksafe.KSafe
 
 class MyViewModel(ksafe: KSafe): ViewModel() {
-    var counter by ksafe(0)
+  var counter by ksafe(0)
 
-    init {
-        // then just use it as a regular variable
-        counter++
-    }
+  init {
+    // then just use it as a regular variable
+    counter++
+  }
 }
 ```
 
@@ -155,13 +160,13 @@ That is a composable state, but to make use of it you need to have imported the 
 import eu.anifantakis.lib.ksafe.KSafe
 
 class MyViewModel(ksafe: KSafe): ViewModel() {
-    var counter by ksafe.mutableStateOf(0)
-        private set
+  var counter by ksafe.mutableStateOf(0)
+    private set
 
-    init {
-        // then just use it as a regular variable
-        counter++
-    }
+  init {
+    // then just use it as a regular variable
+    counter++
+  }
 }
 ```
 
@@ -170,9 +175,9 @@ class MyViewModel(ksafe: KSafe): ViewModel() {
 ```Kotlin
 @Serializable
 data class AuthInfo(
-    val accessToken: String = "",
-    val refreshToken: String = "",
-    val expiresIn: Long = 0L
+  val accessToken: String = "",
+  val refreshToken: String = "",
+  val expiresIn: Long = 0L
 )
 
 var authInfo by ksafe(AuthInfo())   // encryption + JSON automatically
@@ -213,30 +218,31 @@ ksafe.deleteDirect("profile") // blocking
 When you delete a value, both the data and its associated encryption key are removed from the secure storage (Keystore/Keychain).
 
 #### Using Multiple KSafe Instances
+by [Mark Andrachek](https://github.com/mandrachek)
 
 You can create multiple KSafe instances with different file names to separate different types of data (e.g., user preferences vs. app settings vs. cache data):
 
 ```Kotlin
 class MyViewModel : ViewModel() {
-    // Separate instances for different data domains
-    private val userPrefs = KSafe(fileName = "userpreferences")
-    private val appSettings = KSafe(fileName = "appsettings")
-    private val cacheData = KSafe(fileName = "cache")
-    
-    // Note: Property delegation only works with the default instance
-    // For named instances, use suspend or direct APIs:
-    
-    suspend fun saveUserToken(token: String) {
-        userPrefs.put("auth_token", token, encrypted = true)
-    }
-    
-    fun getCachedData(): String {
-        return cacheData.getDirect("last_sync", "", encrypted = false)
-    }
-    
-    suspend fun updateAppTheme(isDark: Boolean) {
-        appSettings.put("dark_mode", isDark)
-    }
+  // Separate instances for different data domains
+  private val userPrefs = KSafe(fileName = "userpreferences")
+  private val appSettings = KSafe(fileName = "appsettings")
+  private val cacheData = KSafe(fileName = "cache")
+
+  // Note: Property delegation only works with the default instance
+  // For named instances, use suspend or direct APIs:
+
+  suspend fun saveUserToken(token: String) {
+    userPrefs.put("auth_token", token, encrypted = true)
+  }
+
+  fun getCachedData(): String {
+    return cacheData.getDirect("last_sync", "", encrypted = false)
+  }
+
+  suspend fun updateAppTheme(isDark: Boolean) {
+    appSettings.put("dark_mode", isDark)
+  }
 }
 ```
 
@@ -248,17 +254,17 @@ class MyViewModel : ViewModel() {
 ```Kotlin
 // ✅ Good Idea: Singleton instances via DI
 val appModule = module {
-    single { KSafe() }  // Default instance
-    single(named("user")) { KSafe(fileName = "userdata") }
-    single(named("cache")) { KSafe(fileName = "cache") }
+  single { KSafe() }  // Default instance
+  single(named("user")) { KSafe(fileName = "userdata") }
+  single(named("cache")) { KSafe(fileName = "cache") }
 }
 
 // ❌ Bad Idea: Creating multiple instances for the same file
 class ScreenA {
-    val prefs = KSafe(fileName = "userdata")  // Instance 1
+  val prefs = KSafe(fileName = "userdata")  // Instance 1
 }
 class ScreenB {
-    val prefs = KSafe(fileName = "userdata")  // Instance 2 - DON'T DO THIS!
+  val prefs = KSafe(fileName = "userdata")  // Instance 2 - DON'T DO THIS!
 }
 ```
 
@@ -276,22 +282,22 @@ Each instance creates its own separate DataStore file and encryption keys, allow
 #### Full ViewModel example
 ```Kotlin
 class CounterViewModel(ksafe: KSafe) : ViewModel() {
-    // regular Compose state (not persisted)
-    var volatile by mutableStateOf(0)
-        private set
+  // regular Compose state (not persisted)
+  var volatile by mutableStateOf(0)
+    private set
 
-    // persisted Compose state (AES encrypted)
-    var persisted by ksafe.mutableStateOf(100)
-        private set
+  // persisted Compose state (AES encrypted)
+  var persisted by ksafe.mutableStateOf(100)
+    private set
 
-    // plain property‑delegate preference
-    var hits by ksafe(0)
+  // plain property‑delegate preference
+  var hits by ksafe(0)
 
-    fun inc() {
-        volatile++
-        persisted++
-        hits++
-    }
+  fun inc() {
+    volatile++
+    persisted++
+    hits++
+  }
 }
 ```
 
@@ -341,6 +347,7 @@ On iOS, KSafe uses a smart detection system:
 ***
 
 ## Testing & Development
+by [Mark Andrachek](https://github.com/mandrachek)
 
 ### Running Tests
 
