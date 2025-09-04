@@ -71,7 +71,7 @@ Add the KSafe dependency to your `build.gradle.kts` (or `build.gradle`) file.
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
 implementation("eu.anifantakis:ksafe:1.1.0")
-implementation("eu.anifantakis:ksafe-compose:1.1.0") // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe-compose:1.0.0") // ← Compose state (optional)
 ```
 
 > Skip `ksafe-compose` if your project doesn’t use Jetpack Compose, or if you don't intend to use the library's `mutableStateOf` persistance option
@@ -83,7 +83,7 @@ If you want to use the library with data classes, you need to enable Serializati
 Add Serialization definition to your `plugins` section of your `libs.versions.toml`
 ```toml
 [versions]
-kotlin = "2.1.21"
+kotlin = "2.2.10"
 
 [plugins]
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
