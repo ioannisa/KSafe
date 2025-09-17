@@ -1,4 +1,7 @@
 import com.vanniktech.maven.publish.SonatypeHost
+import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinAndroidTarget
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -9,13 +12,18 @@ plugins {
 
 // Set the same group and version as your main library
 group = "eu.anifantakis"
-version = "1.1.0"
+version = "1.1.1"
 
 kotlin {
     androidLibrary {
         namespace = "eu.anifantakis.ksafe.compose"
         compileSdk = 36
         minSdk = 24
+
+        @OptIn(ExperimentalKotlinGradlePluginApi::class)
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_11)
+        }
 
         withHostTestBuilder {
         }
@@ -82,6 +90,13 @@ kotlin {
             dependencies {
                 // Add iOS-specific dependencies here
             }
+        }
+    }
+
+    targets.withType<KotlinAndroidTarget>().configureEach {
+        @OptIn(ExperimentalKotlinGradlePluginApi::class)
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_11)
         }
     }
 }

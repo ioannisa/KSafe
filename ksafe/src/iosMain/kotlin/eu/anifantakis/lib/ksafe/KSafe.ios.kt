@@ -216,10 +216,12 @@ actual class KSafe(val fileName: String? = null) {
     private fun removeOrphanedKeychainKeys(validKeys: Set<String>) {
         // Use mock keychain in simulator
         if (MockKeychain.isSimulator()) {
-            val prefix = listOfNotNull(KEY_PREFIX, fileName).joinToString(".")
+            val basePrefix = listOfNotNull(KEY_PREFIX, fileName).joinToString(".")
+            val prefixWithDelimiter = "$basePrefix."
+
             MockKeychain.getAllKeys().forEach { account ->
-                if (account.startsWith(prefix)) {
-                    val keyId = account.removePrefix("$prefix.")
+                if (account.startsWith(prefixWithDelimiter)) {
+                    val keyId = account.removePrefix(prefixWithDelimiter)
                     if (keyId !in validKeys) {
                         MockKeychain.delete(account)
                     }
@@ -227,6 +229,9 @@ actual class KSafe(val fileName: String? = null) {
             }
             return
         }
+
+        val basePrefix = listOfNotNull(KEY_PREFIX, fileName).joinToString(".")
+        val prefixWithDelimiter = "$basePrefix."
 
         memScoped {
             // Query for all our Keychain items
@@ -252,19 +257,8 @@ actual class KSafe(val fileName: String? = null) {
                     for (i in 0 until array.count.toInt()) {
                         val dict = array.objectAtIndex(i.toULong()) as? NSDictionary
                         val account = dict?.objectForKey(kSecAttrAccount as Any) as? String
-                        if (account != null && account.startsWith(
-                                listOfNotNull(
-                                    KEY_PREFIX,
-                                    fileName
-                                ).joinToString(".")
-                            )
-                        ) {
-                            val keyId = account.removePrefix(
-                                listOfNotNull(
-                                    KEY_PREFIX,
-                                    fileName
-                                ).joinToString(".")
-                            )
+                        if (account != null && account.startsWith(prefixWithDelimiter)) {
+                            val keyId = account.removePrefix(prefixWithDelimiter)
                             if (keyId !in validKeys) deleteKeychainKey(keyId)
                         }
                     }
