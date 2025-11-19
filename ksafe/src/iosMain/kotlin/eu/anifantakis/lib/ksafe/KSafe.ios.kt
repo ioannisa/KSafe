@@ -698,8 +698,11 @@ actual class KSafe(val fileName: String? = null) {
      */
     actual suspend fun delete(key: String) {
         val dataKey = stringPreferencesKey(key)
+        val encryptedKey = encryptedPrefKey(key)
+
         dataStore.edit { preferences ->
             preferences.remove(dataKey)
+            preferences.remove(encryptedKey)
         }
 
         // Also delete the encryption key from Keychain
@@ -724,7 +727,7 @@ actual class KSafe(val fileName: String? = null) {
      * Useful for complete cleanup or testing.
      */
     @Suppress("unused")
-    suspend fun clearAll() {
+    actual suspend fun clearAll() {
         // Get all encrypted keys before clearing
         val encryptedKeys = mutableSetOf<String>()
         val preferences = dataStore.data.first()

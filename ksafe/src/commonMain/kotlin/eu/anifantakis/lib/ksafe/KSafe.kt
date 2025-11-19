@@ -18,4 +18,6 @@ expect class KSafe {
 
     suspend fun delete(key: String)
     fun deleteDirect(key: String)
+
+    suspend fun clearAll()
 }

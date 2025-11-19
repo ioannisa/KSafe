@@ -70,8 +70,8 @@ Add the KSafe dependency to your `build.gradle.kts` (or `build.gradle`) file.
 #### 1 - Add the Dependency
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:1.1.1")
-implementation("eu.anifantakis:ksafe-compose:1.1.1") // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe:1.2.0-alpha01")
+implementation("eu.anifantakis:ksafe-compose:1.2.0-alpha01") // ← Compose state (optional)
 ```
 
 > Skip `ksafe-compose` if your project doesn’t use Jetpack Compose, or if you don't intend to use the library's `mutableStateOf` persistance option

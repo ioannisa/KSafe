@@ -1,8 +1,5 @@
 package eu.anifantakis.lib.ksafe
 
-import androidx.datastore.preferences.core.PreferencesSerializer.defaultValue
-import kotlinx.coroutines.NonCancellable.key
-import kotlin.js.JsFileName
 import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
 
@@ -40,7 +37,7 @@ inline operator fun <reified T> KSafe.invoke(
 
         override fun setValue(thisRef: Any?, property: KProperty<*>, value: T) {
             // Similarly, T is reified here. We explicitly pass it to putDirect.
-            // putDirect does not use runBlocking - it's a fire-and-forget async operation.
+            // putDirect uses runBlocking to behave synchronously on JVM so a read right after a write is consistent.
             // an immedicate read after a write can therefore give you stale data.
             ksafeInstance.putDirect<T>(key = key ?:property.name, value, encrypted)
         }

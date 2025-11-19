@@ -1,4 +1,3 @@
-import com.vanniktech.maven.publish.SonatypeHost
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinAndroidTarget
@@ -12,7 +11,7 @@ plugins {
 
 // Set the same group and version as your main library
 group = "eu.anifantakis"
-version = "1.1.1"
+version = "1.2.0-alpha01"
 
 kotlin {
     androidLibrary {
@@ -54,6 +53,8 @@ kotlin {
             baseName = xcfName
         }
     }
+
+    jvm()
 
     sourceSets {
         commonMain {
@@ -115,7 +116,7 @@ kotlin {
 
 // Add the same publishing configuration as your main library
 mavenPublishing {
-    publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL)
+    publishToMavenCentral()
 
     signAllPublications()
     coordinates(

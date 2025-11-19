@@ -385,9 +385,11 @@ actual class KSafe(private val context: Context, @PublishedApi internal val file
      */
     actual suspend fun delete(key: String) {
         val dataKey = stringPreferencesKey(key)
+        val encryptedKey = encryptedPrefKey(key)
 
         dataStore.edit { preferences ->
             preferences.remove(dataKey)
+            preferences.remove(encryptedKey)
         }
 
         // Also try to delete the corresponding encryption key from Keystore
@@ -423,7 +425,7 @@ actual class KSafe(private val context: Context, @PublishedApi internal val file
      * Note: On Android, Keystore entries are automatically deleted on app uninstall.
      */
     @Suppress("unused")
-    suspend fun clearAll() {
+    actual suspend fun clearAll() {
         // Get all encrypted keys before clearing
         val encryptedKeys = mutableSetOf<String>()
         val preferences = dataStore.data.first()

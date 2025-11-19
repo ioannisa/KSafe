@@ -1,4 +1,3 @@
-import com.vanniktech.maven.publish.SonatypeHost
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
@@ -11,7 +10,7 @@ plugins {
 }
 
 group = "eu.anifantakis"
-version = "1.1.1"
+version = "1.2.0-alpha01"
 
 kotlin {
     androidTarget {
@@ -32,13 +31,12 @@ kotlin {
         }
     }
 
-//    targets
-//        .withType<org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget>()
-//        .configureEach {
-//            binaries.all {
-//                binaryOptions["memoryModel"] = "strict"
-//            }
-//        }
+    // Add a JVM target to support desktop platforms.
+    jvm {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_11)
+        }
+    }
 
     sourceSets {
         androidMain.dependencies {
@@ -61,16 +59,31 @@ kotlin {
             implementation(libs.cryptography.provider.cryptokit)
         }
 
+        // Dependencies for the JVM target
+        val jvmMain by getting {
+            dependencies {
+                implementation(libs.androidx.datastore.preferences)
+                implementation(libs.kotlinx.serialization.json)
+                implementation(libs.kotlinx.coroutines.core)
+            }
+        }
+
+        val jvmTest by getting {
+            dependencies {
+                implementation(kotlin("test"))
+            }
+        }
+
         compilerOptions {
             freeCompilerArgs.add("-Xexpect-actual-classes")
         }
-        
+
         commonTest.dependencies {
             implementation(libs.kotlin.test)
             implementation(libs.kotlinx.coroutines.test)
             implementation(libs.turbine)
         }
-        
+
         val androidInstrumentedTest by getting {
             dependencies {
                 implementation(libs.androidx.runner)
@@ -82,7 +95,7 @@ kotlin {
             }
         }
     }
-    
+
     // Configure iOS tests to run sequentially
     targets.withType<org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget>().configureEach {
         binaries.all {
@@ -114,26 +127,14 @@ android {
         execution = "ANDROIDX_TEST_ORCHESTRATOR"
         animationsDisabled = true
     }
-    
+
     dependencies {
         androidTestUtil(libs.androidx.orchestrator)
     }
 }
 
-//publishing {
-//    publications {
-//        val kotlinMultiplatformPublication = publications.getByName("kotlinMultiplatform") as MavenPublication
-//        kotlinMultiplatformPublication.groupId = group.toString()
-//        kotlinMultiplatformPublication.artifactId = "ksafe"
-//        kotlinMultiplatformPublication.version = version.toString()
-//    }
-//    repositories {
-//        mavenLocal()
-//    }
-//}
-
 mavenPublishing {
-    publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL)
+    publishToMavenCentral()
 
     signAllPublications()
     coordinates(
