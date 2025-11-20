@@ -26,10 +26,6 @@ class KSafeComposeState<T>(
     private val policy: SnapshotMutationPolicy<T>
 ) : MutableState<T>, ReadWriteProperty<Any?, T> {
 
-    // No longer needs: KSafe, defaultValue, explicitKey, encrypted for its own ops.
-    // No longer needs: propertyName, _isInitialized (for lazy loading), actualKey, loadPersistedValueAndUpdateState.
-    // The atomicfu for _isInitialized is also not needed here as loading is eager in the provider.
-
     private var _internalState: MutableState<T> = mutableStateOf(initialValue, policy)
 
     override var value: T
@@ -65,7 +61,13 @@ class KSafeComposeState<T>(
  *
  * The state is initialized from KSafe when the delegate is created. Changes are
  * automatically persisted back. This function calls KSafe's `inline reified T`
- * `getDirect` and `putDirect` methods safely.
+ * [KSafe.getDirect] and [KSafe.putDirect] methods safely.
+ *
+ * **Usage:**
+ * ```kotlin
+ * // In a Composable or ViewModel
+ * var username by ksafe.mutableStateOf("Guest")
+ * ```
  *
  * @param T The type of the state value.
  * @param defaultValue The default value if no value is found in KSafe.
@@ -85,9 +87,12 @@ inline fun <reified T> KSafe.mutableStateOf(
 
     return PropertyDelegateProvider { _, property ->
         val actualKey = key ?: property.name
+
+        // Load initial value using non-blocking getDirect
         val initialValue = ksafe.getDirect<T>(actualKey, defaultValue, encrypted)
 
         val saver: (newValue: T) -> Unit = { newValueToSave ->
+            // Persist using non-blocking putDirect
             ksafe.putDirect<T>(actualKey, newValueToSave, encrypted)
         }
 

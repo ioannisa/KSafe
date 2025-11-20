@@ -26,6 +26,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 import java.security.KeyStore
+import java.util.Collections
+import java.util.concurrent.atomic.AtomicReference
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -34,13 +36,32 @@ import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 @OptIn(ExperimentalEncodingApi::class)
-private fun encodeBase64(bytes: ByteArray): String = Base64.encode(bytes)
+@PublishedApi
+internal fun encodeBase64(bytes: ByteArray): String = Base64.encode(bytes)
 
 @OptIn(ExperimentalEncodingApi::class)
 @PublishedApi
 internal fun decodeBase64(encoded: String): ByteArray = Base64.decode(encoded)
 
-actual class KSafe(private val context: Context, @PublishedApi internal val fileName: String? = null) {
+/**
+ * Android implementation of KSafe.
+ *
+ * This class manages secure key-value storage using:
+ * 1. **Jetpack DataStore:** For storing encrypted values (or plain values) on disk.
+ * 2. **Android Keystore System:** For generating and storing AES-256 cryptographic keys securely in hardware.
+ * 3. **Atomic Hot Cache:** For providing instant, non-blocking reads to the UI.
+ *
+ * @property context Android Context used to create the DataStore file.
+ * @property fileName Optional namespace for the storage file. Must be lower-case letters only.
+ * @property lazyLoad Whether to start the background preloader immediately.
+ * @property memoryPolicy Whether to decrypt and store values in RAM, or keep them encrypted in RAM for additional security
+ */
+actual class KSafe(
+    private val context: Context,
+    @PublishedApi internal val fileName: String? = null,
+    private val lazyLoad: Boolean = false,
+    @PublishedApi internal val memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED
+) {
     companion object Companion {
         // we intentionally don't allow "." to avoid path traversal vulnerabilities
         private val fileNameRegex = Regex("[a-z]+")
@@ -50,12 +71,15 @@ actual class KSafe(private val context: Context, @PublishedApi internal val file
     }
 
     init {
-        if (fileName != null) {
-            if (!fileName.matches(fileNameRegex)) {
-                throw IllegalArgumentException("File name must contain only lowercase letters")
-            }
+        if (fileName != null && !fileName.matches(fileNameRegex)) {
+            throw IllegalArgumentException("File name must contain only lowercase letters")
         }
     }
+
+    /**
+     * Lock object to synchronize cache updates between background preloader and main thread fallback.
+     */
+    private val cacheLock = Any()
 
     @PublishedApi
     internal val json = Json { ignoreUnknownKeys = true }
@@ -71,92 +95,238 @@ actual class KSafe(private val context: Context, @PublishedApi internal val file
         }
     )
 
-    // ----- Unencrypted Storage Helpers -----
-
-    @Suppress("UNCHECKED_CAST")
+    /**
+     * **Atomic In-Memory Cache (Hot State).**
+     *
+     * Holds a map of pre-decrypted values: `Map<Key, Value>`.
+     * This enables [getDirect] to return immediately without blocking for disk I/O.
+     */
     @PublishedApi
-    internal suspend inline fun <reified T> getUnencrypted(key: String, defaultValue: T): T {
-        val preferencesKey: Preferences.Key<Any> = when (defaultValue) {
-            is Boolean -> booleanPreferencesKey(key)
-            is Int -> intPreferencesKey(key)
-            is Float -> floatPreferencesKey(key)
-            is Long -> longPreferencesKey(key)
-            is String -> stringPreferencesKey(key)
-            is Double -> doublePreferencesKey(key)
-            else -> stringPreferencesKey(key)
-        } as Preferences.Key<Any>
+    internal val memoryCache = AtomicReference<Map<String, Any>?>(null)
 
-        return dataStore.data.map { preferences ->
-            val storedValue = preferences[preferencesKey]
-            when (defaultValue) {
-                is Boolean -> (storedValue as? Boolean ?: defaultValue) as T
-                is Int -> {
-                    when (storedValue) {
-                        is Int -> storedValue as T
-                        is Long -> if (storedValue in Int.MIN_VALUE..Int.MAX_VALUE) storedValue.toInt() as T else defaultValue
-                        else -> defaultValue
-                    }
+    /**
+     * **Dirty Keys Tracker.**
+     *
+     * A thread-safe set of keys currently being written to disk.
+     * This prevents the background DataStore observer from overwriting our optimistic
+     * in-memory updates with stale data from disk during the write window.
+     */
+    @PublishedApi internal val dirtyKeys: MutableSet<String> = Collections.synchronizedSet(HashSet())
+
+    init {
+        // HYBRID CACHE: Start Background Preload immediately.
+        // If this finishes before the user calls getDirect, the cache will be ready instantly.
+        if (!lazyLoad) {
+            startBackgroundCollector()
+        }
+    }
+
+    private fun startBackgroundCollector() {
+        CoroutineScope(Dispatchers.Default + SupervisorJob()).launch {
+            dataStore.data.collect { updateCache(it) }
+        }
+    }
+
+    /**
+     * Updates the atomic [memoryCache] based on the raw [Preferences] from DataStore.
+     * Synchronized to prevent race conditions between Background Preload and Main Thread Fallback.
+     */
+    @PublishedApi
+    internal fun updateCache(prefs: Preferences) {
+        synchronized(cacheLock) {
+            val currentCache = memoryCache.get() ?: emptyMap()
+            val newCache = mutableMapOf<String, Any>()
+            val prefsMap = prefs.asMap()
+            val encryptedPrefix = "encrypted_"
+
+            for ((key, value) in prefsMap) {
+                val keyName = key.name
+
+                // Dirty Check: If a local write is pending for this key,
+                // prioritize the local optimistic value over the (potentially stale) disk value.
+                if (dirtyKeys.contains(keyName)) {
+                    currentCache[keyName]?.let { newCache[keyName] = it }
+                    continue
                 }
 
-                is Long -> {
-                    when (storedValue) {
-                        is Long -> storedValue as T
-                        is Int -> storedValue.toLong() as T
-                        else -> defaultValue
+                // Handle Encrypted Entries
+                if (keyName.startsWith(encryptedPrefix)) {
+                    // ENCRYPTED ENTRY
+                    if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED) {
+                        // SECURITY MODE: Do NOT decrypt. Store the raw ciphertext string in RAM.
+                        // We will decrypt it only when the user asks for it in resolveFromCache.
+                        if (value != null) newCache[keyName] = value
+                    } else {
+                        // PERFORMANCE MODE: Decrypt now, store plaintext in RAM.
+                        val originalKey = keyName.removePrefix(encryptedPrefix)
+                        val encryptedString = value as? String
+                        if (encryptedString != null) {
+                            try {
+                                val ciphertext = decodeBase64(encryptedString)
+                                val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, originalKey).joinToString(".")
+                                val decryptedBytes = decryptWithKeystore(keyAlias, ciphertext)
+                                newCache[keyName] = decryptedBytes.decodeToString()
+                            } catch (_: Exception) { }
+                        }
                     }
                 }
+                // Handle Unencrypted Entries
+                else if (!keyName.startsWith("ksafe_")) {
+                    newCache[keyName] = value
+                }
+            }
 
-                is Float -> (storedValue as? Float ?: defaultValue) as T
-                is String -> (storedValue as? String ?: defaultValue) as T
-                is Double -> (storedValue as? Double ?: defaultValue) as T
-                else -> {
-                    val jsonString = storedValue as? String ?: return@map defaultValue
-                    try {
-                        json.decodeFromString(serializer<T>(), jsonString)
-                    } catch (_: Exception) {
-                        defaultValue
+            // Important: Preserve any dirty keys that haven't been persisted to disk yet.
+            synchronized(dirtyKeys) {
+                for (dirtyKey in dirtyKeys) {
+                    if (!newCache.containsKey(dirtyKey)) {
+                        currentCache[dirtyKey]?.let { newCache[dirtyKey] = it }
                     }
                 }
             }
-        }.first()
+
+            // Atomically replace the entire cache with the freshly computed map.
+            memoryCache.set(newCache)
+        }
+    }
+
+    /**
+     * Thread-safe helper to update specific keys in the memory cache.
+     * Uses a CAS (Compare-And-Swap) loop to ensure atomicity.
+     */
+    @PublishedApi
+    internal fun updateMemoryCache(rawKeyName: String, value: Any?) {
+        while (true) {
+            val current = memoryCache.get() ?: emptyMap()
+            val newMap = current.toMutableMap()
+
+            // Update or remove based on value presence
+            if (value == null) newMap.remove(rawKeyName) else newMap[rawKeyName] = value
+
+            // Attempt to atomically swap the old map with the new one.
+            if (memoryCache.compareAndSet(current, newMap)) break
+        }
+    }
+
+    // ----- Storage Helpers -----
+
+    @PublishedApi internal inline fun <reified T> resolveFromCache(cache: Map<String, Any>, key: String, defaultValue: T, encrypted: Boolean): T {
+        // Determine internal key format used in cache (isomorphic to disk keys)
+        val cacheKey = if (encrypted) "encrypted_$key" else key
+        val cachedValue = cache[cacheKey] ?: return defaultValue
+
+        return if (encrypted) {
+            // Encrypted values are stored as JSON strings in the cache (decrypted from bytes)
+            var jsonString: String? = null
+
+            if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED) {
+                // SECURITY MODE: Decrypt On-Demand
+                try {
+                    val encryptedString = cachedValue as? String ?: return defaultValue
+                    val ciphertext = decodeBase64(encryptedString)
+                    val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, key).joinToString(".")
+                    val decryptedBytes = decryptWithKeystore(keyAlias, ciphertext)
+                    jsonString = decryptedBytes.decodeToString()
+                } catch (e: Exception) {
+                    // FALLBACK: If decryption fails, check if this is an Optimistic Update (Plain JSON)
+                    // putDirect() writes JSON temporarily to allow instant read-back before encryption.
+                    jsonString = cachedValue as? String
+                }
+            } else {
+                // PERFORMANCE MODE: Already decrypted
+                jsonString = cachedValue as? String
+            }
+
+            if (jsonString == null) return defaultValue
+            try { json.decodeFromString(serializer<T>(), jsonString) } catch (_: Exception) { defaultValue }
+        } else {
+            // Unencrypted values are stored as primitives or JSON strings (for objects)
+            convertStoredValue(cachedValue, defaultValue)
+        }
     }
 
     @Suppress("UNCHECKED_CAST")
-    @PublishedApi
-    internal suspend inline fun <reified T> putUnencrypted(key: String, value: T) {
-        val preferencesKey: Preferences.Key<Any> = when (value) {
-            is Boolean -> booleanPreferencesKey(key)
-            is Number -> {
-                when {
-                    value is Int || (value is Long && value in Int.MIN_VALUE..Int.MAX_VALUE) ->
-                        intPreferencesKey(key)
-
-                    value is Long -> longPreferencesKey(key)
-                    value is Float -> floatPreferencesKey(key)
-                    value is Double -> doublePreferencesKey(key)
-                    else -> stringPreferencesKey(key)
+    @PublishedApi internal inline fun <reified T> convertStoredValue(storedValue: Any?, defaultValue: T): T {
+        if (storedValue == null) return defaultValue
+        return when (defaultValue) {
+            is Boolean -> (storedValue as? Boolean ?: defaultValue) as T
+            is Int -> {
+                when (storedValue) {
+                    is Int -> storedValue as T
+                    is Long -> if (storedValue in Int.MIN_VALUE..Int.MAX_VALUE) storedValue.toInt() as T else defaultValue
+                    else -> defaultValue
                 }
             }
-
-            is String -> stringPreferencesKey(key)
-            else -> stringPreferencesKey(key)
-        } as Preferences.Key<Any>
-
-        val storedValue: Any = when (value) {
-            is Boolean -> value
-            is Number -> {
-                when {
-                    value is Int || (value is Long && value in Int.MIN_VALUE..Int.MAX_VALUE) -> value.toInt()
-                    else -> value
+            is Long -> {
+                when (storedValue) {
+                    is Long -> storedValue as T
+                    is Int -> storedValue.toLong() as T
+                    else -> defaultValue
                 }
             }
+            is Float -> (storedValue as? Float ?: defaultValue) as T
+            is String -> (storedValue as? String ?: defaultValue) as T
+            is Double -> (storedValue as? Double ?: defaultValue) as T
+            else -> {
+                val jsonString = storedValue as? String ?: return defaultValue
+                try {
+                    json.decodeFromString(serializer<T>(), jsonString)
+                } catch (_: Exception) {
+                    defaultValue
+                }
+            }
+        }
+    }
 
-            is String -> value
-            else -> json.encodeToString(serializer<T>(), value)
+    // ----- Public API implementation -----
+
+    actual inline fun <reified T> getDirect(key: String, defaultValue: T, encrypted: Boolean): T {
+        val currentCache = memoryCache.get()
+
+        // 1. FAST PATH: Cache is ready (Background preload finished) -> Return instantly
+        if (currentCache != null) {
+            return resolveFromCache(currentCache, key, defaultValue, encrypted)
         }
 
-        dataStore.edit { preferences ->
-            preferences[preferencesKey] = storedValue
+        // 2. FALLBACK PATH: Cache not ready -> Block to fetch immediately (Cold Start)
+        // This only happens if accessed before the background loader finishes.
+        return runBlocking {
+            // Double-check optimization
+            memoryCache.get()?.let { return@runBlocking resolveFromCache(it, key, defaultValue, encrypted) }
+
+            val prefs = dataStore.data.first()
+            updateCache(prefs) // Synchronized
+            val populatedCache = memoryCache.get() ?: emptyMap()
+            resolveFromCache(populatedCache, key, defaultValue, encrypted)
+        }
+    }
+
+    actual inline fun <reified T> putDirect(key: String, value: T, encrypted: Boolean) {
+        val rawKey = if (encrypted) "encrypted_$key" else key
+
+        // 1. Lock key to prevent overwrite by background observer
+        dirtyKeys.add(rawKey)
+
+        // 2. Optimistic Update (Immediate memory update)
+        val toCache: Any = if (encrypted) {
+            json.encodeToString(serializer<T>(), value)
+        } else {
+            when (value) {
+                is Boolean, is Int, is Long, is Float, is Double, is String -> value as Any
+                else -> json.encodeToString(serializer<T>(), value)
+            }
+        }
+
+        updateMemoryCache(rawKey, toCache)
+
+        // 3. Async Disk Write (Fire and forget)
+        CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
+            try {
+                put(key, value, encrypted)
+            } finally {
+                // Clear dirty flag only after write completes (or fails)
+                dirtyKeys.remove(rawKey)
+            }
         }
     }
 
@@ -232,36 +402,38 @@ actual class KSafe(private val context: Context, @PublishedApi internal val file
         }
     }
 
-    suspend fun loadEncryptedData(key: String): ByteArray? {
-        val stored = dataStore.data.map { it[encryptedPrefKey(key)] }.first()
-        return stored?.let { decodeBase64(it) }
-    }
-
     suspend inline fun <reified T> putEncrypted(key: String, value: T) {
         // Serialize the value to JSON and get plaintext bytes.
         val jsonString = json.encodeToString(serializer<T>(), value)
-        val plaintext = jsonString.encodeToByteArray()
 
         // Use Android Keystore for encryption
         val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, key).joinToString(".")
-        val ciphertext = encryptWithKeystore(keyAlias, plaintext)
+        val ciphertext = encryptWithKeystore(keyAlias, jsonString.encodeToByteArray())
 
         storeEncryptedData(key, ciphertext)
+
+        // Sync cache
+
+        // Optimistic Update:
+        // If ENCRYPTED policy, store Ciphertext (Base64). If PLAIN, store JSON.
+        val cacheValue = if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED) {
+            encodeBase64(ciphertext)
+        } else {
+            jsonString
+        }
+        updateMemoryCache("encrypted_$key", cacheValue)
     }
 
     suspend inline fun <reified T> getEncrypted(key: String, defaultValue: T): T {
-        val ciphertext = loadEncryptedData(key) ?: return defaultValue
+        // Check cache first
+        val currentCache = memoryCache.get()
+        if (currentCache != null) return resolveFromCache(currentCache, key, defaultValue, encrypted = true)
 
-        return try {
-            // Use Android Keystore for decryption
-            val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, key).joinToString(".")
-            val decryptedBytes = decryptWithKeystore(keyAlias, ciphertext)
-            val jsonString = decryptedBytes.decodeToString()
-            json.decodeFromString(serializer<T>(), jsonString)
-        } catch (_: Exception) {
-            // If decryption fails (e.g., key was deleted), return default value
-            defaultValue
-        }
+        // Fallback to disk (ensure cache is populated)
+        val prefs = dataStore.data.first()
+        updateCache(prefs)
+        val populatedCache = memoryCache.get() ?: emptyMap()
+        return resolveFromCache(populatedCache, key, defaultValue, encrypted = true)
     }
 
     actual suspend inline fun <reified T> get(key: String, defaultValue: T, encrypted: Boolean): T {
@@ -274,49 +446,62 @@ actual class KSafe(private val context: Context, @PublishedApi internal val file
 
     @Suppress("UNCHECKED_CAST")
     @PublishedApi
-    internal inline fun <reified T> getUnencryptedFlow(key: String, defaultValue: T): Flow<T> {
-        val preferencesKey: Preferences.Key<Any> = when (defaultValue) {
+    internal suspend inline fun <reified T> getUnencrypted(key: String, defaultValue: T): T {
+        // Check cache first
+        val currentCache = memoryCache.get()
+        if (currentCache != null) return resolveFromCache(currentCache, key, defaultValue, encrypted = false)
+
+        // Fallback to disk
+        val prefs = dataStore.data.first()
+        updateCache(prefs)
+        val populatedCache = memoryCache.get() ?: emptyMap()
+        return resolveFromCache(populatedCache, key, defaultValue, encrypted = false)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    @PublishedApi
+    internal suspend inline fun <reified T> putUnencrypted(key: String, value: T) {
+        val preferencesKey = getUnencryptedKey(key, defaultValue = value)
+
+        val storedValue: Any = when (value) {
+            is Boolean -> value
+            is Number -> {
+                when {
+                    value is Int || (value is Long && value in Int.MIN_VALUE..Int.MAX_VALUE) -> value.toInt()
+                    else -> value
+                }
+            }
+            is String -> value
+            else -> json.encodeToString(serializer<T>(), value)
+        }
+
+        dataStore.edit { preferences ->
+            preferences[preferencesKey] = storedValue
+        }
+
+        // Update cache
+        updateMemoryCache(key, storedValue)
+    }
+
+    @PublishedApi internal fun <T> getUnencryptedKey(key: String, defaultValue: T): Preferences.Key<Any> {
+        return when (defaultValue) {
             is Boolean -> booleanPreferencesKey(key)
             is Int -> intPreferencesKey(key)
-            is Float -> floatPreferencesKey(key)
             is Long -> longPreferencesKey(key)
+            is Float -> floatPreferencesKey(key)
             is String -> stringPreferencesKey(key)
             is Double -> doublePreferencesKey(key)
             else -> stringPreferencesKey(key)
         } as Preferences.Key<Any>
+    }
 
+    @Suppress("UNCHECKED_CAST")
+    @PublishedApi
+    internal inline fun <reified T> getUnencryptedFlow(key: String, defaultValue: T): Flow<T> {
+        val preferencesKey = getUnencryptedKey(key, defaultValue)
         return dataStore.data.map { preferences ->
             val storedValue = preferences[preferencesKey]
-            when (defaultValue) {
-                is Boolean -> (storedValue as? Boolean ?: defaultValue) as T
-                is Int -> {
-                    when (storedValue) {
-                        is Int -> storedValue as T
-                        is Long -> if (storedValue in Int.MIN_VALUE..Int.MAX_VALUE) storedValue.toInt() as T else defaultValue
-                        else -> defaultValue
-                    }
-                }
-
-                is Long -> {
-                    when (storedValue) {
-                        is Long -> storedValue as T
-                        is Int -> storedValue.toLong() as T
-                        else -> defaultValue
-                    }
-                }
-
-                is Float -> (storedValue as? Float ?: defaultValue) as T
-                is String -> (storedValue as? String ?: defaultValue) as T
-                is Double -> (storedValue as? Double ?: defaultValue) as T
-                else -> {
-                    val jsonString = storedValue as? String ?: return@map defaultValue
-                    try {
-                        json.decodeFromString(serializer<T>(), jsonString)
-                    } catch (_: Exception) {
-                        defaultValue
-                    }
-                }
-            }
+            convertStoredValue(storedValue, defaultValue)
         }.distinctUntilChanged()
     }
 
@@ -344,13 +529,6 @@ actual class KSafe(private val context: Context, @PublishedApi internal val file
             .distinctUntilChanged()
     }
 
-    actual inline fun <reified T> getDirect(key: String, defaultValue: T, encrypted: Boolean): T {
-        return runBlocking {
-            get(key, defaultValue, encrypted)
-        }
-    }
-
-    @Suppress("unused")
     actual inline fun <reified T> getFlow(
         key: String,
         defaultValue: T,
@@ -370,13 +548,6 @@ actual class KSafe(private val context: Context, @PublishedApi internal val file
             putUnencrypted(key, value)
         }
     }
-
-    actual inline fun <reified T> putDirect(key: String, value: T, encrypted: Boolean) {
-        CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
-            put(key, value, encrypted)
-        }
-    }
-
 
     /**
      * Deletes a value from DataStore.
@@ -404,6 +575,10 @@ actual class KSafe(private val context: Context, @PublishedApi internal val file
         } catch (_: Exception) {
             // Ignore errors when deleting from keystore
         }
+
+        // Update cache
+        updateMemoryCache(key, null)
+        updateMemoryCache("encrypted_$key", null)
     }
 
     /**
@@ -412,8 +587,11 @@ actual class KSafe(private val context: Context, @PublishedApi internal val file
      *
      * @param key The key of the value to delete.
      */
-    @Suppress("unused")
     actual fun deleteDirect(key: String) {
+        // Optimistic update
+        updateMemoryCache(key, null)
+        updateMemoryCache("encrypted_$key", null)
+
         CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
             delete(key)
         }
@@ -424,7 +602,6 @@ actual class KSafe(private val context: Context, @PublishedApi internal val file
      * Useful for complete cleanup or testing.
      * Note: On Android, Keystore entries are automatically deleted on app uninstall.
      */
-    @Suppress("unused")
     actual suspend fun clearAll() {
         // Get all encrypted keys before clearing
         val encryptedKeys = mutableSetOf<String>()
@@ -455,5 +632,8 @@ actual class KSafe(private val context: Context, @PublishedApi internal val file
                 // Ignore errors when deleting from keystore
             }
         }
+
+        // Clear cache
+        memoryCache.set(emptyMap())
     }
 }

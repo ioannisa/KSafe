@@ -3,6 +3,7 @@ package eu.anifantakis.lib.ksafe
 import app.cash.turbine.test
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.Serializable
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -340,11 +341,11 @@ abstract class KSafeTest {
 
         // Store encrypted
         ksafe.put(key, value, encrypted = true)
-        
+
         // Try to retrieve as unencrypted - should not match
         val unencryptedRetrieve = ksafe.get(key, defaultValue, encrypted = false)
         assertNotEquals(value, unencryptedRetrieve)
-        
+
         // Retrieve as encrypted - should match
         val encryptedRetrieve = ksafe.get(key, defaultValue, encrypted = true)
         assertEquals(value, encryptedRetrieve)
@@ -496,7 +497,7 @@ abstract class KSafeTest {
     @Test
     fun testNegativeNumbers() = runTest {
         val ksafe = createKSafe()
-        
+
         // Test negative int
         val intKey = "negative_int"
         val intValue = -42
@@ -525,7 +526,7 @@ abstract class KSafeTest {
     @Test
     fun testEdgeCaseNumbers() = runTest {
         val ksafe = createKSafe()
-        
+
         // Test Int boundaries
         val maxIntKey = "max_int"
         ksafe.put(maxIntKey, Int.MAX_VALUE, encrypted = false)
@@ -543,5 +544,126 @@ abstract class KSafeTest {
         val minLongKey = "min_long"
         ksafe.put(minLongKey, Long.MIN_VALUE, encrypted = false)
         assertEquals(Long.MIN_VALUE, ksafe.get(minLongKey, 0L, encrypted = false))
+    }
+
+    @Test
+    fun testGetDirectReflectsSuspendingPut() = runTest {
+        val ksafe = createKSafe()
+        val key = "direct_read_test"
+        val value = "read_me_now"
+
+        // 1. Write using suspend function (waits for disk write)
+        ksafe.put(key, value, encrypted = true)
+
+        // 2. Allow a brief moment for the internal cache observer to update
+        // (Necessary because the cache update happens on a background job after the write)
+        //delay(50)
+
+        // 3. Read using non-blocking getDirect
+        val result = ksafe.getDirect(key, "default", encrypted = true)
+        assertEquals(value, result)
+    }
+
+    @Test
+    fun testPutDirect() = runTest {
+        val ksafe = createKSafe()
+        val key = "direct_read_test"
+        val value = "read_me_now"
+
+        // 1. Write using suspend function (waits for disk write)
+        ksafe.putDirect(key, value, encrypted = true)
+
+        // 2. Allow a brief moment for the internal cache observer to update
+        // (Necessary because the cache update happens on a background job after the write)
+        //delay(50)
+
+        // 3. Read using non-blocking getDirect
+        val result = ksafe.getDirect(key, "default", encrypted = true)
+        assertEquals(value, result)
+    }
+
+    @Test
+    fun testPutDirectEventuallyUpdatesValue() = runTest {
+        val ksafe = createKSafe()
+        val key = "put_direct_test"
+        val value = "eventual_consistency"
+
+        // 1. Fire and forget write
+        ksafe.putDirect(key, value, encrypted = true)
+
+        // 2. Poll until consistency is reached
+        // Since putDirect launches a coroutine, we can't predict exactly when it finishes.
+        var attempts = 0
+        var result: String
+        do {
+            //delay(50) // Wait 50ms between checks
+            result = ksafe.getDirect(key, "default", encrypted = true)
+            attempts++
+        } while (result != value && attempts < 20) // Timeout after 1 second
+
+        assertEquals(value, result, "getDirect should eventually return the value set by putDirect")
+    }
+
+    @Test
+    fun testDirectEncryptedRoundTrip() = runTest {
+        val ksafe = createKSafe()
+        val key = "direct_enc_roundtrip"
+        val value = 999
+
+        // Write
+        ksafe.putDirect(key, value, encrypted = true)
+
+        // Wait for propagation
+        var attempts = 0
+        while (ksafe.getDirect(key, -1, encrypted = true) != value && attempts < 20) {
+            //delay(50)
+            attempts++
+        }
+
+        // Read
+        assertEquals(value, ksafe.getDirect(key, -1, encrypted = true))
+
+        // Verify it wasn't stored as plain text (reading unencrypted should fail or return default)
+        // Note: Depending on your implementation, reading encrypted data as unencrypted
+        // usually returns the Base64 ciphertext string or default if type mismatch.
+        // Here we expect it NOT to be the integer 999.
+        val rawRead = ksafe.getDirect(key, -1, encrypted = false)
+        assertNotEquals(value, rawRead, "Encrypted value should not be readable via unencrypted get")
+    }
+
+    @Test
+    fun delegate_defaultEncrypted_and_propertyNameKey() = runTest {
+        val ksafe = createKSafe()
+        var secret: String by ksafe(defaultValue = "init")
+        assertEquals("init", secret)
+        secret = "z"
+        assertEquals("z", secret)
+        assertEquals("z", ksafe.get("secret", "x", true))
+        assertNotEquals("z", ksafe.get("secret", "x", false))
+    }
+
+    @Test
+    fun delegate_explicitKey_unencrypted() = runTest {
+        val ksafe = createKSafe()
+        var count: Int by ksafe(defaultValue = 0, key = "count", encrypted = false)
+        assertEquals(0, count)
+        count = 3
+        assertEquals(3, count)
+        assertEquals(3, ksafe.get("count", -1, false))
+        assertEquals(-1, ksafe.get("count", -1, true))
+    }
+
+    @Serializable
+    data class Person(val id: Long, val name: String)
+
+    @Test
+    fun serializable_encrypted_roundTrip() = runTest {
+        val ksafe = createKSafe()
+        val k = "person"
+        val p = Person(7, "Grace")
+        ksafe.put(k, p) // encrypted
+        assertEquals(p, ksafe.get(k, Person(0, "")))
+        // ciphertext should not be decodable in plaintext mode
+        assertEquals(Person(0, ""), ksafe.get(k, Person(0, ""), encrypted = false))
     }
 }

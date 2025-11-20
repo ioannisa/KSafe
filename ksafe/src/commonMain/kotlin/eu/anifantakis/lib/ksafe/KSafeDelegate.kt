@@ -6,20 +6,25 @@ import kotlin.reflect.KProperty
 /**
  * Allows KSafe to be used with property delegation.
  *
- * Note: This uses runBlocking internally for synchronous behavior.
- * For better performance in coroutines, use the suspend functions directly.
- * You can use flows to achieve much the same behavior.
+ * This delegate uses the non-blocking [KSafe.getDirect] and [KSafe.putDirect] APIs internally.
+ * This ensures that accessing delegated properties on the Main Thread is safe and will not cause UI freezes.
  *
- * Usage:
- * ```
- * val ksafe: KSafe = // ... obtain your KSafe instance
- * var mySetting: String by ksafe(defaultValue = "default", encrypted = true)
+ * **Usage:**
+ * ```kotlin
+ * val ksafe: KSafe = // ... obtain instance
+ *
+ * // Property name "mySetting" is used as the key
+ * var mySetting: String by ksafe(defaultValue = "default")
+ *
+ * // Explicit key "custom_key" is used
+ * var counter: Int by ksafe(defaultValue = 0, key = "custom_key", encrypted = false)
  * ```
  *
  * @param T The type of the property.
  * @param defaultValue The default value to return if the key is not found.
+ * @param key Optional explicit key. If null, the property name is used.
  * @param encrypted Whether the value should be encrypted (defaults to true).
- * @return A ReadWriteProperty delegate.
+ * @return A [ReadWriteProperty] delegate.
  */
 inline operator fun <reified T> KSafe.invoke(
     defaultValue: T,
@@ -37,8 +42,7 @@ inline operator fun <reified T> KSafe.invoke(
 
         override fun setValue(thisRef: Any?, property: KProperty<*>, value: T) {
             // Similarly, T is reified here. We explicitly pass it to putDirect.
-            // putDirect uses runBlocking to behave synchronously on JVM so a read right after a write is consistent.
-            // an immedicate read after a write can therefore give you stale data.
+            // Updates memory cache instantly and writes to disk in background (Async)
             ksafeInstance.putDirect<T>(key = key ?:property.name, value, encrypted)
         }
     }
