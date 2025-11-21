@@ -68,10 +68,19 @@ Add the KSafe dependency to your `build.gradle.kts` (or `build.gradle`) file.
 [![Maven Central](https://img.shields.io/maven-central/v/eu.anifantakis/ksafe.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/eu.anifantakis/ksafe)
 
 #### 1 - Add the Dependency
+
+If you want to use the latest stable version
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:1.2.0-alpha01")
-implementation("eu.anifantakis:ksafe-compose:1.2.0-alpha01") // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe:1.1.1")
+implementation("eu.anifantakis:ksafe-compose:1.1.1") // ← Compose state (optional)
+```
+
+If you want to use the latest pre-release version with Desktop support
+```kotlin
+// commonMain or Android-only build.gradle(.kts)
+implementation("eu.anifantakis:ksafe:1.2.0-alpha02")
+implementation("eu.anifantakis:ksafe-compose:1.2.0-alpha02") // ← Compose state (optional)
 ```
 
 > Skip `ksafe-compose` if your project doesn’t use Jetpack Compose, or if you don't intend to use the library's `mutableStateOf` persistance option
