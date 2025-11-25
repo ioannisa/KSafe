@@ -26,18 +26,27 @@ expect class KSafe {
     /**
      * Retrieves a value from the in-memory cache immediately.
      *
-     * This method is **Non-Blocking** and safe to call on the Main/UI thread.
-     * It reads directly from an atomic memory reference ($O(1)$), ensuring zero UI freeze.
+     * This method is **non-blocking** and safe to call on the Main/UI thread.
+     * It reads directly from an atomic memory reference, ensuring zero UI freeze.
      *
-     * **Note:** On the very first app launch (Cold Start), if the cache has not finished initializing
-     * by the time this is called, it will block the thread *once* to ensure data consistency.
+     * **Cold Start Behavior:** On the very first app launch, if the cache has not
+     * finished initializing, this will block once to ensure data consistency.
      * Subsequent calls are always instant.
      *
-     * @param T The type of value to retrieve. Supported types: [Boolean], [Int], [Long], [Float], [Double], [String], and `@Serializable` objects.
+     * ## Example
+     * ```kotlin
+     * val username = ksafe.getDirect("username", "Guest")
+     * val token = ksafe.getDirect("auth_token", "", encrypted = true)
+     * ```
+     *
+     * @param T The type of value to retrieve. Supported: [Boolean], [Int], [Long],
+     *          [Float], [Double], [String], and `@Serializable` objects.
      * @param key The unique key for the value.
-     * @param defaultValue The value to return if the key does not exist or if decryption fails.
+     * @param defaultValue The value to return if the key doesn't exist or decryption fails.
      * @param encrypted Whether the value is stored encrypted. Defaults to `true`.
      * @return The stored value or [defaultValue].
+     * @see putDirect for the corresponding write operation
+     * @see get for the suspending alternative
      */
     inline fun <reified T> getDirect(key: String, defaultValue: T, encrypted: Boolean = true): T
 

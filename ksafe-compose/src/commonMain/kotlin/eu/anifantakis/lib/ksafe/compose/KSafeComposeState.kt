@@ -1,4 +1,4 @@
-package eu.eu.anifantakis.lib.ksafe.compose
+package eu.anifantakis.lib.ksafe.compose
 
 import eu.anifantakis.lib.ksafe.KSafe
 import androidx.compose.runtime.MutableState

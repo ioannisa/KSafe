@@ -111,6 +111,13 @@ actual class KSafe(
         private const val SERVICE_NAME = "eu.anifantakis.ksafe"
         private const val KEY_PREFIX = "eu.anifantakis.ksafe"
         private const val INSTALLATION_ID_KEY = "ksafe_installation_id"
+
+        /**
+         * Sentinel value used to represent null in storage.
+         * This allows distinguishing between "key not found" and "key exists with null value".
+         */
+        @PublishedApi
+        internal const val NULL_SENTINEL = "__KSAFE_NULL_VALUE__"
     }
 
     init {
@@ -409,6 +416,14 @@ actual class KSafe(
         }
     }
 
+    /**
+     * Checks if the given value represents a stored null (using the sentinel).
+     */
+    @PublishedApi
+    internal fun isNullSentinel(value: Any?): Boolean {
+        return value == NULL_SENTINEL
+    }
+
     @PublishedApi internal inline fun <reified T> resolveFromCache(cache: Map<String, Any>, key: String, defaultValue: T, encrypted: Boolean): T {
         val cacheKey = if (encrypted) (fileName?.let { "${fileName}_$key" } ?: "encrypted_$key") else key
         val cachedValue = cache[cacheKey] ?: return defaultValue
@@ -443,8 +458,20 @@ actual class KSafe(
             }
 
             if (jsonString == null) return defaultValue
+
+            // Check for null sentinel
+            if (jsonString == NULL_SENTINEL) {
+                @Suppress("UNCHECKED_CAST")
+                return null as T
+            }
+
             try { json.decodeFromString(serializer<T>(), jsonString) } catch (_: Exception) { defaultValue }
         } else {
+            // Check for null sentinel first
+            if (isNullSentinel(cachedValue)) {
+                @Suppress("UNCHECKED_CAST")
+                return null as T
+            }
             convertStoredValue(cachedValue, defaultValue)
         }
     }
@@ -452,6 +479,12 @@ actual class KSafe(
     @Suppress("UNCHECKED_CAST")
     @PublishedApi internal inline fun <reified T> convertStoredValue(storedValue: Any?, defaultValue: T): T {
         if (storedValue == null) return defaultValue
+
+        // Check for null sentinel
+        if (isNullSentinel(storedValue)) {
+            return null as T
+        }
+
         return when (defaultValue) {
             is Boolean -> (storedValue as? Boolean ?: defaultValue) as T
             is Int -> {
@@ -472,11 +505,22 @@ actual class KSafe(
             is String -> (storedValue as? String ?: defaultValue) as T
             is Double -> (storedValue as? Double ?: defaultValue) as T
             else -> {
-                val jsonString = storedValue as? String ?: return defaultValue
-                try {
-                    json.decodeFromString(serializer<T>(), jsonString)
-                } catch (_: Exception) {
-                    defaultValue
+                // For nullable types where defaultValue is null, we need special handling
+                if (defaultValue == null) {
+                    val jsonString = storedValue as? String ?: return defaultValue
+                    if (jsonString == NULL_SENTINEL) return null as T
+                    try {
+                        json.decodeFromString(serializer<T>(), jsonString)
+                    } catch (_: Exception) {
+                        defaultValue
+                    }
+                } else {
+                    val jsonString = storedValue as? String ?: return defaultValue
+                    try {
+                        json.decodeFromString(serializer<T>(), jsonString)
+                    } catch (_: Exception) {
+                        defaultValue
+                    }
                 }
             }
         }
@@ -501,6 +545,16 @@ actual class KSafe(
     @PublishedApi
     internal suspend inline fun <reified T> putUnencrypted(key: String, value: T) {
         ensureCleanupPerformed() // Thread-safe cleanup
+
+        // Handle null values
+        if (value == null) {
+            val preferencesKey = stringPreferencesKey(key)
+            dataStore.edit { preferences ->
+                preferences[preferencesKey] = NULL_SENTINEL
+            }
+            updateMemoryCache(key, NULL_SENTINEL)
+            return
+        }
 
         val preferencesKey: Preferences.Key<Any> = when (value) {
             is Boolean -> booleanPreferencesKey(key)
@@ -698,7 +752,12 @@ actual class KSafe(
     suspend inline fun <reified T> putEncrypted(key: String, value: T) {
         ensureCleanupPerformed()
 
-        val jsonString = json.encodeToString(serializer<T>(), value)
+        // Handle null values with sentinel
+        val jsonString = if (value == null) {
+            NULL_SENTINEL
+        } else {
+            json.encodeToString(serializer<T>(), value)
+        }
         val plaintext = jsonString.encodeToByteArray()
 
         // Get key from Keychain
@@ -807,7 +866,14 @@ actual class KSafe(
                         val cipher = symmetricKey.cipher()
                         val decryptedBytes = cipher.decrypt(ciphertext = ciphertext)
                         val jsonString = decryptedBytes.decodeToString()
-                        json.decodeFromString(serializer<T>(), jsonString)
+
+                        // Check for null sentinel
+                        if (jsonString == NULL_SENTINEL) {
+                            @Suppress("UNCHECKED_CAST")
+                            null as T
+                        } else {
+                            json.decodeFromString(serializer<T>(), jsonString)
+                        }
                     } catch (_: Exception) {
                         // If decryption fails, return default value
                         defaultValue
@@ -841,7 +907,9 @@ actual class KSafe(
         val rawKey = if (encrypted) (fileName?.let { "${fileName}_$key" } ?: "encrypted_$key") else key
         addDirtyKey(rawKey)
 
-        val toCache: Any = if (encrypted) {
+        val toCache: Any = if (value == null) {
+            NULL_SENTINEL
+        } else if (encrypted) {
             json.encodeToString(serializer<T>(), value)
         } else {
             when (value) {

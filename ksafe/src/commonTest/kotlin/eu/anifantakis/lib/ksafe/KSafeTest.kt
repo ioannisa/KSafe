@@ -1,14 +1,13 @@
 package eu.anifantakis.lib.ksafe
 
 import app.cash.turbine.test
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.Serializable
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
-import kotlin.test.Ignore
+import kotlin.test.assertNull
 
 abstract class KSafeTest {
     abstract fun createKSafe(fileName: String? = null): KSafe
@@ -382,19 +381,155 @@ abstract class KSafeTest {
         assertEquals(value, encryptedRetrieved)
     }
 
-    @Ignore // Nullable values are not properly supported yet - JSON serialization converts null to string 'null'
+    // ============ NULLABLE VALUE TESTS ============
+
     @Test
-    fun testNullableValues() = runTest {
+    fun testNullableStringUnencrypted() = runTest {
         val ksafe = createKSafe()
-        val key = "test_nullable"
+        val key = "test_nullable_string_unenc"
         val value: String? = null
         val defaultValue: String? = "default"
 
         // Store null value
         ksafe.put(key, value, encrypted = false)
+        val retrieved: String? = ksafe.get(key, defaultValue, encrypted = false)
+        assertNull(retrieved, "Retrieved value should be null")
+    }
+
+    @Test
+    fun testNullableStringEncrypted() = runTest {
+        val ksafe = createKSafe()
+        val key = "test_nullable_string_enc"
+        val value: String? = null
+        val defaultValue: String? = "default"
+
+        // Store null value encrypted
+        ksafe.put(key, value, encrypted = true)
+        val retrieved: String? = ksafe.get(key, defaultValue, encrypted = true)
+        assertNull(retrieved, "Retrieved encrypted value should be null")
+    }
+
+    @Test
+    fun testNullableIntUnencrypted() = runTest {
+        val ksafe = createKSafe()
+        val key = "test_nullable_int_unenc"
+        val value: Int? = null
+        val defaultValue: Int? = 42
+
+        ksafe.put(key, value, encrypted = false)
+        val retrieved: Int? = ksafe.get(key, defaultValue, encrypted = false)
+        assertNull(retrieved, "Retrieved Int? should be null")
+    }
+
+    @Test
+    fun testNullableIntEncrypted() = runTest {
+        val ksafe = createKSafe()
+        val key = "test_nullable_int_enc"
+        val value: Int? = null
+        val defaultValue: Int? = 42
+
+        ksafe.put(key, value, encrypted = true)
+        val retrieved: Int? = ksafe.get(key, defaultValue, encrypted = true)
+        assertNull(retrieved, "Retrieved encrypted Int? should be null")
+    }
+
+    @Test
+    fun testNullableOverwriteWithNonNull() = runTest {
+        val ksafe = createKSafe()
+        val key = "test_nullable_overwrite"
+        val nullValue: String? = null
+        val nonNullValue: String? = "now_has_value"
+        val defaultValue: String? = "default"
+
+        // Store null first
+        ksafe.put(key, nullValue, encrypted = false)
+        assertNull(ksafe.get(key, defaultValue, encrypted = false))
+
+        // Overwrite with non-null
+        ksafe.put(key, nonNullValue, encrypted = false)
+        assertEquals(nonNullValue, ksafe.get(key, defaultValue, encrypted = false))
+    }
+
+    @Test
+    fun testNonNullOverwriteWithNull() = runTest {
+        val ksafe = createKSafe()
+        val key = "test_nonnull_to_null"
+        val nonNullValue: String? = "has_value"
+        val nullValue: String? = null
+        val defaultValue: String? = "default"
+
+        // Store non-null first
+        ksafe.put(key, nonNullValue, encrypted = false)
+        assertEquals(nonNullValue, ksafe.get(key, defaultValue, encrypted = false))
+
+        // Overwrite with null
+        ksafe.put(key, nullValue, encrypted = false)
+        assertNull(ksafe.get(key, defaultValue, encrypted = false))
+    }
+
+    @Serializable
+    data class NullableFieldData(
+        val id: Int,
+        val name: String?,
+        val description: String?
+    )
+
+    @Test
+    fun testSerializableWithNullFields() = runTest {
+        val ksafe = createKSafe()
+        val key = "test_nullable_fields"
+        val value = NullableFieldData(
+            id = 1,
+            name = null,
+            description = "Has description but no name"
+        )
+        val defaultValue = NullableFieldData(0, "default", "default")
+
+        // Test unencrypted
+        ksafe.put(key, value, encrypted = false)
         val retrieved = ksafe.get(key, defaultValue, encrypted = false)
         assertEquals(value, retrieved)
+        assertNull(retrieved.name)
+        assertEquals("Has description but no name", retrieved.description)
+
+        // Test encrypted
+        val encKey = "${key}_enc"
+        ksafe.put(encKey, value, encrypted = true)
+        val encRetrieved = ksafe.get(encKey, defaultValue, encrypted = true)
+        assertEquals(value, encRetrieved)
     }
+
+    @Test
+    fun testNullableWithDirectApi() = runTest {
+        val ksafe = createKSafe()
+        val key = "test_nullable_direct"
+        val value: String? = null
+        val defaultValue: String? = "default"
+
+        // Use putDirect
+        ksafe.putDirect(key, value, encrypted = false)
+
+        // Use getDirect
+        val retrieved: String? = ksafe.getDirect(key, defaultValue, encrypted = false)
+        assertNull(retrieved, "getDirect should return null for null value")
+    }
+
+    @Test
+    fun testNullableWithDirectApiEncrypted() = runTest {
+        val ksafe = createKSafe()
+        val key = "test_nullable_direct_enc"
+        val value: String? = null
+        val defaultValue: String? = "default"
+
+        // Use putDirect with encryption
+        ksafe.putDirect(key, value, encrypted = true)
+
+        // Use getDirect with encryption
+        val retrieved: String? = ksafe.getDirect(key, defaultValue, encrypted = true)
+        assertNull(retrieved, "getDirect should return null for encrypted null value")
+    }
+
+    // ============ END NULLABLE VALUE TESTS ============
 
     @Test
     fun testEmptyString() = runTest {

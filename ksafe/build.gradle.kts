@@ -10,7 +10,7 @@ plugins {
 }
 
 group = "eu.anifantakis"
-version = "1.2.0-alpha02"
+version = "1.2.0-alpha03"
 
 kotlin {
     androidTarget {
@@ -175,3 +175,16 @@ tasks.withType<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest
     // Set environment variable to help with debugging
     environment("KSAFE_TEST_MODE", "sequential")
 }
+
+tasks.named<Test>("jvmTest") {
+    doFirst {
+        val ksafeDir = File(System.getProperty("user.home"), ".eu_anifantakis_ksafe")
+        if (ksafeDir.exists()) {
+            ksafeDir.deleteRecursively()
+            println("Cleaned up KSafe test data directory: $ksafeDir")
+        }
+    }
+}
+
+// Run test
+// ./gradlew :ksafe:jvmTest

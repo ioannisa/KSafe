@@ -68,6 +68,13 @@ actual class KSafe(
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val KEY_ALIAS_PREFIX = "eu.anifantakis.ksafe"
         private const val GCM_TAG_LENGTH = 128
+
+        /**
+         * Sentinel value used to represent null in storage.
+         * This allows distinguishing between "key not found" and "key exists with null value".
+         */
+        @PublishedApi
+        internal const val NULL_SENTINEL = "__KSAFE_NULL_VALUE__"
     }
 
     init {
@@ -210,7 +217,16 @@ actual class KSafe(
 
     // ----- Storage Helpers -----
 
-    @PublishedApi internal inline fun <reified T> resolveFromCache(cache: Map<String, Any>, key: String, defaultValue: T, encrypted: Boolean): T {
+    /**
+     * Checks if the given value represents a stored null (using the sentinel).
+     */
+    @PublishedApi
+    internal fun isNullSentinel(value: Any?): Boolean {
+        return value == NULL_SENTINEL
+    }
+
+    @PublishedApi
+    internal inline fun <reified T> resolveFromCache(cache: Map<String, Any>, key: String, defaultValue: T, encrypted: Boolean): T {
         // Determine internal key format used in cache (isomorphic to disk keys)
         val cacheKey = if (encrypted) "encrypted_$key" else key
         val cachedValue = cache[cacheKey] ?: return defaultValue
@@ -238,16 +254,35 @@ actual class KSafe(
             }
 
             if (jsonString == null) return defaultValue
+
+            // Check for null sentinel
+            if (jsonString == NULL_SENTINEL) {
+                @Suppress("UNCHECKED_CAST")
+                return null as T
+            }
+
             try { json.decodeFromString(serializer<T>(), jsonString) } catch (_: Exception) { defaultValue }
         } else {
             // Unencrypted values are stored as primitives or JSON strings (for objects)
+            // Check for null sentinel first
+            if (isNullSentinel(cachedValue)) {
+                @Suppress("UNCHECKED_CAST")
+                return null as T
+            }
             convertStoredValue(cachedValue, defaultValue)
         }
     }
 
     @Suppress("UNCHECKED_CAST")
-    @PublishedApi internal inline fun <reified T> convertStoredValue(storedValue: Any?, defaultValue: T): T {
+    @PublishedApi
+    internal inline fun <reified T> convertStoredValue(storedValue: Any?, defaultValue: T): T {
         if (storedValue == null) return defaultValue
+
+        // Check for null sentinel
+        if (isNullSentinel(storedValue)) {
+            return null as T
+        }
+
         return when (defaultValue) {
             is Boolean -> (storedValue as? Boolean ?: defaultValue) as T
             is Int -> {
@@ -268,11 +303,22 @@ actual class KSafe(
             is String -> (storedValue as? String ?: defaultValue) as T
             is Double -> (storedValue as? Double ?: defaultValue) as T
             else -> {
-                val jsonString = storedValue as? String ?: return defaultValue
-                try {
-                    json.decodeFromString(serializer<T>(), jsonString)
-                } catch (_: Exception) {
-                    defaultValue
+                // For nullable types where defaultValue is null, we need special handling
+                if (defaultValue == null) {
+                    val jsonString = storedValue as? String ?: return defaultValue
+                    if (jsonString == NULL_SENTINEL) return null as T
+                    try {
+                        json.decodeFromString(serializer<T>(), jsonString)
+                    } catch (_: Exception) {
+                        defaultValue
+                    }
+                } else {
+                    val jsonString = storedValue as? String ?: return defaultValue
+                    try {
+                        json.decodeFromString(serializer<T>(), jsonString)
+                    } catch (_: Exception) {
+                        defaultValue
+                    }
                 }
             }
         }
@@ -308,7 +354,9 @@ actual class KSafe(
         dirtyKeys.add(rawKey)
 
         // 2. Optimistic Update (Immediate memory update)
-        val toCache: Any = if (encrypted) {
+        val toCache: Any = if (value == null) {
+            NULL_SENTINEL
+        } else if (encrypted) {
             json.encodeToString(serializer<T>(), value)
         } else {
             when (value) {
@@ -403,8 +451,12 @@ actual class KSafe(
     }
 
     suspend inline fun <reified T> putEncrypted(key: String, value: T) {
-        // Serialize the value to JSON and get plaintext bytes.
-        val jsonString = json.encodeToString(serializer<T>(), value)
+        // Handle null values with sentinel
+        val jsonString = if (value == null) {
+            NULL_SENTINEL
+        } else {
+            json.encodeToString(serializer<T>(), value)
+        }
 
         // Use Android Keystore for encryption
         val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, key).joinToString(".")
@@ -461,6 +513,16 @@ actual class KSafe(
     @Suppress("UNCHECKED_CAST")
     @PublishedApi
     internal suspend inline fun <reified T> putUnencrypted(key: String, value: T) {
+        // Handle null values
+        if (value == null) {
+            val preferencesKey = stringPreferencesKey(key)
+            dataStore.edit { preferences ->
+                preferences[preferencesKey] = NULL_SENTINEL
+            }
+            updateMemoryCache(key, NULL_SENTINEL)
+            return
+        }
+
         val preferencesKey = getUnencryptedKey(key, defaultValue = value)
 
         val storedValue: Any = when (value) {
@@ -520,7 +582,14 @@ actual class KSafe(
                         val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, key).joinToString(".")
                         val decryptedBytes = decryptWithKeystore(keyAlias, ciphertext)
                         val jsonString = decryptedBytes.decodeToString()
-                        json.decodeFromString(serializer<T>(), jsonString)
+
+                        // Check for null sentinel
+                        if (jsonString == NULL_SENTINEL) {
+                            @Suppress("UNCHECKED_CAST")
+                            null as T
+                        } else {
+                            json.decodeFromString(serializer<T>(), jsonString)
+                        }
                     } catch (_: Exception) {
                         defaultValue
                     }
