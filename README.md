@@ -79,8 +79,8 @@ implementation("eu.anifantakis:ksafe-compose:1.1.1") // ← Compose state (optio
 If you want to use the latest pre-release version with Desktop support
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:1.2.0-alpha02")
-implementation("eu.anifantakis:ksafe-compose:1.2.0-alpha02") // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe:1.2.0-alpha03")
+implementation("eu.anifantakis:ksafe-compose:1.2.0-alpha03") // ← Compose state (optional)
 ```
 
 > Skip `ksafe-compose` if your project doesn’t use Jetpack Compose, or if you don't intend to use the library's `mutableStateOf` persistance option
