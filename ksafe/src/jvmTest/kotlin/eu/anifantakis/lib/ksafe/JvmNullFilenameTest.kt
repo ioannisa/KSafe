@@ -604,7 +604,6 @@ class JvmNullFilenameTest {
         assertEquals(value, encryptedRetrieved)
     }
 
-    @Ignore // Nullable values are not properly supported yet - JSON serialization converts null to string 'null'
     @Test
     fun testNullableValues() = runTest {
         val ksafe = createKSafe()

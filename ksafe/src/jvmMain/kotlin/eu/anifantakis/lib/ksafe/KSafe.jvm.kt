@@ -170,7 +170,7 @@ actual class KSafe(
             if (keyName.startsWith(encryptedPrefix)) {
                 if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED) {
                     // POLICY: ENCRYPTED -> Store raw ciphertext (value is already String/Base64)
-                    if (value != null) newCache[keyName] = value
+                    newCache[keyName] = value
                 } else {
                     // POLICY: PLAIN_TEXT -> Decrypt immediately
                     val originalKey = keyName.removePrefix(encryptedPrefix)
@@ -209,7 +209,7 @@ actual class KSafe(
         val cachedValue = cache[cacheKey] ?: return defaultValue
 
         return if (encrypted) {
-            var jsonString: String? = null
+            var jsonString: String?
 
             if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED) {
                 // POLICY: ENCRYPTED -> Decrypt On-Demand
@@ -229,7 +229,7 @@ actual class KSafe(
                     val plainBytes = cipher.doFinal(cipherBytes)
 
                     jsonString = plainBytes.toString(Charsets.UTF_8)
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     // FALLBACK: Optimistic Update (putDirect stores Plain JSON initially)
                     // If decryption fails (e.g. invalid Base64 or AES error), assume it's JSON.
                     jsonString = cachedValue as? String
@@ -436,6 +436,7 @@ actual class KSafe(
         updateMemoryCache(key, storedValue)
     }
 
+    @Suppress("UNCHECKED_CAST")
     @PublishedApi internal fun <T> getUnencryptedKey(key: String, defaultValue: T): Preferences.Key<Any> {
         return when (defaultValue) {
             is Boolean -> booleanPreferencesKey(key)
@@ -521,7 +522,7 @@ actual class KSafe(
             val fnameWithSuffix = "$base.preferences_pb"
             val file = File(baseDir, fnameWithSuffix)
             if (file.exists()) file.delete()
-        } catch (e: Exception) { }
+        } catch (_: Exception) { }
         memoryCache.set(emptyMap())
     }
 }

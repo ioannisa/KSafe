@@ -369,7 +369,7 @@ actual class KSafe(
                     // ENCRYPTED ENTRY
                     if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED) {
                         // SECURITY MODE: Store raw Ciphertext in RAM.
-                        if (value != null) newCache[keyName] = value
+                        newCache[keyName] = value
                     } else {
                         // PERFORMANCE MODE: Decrypt now, store Plaintext.
                         val originalKey = keyName.removePrefix(encryptedPrefix)
@@ -429,7 +429,7 @@ actual class KSafe(
         val cachedValue = cache[cacheKey] ?: return defaultValue
 
         return if (encrypted) {
-            var jsonString: String? = null
+            var jsonString: String?
 
             if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED) {
                 // SECURITY MODE: Decrypt On-Demand
@@ -448,7 +448,7 @@ actual class KSafe(
                         val decryptedBytes = cipher.decrypt(ciphertext = ciphertext)
                         decryptedBytes.decodeToString()
                     }
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     // FALLBACK: If decryption fails, check if this is an Optimistic Update (Plain JSON)
                     jsonString = cachedValue as? String
                 }
@@ -594,6 +594,7 @@ actual class KSafe(
         updateMemoryCache(key, storedValue)
     }
 
+    @Suppress("UNCHECKED_CAST")
     @PublishedApi internal fun <T> getUnencryptedKey(key: String, defaultValue: T): Preferences.Key<Any> {
         return when (defaultValue) {
             is Boolean -> booleanPreferencesKey(key)
@@ -742,11 +743,6 @@ actual class KSafe(
         dataStore.edit { preferences ->
             preferences[encryptedPrefKey(key)] = encoded
         }
-    }
-
-    suspend fun loadEncryptedData(key: String): ByteArray? {
-        val stored = dataStore.data.map { it[encryptedPrefKey(key)] }.first()
-        return stored?.let { decodeBase64(it) }
     }
 
     suspend inline fun <reified T> putEncrypted(key: String, value: T) {

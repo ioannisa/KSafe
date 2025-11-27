@@ -11,11 +11,11 @@ plugins {
 
 // Set the same group and version as your main library
 group = "eu.anifantakis"
-version = "1.2.0-alpha03"
+version = "1.2.0-RC1"
 
 kotlin {
     androidLibrary {
-        namespace = "eu.anifantakis.ksafe.compose"
+        namespace = "eu.anifantakis.lib.ksafe.compose"
         compileSdk = 36
         minSdk = 24
 

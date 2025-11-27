@@ -162,7 +162,7 @@ actual class KSafe(
                     if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED) {
                         // SECURITY MODE: Do NOT decrypt. Store the raw ciphertext string in RAM.
                         // We will decrypt it only when the user asks for it in resolveFromCache.
-                        if (value != null) newCache[keyName] = value
+                        newCache[keyName] = value
                     } else {
                         // PERFORMANCE MODE: Decrypt now, store plaintext in RAM.
                         val originalKey = keyName.removePrefix(encryptedPrefix)
@@ -233,7 +233,7 @@ actual class KSafe(
 
         return if (encrypted) {
             // Encrypted values are stored as JSON strings in the cache (decrypted from bytes)
-            var jsonString: String? = null
+            var jsonString: String?
 
             if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED) {
                 // SECURITY MODE: Decrypt On-Demand
@@ -243,7 +243,7 @@ actual class KSafe(
                     val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, key).joinToString(".")
                     val decryptedBytes = decryptWithKeystore(keyAlias, ciphertext)
                     jsonString = decryptedBytes.decodeToString()
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     // FALLBACK: If decryption fails, check if this is an Optimistic Update (Plain JSON)
                     // putDirect() writes JSON temporarily to allow instant read-back before encryption.
                     jsonString = cachedValue as? String
@@ -545,6 +545,7 @@ actual class KSafe(
         updateMemoryCache(key, storedValue)
     }
 
+    @Suppress("UNCHECKED_CAST")
     @PublishedApi internal fun <T> getUnencryptedKey(key: String, defaultValue: T): Preferences.Key<Any> {
         return when (defaultValue) {
             is Boolean -> booleanPreferencesKey(key)
