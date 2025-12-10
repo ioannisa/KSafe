@@ -18,18 +18,17 @@ Whether you must squirrel away OAuth tokens in a fintech app or remember the las
 ##### Contributors
 Special thanks to [Mark Andrachek](https://github.com/mandrachek) for his contribution!
 
-
 ***
-
 
 ## Why use KSafe?
 
-* **Hardware-backed security** 🔐 AES‑256‑GCM with keys stored in Android Keystore or iOS Keychain for maximum protection.
+* **Hardware-backed security** 🔐 AES‑256‑GCM with keys stored in Android Keystore, iOS Keychain, or software-backed on JVM for maximum protection.
 * **Clean reinstalls** 🧹 Automatic cleanup ensures fresh starts after app reinstallation on both platforms.
 * **One code path** No expect/actual juggling—your common code owns the vault.
 * **Ease of use** `var launchCount by ksafe(0)` —that is literally it.
-* **Versatility** Primitives, data classes, sealed hierarchies, lists, sets; all accepted.
-* **Performance** Suspend API keeps the UI thread free; direct API is there when you need blocking simplicity.
+* **Versatility** Primitives, data classes, sealed hierarchies, lists, sets, and nullable types—all accepted.
+* **Performance** Zero-latency UI reads with the new Hybrid Cache architecture; suspend API keeps the UI thread free.
+* **Desktop Support** Full JVM/Desktop support alongside Android and iOS.
 
 ## How encryption works under the hood
 
@@ -42,14 +41,19 @@ KSafe provides enterprise-grade encrypted persistence using DataStore Preference
 * **Access Control:** Keys only accessible when device is unlocked
 
 ##### iOS
-* **Cipher:** AES‑256‑GCM via OpenSSL-3 provider
+* **Cipher:** AES‑256‑GCM via CryptoKit provider
 * **Key Storage:** iOS Keychain Services
 * **Security:** Protected by device passcode/biometrics, not included in backups
 * **Access Control**: `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`
 * **Reinstall Handling:** Automatic cleanup of orphaned Keychain entries on first use
 
-##### Flow
+##### JVM/Desktop
+* **Cipher:** AES-256-GCM via javax.crypto
+* **Key Storage:** Software-backed keys stored alongside data
+* **Security:** Relies on OS file permissions (0700 on POSIX systems)
+* **Location:** `~/.eu_anifantakis_ksafe/` directory
 
+##### Flow
 * **Serialize value → plaintext bytes** using kotlinx.serialization.
 * **Load (or generate) a random 256‑bit AES key**  from Keystore/Keychain (unique per preference key)
 * **Encrypt with AES‑GCM** (nonce + auth‑tag included).
@@ -69,21 +73,13 @@ Add the KSafe dependency to your `build.gradle.kts` (or `build.gradle`) file.
 
 #### 1 - Add the Dependency
 
-If you want to use the latest stable version
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:1.1.1")
-implementation("eu.anifantakis:ksafe-compose:1.1.1") // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe:1.2.0")
+implementation("eu.anifantakis:ksafe-compose:1.2.0") // ← Compose state (optional)
 ```
 
-If you want to use the latest pre-release (Release Candidate) version with Desktop support
-```kotlin
-// commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:1.2.0-RC1")
-implementation("eu.anifantakis:ksafe-compose:1.2.0-RC1") // ← Compose state (optional)
-```
-
-> Skip `ksafe-compose` if your project doesn’t use Jetpack Compose, or if you don't intend to use the library's `mutableStateOf` persistance option
+> Skip `ksafe-compose` if your project doesn't use Jetpack Compose, or if you don't intend to use the library's `mutableStateOf` persistance option
 
 #### 2 - Apply the kotlinx‑serialization plugin
 
@@ -92,7 +88,7 @@ If you want to use the library with data classes, you need to enable Serializati
 Add Serialization definition to your `plugins` section of your `libs.versions.toml`
 ```toml
 [versions]
-kotlin = "2.2.10"
+kotlin = "2.2.21"
 
 [plugins]
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
@@ -122,6 +118,11 @@ actual val platformModule = module {
 }
 
 // iOS
+actual val platformModule = module {
+  single { KSafe() }
+}
+
+// JVM/Desktop
 actual val platformModule = module {
   single { KSafe() }
 }
@@ -197,6 +198,36 @@ authInfo = authInfo.copy(accessToken = "newToken")
 > ⚠️ Seeing "Serializer for class X' is not found"?
 Add `@Serializable` and make sure you have added Serialization plugin to your app
 
+#### Nullable Values
+
+KSafe fully supports nullable types. You can store and retrieve `null` values correctly:
+
+```Kotlin
+// Store null values
+val token: String? = null
+ksafe.put("auth_token", token, encrypted = true)
+
+// Retrieve null values (returns null, not defaultValue)
+val retrieved: String? = ksafe.get("auth_token", "default", encrypted = true)
+// retrieved == null ✓
+
+// Works with all APIs
+ksafe.putDirect("key", null as String?, encrypted = false)
+val value: String? = ksafe.getDirect("key", "default", encrypted = false)
+// value == null ✓
+
+// Nullable fields in serializable classes
+@Serializable
+data class UserProfile(
+    val id: Int,
+    val nickname: String?,  // Can be null
+    val bio: String?        // Can be null
+)
+
+val profile = UserProfile(1, null, "Hello!")
+ksafe.put("profile", profile, encrypted = true)
+```
+
 #### Suspend API (non‑blocking)
 
 ```Kotlin
@@ -209,6 +240,13 @@ val cached: User = ksafe.get("profile", User())
 ```Kotlin
 ksafe.putDirect("counter", 42)
 val n = ksafe.getDirect("counter", 0)
+```
+
+#### Jetpack Compose ♥ KSafe (optional module)
+as already mentioned above, Recomposition‑proof and survives process death with zero boilerplate.
+```Kotlin
+var clicks by ksafe.mutableStateOf(0)  // encrypted backing storage
+actionButton { clicks++ }
 ```
 
 #### Jetpack Compose ♥ KSafe (optional module)
@@ -312,6 +350,78 @@ class CounterViewModel(ksafe: KSafe) : ViewModel() {
 
 ***
 
+## Architecture: Hybrid "Hot Cache" 🚀
+
+KSafe 1.2.0 introduces a completely rewritten core architecture focusing on zero-latency UI performance.
+
+### How It Works
+
+**Before (v1.1.x):** Every `getDirect()` call triggered a blocking disk read and decryption on the calling thread. This could cause frame drops in scrollable environments.
+
+**Now (v1.2.0):** Data is preloaded asynchronously immediately upon initialization. `getDirect()` now performs an **Atomic Memory Lookup (O(1))**, returning instantly.
+
+**Safety:** If data is accessed before the preload finishes (Cold Start), the library automatically falls back to a blocking read to ensure you never receive incorrect default values.
+
+### Optimistic Updates
+
+`putDirect()` now updates the in-memory cache **immediately**, allowing your UI to reflect changes instantly while the disk encryption and write happen safely in the background.
+
+***
+
+## Memory Security Policy 🔒
+
+You can now choose the trade-off between maximum performance and maximum security regarding data resident in RAM.
+
+```Kotlin
+val ksafe = KSafe(
+    fileName = "secrets",
+    memoryPolicy = KSafeMemoryPolicy.ENCRYPTED // (Default) or PLAIN_TEXT
+)
+```
+
+### Policy Options
+
+| Policy | Best For | Behavior | Performance |
+|--------|----------|----------|-------------|
+| `ENCRYPTED` (Default) | Tokens, passwords, sensitive data | Stores raw ciphertext in RAM. Decrypts on-demand every time you ask for data, then discards the plaintext immediately. | Slightly higher CPU per read |
+| `PLAIN_TEXT` | User settings, themes, preferences | Decrypts once on load, stores plain values in RAM. | Instant reads, zero CPU overhead per call |
+
+Both policies encrypt data on disk. The difference is how data is handled in memory:
+- **ENCRYPTED:** Maximum security against memory dump attacks
+- **PLAIN_TEXT:** Maximum performance for frequently accessed data
+
+### Lazy Loading
+
+By default, KSafe eagerly preloads data on initialization. If you want to defer loading until first access:
+
+```Kotlin
+val archive = KSafe(
+    fileName = "archive",
+    lazyLoad = true  // Skip preload, load on first request
+)
+```
+
+### Constructor Parameters
+
+```Kotlin
+// Android
+KSafe(
+    context: Context,
+    fileName: String? = null,          // Optional namespace
+    lazyLoad: Boolean = false,         // Eager (false) or lazy (true) loading
+    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED
+)
+
+// iOS / JVM
+KSafe(
+    fileName: String? = null,
+    lazyLoad: Boolean = false,
+    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED
+)
+```
+
+***
+
 ## Security Features
 ### Platform-Specific Protection
 
@@ -326,6 +436,11 @@ class CounterViewModel(ksafe: KSafe) : ViewModel() {
 * Protected by device authentication
 * Not included in iCloud/iTunes backups
 * Automatic cleanup of orphaned keys on first app use after reinstall
+
+#### JVM/Desktop
+* AES-256-GCM encryption via standard javax.crypto
+* Keys stored in user home directory with restricted permissions
+* Suitable for desktop applications and server-side use
 
 ### Error Handling
 If decryption fails (e.g., corrupted data or missing key), KSafe gracefully returns the default value, ensuring your app continues to function.
@@ -351,7 +466,8 @@ On iOS, KSafe uses a smart detection system:
 
 * **iOS:** Keychain access requires device to be unlocked
 * **Android:** Some devices may not have hardware-backed keystore
-* **Both:** Encrypted data is lost if encryption keys are deleted (by design for security)
+* **JVM:** No hardware security module; relies on file system permissions
+* **All Platforms:** Encrypted data is lost if encryption keys are deleted (by design for security)
 
 ***
 
@@ -368,6 +484,9 @@ KSafe includes comprehensive tests for all platforms. Here are the Gradle comman
 
 # Run common tests only
 ./gradlew :ksafe:commonTest
+
+# Run JVM tests
+./gradlew :ksafe:jvmTest
 
 # Run Android unit tests (Note: May fail in Robolectric due to KeyStore limitations)
 ./gradlew :ksafe:testDebugUnitTest
@@ -454,9 +573,30 @@ xcrun devicectl device process launch \
 The iOS test app demonstrates:
 - Creating a KSafe instance with a custom file name
 - Observing value changes through Flow simulation (via polling)
-  - For production apps, consider using [SKIE](https://skie.touchlab.co/) or [KMP-NativeCoroutines](https://github.com/rickclephas/KMP-NativeCoroutines) for easier Flow consumption from iOS
+    - For production apps, consider using [SKIE](https://skie.touchlab.co/) or [KMP-NativeCoroutines](https://github.com/rickclephas/KMP-NativeCoroutines) for easier Flow consumption from iOS
 - Using `putDirect` to immediately update values
 - Real-time UI updates responding to value changes
+
+***
+
+## Migration from v1.1.x
+
+### Binary Compatibility
+The public API surface (`get`, `put`, `getDirect`, `putDirect`) remains backward compatible.
+
+### Behavior Changes
+- **Initialization is now eager by default.** If you relied on KSafe doing absolutely nothing until the first call, pass `lazyLoad = true`.
+- **Nullable values now work correctly.** No code changes needed, but you can now safely store `null` values.
+
+### Compose Module Import Fix
+If upgrading from early 1.2.0 alphas, update your imports:
+```kotlin
+// Old (broken in alpha versions)
+import eu.eu.anifantakis.lib.ksafe.compose.mutableStateOf
+
+// New (correct)
+import eu.anifantakis.lib.ksafe.compose.mutableStateOf
+```
 
 ***
 

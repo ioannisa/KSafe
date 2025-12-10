@@ -10,7 +10,7 @@ plugins {
 }
 
 group = "eu.anifantakis"
-version = "1.2.0-RC1"
+version = "1.2.0"
 
 kotlin {
     androidTarget {
