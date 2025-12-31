@@ -27,14 +27,8 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.nio.file.attribute.PosixFilePermission
-import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
-import javax.crypto.Cipher
-import javax.crypto.KeyGenerator
-import javax.crypto.SecretKey
-import javax.crypto.spec.GCMParameterSpec
-import javax.crypto.spec.SecretKeySpec
 
 @OptIn(ExperimentalEncodingApi::class)
 fun encodeBase64(bytes: ByteArray): String = Base64.encode(bytes)
@@ -60,12 +54,31 @@ internal fun decodeBase64(encoded: String): ByteArray = Base64.decode(encoded)
 actual class KSafe(
     @PublishedApi internal val fileName: String? = null,
     private val lazyLoad: Boolean = false,
-    @PublishedApi internal val memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED
+    @PublishedApi internal val memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+    private val config: KSafeConfig = KSafeConfig()
 ) {
+
+    /**
+     * Internal constructor for testing with custom encryption engine.
+     */
+    @PublishedApi
+    internal constructor(
+        fileName: String? = null,
+        lazyLoad: Boolean = false,
+        memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+        config: KSafeConfig = KSafeConfig(),
+        testEngine: KSafeEncryption
+    ) : this(fileName, lazyLoad, memoryPolicy, config) {
+        _testEngine = testEngine
+    }
+
+    // Internal injection hook for testing
+    @PublishedApi
+    internal var _testEngine: KSafeEncryption? = null
 
     companion object {
         private val fileNameRegex = Regex("[a-z]+")
-        const val GCM_TAG_LENGTH = 128
+        private const val GCM_TAG_LENGTH = 128
 
         /**
          * Sentinel value used to represent null in storage.
@@ -100,6 +113,13 @@ actual class KSafe(
             File(baseDir, fnameWithSuffix)
         }
     )
+
+    // Encryption engine - uses test engine if provided, or creates default JvmSoftwareEncryption
+    // Must be initialized after dataStore (lazy to allow _testEngine to be set first)
+    @PublishedApi
+    internal val engine: KSafeEncryption by lazy {
+        _testEngine ?: JvmSoftwareEncryption(config, dataStore)
+    }
 
     private fun secureDirectory(file: File) {
         try {
@@ -178,19 +198,9 @@ actual class KSafe(
                     if (encryptedString != null) {
                         try {
                             val alias = fileName?.let { "$it:$originalKey" } ?: originalKey
-                            // Adopted from working code: blocking fetch ensures key availability
-                            val secretKey = runBlocking { getOrCreateSecretKey(alias) }
-
                             val encryptedBytes = decodeBase64(encryptedString)
-                            if (encryptedBytes.size >= 13) {
-                                val iv = encryptedBytes.copyOfRange(0, 12)
-                                val cipherBytes = encryptedBytes.copyOfRange(12, encryptedBytes.size)
-                                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-                                val spec = GCMParameterSpec(GCM_TAG_LENGTH, iv)
-                                cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)
-                                val plainBytes = cipher.doFinal(cipherBytes)
-                                newCache[keyName] = plainBytes.toString(Charsets.UTF_8)
-                            }
+                            val plainBytes = engine.decrypt(alias, encryptedBytes)
+                            newCache[keyName] = plainBytes.toString(Charsets.UTF_8)
                         } catch (_: Exception) { /* Ignore failures */ }
                     }
                 }
@@ -217,16 +227,9 @@ actual class KSafe(
                     val encryptedString = cachedValue as? String ?: return defaultValue
                     val ciphertext = decodeBase64(encryptedString)
 
-                    // Decrypt using javax.crypto
+                    // Decrypt using the engine
                     val alias = fileName?.let { "$it:$key" } ?: key
-                    val secretKey = runBlocking { getOrCreateSecretKey(alias) }
-
-                    val iv = ciphertext.copyOfRange(0, 12)
-                    val cipherBytes = ciphertext.copyOfRange(12, ciphertext.size)
-                    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-                    val spec = GCMParameterSpec(GCM_TAG_LENGTH, iv)
-                    cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)
-                    val plainBytes = cipher.doFinal(cipherBytes)
+                    val plainBytes = engine.decrypt(alias, ciphertext)
 
                     jsonString = plainBytes.toString(Charsets.UTF_8)
                 } catch (_: Exception) {
@@ -351,27 +354,10 @@ actual class KSafe(
         }
     }
 
-    @PublishedApi internal suspend fun getOrCreateSecretKey(alias: String): SecretKey {
-        val keyPref = stringPreferencesKey("ksafe_key_$alias")
-        val preferences = dataStore.data.first()
-        val existing = preferences[keyPref]
-        if (existing != null) {
-            val keyBytes = decodeBase64(existing)
-            return SecretKeySpec(keyBytes, "AES")
-        }
-        val keyGen = KeyGenerator.getInstance("AES")
-        keyGen.init(256)
-        val secretKey = keyGen.generateKey()
-        val encoded = encodeBase64(secretKey.encoded)
-        dataStore.edit { prefs -> prefs[keyPref] = encoded }
-        return secretKey
-    }
-
     @PublishedApi internal fun encryptedPrefKey(key: String) = stringPreferencesKey("encrypted_$key")
 
     suspend inline fun <reified T> putEncrypted(key: String, value: T) {
         val alias = fileName?.let { "$it:$key" } ?: key
-        val secretKey = getOrCreateSecretKey(alias)
 
         // Handle null values with sentinel
         val rawString = if (value == null) {
@@ -381,12 +367,7 @@ actual class KSafe(
         }
 
         val plainBytes = rawString.toByteArray(Charsets.UTF_8)
-        val iv = ByteArray(12).apply { SecureRandom().nextBytes(this) }
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        val spec = GCMParameterSpec(GCM_TAG_LENGTH, iv)
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey, spec)
-        val cipherBytes = cipher.doFinal(plainBytes)
-        val encryptedBytes = iv + cipherBytes
+        val encryptedBytes = engine.encrypt(alias, plainBytes)
         val encryptedString = encodeBase64(encryptedBytes)
 
         dataStore.edit { prefs -> prefs[encryptedPrefKey(key)] = encryptedString }
@@ -466,15 +447,8 @@ actual class KSafe(
             else {
                 try {
                     val alias = fileName?.let { "$it:$key" } ?: key
-                    val secretKey = runBlocking { getOrCreateSecretKey(alias) }
                     val encryptedBytes = decodeBase64(encryptedValue)
-                    if (encryptedBytes.size < 13) return@map defaultValue
-                    val iv = encryptedBytes.copyOfRange(0, 12)
-                    val cipherBytes = encryptedBytes.copyOfRange(12, encryptedBytes.size)
-                    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-                    val spec = GCMParameterSpec(GCM_TAG_LENGTH, iv)
-                    cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)
-                    val plainBytes = cipher.doFinal(cipherBytes)
+                    val plainBytes = engine.decrypt(alias, encryptedBytes)
                     val rawString = plainBytes.toString(Charsets.UTF_8)
 
                     // Check for null sentinel
@@ -499,10 +473,11 @@ actual class KSafe(
         dataStore.edit {
             it.remove(dataKey)
             it.remove(encryptedKey)
-            val alias = fileName?.let { "$it:$key" } ?: key
-            val keyPref = stringPreferencesKey("ksafe_key_$alias")
-            it.remove(keyPref)
         }
+        // Delete the encryption key using the engine
+        val alias = fileName?.let { "$it:$key" } ?: key
+        engine.deleteKey(alias)
+
         updateMemoryCache(key, null)
         updateMemoryCache("encrypted_$key", null)
     }

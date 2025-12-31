@@ -1,8 +1,6 @@
 package eu.anifantakis.lib.ksafe
 
 import android.content.Context
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
@@ -25,13 +23,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
-import java.security.KeyStore
-import java.util.Collections
 import java.util.concurrent.atomic.AtomicReference
-import javax.crypto.Cipher
-import javax.crypto.KeyGenerator
-import javax.crypto.SecretKey
-import javax.crypto.spec.GCMParameterSpec
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -60,14 +52,32 @@ actual class KSafe(
     private val context: Context,
     @PublishedApi internal val fileName: String? = null,
     private val lazyLoad: Boolean = false,
-    @PublishedApi internal val memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED
+    @PublishedApi internal val memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+    private val config: KSafeConfig = KSafeConfig()
 ) {
+    /**
+     * Internal constructor for testing with custom encryption engine.
+     */
+    @PublishedApi
+    internal constructor(
+        context: Context,
+        fileName: String? = null,
+        lazyLoad: Boolean = false,
+        memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+        config: KSafeConfig = KSafeConfig(),
+        testEngine: KSafeEncryption
+    ) : this(context, fileName, lazyLoad, memoryPolicy, config) {
+        _testEngine = testEngine
+    }
+
+    // Internal injection hook for testing
+    @PublishedApi
+    internal var _testEngine: KSafeEncryption? = null
+
     companion object Companion {
         // we intentionally don't allow "." to avoid path traversal vulnerabilities
         private val fileNameRegex = Regex("[a-z]+")
-        private const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val KEY_ALIAS_PREFIX = "eu.anifantakis.ksafe"
-        private const val GCM_TAG_LENGTH = 128
 
         /**
          * Sentinel value used to represent null in storage.
@@ -77,16 +87,17 @@ actual class KSafe(
         internal const val NULL_SENTINEL = "__KSAFE_NULL_VALUE__"
     }
 
+    // Encryption engine - uses test engine if provided, or creates default AndroidKeystoreEncryption
+    @PublishedApi
+    internal val engine: KSafeEncryption by lazy {
+        _testEngine ?: AndroidKeystoreEncryption(config)
+    }
+
     init {
         if (fileName != null && !fileName.matches(fileNameRegex)) {
             throw IllegalArgumentException("File name must contain only lowercase letters")
         }
     }
-
-    /**
-     * Lock object to synchronize cache updates between background preloader and main thread fallback.
-     */
-    private val cacheLock = Any()
 
     @PublishedApi
     internal val json = Json { ignoreUnknownKeys = true }
@@ -114,11 +125,37 @@ actual class KSafe(
     /**
      * **Dirty Keys Tracker.**
      *
-     * A thread-safe set of keys currently being written to disk.
+     * An atomic set of keys currently being written to disk.
      * This prevents the background DataStore observer from overwriting our optimistic
      * in-memory updates with stale data from disk during the write window.
+     * Uses AtomicReference with CAS operations for lock-free thread safety.
      */
-    @PublishedApi internal val dirtyKeys: MutableSet<String> = Collections.synchronizedSet(HashSet())
+    @PublishedApi
+    internal val dirtyKeys = AtomicReference<Set<String>>(emptySet())
+
+    /**
+     * Atomically adds a key to the dirty set using CAS loop.
+     */
+    @PublishedApi
+    internal fun addDirtyKey(key: String) {
+        while (true) {
+            val current = dirtyKeys.get()
+            val next = current + key
+            if (dirtyKeys.compareAndSet(current, next)) break
+        }
+    }
+
+    /**
+     * Atomically removes a key from the dirty set using CAS loop.
+     */
+    @PublishedApi
+    internal fun removeDirtyKey(key: String) {
+        while (true) {
+            val current = dirtyKeys.get()
+            val next = current - key
+            if (dirtyKeys.compareAndSet(current, next)) break
+        }
+    }
 
     init {
         // HYBRID CACHE: Start Background Preload immediately.
@@ -136,65 +173,67 @@ actual class KSafe(
 
     /**
      * Updates the atomic [memoryCache] based on the raw [Preferences] from DataStore.
-     * Synchronized to prevent race conditions between Background Preload and Main Thread Fallback.
+     *
+     * **Lock-Free Design:**
+     * This function is lock-free to prevent deadlocks and race conditions with [updateMemoryCache].
+     * The dirty keys mechanism ensures that optimistic writes from [putDirect] are not
+     * overwritten by stale data from DataStore during the write window.
      */
     @PublishedApi
     internal fun updateCache(prefs: Preferences) {
-        synchronized(cacheLock) {
-            val currentCache = memoryCache.get() ?: emptyMap()
-            val newCache = mutableMapOf<String, Any>()
-            val prefsMap = prefs.asMap()
-            val encryptedPrefix = "encrypted_"
+        val currentCache = memoryCache.get() ?: emptyMap()
+        val newCache = mutableMapOf<String, Any>()
+        val prefsMap = prefs.asMap()
+        val encryptedPrefix = "encrypted_"
+        val currentDirty = dirtyKeys.get() // Snapshot of dirty keys
 
-            for ((key, value) in prefsMap) {
-                val keyName = key.name
+        for ((key, value) in prefsMap) {
+            val keyName = key.name
 
-                // Dirty Check: If a local write is pending for this key,
-                // prioritize the local optimistic value over the (potentially stale) disk value.
-                if (dirtyKeys.contains(keyName)) {
-                    currentCache[keyName]?.let { newCache[keyName] = it }
-                    continue
-                }
+            // Dirty Check: If a local write is pending for this key,
+            // prioritize the local optimistic value over the (potentially stale) disk value.
+            if (currentDirty.contains(keyName)) {
+                currentCache[keyName]?.let { newCache[keyName] = it }
+                continue
+            }
 
-                // Handle Encrypted Entries
-                if (keyName.startsWith(encryptedPrefix)) {
-                    // ENCRYPTED ENTRY
-                    if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED) {
-                        // SECURITY MODE: Do NOT decrypt. Store the raw ciphertext string in RAM.
-                        // We will decrypt it only when the user asks for it in resolveFromCache.
-                        newCache[keyName] = value
-                    } else {
-                        // PERFORMANCE MODE: Decrypt now, store plaintext in RAM.
-                        val originalKey = keyName.removePrefix(encryptedPrefix)
-                        val encryptedString = value as? String
-                        if (encryptedString != null) {
-                            try {
-                                val ciphertext = decodeBase64(encryptedString)
-                                val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, originalKey).joinToString(".")
-                                val decryptedBytes = decryptWithKeystore(keyAlias, ciphertext)
-                                newCache[keyName] = decryptedBytes.decodeToString()
-                            } catch (_: Exception) { }
-                        }
-                    }
-                }
-                // Handle Unencrypted Entries
-                else if (!keyName.startsWith("ksafe_")) {
+            // Handle Encrypted Entries
+            if (keyName.startsWith(encryptedPrefix)) {
+                // ENCRYPTED ENTRY
+                if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED) {
+                    // SECURITY MODE: Do NOT decrypt. Store the raw ciphertext string in RAM.
+                    // We will decrypt it only when the user asks for it in resolveFromCache.
                     newCache[keyName] = value
-                }
-            }
-
-            // Important: Preserve any dirty keys that haven't been persisted to disk yet.
-            synchronized(dirtyKeys) {
-                for (dirtyKey in dirtyKeys) {
-                    if (!newCache.containsKey(dirtyKey)) {
-                        currentCache[dirtyKey]?.let { newCache[dirtyKey] = it }
+                } else {
+                    // PERFORMANCE MODE: Decrypt now, store plaintext in RAM.
+                    val originalKey = keyName.removePrefix(encryptedPrefix)
+                    val encryptedString = value as? String
+                    if (encryptedString != null) {
+                        try {
+                            val ciphertext = decodeBase64(encryptedString)
+                            val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, originalKey).joinToString(".")
+                            val decryptedBytes = engine.decrypt(keyAlias, ciphertext)
+                            newCache[keyName] = decryptedBytes.decodeToString()
+                        } catch (_: Exception) { }
                     }
                 }
             }
-
-            // Atomically replace the entire cache with the freshly computed map.
-            memoryCache.set(newCache)
+            // Handle Unencrypted Entries
+            else if (!keyName.startsWith("ksafe_")) {
+                newCache[keyName] = value
+            }
         }
+
+        // Important: Preserve any dirty keys that haven't been persisted to disk yet.
+        // This catches keys that were added to dirtyKeys after our snapshot but before persist completed.
+        for (dirtyKey in currentDirty) {
+            if (!newCache.containsKey(dirtyKey)) {
+                currentCache[dirtyKey]?.let { newCache[dirtyKey] = it }
+            }
+        }
+
+        // Atomically replace the entire cache with the freshly computed map.
+        memoryCache.set(newCache)
     }
 
     /**
@@ -241,7 +280,7 @@ actual class KSafe(
                     val encryptedString = cachedValue as? String ?: return defaultValue
                     val ciphertext = decodeBase64(encryptedString)
                     val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, key).joinToString(".")
-                    val decryptedBytes = decryptWithKeystore(keyAlias, ciphertext)
+                    val decryptedBytes = engine.decrypt(keyAlias, ciphertext)
                     jsonString = decryptedBytes.decodeToString()
                 } catch (_: Exception) {
                     // FALLBACK: If decryption fails, check if this is an Optimistic Update (Plain JSON)
@@ -350,8 +389,8 @@ actual class KSafe(
     actual inline fun <reified T> putDirect(key: String, value: T, encrypted: Boolean) {
         val rawKey = if (encrypted) "encrypted_$key" else key
 
-        // 1. Lock key to prevent overwrite by background observer
-        dirtyKeys.add(rawKey)
+        // 1. Mark key as dirty to prevent overwrite by background observer
+        addDirtyKey(rawKey)
 
         // 2. Optimistic Update (Immediate memory update)
         val toCache: Any = if (value == null) {
@@ -373,75 +412,14 @@ actual class KSafe(
                 put(key, value, encrypted)
             } finally {
                 // Clear dirty flag only after write completes (or fails)
-                dirtyKeys.remove(rawKey)
+                removeDirtyKey(rawKey)
             }
         }
     }
 
-    // ----- Android Keystore Encryption Helpers -----
+    // ----- Encryption Helpers -----
     @PublishedApi
     internal fun encryptedPrefKey(key: String) = stringPreferencesKey("encrypted_$key")
-
-    /**
-     * Gets or creates a secret key in Android Keystore
-     */
-    private fun getOrCreateSecretKey(keyAlias: String): SecretKey {
-        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply {
-            load(null)
-        }
-
-        // Check if key already exists
-        if (keyStore.containsAlias(keyAlias)) {
-            return keyStore.getKey(keyAlias, null) as SecretKey
-        }
-
-        // Generate new key
-        val keyGenerator =
-            KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
-        val keyGenParameterSpec = KeyGenParameterSpec.Builder(
-            keyAlias,
-            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
-        )
-            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-            .setKeySize(256)
-            .build()
-
-        keyGenerator.init(keyGenParameterSpec)
-        return keyGenerator.generateKey()
-    }
-
-    /**
-     * Encrypts data using Android Keystore
-     */
-    fun encryptWithKeystore(keyAlias: String, plaintext: ByteArray): ByteArray {
-        val secretKey = getOrCreateSecretKey(keyAlias)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey)
-
-        val iv = cipher.iv
-        val ciphertext = cipher.doFinal(plaintext)
-
-        // Combine IV and ciphertext
-        return iv + ciphertext
-    }
-
-    /**
-     * Decrypts data using Android Keystore
-     */
-    fun decryptWithKeystore(keyAlias: String, encryptedData: ByteArray): ByteArray {
-        val secretKey = getOrCreateSecretKey(keyAlias)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-
-        // Extract IV and ciphertext
-        val iv = encryptedData.sliceArray(0..11)
-        val ciphertext = encryptedData.sliceArray(12 until encryptedData.size)
-
-        val spec = GCMParameterSpec(GCM_TAG_LENGTH, iv)
-        cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)
-
-        return cipher.doFinal(ciphertext)
-    }
 
     suspend fun storeEncryptedData(key: String, data: ByteArray) {
         val encoded = encodeBase64(data)
@@ -458,9 +436,9 @@ actual class KSafe(
             json.encodeToString(serializer<T>(), value)
         }
 
-        // Use Android Keystore for encryption
+        // Use encryption engine
         val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, key).joinToString(".")
-        val ciphertext = encryptWithKeystore(keyAlias, jsonString.encodeToByteArray())
+        val ciphertext = engine.encrypt(keyAlias, jsonString.encodeToByteArray())
 
         storeEncryptedData(key, ciphertext)
 
@@ -581,7 +559,7 @@ actual class KSafe(
                     try {
                         val ciphertext = decodeBase64(encryptedValue)
                         val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, key).joinToString(".")
-                        val decryptedBytes = decryptWithKeystore(keyAlias, ciphertext)
+                        val decryptedBytes = engine.decrypt(keyAlias, ciphertext)
                         val jsonString = decryptedBytes.decodeToString()
 
                         // Check for null sentinel
@@ -633,18 +611,9 @@ actual class KSafe(
             preferences.remove(encryptedKey)
         }
 
-        // Also try to delete the corresponding encryption key from Keystore
-        try {
-            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply {
-                load(null)
-            }
-            val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, key).joinToString(".")
-            if (keyStore.containsAlias(keyAlias)) {
-                keyStore.deleteEntry(keyAlias)
-            }
-        } catch (_: Exception) {
-            // Ignore errors when deleting from keystore
-        }
+        // Delete the corresponding encryption key using the engine
+        val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, key).joinToString(".")
+        engine.deleteKey(keyAlias)
 
         // Update cache
         updateMemoryCache(key, null)
@@ -687,20 +656,10 @@ actual class KSafe(
         // Clear all DataStore preferences
         dataStore.edit { it.clear() }
 
-        // Delete all associated Keystore entries
-        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply {
-            load(null)
-        }
-
+        // Delete all associated encryption keys using the engine
         encryptedKeys.forEach { keyId ->
             val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, keyId).joinToString(".")
-            try {
-                if (keyStore.containsAlias(keyAlias)) {
-                    keyStore.deleteEntry(keyAlias)
-                }
-            } catch (_: Exception) {
-                // Ignore errors when deleting from keystore
-            }
+            engine.deleteKey(keyAlias)
         }
 
         // Clear cache

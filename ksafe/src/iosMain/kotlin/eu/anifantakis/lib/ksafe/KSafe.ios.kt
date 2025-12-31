@@ -13,19 +13,14 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import dev.whyoleg.cryptography.CryptographyProvider
 import dev.whyoleg.cryptography.algorithms.AES
 import dev.whyoleg.cryptography.providers.cryptokit.CryptoKit
-import kotlinx.cinterop.BetaInteropApi
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
-import kotlinx.cinterop.refTo
-import kotlinx.cinterop.usePinned
 import kotlinx.cinterop.value
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.IO
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -50,30 +45,21 @@ import platform.CoreFoundation.kCFBooleanTrue
 import platform.Foundation.CFBridgingRelease
 import platform.Foundation.CFBridgingRetain
 import platform.Foundation.NSArray
-import platform.Foundation.NSData
 import platform.Foundation.NSDictionary
 import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSURL
 import platform.Foundation.NSUserDomainMask
-import platform.Foundation.create
-import platform.Security.SecItemAdd
 import platform.Security.SecItemCopyMatching
 import platform.Security.SecItemDelete
 import platform.Security.errSecSuccess
-import platform.Security.kSecAttrAccessible
-import platform.Security.kSecAttrAccessibleWhenUnlockedThisDeviceOnly
 import platform.Security.kSecAttrAccount
 import platform.Security.kSecAttrService
 import platform.Security.kSecClass
 import platform.Security.kSecClassGenericPassword
 import platform.Security.kSecMatchLimit
 import platform.Security.kSecMatchLimitAll
-import platform.Security.kSecMatchLimitOne
 import platform.Security.kSecReturnAttributes
-import platform.Security.kSecReturnData
-import platform.Security.kSecValueData
-import platform.posix.memcpy
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.random.Random
@@ -102,14 +88,33 @@ internal fun decodeBase64(encoded: String): ByteArray = Base64.decode(encoded)
 actual class KSafe(
     @PublishedApi internal val fileName: String? = null,
     private val lazyLoad: Boolean = false,
-    @PublishedApi internal val memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED
+    @PublishedApi internal val memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+    private val config: KSafeConfig = KSafeConfig()
 ) {
+    /**
+     * Internal constructor for testing with custom encryption engine.
+     */
+    @PublishedApi
+    internal constructor(
+        fileName: String? = null,
+        lazyLoad: Boolean = false,
+        memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+        config: KSafeConfig = KSafeConfig(),
+        testEngine: KSafeEncryption
+    ) : this(fileName, lazyLoad, memoryPolicy, config) {
+        _testEngine = testEngine
+    }
+
+    // Internal injection hook for testing
+    @PublishedApi
+    internal var _testEngine: KSafeEncryption? = null
+
     companion object Companion {
         // we intentionally don't allow "." to avoid path traversal vulnerabilities
         private val fileNameRegex = Regex("[a-z]+")
-        private const val KEY_SIZE = 32 // 256 bits for AES-256
         private const val SERVICE_NAME = "eu.anifantakis.ksafe"
-        private const val KEY_PREFIX = "eu.anifantakis.ksafe"
+        @PublishedApi
+        internal const val KEY_PREFIX = "eu.anifantakis.ksafe"
         private const val INSTALLATION_ID_KEY = "ksafe_installation_id"
 
         /**
@@ -118,6 +123,16 @@ actual class KSafe(
          */
         @PublishedApi
         internal const val NULL_SENTINEL = "__KSAFE_NULL_VALUE__"
+    }
+
+    // Encryption engine - uses test engine if provided, or creates default IosKeychainEncryption
+    @PublishedApi
+    internal val engine: KSafeEncryption by lazy {
+        _testEngine ?: IosKeychainEncryption(
+            config = config,
+            serviceName = SERVICE_NAME,
+            keyPrefix = KEY_PREFIX
+        )
     }
 
     init {
@@ -377,11 +392,8 @@ actual class KSafe(
                         if (encryptedString != null) {
                             try {
                                 val ciphertext = decodeBase64(encryptedString)
-                                val keychainKey = getOrCreateKeychainKey(originalKey)
-                                val aesGcm = obtainAesGcm()
-                                val symmetricKey = aesGcm.keyDecoder().decodeFromByteArray(AES.Key.Format.RAW, keychainKey)
-                                val cipher = symmetricKey.cipher()
-                                val decryptedBytes = cipher.decrypt(ciphertext = ciphertext)
+                                val keyId = listOfNotNull(KEY_PREFIX, fileName, originalKey).joinToString(".")
+                                val decryptedBytes = engine.decrypt(keyId, ciphertext)
                                 newCache[keyName] = decryptedBytes.decodeToString()
                             } catch (_: Exception) { /* Ignore failures */ }
                         }
@@ -437,17 +449,10 @@ actual class KSafe(
                     val encryptedString = cachedValue as? String ?: return defaultValue
                     val ciphertext = decodeBase64(encryptedString)
 
-                    // Access Keychain & Decrypt
-                    // Wrapped in runBlocking because 'decodeFromByteArray' and 'decrypt' are suspend functions
-                    // This turns the async crypto call into a blocking call, which is required for 'getDirect'.
-                    jsonString = runBlocking {
-                        val keychainKey = getOrCreateKeychainKey(key)
-                        val aesGcm = obtainAesGcm()
-                        val symmetricKey = aesGcm.keyDecoder().decodeFromByteArray(AES.Key.Format.RAW, keychainKey)
-                        val cipher = symmetricKey.cipher()
-                        val decryptedBytes = cipher.decrypt(ciphertext = ciphertext)
-                        decryptedBytes.decodeToString()
-                    }
+                    // Decrypt using the engine
+                    val keyId = listOfNotNull(KEY_PREFIX, fileName, key).joinToString(".")
+                    val decryptedBytes = engine.decrypt(keyId, ciphertext)
+                    jsonString = decryptedBytes.decodeToString()
                 } catch (_: Exception) {
                     // FALLBACK: If decryption fails, check if this is an Optimistic Update (Plain JSON)
                     jsonString = cachedValue as? String
@@ -607,96 +612,15 @@ actual class KSafe(
         } as Preferences.Key<Any>
     }
 
-    // ----- iOS Keychain Encryption Functions -----
+    // ----- Encryption Helpers -----
 
     @PublishedApi
     internal fun encryptedPrefKey(key: String) =
         stringPreferencesKey(fileName?.let { "${fileName}_$key" } ?: "encrypted_$key")
 
     /**
-     * Gets or creates an encryption key from iOS Keychain
-     */
-    @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
-    @PublishedApi
-    internal fun getOrCreateKeychainKey(keyId: String): ByteArray {
-        val account = listOfNotNull(KEY_PREFIX, fileName, keyId).joinToString(".")
-
-        // Use mock keychain in simulator
-        if (MockKeychain.isSimulator()) {
-            val existingKey = MockKeychain.retrieve(account)
-            if (existingKey != null) {
-                return existingKey
-            }
-
-            // Generate new key
-            val newKey = ByteArray(KEY_SIZE)
-            Random.nextBytes(newKey)
-            MockKeychain.store(account, newKey)
-            return newKey
-        }
-
-        // First try to retrieve existing key
-        memScoped {
-            val query = CFDictionaryCreateMutable(
-                kCFAllocatorDefault,
-                0,
-                null,
-                null
-            ).apply {
-                CFDictionarySetValue(this, kSecClass, kSecClassGenericPassword)
-                CFDictionarySetValue(this, kSecAttrService, CFBridgingRetain(SERVICE_NAME))
-                CFDictionarySetValue(this, kSecAttrAccount, CFBridgingRetain(account))
-                CFDictionarySetValue(this, kSecReturnData, kCFBooleanTrue)
-                CFDictionarySetValue(this, kSecMatchLimit, kSecMatchLimitOne)
-            }
-
-            val resultRef = alloc<CFTypeRefVar>()
-            val status = SecItemCopyMatching(query, resultRef.ptr)
-            CFRelease(query as CFTypeRef?)
-
-            if (status == errSecSuccess) {
-                val data = CFBridgingRelease(resultRef.value) as NSData
-                return data.toByteArray()
-            }
-        }
-
-        // Key doesn't exist, generate new one
-        val newKey = ByteArray(KEY_SIZE)
-        Random.nextBytes(newKey)
-
-        // Store in keychain
-        memScoped {
-            val keyData = NSData.create(
-                bytes = newKey.refTo(0).getPointer(this),
-                length = newKey.size.toULong()
-            )
-
-            val addQuery = CFDictionaryCreateMutable(
-                kCFAllocatorDefault,
-                0,
-                null,
-                null
-            ).apply {
-                CFDictionarySetValue(this, kSecClass, kSecClassGenericPassword)
-                CFDictionarySetValue(this, kSecAttrService, CFBridgingRetain(SERVICE_NAME))
-                CFDictionarySetValue(this, kSecAttrAccount, CFBridgingRetain(account))
-                CFDictionarySetValue(this, kSecValueData, CFBridgingRetain(keyData))
-                CFDictionarySetValue(
-                    this,
-                    kSecAttrAccessible,
-                    kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-                )
-            }
-
-            SecItemAdd(addQuery, null)
-            CFRelease(addQuery as CFTypeRef?)
-        }
-
-        return newKey
-    }
-
-    /**
-     * Deletes a key from iOS Keychain
+     * Deletes a key from iOS Keychain.
+     * Used by cleanup logic to remove orphaned keys.
      */
     @OptIn(ExperimentalForeignApi::class)
     @PublishedApi
@@ -726,18 +650,6 @@ actual class KSafe(
         }
     }
 
-    /**
-     * Extension function to convert NSData to ByteArray
-     */
-    @OptIn(ExperimentalForeignApi::class)
-    private fun NSData.toByteArray(): ByteArray {
-        return ByteArray(this.length.toInt()).apply {
-            usePinned {
-                memcpy(it.addressOf(0), this@toByteArray.bytes, this@toByteArray.length)
-            }
-        }
-    }
-
     suspend fun storeEncryptedData(key: String, data: ByteArray) {
         val encoded = encodeBase64(data)
         dataStore.edit { preferences ->
@@ -756,15 +668,9 @@ actual class KSafe(
         }
         val plaintext = jsonString.encodeToByteArray()
 
-        // Get key from Keychain
-        val keychainKey = getOrCreateKeychainKey(key)
-
-        // Use whyoleg cryptography with the Keychain key
-        val aesGcm = obtainAesGcm()
-        val symmetricKey =
-            aesGcm.keyDecoder().decodeFromByteArray(AES.Key.Format.RAW, keychainKey)
-        val cipher = symmetricKey.cipher()
-        val ciphertext = cipher.encrypt(plaintext = plaintext)
+        // Encrypt using the engine
+        val keyId = listOfNotNull(KEY_PREFIX, fileName, key).joinToString(".")
+        val ciphertext = engine.encrypt(keyId, plaintext)
 
         storeEncryptedData(key, ciphertext)
 
@@ -851,16 +757,9 @@ actual class KSafe(
                     try {
                         val ciphertext = decodeBase64(encryptedValue)
 
-                        // Get key from Keychain
-                        val keychainKey = getOrCreateKeychainKey(key)
-
-                        // Use whyoleg cryptography with the Keychain key
-                        val aesGcm = obtainAesGcm()
-                        val symmetricKey =
-                            aesGcm.keyDecoder()
-                                .decodeFromByteArray(AES.Key.Format.RAW, keychainKey)
-                        val cipher = symmetricKey.cipher()
-                        val decryptedBytes = cipher.decrypt(ciphertext = ciphertext)
+                        // Decrypt using the engine
+                        val keyId = listOfNotNull(KEY_PREFIX, fileName, key).joinToString(".")
+                        val decryptedBytes = engine.decrypt(keyId, ciphertext)
                         val jsonString = decryptedBytes.decodeToString()
 
                         // Check for null sentinel
@@ -934,8 +833,9 @@ actual class KSafe(
             preferences.remove(encryptedKey)
         }
 
-        // Also delete the encryption key from Keychain
-        deleteKeychainKey(key)
+        // Delete the encryption key using the engine
+        val keyId = listOfNotNull(KEY_PREFIX, fileName, key).joinToString(".")
+        engine.deleteKey(keyId)
 
         val encKeyName = fileName?.let { "${fileName}_$key" } ?: "encrypted_$key"
         updateMemoryCache(key, null)
@@ -953,7 +853,7 @@ actual class KSafe(
         val encKeyName = fileName?.let { "${fileName}_$key" } ?: "encrypted_$key"
         updateMemoryCache(key, null)
         updateMemoryCache(encKeyName, null)
-        CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
+        CoroutineScope(Dispatchers.Default + SupervisorJob()).launch {
             delete(key)
         }
     }
@@ -979,9 +879,10 @@ actual class KSafe(
         // Clear all DataStore preferences
         dataStore.edit { it.clear() }
 
-        // Delete all associated Keychain entries
+        // Delete all associated encryption keys using the engine
         encryptedKeys.forEach { keyId ->
-            deleteKeychainKey(keyId)
+            val keyIdentifier = listOfNotNull(KEY_PREFIX, fileName, keyId).joinToString(".")
+            engine.deleteKey(keyIdentifier)
         }
 
         // Clear mock keychain if in simulator
