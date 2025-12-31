@@ -359,54 +359,77 @@ actual class KSafe(
         }
     }
 
+    /**
+     * Updates the atomic [memoryCache] based on the raw [Preferences] from DataStore.
+     *
+     * **Lock-Free Design:**
+     * This function is lock-free to prevent race conditions with [updateMemoryCache].
+     * The dirty keys mechanism ensures that optimistic writes from [putDirect] are not
+     * overwritten by stale data from DataStore during the write window.
+     *
+     * Cleanup is handled separately via [ensureCleanupPerformed] which has its own mutex.
+     */
     @PublishedApi
     internal suspend fun updateCache(prefs: Preferences) {
-        // The Mutex allows the Background Thread (Preload) and Main Thread (Blocking Fetch)
-        // to effectively "race" without corrupting the Keychain or map.
-        mutex.withLock {
-            ensureCleanupPerformedLocked()
+        // Ensure cleanup runs once (has its own mutex protection)
+        ensureCleanupPerformed()
 
-            val currentCache = memoryCache.value ?: emptyMap()
-            val newCache = mutableMapOf<String, Any>()
-            val prefsMap = prefs.asMap()
-            val encryptedPrefix = fileName?.let { "${fileName}_" } ?: "encrypted_"
-            val currentDirty = dirtyKeys.value
+        // Lock-free cache update using dirty keys for coordination
+        val currentCache = memoryCache.value ?: emptyMap()
+        val newCache = mutableMapOf<String, Any>()
+        val prefsMap = prefs.asMap()
+        val encryptedPrefix = fileName?.let { "${fileName}_" } ?: "encrypted_"
+        val currentDirty = dirtyKeys.value // Snapshot of dirty keys
 
-            for ((key, value) in prefsMap) {
-                val keyName = key.name
-                // Dirty Check
-                if (currentDirty.contains(keyName)) {
-                    currentCache[keyName]?.let { newCache[keyName] = it }
-                    continue
-                }
+        for ((key, value) in prefsMap) {
+            val keyName = key.name
+            // Dirty Check: preserve optimistic updates from putDirect
+            if (currentDirty.contains(keyName)) {
+                currentCache[keyName]?.let { newCache[keyName] = it }
+                continue
+            }
 
-                if (keyName.startsWith(encryptedPrefix)) {
-                    // ENCRYPTED ENTRY
-                    if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED) {
-                        // SECURITY MODE: Store raw Ciphertext in RAM.
-                        newCache[keyName] = value
-                    } else {
-                        // PERFORMANCE MODE: Decrypt now, store Plaintext.
-                        val originalKey = keyName.removePrefix(encryptedPrefix)
-                        val encryptedString = value as? String
-                        if (encryptedString != null) {
-                            try {
-                                val ciphertext = decodeBase64(encryptedString)
-                                val keyId = listOfNotNull(KEY_PREFIX, fileName, originalKey).joinToString(".")
-                                val decryptedBytes = engine.decrypt(keyId, ciphertext)
-                                newCache[keyName] = decryptedBytes.decodeToString()
-                            } catch (_: Exception) { /* Ignore failures */ }
-                        }
-                    }
-                } else if (!keyName.startsWith("ksafe_")) {
-                    // UNENCRYPTED ENTRY
+            if (keyName.startsWith(encryptedPrefix)) {
+                // ENCRYPTED ENTRY
+                if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED) {
+                    // SECURITY MODE: Store raw Ciphertext in RAM.
                     newCache[keyName] = value
+                } else {
+                    // PERFORMANCE MODE: Decrypt now, store Plaintext.
+                    val originalKey = keyName.removePrefix(encryptedPrefix)
+                    val encryptedString = value as? String
+                    if (encryptedString != null) {
+                        try {
+                            val ciphertext = decodeBase64(encryptedString)
+                            val keyId = listOfNotNull(KEY_PREFIX, fileName, originalKey).joinToString(".")
+                            val decryptedBytes = engine.decrypt(keyId, ciphertext)
+                            newCache[keyName] = decryptedBytes.decodeToString()
+                        } catch (_: Exception) { /* Ignore failures */ }
+                    }
+                }
+            } else if (!keyName.startsWith("ksafe_")) {
+                // UNENCRYPTED ENTRY
+                newCache[keyName] = value
+            }
+        }
+
+        // CRITICAL: Use CAS loop for the final update to handle concurrent putDirect operations.
+        // This ensures we don't lose values that were added via updateMemoryCache during our processing.
+        while (true) {
+            val latestCache = memoryCache.value  // Keep the actual reference (could be null)
+            val latestCacheOrEmpty = latestCache ?: emptyMap()
+            val finalDirty = dirtyKeys.value
+            val finalCache = newCache.toMutableMap()
+
+            // Preserve ALL dirty keys from the latest cache
+            for (dirtyKey in finalDirty) {
+                if (!finalCache.containsKey(dirtyKey)) {
+                    latestCacheOrEmpty[dirtyKey]?.let { finalCache[dirtyKey] = it }
                 }
             }
-            for (dirtyKey in currentDirty) {
-                if (!newCache.containsKey(dirtyKey)) currentCache[dirtyKey]?.let { newCache[dirtyKey] = it }
-            }
-            memoryCache.value = newCache
+
+            // Try to atomically update. Compare against actual reference (latestCache, not latestCacheOrEmpty).
+            if (memoryCache.compareAndSet(latestCache, finalCache)) break
         }
     }
 

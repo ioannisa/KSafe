@@ -166,12 +166,12 @@ actual class KSafe(
     }
 
     /**
-     * Updates the atomic [memoryCache].
+     * Updates the atomic [memoryCache] based on the raw [Preferences] from DataStore.
      *
-     * **Note:** This function matches the logic of your "working code".
-     * It fetches the secret key on-demand using runBlocking inside the loop.
-     * While normally discouraged in flows, it is safe here because DataStore on JVM is file-based
-     * and this ensures we always have the latest key to decrypt the data.
+     * **Lock-Free Design:**
+     * This function is lock-free to prevent race conditions with [updateMemoryCache].
+     * The dirty keys mechanism ensures that optimistic writes from [putDirect] are not
+     * overwritten by stale data from DataStore during the write window.
      */
     @PublishedApi
     internal fun updateCache(prefs: Preferences) {
@@ -179,11 +179,12 @@ actual class KSafe(
         val newCache = mutableMapOf<String, Any>()
         val prefsMap = prefs.asMap()
         val encryptedPrefix = "encrypted_"
+        val currentDirty = dirtyKeys.toSet() // Snapshot of dirty keys
 
         for ((key, value) in prefsMap) {
             val keyName = key.name
-            // Dirty Check
-            if (dirtyKeys.contains(keyName)) {
+            // Dirty Check: preserve optimistic updates from putDirect
+            if (currentDirty.contains(keyName)) {
                 currentCache[keyName]?.let { newCache[keyName] = it }
                 continue
             }
@@ -208,10 +209,25 @@ actual class KSafe(
                 newCache[keyName] = value
             }
         }
-        for (dirtyKey in dirtyKeys) {
-            if (!newCache.containsKey(dirtyKey)) currentCache[dirtyKey]?.let { newCache[dirtyKey] = it }
+
+        // CRITICAL: Use CAS loop for the final update to handle concurrent putDirect operations.
+        // This ensures we don't lose values that were added via updateMemoryCache during our processing.
+        while (true) {
+            val latestCache = memoryCache.get()  // Keep the actual reference (could be null)
+            val latestCacheOrEmpty = latestCache ?: emptyMap()
+            val finalDirty = dirtyKeys.toSet()
+            val finalCache = newCache.toMutableMap()
+
+            // Preserve ALL dirty keys from the latest cache
+            for (dirtyKey in finalDirty) {
+                if (!finalCache.containsKey(dirtyKey)) {
+                    latestCacheOrEmpty[dirtyKey]?.let { finalCache[dirtyKey] = it }
+                }
+            }
+
+            // Try to atomically update. Compare against actual reference (latestCache, not latestCacheOrEmpty).
+            if (memoryCache.compareAndSet(latestCache, finalCache)) break
         }
-        memoryCache.set(newCache)
     }
 
     @PublishedApi internal inline fun <reified T> resolveFromCache(cache: Map<String, Any>, key: String, defaultValue: T, encrypted: Boolean): T {

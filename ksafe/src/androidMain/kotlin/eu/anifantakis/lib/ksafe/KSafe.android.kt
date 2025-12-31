@@ -224,16 +224,24 @@ actual class KSafe(
             }
         }
 
-        // Important: Preserve any dirty keys that haven't been persisted to disk yet.
-        // This catches keys that were added to dirtyKeys after our snapshot but before persist completed.
-        for (dirtyKey in currentDirty) {
-            if (!newCache.containsKey(dirtyKey)) {
-                currentCache[dirtyKey]?.let { newCache[dirtyKey] = it }
-            }
-        }
+        // CRITICAL: Use CAS loop for the final update to handle concurrent putDirect operations.
+        // This ensures we don't lose values that were added via updateMemoryCache during our processing.
+        while (true) {
+            val latestCache = memoryCache.get()  // Keep the actual reference (could be null)
+            val latestCacheOrEmpty = latestCache ?: emptyMap()
+            val finalDirty = dirtyKeys.get()
+            val finalCache = newCache.toMutableMap()
 
-        // Atomically replace the entire cache with the freshly computed map.
-        memoryCache.set(newCache)
+            // Preserve ALL dirty keys from the latest cache
+            for (dirtyKey in finalDirty) {
+                if (!finalCache.containsKey(dirtyKey)) {
+                    latestCacheOrEmpty[dirtyKey]?.let { finalCache[dirtyKey] = it }
+                }
+            }
+
+            // Try to atomically update. Compare against actual reference (latestCache, not latestCacheOrEmpty).
+            if (memoryCache.compareAndSet(latestCache, finalCache)) break
+        }
     }
 
     /**
