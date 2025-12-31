@@ -516,4 +516,46 @@ actual class KSafe(
         } catch (_: Exception) { }
         memoryCache.set(emptyMap())
     }
+
+    /**
+     * Verifies biometric authentication.
+     * On JVM, always returns true (no biometric hardware).
+     *
+     * @param reason The reason string (ignored on JVM)
+     * @param authorizationDuration Duration configuration (ignored on JVM)
+     */
+    actual suspend fun verifyBiometric(
+        reason: String,
+        authorizationDuration: BiometricAuthorizationDuration?
+    ): Boolean {
+        // No biometric hardware on JVM
+        return true
+    }
+
+    /**
+     * Verifies biometric authentication (non-blocking).
+     * On JVM, always returns true (no biometric hardware).
+     *
+     * @param reason The reason string (ignored on JVM)
+     * @param authorizationDuration Duration configuration (ignored on JVM)
+     * @param onResult Callback with true (always succeeds on JVM)
+     */
+    actual fun verifyBiometricDirect(
+        reason: String,
+        authorizationDuration: BiometricAuthorizationDuration?,
+        onResult: (Boolean) -> Unit
+    ) {
+        // No biometric hardware on JVM
+        onResult(true)
+    }
+
+    /**
+     * Clears cached biometric authorization.
+     * On JVM, this is a no-op (no biometric hardware).
+     *
+     * @param scope The scope to clear (ignored on JVM)
+     */
+    actual fun clearBiometricAuth(scope: String?) {
+        // No biometric hardware on JVM - nothing to clear
+    }
 }

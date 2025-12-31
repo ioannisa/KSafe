@@ -10,7 +10,7 @@ plugins {
 }
 
 group = "eu.anifantakis"
-version = "1.2.0"
+version = "1.3.0"
 
 kotlin {
     androidTarget {
@@ -42,6 +42,7 @@ kotlin {
         androidMain.dependencies {
             implementation(libs.androidx.datastore.preferences)
             implementation(libs.cryptography.provider.jdk)
+            implementation(libs.androidx.biometric)
         }
         @Suppress("unused")
         val commonMain by getting {

@@ -116,6 +116,7 @@ actual class KSafe(
         @PublishedApi
         internal const val KEY_PREFIX = "eu.anifantakis.ksafe"
         private const val INSTALLATION_ID_KEY = "ksafe_installation_id"
+        private const val BIOMETRIC_CLEANUP_KEY = "ksafe_biometric_cleanup_done"
 
         /**
          * Sentinel value used to represent null in storage.
@@ -157,6 +158,13 @@ actual class KSafe(
     private val dirtyKeys = AtomicReference<Set<String>>(emptySet())
     @PublishedApi internal val json = Json { ignoreUnknownKeys = true }
 
+    /**
+     * Map of scope -> timestamp for biometric authorization sessions.
+     * Each scope maintains its own authorization timestamp.
+     */
+    @PublishedApi
+    internal val biometricAuthSessions = AtomicReference<Map<String, Long>>(emptyMap())
+
     // Create DataStore using a file in the app's Documents directory.
     @OptIn(ExperimentalForeignApi::class)
     @PublishedApi internal val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.createWithPath(
@@ -185,11 +193,66 @@ actual class KSafe(
         registerAppleProvider()
         forceAesGcmRegistration()
 
+        // CRITICAL: Clear ALL keychain entries synchronously on startup.
+        // This ensures old biometric-protected entries are removed before any property access.
+        // Data encrypted with old keys will be lost, but this is necessary to prevent
+        // biometric prompts from old library versions.
+        clearAllKeychainEntriesSync()
+
         // HYBRID CACHE: Start Background Preload immediately.
         // If this finishes before the user calls getDirect, the cache will be ready instantly.
         if (!lazyLoad) {
             startBackgroundCollector()
         }
+    }
+
+    /**
+     * Synchronously clears ALL keychain entries for this KSafe instance (ONE TIME ONLY).
+     * This prevents old biometric-protected entries from triggering unwanted prompts.
+     * Uses NSUserDefaults to track if cleanup has been performed.
+     */
+    @OptIn(ExperimentalForeignApi::class)
+    private fun clearAllKeychainEntriesSync() {
+        val userDefaults = platform.Foundation.NSUserDefaults.standardUserDefaults
+        val cleanupKey = fileName?.let { "${BIOMETRIC_CLEANUP_KEY}_$it" } ?: BIOMETRIC_CLEANUP_KEY
+
+        // Check if cleanup has already been done
+        if (userDefaults.boolForKey(cleanupKey)) {
+            return
+        }
+
+        // Use mock keychain in simulator
+        if (MockKeychain.isSimulator()) {
+            val basePrefix = listOfNotNull(KEY_PREFIX, fileName).joinToString(".")
+            val prefixWithDelimiter = "$basePrefix."
+            MockKeychain.getAllKeys().filter { it.startsWith(prefixWithDelimiter) }.forEach {
+                MockKeychain.delete(it)
+            }
+            // Mark cleanup as done
+            userDefaults.setBool(true, forKey = cleanupKey)
+            userDefaults.synchronize()
+            return
+        }
+
+        // Delete all keychain entries for our service
+        memScoped {
+            val query = CFDictionaryCreateMutable(
+                kCFAllocatorDefault,
+                0,
+                null,
+                null
+            ).apply {
+                CFDictionarySetValue(this, kSecClass, kSecClassGenericPassword)
+                CFDictionarySetValue(this, kSecAttrService, CFBridgingRetain(SERVICE_NAME))
+            }
+
+            SecItemDelete(query)
+            CFRelease(query as CFTypeRef?)
+        }
+
+        // Mark cleanup as done
+        userDefaults.setBool(true, forKey = cleanupKey)
+        userDefaults.synchronize()
     }
 
     private fun startBackgroundCollector() {
@@ -838,7 +901,15 @@ actual class KSafe(
         updateMemoryCache(rawKey, toCache)
 
         CoroutineScope(Dispatchers.Default + SupervisorJob()).launch {
-            try { put(key, value, encrypted) } finally { removeDirtyKey(rawKey) }
+            try {
+                put(key, value, encrypted)
+            } catch (e: Exception) {
+                // Handle biometric authentication failures gracefully
+                // The value is already in memory cache, but won't be persisted
+                println("KSafe: Failed to persist value for key '$key': ${e.message}")
+            } finally {
+                removeDirtyKey(rawKey)
+            }
         }
     }
 
@@ -913,6 +984,162 @@ actual class KSafe(
             MockKeychain.clear()
         }
         memoryCache.value = emptyMap()
+    }
+
+    /**
+     * Gets the current time in milliseconds.
+     * CFAbsoluteTimeGetCurrent returns seconds since Jan 1, 2001.
+     * We add the difference to Unix epoch (978307200 seconds).
+     */
+    @OptIn(ExperimentalForeignApi::class)
+    private fun currentTimeMillis(): Long {
+        val cfTime = platform.CoreFoundation.CFAbsoluteTimeGetCurrent()
+        // CFAbsoluteTime epoch is Jan 1, 2001. Unix epoch is Jan 1, 1970.
+        // Difference is 978307200 seconds
+        return ((cfTime + 978307200.0) * 1000).toLong()
+    }
+
+    /**
+     * Atomically updates the biometric auth session for a scope.
+     */
+    private fun updateBiometricSession(scope: String, timestamp: Long) {
+        while (true) {
+            val current = biometricAuthSessions.value
+            val updated = current + (scope to timestamp)
+            if (biometricAuthSessions.compareAndSet(current, updated)) break
+        }
+    }
+
+    /**
+     * Verifies biometric authentication using iOS LocalAuthentication framework.
+     *
+     * @param reason The reason string to display
+     * @param authorizationDuration Optional duration configuration for caching successful authentication.
+     */
+    actual suspend fun verifyBiometric(
+        reason: String,
+        authorizationDuration: BiometricAuthorizationDuration?
+    ): Boolean {
+        // Check if we're still within the authorized duration for this scope
+        if (authorizationDuration != null && authorizationDuration.duration > 0) {
+            val scope = authorizationDuration.scope ?: ""
+            val sessions = biometricAuthSessions.value
+            val lastAuth = sessions[scope] ?: 0L
+            val now = currentTimeMillis()
+            if (lastAuth > 0 && (now - lastAuth) < authorizationDuration.duration) {
+                return true // Still authorized for this scope, skip biometric prompt
+            }
+        }
+
+        // In simulator, always return true (no biometric hardware)
+        if (MockKeychain.isSimulator()) {
+            if (authorizationDuration != null) {
+                val scope = authorizationDuration.scope ?: ""
+                updateBiometricSession(scope, currentTimeMillis())
+            }
+            return true
+        }
+
+        return kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+            verifyBiometricDirectInternal(reason) { success ->
+                if (success && authorizationDuration != null) {
+                    val scope = authorizationDuration.scope ?: ""
+                    updateBiometricSession(scope, currentTimeMillis())
+                }
+                continuation.resumeWith(Result.success(success))
+            }
+        }
+    }
+
+    /**
+     * Verifies biometric authentication using iOS LocalAuthentication framework (non-blocking).
+     *
+     * @param reason The reason string to display
+     * @param authorizationDuration Optional duration configuration for caching successful authentication.
+     * @param onResult Callback with true if authentication succeeded, false otherwise
+     */
+    actual fun verifyBiometricDirect(
+        reason: String,
+        authorizationDuration: BiometricAuthorizationDuration?,
+        onResult: (Boolean) -> Unit
+    ) {
+        // Dispatch to Main thread for consistency with Android implementation
+        CoroutineScope(Dispatchers.Main).launch {
+            // Check if we're still within the authorized duration for this scope
+            if (authorizationDuration != null && authorizationDuration.duration > 0) {
+                val scope = authorizationDuration.scope ?: ""
+                val sessions = biometricAuthSessions.value
+                val lastAuth = sessions[scope] ?: 0L
+                val now = currentTimeMillis()
+                if (lastAuth > 0 && (now - lastAuth) < authorizationDuration.duration) {
+                    onResult(true) // Still authorized for this scope, skip biometric prompt
+                    return@launch
+                }
+            }
+
+            // In simulator, always return true (no biometric hardware)
+            if (MockKeychain.isSimulator()) {
+                if (authorizationDuration != null) {
+                    val scope = authorizationDuration.scope ?: ""
+                    updateBiometricSession(scope, currentTimeMillis())
+                }
+                onResult(true)
+                return@launch
+            }
+
+            // Perform actual biometric authentication
+            // Note: verifyBiometricDirectInternal handles its own main thread dispatch for the callback,
+            // but since we are already in a Main scope launch, it's fine.
+            // However, verifyBiometricDirectInternal is private and takes a callback.
+            // To keep things clean, let's inline the logic or delegate cleanly.
+            
+            val context = platform.LocalAuthentication.LAContext()
+            val policy = platform.LocalAuthentication.LAPolicyDeviceOwnerAuthenticationWithBiometrics
+
+            context.evaluatePolicy(policy, localizedReason = reason) { success, _ ->
+                // Callback from LAContext is on a background thread, so we must dispatch back to Main
+                CoroutineScope(Dispatchers.Main).launch {
+                    if (success && authorizationDuration != null) {
+                        val scope = authorizationDuration.scope ?: ""
+                        updateBiometricSession(scope, currentTimeMillis())
+                    }
+                    onResult(success)
+                }
+            }
+        }
+    }
+
+    /**
+     * Clears cached biometric authorization for a specific scope or all scopes.
+     *
+     * @param scope The scope to clear. If null, clears ALL cached authorizations.
+     */
+    actual fun clearBiometricAuth(scope: String?) {
+        if (scope == null) {
+            // Clear all sessions
+            biometricAuthSessions.value = emptyMap()
+        } else {
+            // Clear specific scope
+            while (true) {
+                val current = biometricAuthSessions.value
+                val updated = current - scope
+                if (biometricAuthSessions.compareAndSet(current, updated)) break
+            }
+        }
+    }
+
+    /**
+     * Internal biometric verification without duration caching.
+     */
+    private fun verifyBiometricDirectInternal(reason: String, onResult: (Boolean) -> Unit) {
+        val context = platform.LocalAuthentication.LAContext()
+        val policy = platform.LocalAuthentication.LAPolicyDeviceOwnerAuthenticationWithBiometrics
+
+        context.evaluatePolicy(policy, localizedReason = reason) { success, _ ->
+            CoroutineScope(Dispatchers.Main).launch {
+                onResult(success)
+            }
+        }
     }
 }
 

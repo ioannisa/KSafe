@@ -75,11 +75,11 @@ Add the KSafe dependency to your `build.gradle.kts` (or `build.gradle`) file.
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:1.2.0")
-implementation("eu.anifantakis:ksafe-compose:1.2.0") // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe:1.3.0")
+implementation("eu.anifantakis:ksafe-compose:1.3.0") // ← Compose state (optional)
 ```
 
-> Skip `ksafe-compose` if your project doesn't use Jetpack Compose, or if you don't intend to use the library's `mutableStateOf` persistance option
+> Skip `ksafe-compose` if your project doesn't use Jetpack Compose, or if you don't intend to use the library's `mutableStateOf` persistence option
 
 #### 2 - Apply the kotlinx‑serialization plugin
 
@@ -138,11 +138,11 @@ And now you're ready to inject KSafe to your ViewModels :)
 `var counter by ksafe(0)`
 
 params:
-* `defaultValue` must be declared (type is infered by it)
+* `defaultValue` must be declared (type is inferred from it)
 * `key` if not set the variable name is used as a key
 * `encrypted` by default is set to true (uses Keystore/Keychain)
 
-The above wat is easiest to utilize the library with property delegation, that provides out of the box, intuitive way to encrypted persisted values.  All you need is `by ksafe(x)`
+The above way is the easiest to utilize the library with property delegation, that provides out of the box, intuitive way to encrypted persisted values.  All you need is `by ksafe(x)`
 
 ```Kotlin
 import eu.anifantakis.lib.ksafe.KSafe
@@ -160,16 +160,22 @@ class MyViewModel(ksafe: KSafe): ViewModel() {
 > **Important:** The property delegate can ONLY use the default KSafe instance. If you need to use multiple KSafe instances with different file names, you must use the suspend or direct APIs (see below).
 
 ##### Composable State (One Liner)
-`var counter by ksafe.mutableStateOf(0))`
+`var counter by ksafe.mutableStateOf(0)`
 
 Recomposition‑proof and survives process death with zero boilerplate.
 
 That is a composable state, but to make use of it you need to have imported the second dependency in our installation guide that includes compose.
 
+params:
+* `defaultValue` must be declared (type is inferred from it)
+* `key` if not set the variable name is used as a key
+* `encrypted` by default is set to true (uses Keystore/Keychain)
+
 ```Kotlin
 import eu.anifantakis.lib.ksafe.KSafe
 
 class MyViewModel(ksafe: KSafe): ViewModel() {
+  // Regular persisted state
   var counter by ksafe.mutableStateOf(0)
     private set
 
@@ -240,13 +246,6 @@ val cached: User = ksafe.get("profile", User())
 ```Kotlin
 ksafe.putDirect("counter", 42)
 val n = ksafe.getDirect("counter", 0)
-```
-
-#### Jetpack Compose ♥ KSafe (optional module)
-as already mentioned above, Recomposition‑proof and survives process death with zero boilerplate.
-```Kotlin
-var clicks by ksafe.mutableStateOf(0)  // encrypted backing storage
-actionButton { clicks++ }
 ```
 
 #### Jetpack Compose ♥ KSafe (optional module)
@@ -352,7 +351,7 @@ class CounterViewModel(ksafe: KSafe) : ViewModel() {
 
 ## Architecture: Hybrid "Hot Cache" 🚀
 
-KSafe 1.2.0 introduces a completely rewritten core architecture focusing on zero-latency UI performance.
+KSafe 1.2.0 introduced a completely rewritten core architecture focusing on zero-latency UI performance.
 
 ### How It Works
 
@@ -409,16 +408,365 @@ KSafe(
     context: Context,
     fileName: String? = null,          // Optional namespace
     lazyLoad: Boolean = false,         // Eager (false) or lazy (true) loading
-    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED
+    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+    config: KSafeConfig = KSafeConfig()  // Encryption configuration
 )
 
 // iOS / JVM
 KSafe(
     fileName: String? = null,
     lazyLoad: Boolean = false,
-    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED
+    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+    config: KSafeConfig = KSafeConfig()  // Encryption configuration
 )
 ```
+
+### Encryption Configuration
+
+`KSafeConfig` allows you to customize encryption parameters while maintaining security:
+
+```Kotlin
+val ksafe = KSafe(
+    context = context,  // Android only
+    config = KSafeConfig(
+        keySize = 256  // AES key size: 128 or 256 bits
+    )
+)
+```
+
+| Parameter | Values | Default | Description |
+|-----------|--------|---------|-------------|
+| `keySize` | 128, 256 | 256 | AES key size in bits. 256-bit recommended for all modern devices. |
+
+**Note:** The encryption algorithm (AES-GCM) and block mode are intentionally NOT configurable to prevent insecure configurations. Only safe parameters are exposed.
+
+### Biometric Authentication Helper
+
+KSafe provides a **standalone biometric authentication helper** that works on both Android and iOS. This is a general-purpose utility that can be used to protect **any action** in your app—not just KSafe persistence operations.
+
+#### Why Standalone Biometrics?
+
+Biometric authentication is **decoupled from storage** because:
+- You might want to verify identity before performing any sensitive action (API calls, showing data, etc.)
+- You have full control over when and where biometric prompts appear
+- The same biometric helper can protect KSafe operations or any other code
+
+#### Two APIs
+
+| Method | Type | Use Case |
+|--------|------|----------|
+| `verifyBiometricDirect(reason, authorizationDuration?) { success -> }` | Callback-based | Simple, non-blocking, works anywhere |
+| `verifyBiometric(reason, authorizationDuration?): Boolean` | Suspend function | Coroutine-based, cleaner async code |
+
+#### Authorization Duration Caching
+
+You can optionally cache successful authentication for a duration, avoiding repeated biometric prompts:
+
+```kotlin
+// Data class for configuring duration caching
+data class BiometricAuthorizationDuration(
+    val duration: Long,       // Duration in milliseconds
+    val scope: String? = null // Optional scope identifier (null = global)
+)
+```
+
+| Parameter | Meaning |
+|-----------|---------|
+| `authorizationDuration = null` | Always prompt (no caching) |
+| `duration > 0` | Cache auth for this many milliseconds |
+| `scope = null` | Global scope - any call benefits from cached auth |
+| `scope = "xyz"` | Scoped auth - only calls with same scope benefit |
+
+#### Basic Usage
+
+```kotlin
+class MyViewModel(private val ksafe: KSafe) : ViewModel() {
+
+    var secureCounter by ksafe.mutableStateOf(0)
+        private set
+
+    // Always prompt (no caching)
+    fun incrementWithBiometric() {
+        ksafe.verifyBiometricDirect("Authenticate to increment") { success ->
+            if (success) {
+                secureCounter++
+            }
+        }
+    }
+
+    // Cache for 60 seconds (global scope)
+    fun incrementWithCachedBiometric() {
+        ksafe.verifyBiometricDirect(
+            reason = "Authenticate to increment",
+            authorizationDuration = BiometricAuthorizationDuration(60_000L)
+        ) { success ->
+            if (success) {
+                secureCounter++
+            }
+        }
+    }
+
+    // Cache for 60 seconds (scoped to this screen)
+    private val screenScope = "counter-screen-${hashCode()}"
+
+    fun incrementWithScopedBiometric() {
+        ksafe.verifyBiometricDirect(
+            reason = "Authenticate to increment",
+            authorizationDuration = BiometricAuthorizationDuration(60_000L, screenScope)
+        ) { success ->
+            if (success) {
+                secureCounter++
+            }
+        }
+    }
+
+    // Coroutine-based approach
+    fun incrementWithBiometricSuspend() {
+        viewModelScope.launch {
+            if (ksafe.verifyBiometric("Authenticate to increment")) {
+                secureCounter++
+            }
+        }
+    }
+}
+```
+
+#### Scoped Authorization Use Cases
+
+The `scope` parameter lets you control when cached auth is invalidated:
+
+```kotlin
+// ViewModel-scoped: auth invalidates when ViewModel is recreated (recommended)
+BiometricAuthorizationDuration(60_000L, viewModelScope.hashCode().toString())
+
+// Screen-scoped: same as above, using ViewModel's hashCode
+BiometricAuthorizationDuration(60_000L, this.hashCode().toString())
+
+// User-scoped: auth invalidates on user change
+BiometricAuthorizationDuration(300_000L, "user_$userId")
+
+// Flow-scoped: auth shared across a multi-step flow
+BiometricAuthorizationDuration(120_000L, "checkout_flow")
+
+// Always fresh: random scope = always prompt
+BiometricAuthorizationDuration(60_000L, UUID.randomUUID().toString())
+```
+
+#### Clearing Cached Authorization
+
+Use `clearBiometricAuth()` to force re-authentication (e.g., on logout):
+
+```kotlin
+// Clear all cached authorizations
+ksafe.clearBiometricAuth()
+
+// Clear specific scope only
+ksafe.clearBiometricAuth("settings-screen")
+```
+
+#### Protecting Any Action
+
+Since biometrics is a standalone helper, you can protect **any sensitive operation**:
+
+```kotlin
+// Protect API calls
+fun deleteAccount() {
+    ksafe.verifyBiometricDirect("Confirm account deletion") { success ->
+        if (success) {
+            api.deleteAccount()
+        }
+    }
+}
+
+// Protect navigation
+fun navigateToSecrets() {
+    ksafe.verifyBiometricDirect("Authenticate to view secrets") { success ->
+        if (success) {
+            navController.navigate("secrets")
+        }
+    }
+}
+
+// Protect data display with 5-minute cache
+fun showSensitiveData() {
+    viewModelScope.launch {
+        val authDuration = BiometricAuthorizationDuration(300_000L, "sensitive-data")
+        if (ksafe.verifyBiometric("Authenticate to view data", authDuration)) {
+            _uiState.value = _uiState.value.copy(showSensitiveData = true)
+        }
+    }
+}
+```
+
+### Platform Setup
+
+#### Android
+
+**Permission** - Add to `AndroidManifest.xml`:
+```xml
+<uses-permission android:name="android.permission.USE_BIOMETRIC" />
+```
+
+**Activity Requirement** - BiometricPrompt requires `FragmentActivity` or `AppCompatActivity`:
+```kotlin
+// ❌ Won't work with biometrics
+class MainActivity : ComponentActivity()
+
+// ✅ Works with biometrics
+class MainActivity : AppCompatActivity()
+```
+
+**Theme** - Ensure you're using an AppCompat theme in `themes.xml`:
+```xml
+<style name="Theme.YourApp" parent="Theme.Material3.DayNight.NoActionBar">
+    <!-- or Theme.AppCompat.DayNight.NoActionBar -->
+</style>
+```
+
+**Important:** KSafe must be initialized **before** any Activity is created. If using Koin, initialize it in a custom `Application` class:
+
+```kotlin
+class MyApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        startKoin {
+            androidContext(this@MyApplication)
+            modules(appModule)
+        }
+        // Force KSafe initialization to register lifecycle callbacks
+        get<KSafe>()
+    }
+}
+```
+
+**Customizing the Prompt:**
+```kotlin
+BiometricHelper.promptTitle = "Unlock Secure Data"
+BiometricHelper.promptSubtitle = "Authenticate to continue"
+```
+
+#### iOS
+
+**Info.plist** - Add Face ID usage description:
+```xml
+<key>NSFaceIDUsageDescription</key>
+<string>Authenticate to access secure data</string>
+```
+
+**Note:** On iOS Simulator, biometric verification always returns `true` since there's no biometric hardware.
+
+### Complete Example
+
+```kotlin
+class SecureViewModel(private val ksafe: KSafe) : ViewModel() {
+
+    // Regular persisted counter (no biometric)
+    var counter by ksafe.mutableStateOf(0)
+        private set
+
+    // Counter that requires biometric to increment
+    var bioCounter by ksafe.mutableStateOf(0)
+        private set
+
+    fun incrementCounter() {
+        counter++  // No biometric prompt
+    }
+
+    // Always prompt
+    fun incrementBioCounter() {
+        ksafe.verifyBiometricDirect("Authenticate to save") { success ->
+            if (success) {
+                bioCounter++
+            }
+        }
+    }
+
+    // With 60s duration caching (scoped to this ViewModel instance)
+    fun incrementBioCounterCached() {
+        ksafe.verifyBiometricDirect(
+            reason = "Authenticate to save",
+            authorizationDuration = BiometricAuthorizationDuration(
+                duration = 60_000L,
+                scope = viewModelScope.hashCode().toString()
+            )
+        ) { success ->
+            if (success) {
+                bioCounter++
+            }
+        }
+    }
+
+    // Suspend function with caching
+    fun incrementBioCounterAsync() {
+        viewModelScope.launch {
+            val authDuration = BiometricAuthorizationDuration(
+                duration = 60_000L,
+                scope = viewModelScope.hashCode().toString()
+            )
+            if (ksafe.verifyBiometric("Authenticate to save", authDuration)) {
+                bioCounter++
+            }
+        }
+    }
+
+    // Call on logout to force re-authentication
+    fun onLogout() {
+        ksafe.clearBiometricAuth()  // Clear all cached auth
+    }
+}
+```
+
+**Key Points:**
+- ✅ Biometrics is a **helper utility**, not tied to storage
+- ✅ Use it to protect **any action** (persistence, API calls, navigation, etc.)
+- ✅ Two APIs: callback-based (`verifyBiometricDirect`) and suspend (`verifyBiometric`)
+- ✅ Optional duration caching with `BiometricAuthorizationDuration`
+- ✅ Scoped authorization for fine-grained control over cache invalidation
+- ✅ Works on Android (BiometricPrompt) and iOS (LocalAuthentication)
+- ⚠️ On Android, requires `AppCompatActivity` and early KSafe initialization
+
+### Encryption Architecture
+
+KSafe uses a layered encryption architecture that separates configuration from implementation:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        KSafe API                            │
+│         (get, put, getDirect, putDirect, delete)            │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      KSafeConfig                            │
+│                        (keySize)                            │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│               KSafeEncryption Interface                     │
+│            encrypt() / decrypt() / deleteKey()              │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+          ┌───────────────┼───────────────┐
+          ▼               ▼               ▼
+┌─────────────────┐ ┌───────────────┐ ┌─────────────────┐
+│    Android      │ │     iOS       │ │      JVM        │
+│    Keystore     │ │   Keychain    │ │   Software      │
+│   Encryption    │ │  Encryption   │ │   Encryption    │
+└─────────────────┘ └───────────────┘ └─────────────────┘
+```
+
+| Layer | Purpose |
+|-------|---------|
+| **KSafe API** | Public interface for encrypted persistence |
+| **KSafeConfig** | User-configurable encryption parameters (key size) |
+| **KSafeEncryption** | Internal interface abstracting platform differences |
+| **Platform Engines** | Hardware-backed (Android/iOS) or software-backed (JVM) encryption |
+
+This architecture ensures:
+- **Security by default:** AES-GCM algorithm is fixed, only safe parameters are configurable
+- **Testability:** Unit tests can use a fake encryption engine without emulators
+- **Extensibility:** Future support for custom encryption providers (e.g., FIPS-compliant libraries)
 
 ***
 
@@ -579,16 +927,56 @@ The iOS test app demonstrates:
 
 ***
 
-## Migration from v1.1.x
+## Migration Guide
 
-### Binary Compatibility
+### From v1.2.x to v1.3.0
+
+#### Biometric API Changes
+The `useBiometrics` parameter has been **removed** from all storage APIs. Biometric authentication is now a standalone helper.
+
+**Before (1.2.x):**
+```kotlin
+// Biometrics tied to storage
+ksafe.put("key", value, useBiometrics = true)
+val data = ksafe.get("key", default, useBiometrics = true)
+```
+
+**After (1.3.0):**
+```kotlin
+// Biometrics as a separate verification step
+ksafe.verifyBiometricDirect("Authenticate to save") { success ->
+    if (success) {
+        ksafe.putDirect("key", value)
+    }
+}
+
+// Or with suspend function
+if (ksafe.verifyBiometric("Authenticate to read")) {
+    val data = ksafe.get("key", default)
+}
+
+// With duration caching (60 seconds, scoped to ViewModel)
+ksafe.verifyBiometricDirect(
+    reason = "Authenticate",
+    authorizationDuration = BiometricAuthorizationDuration(
+        duration = 60_000L,
+        scope = viewModelScope.hashCode().toString()
+    )
+) { success ->
+    if (success) { /* ... */ }
+}
+```
+
+### From v1.1.x to v1.2.0+
+
+#### Binary Compatibility
 The public API surface (`get`, `put`, `getDirect`, `putDirect`) remains backward compatible.
 
-### Behavior Changes
+#### Behavior Changes
 - **Initialization is now eager by default.** If you relied on KSafe doing absolutely nothing until the first call, pass `lazyLoad = true`.
 - **Nullable values now work correctly.** No code changes needed, but you can now safely store `null` values.
 
-### Compose Module Import Fix
+#### Compose Module Import Fix
 If upgrading from early 1.2.0 alphas, update your imports:
 ```kotlin
 // Old (broken in alpha versions)

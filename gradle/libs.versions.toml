@@ -17,6 +17,7 @@ runtime = "1.9.3"
 cryptography = "0.5.0"
 turbine = "1.2.1"
 robolectric = "4.16"
+biometric = "1.1.0"
 
 [libraries]
 androidx-orchestrator = { module = "androidx.test:orchestrator", version.ref = "orchestrator" }
@@ -42,6 +43,9 @@ cryptography-provider-cryptokit = { module = "dev.whyoleg.cryptography:cryptogra
 # DataStore Preferences
 androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastorePreferences" }
 androidx-datastore-preferences-core = { module = "androidx.datastore:datastore-preferences-core", version.ref = "datastorePreferences" }
+
+# Biometric
+androidx-biometric = { module = "androidx.biometric:biometric", version.ref = "biometric" }
 
 
 # Compose

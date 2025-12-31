@@ -1,6 +1,5 @@
 package eu.anifantakis.lib.ksafe
 
-import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import java.security.KeyStore
@@ -17,7 +16,7 @@ import javax.crypto.spec.GCMParameterSpec
  * - Bound to the application
  * - Automatically deleted on app uninstall
  *
- * @property config Configuration for key generation (key size, user authentication requirements)
+ * @property config Configuration for key generation (key size)
  */
 @PublishedApi
 internal class AndroidKeystoreEncryption(
@@ -75,7 +74,6 @@ internal class AndroidKeystoreEncryption(
      * - Block Mode: GCM (hardcoded for security)
      * - Padding: None (hardcoded for security)
      * - Key Size: Configurable via [KSafeConfig.keySize]
-     * - User Authentication: Configurable via [KSafeConfig.userAuthenticationRequired]
      */
     private fun getOrCreateSecretKey(keyAlias: String): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
@@ -98,24 +96,6 @@ internal class AndroidKeystoreEncryption(
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setKeySize(config.keySize)
-
-        // Apply user authentication requirements if configured
-        if (config.userAuthenticationRequired) {
-            builder.setUserAuthenticationRequired(true)
-            if (config.userAuthenticationValiditySeconds > 0) {
-                @Suppress("DEPRECATION")
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    builder.setUserAuthenticationParameters(
-                        config.userAuthenticationValiditySeconds,
-                        KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL
-                    )
-                } else {
-                    builder.setUserAuthenticationValidityDurationSeconds(
-                        config.userAuthenticationValiditySeconds
-                    )
-                }
-            }
-        }
 
         keyGenerator.init(builder.build())
         return keyGenerator.generateKey()

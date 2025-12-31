@@ -20,6 +20,16 @@ import kotlin.reflect.KProperty
  * var counter: Int by ksafe(defaultValue = 0, key = "custom_key", encrypted = false)
  * ```
  *
+ * **For biometric protection**, use [KSafe.verifyBiometric] or [KSafe.verifyBiometricDirect]
+ * before modifying the value:
+ * ```kotlin
+ * ksafe.verifyBiometricDirect("Authenticate") { success ->
+ *     if (success) {
+ *         counter++
+ *     }
+ * }
+ * ```
+ *
  * @param T The type of the property.
  * @param defaultValue The default value to return if the key is not found.
  * @param key Optional explicit key. If null, the property name is used.
@@ -43,7 +53,7 @@ inline operator fun <reified T> KSafe.invoke(
         override fun setValue(thisRef: Any?, property: KProperty<*>, value: T) {
             // Similarly, T is reified here. We explicitly pass it to putDirect.
             // Updates memory cache instantly and writes to disk in background (Async)
-            ksafeInstance.putDirect<T>(key = key ?:property.name, value, encrypted)
+            ksafeInstance.putDirect<T>(key = key ?: property.name, value, encrypted)
         }
     }
 }

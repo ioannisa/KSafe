@@ -18,6 +18,10 @@ import kotlinx.coroutines.flow.Flow
  * - Writes (`putDirect`) are optimistic, updating the memory cache immediately while persisting to disk asynchronously.
  *
  * **The default behavior is to encrypt all data.**
+ *
+ * **Biometric Authentication:**
+ * For biometric verification, use [verifyBiometric] or [verifyBiometricDirect] independently
+ * from storage operations. This gives you full control over when biometrics are required.
  */
 @Suppress("unused")
 expect class KSafe {
@@ -134,7 +138,131 @@ expect class KSafe {
      * This operation is destructive and cannot be undone.
      */
     suspend fun clearAll()
+
+    // --- BIOMETRIC API ---
+
+    /**
+     * Verifies biometric authentication without accessing storage.
+     *
+     * Use this when you want to require biometric verification before performing
+     * an action. This is completely independent from storage operations.
+     *
+     * ## Example
+     * ```kotlin
+     * // Always prompt (no caching)
+     * val success = ksafe.verifyBiometric("Authenticate to delete account")
+     *
+     * // With 60s duration caching (global scope)
+     * val success = ksafe.verifyBiometric(
+     *     reason = "Authenticate",
+     *     authorizationDuration = BiometricAuthorizationDuration(60_000L)
+     * )
+     *
+     * // With 60s duration caching (scoped to settings screen)
+     * val success = ksafe.verifyBiometric(
+     *     reason = "Authenticate",
+     *     authorizationDuration = BiometricAuthorizationDuration(60_000L, "settings-screen")
+     * )
+     * ```
+     *
+     * **Platform behavior:**
+     * - **iOS:** Triggers Face ID / Touch ID prompt using LocalAuthentication framework.
+     * - **Android:** Triggers BiometricPrompt (requires Activity context setup).
+     * - **JVM:** Always returns `true` (no biometric hardware).
+     *
+     * @param reason The reason shown to the user for the biometric prompt.
+     * @param authorizationDuration Optional duration configuration for caching successful authentication.
+     *        If null (default), authentication is required every time.
+     * @return `true` if biometric authentication succeeded, `false` if it failed or was cancelled.
+     */
+    suspend fun verifyBiometric(
+        reason: String = "Authenticate to continue",
+        authorizationDuration: BiometricAuthorizationDuration? = null
+    ): Boolean
+
+    /**
+     * Verifies biometric authentication without accessing storage (non-blocking version).
+     *
+     * ## Example
+     * ```kotlin
+     * // Always prompt (no caching)
+     * ksafe.verifyBiometricDirect("Authenticate") { success -> }
+     *
+     * // With 60s duration caching (global scope)
+     * ksafe.verifyBiometricDirect(
+     *     reason = "Authenticate to save",
+     *     authorizationDuration = BiometricAuthorizationDuration(60_000L)
+     * ) { success ->
+     *     if (success) {
+     *         ksafe.putDirect("key", value)
+     *     }
+     * }
+     *
+     * // With 60s duration caching (scoped to settings screen)
+     * ksafe.verifyBiometricDirect(
+     *     reason = "Authenticate to save",
+     *     authorizationDuration = BiometricAuthorizationDuration(60_000L, "settings-screen")
+     * ) { success -> }
+     * ```
+     *
+     * @param reason The reason shown to the user for the biometric prompt.
+     * @param authorizationDuration Optional duration configuration for caching successful authentication.
+     *        If null (default), authentication is required every time.
+     * @param onResult Callback with `true` if authentication succeeded, `false` otherwise.
+     */
+    fun verifyBiometricDirect(
+        reason: String = "Authenticate to continue",
+        authorizationDuration: BiometricAuthorizationDuration? = null,
+        onResult: (Boolean) -> Unit
+    )
+
+    /**
+     * Clears cached biometric authorization for a specific scope or all scopes.
+     *
+     * Use this to force re-authentication, for example on user logout.
+     *
+     * @param scope The scope to clear. If null, clears ALL cached authorizations.
+     */
+    fun clearBiometricAuth(scope: String? = null)
 }
+
+/**
+ * Configuration for biometric authorization duration caching.
+ *
+ * When provided to [KSafe.verifyBiometric] or [KSafe.verifyBiometricDirect],
+ * successful authentication is cached for the specified duration. Subsequent
+ * calls within this duration (and same scope) will return `true` without
+ * showing a biometric prompt.
+ *
+ * ## Examples
+ * ```kotlin
+ * // Cache for 60 seconds (global scope - any call benefits)
+ * BiometricAuthorizationDuration(60_000L)
+ *
+ * // Cache for 60 seconds (scoped to "settings" - only settings calls benefit)
+ * BiometricAuthorizationDuration(60_000L, "settings")
+ *
+ * // Cache for 5 minutes (scoped to user - invalidates on user change)
+ * BiometricAuthorizationDuration(300_000L, "user_$userId")
+ *
+ * // Cache for 60 seconds (screen instance scope - invalidates on navigation)
+ * BiometricAuthorizationDuration(60_000L, "screen_${viewModel.hashCode()}")
+ * ```
+ *
+ * @property duration Duration in milliseconds for which the authentication remains valid.
+ *           Must be greater than 0.
+ * @property scope Optional scope identifier for the authorization session. Different scopes
+ *           maintain separate authorization timestamps. Use this to invalidate cached auth
+ *           when context changes:
+ *           - `null` (default): Global scope, shared across all calls
+ *           - Screen ID: Auth valid only while on that screen
+ *           - User ID: Auth invalidated on user change
+ *           - Random UUID: Forces fresh auth every time (when scope changes)
+ */
+data class BiometricAuthorizationDuration(
+    val duration: Long,
+    val scope: String? = null
+)
 
 
 /**

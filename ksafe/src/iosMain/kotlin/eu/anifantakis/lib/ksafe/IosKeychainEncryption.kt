@@ -45,15 +45,14 @@ import kotlin.random.Random
  * iOS implementation of [KSafeEncryption] using iOS Keychain Services and CryptoKit.
  *
  * This provides secure encryption with:
- * - Keys stored in the iOS Keychain (protected by device passcode/biometrics)
+ * - Keys stored in the iOS Keychain (protected by device passcode)
  * - Keys not included in iCloud/iTunes backups
  * - Access control: `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`
  *
  * On iOS Simulator, a mock keychain (NSUserDefaults-based) is used since
  * Keychain Services are not available in the simulator environment.
  *
- * @property config Configuration for encryption (key size). Note: userAuthentication
- *                  settings are ignored on iOS as they require UIKit integration.
+ * @property config Configuration for encryption (key size)
  * @property serviceName The Keychain service name for key storage
  * @property keyPrefix Prefix for key identifiers
  */
@@ -149,9 +148,19 @@ internal class IosKeychainEncryption(
             val status = SecItemCopyMatching(query, resultRef.ptr)
             CFRelease(query as CFTypeRef?)
 
-            if (status == errSecSuccess) {
-                val data = CFBridgingRelease(resultRef.value) as NSData
-                return data.toByteArray()
+            when (status) {
+                errSecSuccess -> {
+                    val data = CFBridgingRelease(resultRef.value) as NSData
+                    return data.toByteArray()
+                }
+                // Item not found - will create new key below
+                platform.Security.errSecItemNotFound -> {
+                    // Continue to key generation
+                }
+                // Other errors - log and continue to key generation
+                else -> {
+                    println("KSafe: Keychain query returned status $status, creating new key")
+                }
             }
         }
 
@@ -190,7 +199,26 @@ internal class IosKeychainEncryption(
                 )
             }
 
-            SecItemAdd(addQuery, null)
+            // First delete any existing item with the same key
+            val deleteQuery = CFDictionaryCreateMutable(
+                kCFAllocatorDefault,
+                0,
+                null,
+                null
+            ).apply {
+                CFDictionarySetValue(this, kSecClass, kSecClassGenericPassword)
+                CFDictionarySetValue(this, kSecAttrService, CFBridgingRetain(serviceName))
+                CFDictionarySetValue(this, kSecAttrAccount, CFBridgingRetain(keyId))
+            }
+            SecItemDelete(deleteQuery)
+            CFRelease(deleteQuery as CFTypeRef?)
+
+            // Now add the new item
+            val status = SecItemAdd(addQuery, null)
+            if (status != errSecSuccess) {
+                println("KSafe: SecItemAdd failed with status $status for key $keyId")
+            }
+
             CFRelease(addQuery as CFTypeRef?)
         }
     }

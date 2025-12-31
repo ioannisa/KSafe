@@ -97,6 +97,12 @@ actual class KSafe(
         if (fileName != null && !fileName.matches(fileNameRegex)) {
             throw IllegalArgumentException("File name must contain only lowercase letters")
         }
+
+        // Initialize BiometricHelper for auto-biometric support
+        val app = context.applicationContext as? android.app.Application
+        if (app != null) {
+            BiometricHelper.init(app)
+        }
     }
 
     @PublishedApi
@@ -132,6 +138,13 @@ actual class KSafe(
      */
     @PublishedApi
     internal val dirtyKeys = AtomicReference<Set<String>>(emptySet())
+
+    /**
+     * Map of scope -> timestamp for biometric authorization sessions.
+     * Each scope maintains its own authorization timestamp.
+     */
+    @PublishedApi
+    internal val biometricAuthSessions = AtomicReference<Map<String, Long>>(emptyMap())
 
     /**
      * Atomically adds a key to the dirty set using CAS loop.
@@ -672,5 +685,99 @@ actual class KSafe(
 
         // Clear cache
         memoryCache.set(emptyMap())
+    }
+
+    /**
+     * Atomically updates the biometric auth session for a scope.
+     */
+    private fun updateBiometricSession(scope: String, timestamp: Long) {
+        while (true) {
+            val current = biometricAuthSessions.get()
+            val updated = current + (scope to timestamp)
+            if (biometricAuthSessions.compareAndSet(current, updated)) break
+        }
+    }
+
+    /**
+     * Verifies biometric authentication on Android using BiometricPrompt.
+     *
+     * This method automatically finds the current Activity and shows the biometric prompt.
+     * The BiometricHelper is initialized automatically when KSafe is created.
+     *
+     * @param reason The reason string to display (used as prompt subtitle)
+     * @param authorizationDuration Optional duration configuration for caching successful authentication.
+     * @return true if authentication succeeded, false if it failed or was cancelled
+     */
+    actual suspend fun verifyBiometric(
+        reason: String,
+        authorizationDuration: BiometricAuthorizationDuration?
+    ): Boolean {
+        // Check if we're still within the authorized duration for this scope
+        if (authorizationDuration != null && authorizationDuration.duration > 0) {
+            val scope = authorizationDuration.scope ?: ""
+            val sessions = biometricAuthSessions.get()
+            val lastAuth = sessions[scope] ?: 0L
+            val now = System.currentTimeMillis()
+            if (lastAuth > 0 && (now - lastAuth) < authorizationDuration.duration) {
+                return true // Still authorized for this scope, skip biometric prompt
+            }
+        }
+
+        return try {
+            // Update subtitle with the provided reason
+            BiometricHelper.authenticate(reason)
+            // Update auth time for this scope on success (if duration caching is enabled)
+            if (authorizationDuration != null) {
+                val scope = authorizationDuration.scope ?: ""
+                updateBiometricSession(scope, System.currentTimeMillis())
+            }
+            true
+        } catch (e: BiometricAuthException) {
+            println("KSafe: Biometric authentication failed - ${e.message}")
+            false
+        } catch (e: BiometricActivityNotFoundException) {
+            println("KSafe: Biometric Activity not found - ${e.message}")
+            false
+        } catch (e: Exception) {
+            println("KSafe: Unexpected biometric error - ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Verifies biometric authentication on Android (non-blocking callback version).
+     *
+     * @param reason The reason string to display (used as prompt subtitle)
+     * @param authorizationDuration Optional duration configuration for caching successful authentication.
+     * @param onResult Callback with true if authentication succeeded, false otherwise
+     */
+    actual fun verifyBiometricDirect(
+        reason: String,
+        authorizationDuration: BiometricAuthorizationDuration?,
+        onResult: (Boolean) -> Unit
+    ) {
+        CoroutineScope(Dispatchers.Main + SupervisorJob()).launch {
+            val result = verifyBiometric(reason, authorizationDuration)
+            onResult(result)
+        }
+    }
+
+    /**
+     * Clears cached biometric authorization for a specific scope or all scopes.
+     *
+     * @param scope The scope to clear. If null, clears ALL cached authorizations.
+     */
+    actual fun clearBiometricAuth(scope: String?) {
+        if (scope == null) {
+            // Clear all sessions
+            biometricAuthSessions.set(emptyMap())
+        } else {
+            // Clear specific scope
+            while (true) {
+                val current = biometricAuthSessions.get()
+                val updated = current - scope
+                if (biometricAuthSessions.compareAndSet(current, updated)) break
+            }
+        }
     }
 }

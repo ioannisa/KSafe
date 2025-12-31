@@ -67,6 +67,18 @@ class KSafeComposeState<T>(
  * ```kotlin
  * // In a Composable or ViewModel
  * var username by ksafe.mutableStateOf("Guest")
+ * var counter by ksafe.mutableStateOf(0, key = "my_counter")
+ * var settings by ksafe.mutableStateOf(Settings(), encrypted = false)
+ * ```
+ *
+ * **For biometric protection**, use [KSafe.verifyBiometric] or [KSafe.verifyBiometricDirect]
+ * before modifying the value:
+ * ```kotlin
+ * ksafe.verifyBiometricDirect("Authenticate to save") { success ->
+ *     if (success) {
+ *         counter++
+ *     }
+ * }
  * ```
  *
  * @param T The type of the state value.
@@ -88,12 +100,15 @@ inline fun <reified T> KSafe.mutableStateOf(
     return PropertyDelegateProvider { _, property ->
         val actualKey = key ?: property.name
 
-        // Load initial value using non-blocking getDirect
+        // Load initial value from storage
         val initialValue = ksafe.getDirect<T>(actualKey, defaultValue, encrypted)
 
         val saver: (newValue: T) -> Unit = { newValueToSave ->
-            // Persist using non-blocking putDirect
-            ksafe.putDirect<T>(actualKey, newValueToSave, encrypted)
+            try {
+                ksafe.putDirect<T>(actualKey, newValueToSave, encrypted)
+            } catch (e: Exception) {
+                println("KSafe: Failed to save value for key '$actualKey': ${e.message}")
+            }
         }
 
         KSafeComposeState(
