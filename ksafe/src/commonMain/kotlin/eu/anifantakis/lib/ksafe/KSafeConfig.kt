@@ -14,39 +14,42 @@ package eu.anifantakis.lib.ksafe
  *
  * // Custom key size
  * val ksafe128 = KSafe(context, config = KSafeConfig(keySize = 128))
- *
- * // Android: customize biometric auth validity duration
- * val androidSafe = KSafe(
- *     context,
- *     config = KSafeConfig(androidAuthValiditySeconds = 60)
- * )
  * ```
  *
- * ## Biometric Protection
+ * ## Biometric Authentication
  *
- * Biometric protection is configured **per-value**, not at the KSafe instance level:
+ * Biometric authentication is a **standalone helper** decoupled from storage operations.
+ * Use `verifyBiometric()` or `verifyBiometricDirect()` to protect any action:
  *
  * ```kotlin
  * val ksafe = KSafe(context)
  *
- * // Per-value biometric protection
- * var authToken by ksafe(defaultValue = "", encrypted = true, useBiometrics = true)  // 🔐 Protected
- * var theme by ksafe(defaultValue = "light", encrypted = false)  // Not protected
- * ```
+ * // Protect storage with biometrics
+ * ksafe.verifyBiometricDirect("Authenticate to save") { success ->
+ *     if (success) {
+ *         ksafe.putDirect("authToken", token)
+ *     }
+ * }
  *
- * Platform behavior when `useBiometrics = true`:
+ * // With duration caching (60 seconds, scoped to ViewModel)
+ * ksafe.verifyBiometricDirect(
+ *     reason = "Authenticate",
+ *     authorizationDuration = BiometricAuthorizationDuration(60_000L, viewModelScope.hashCode().toString())
+ * ) { success ->
+ *     if (success) { /* ... */ }
+ * }
+ * ```
  *
  * | Platform | Behavior |
  * |----------|----------|
- * | **Android** | Time-bound: Key usable for N seconds after BiometricPrompt/device unlock |
- * | **iOS** | Per-access: Face ID / Touch ID / Passcode prompt on each key access |
- * | **JVM** | Ignored (no biometric hardware available) |
+ * | **Android** | BiometricPrompt with fingerprint/face/device credential |
+ * | **iOS** | Face ID / Touch ID / Passcode via LocalAuthentication |
+ * | **JVM** | Always returns true (no biometric hardware available) |
  *
  * @property keySize The size of the AES key in bits. Supported values: 128, 256. Default is 256.
  *           **Note:** 128-bit keys may offer marginally faster encryption on very old devices,
  *           but 256-bit is strongly recommended for all modern devices (negligible performance difference).
- * @property androidAuthValiditySeconds **Android only.** Duration in seconds that biometric-protected
- *           keys remain usable after authentication. Default is 30 seconds. Ignored on iOS/JVM.
+ * @property androidAuthValiditySeconds Reserved for future use. Default is 30 seconds.
  */
 data class KSafeConfig(
     val keySize: Int = 256,

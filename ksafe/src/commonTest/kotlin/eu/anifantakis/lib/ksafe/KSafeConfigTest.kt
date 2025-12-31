@@ -8,8 +8,8 @@ import kotlin.test.assertFalse
 /**
  * Tests for [KSafeConfig] validation and defaults.
  *
- * Note: Biometric protection is now configured per-value (via `useBiometrics` parameter),
- * not at the KSafeConfig level. See KSafe API for biometric usage.
+ * Note: Biometric authentication is a standalone helper via `verifyBiometric()` and
+ * `verifyBiometricDirect()`. See KSafe API for biometric usage.
  */
 class KSafeConfigTest {
 

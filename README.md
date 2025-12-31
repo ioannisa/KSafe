@@ -929,44 +929,6 @@ The iOS test app demonstrates:
 
 ## Migration Guide
 
-### From v1.2.x to v1.3.0
-
-#### Biometric API Changes
-The `useBiometrics` parameter has been **removed** from all storage APIs. Biometric authentication is now a standalone helper.
-
-**Before (1.2.x):**
-```kotlin
-// Biometrics tied to storage
-ksafe.put("key", value, useBiometrics = true)
-val data = ksafe.get("key", default, useBiometrics = true)
-```
-
-**After (1.3.0):**
-```kotlin
-// Biometrics as a separate verification step
-ksafe.verifyBiometricDirect("Authenticate to save") { success ->
-    if (success) {
-        ksafe.putDirect("key", value)
-    }
-}
-
-// Or with suspend function
-if (ksafe.verifyBiometric("Authenticate to read")) {
-    val data = ksafe.get("key", default)
-}
-
-// With duration caching (60 seconds, scoped to ViewModel)
-ksafe.verifyBiometricDirect(
-    reason = "Authenticate",
-    authorizationDuration = BiometricAuthorizationDuration(
-        duration = 60_000L,
-        scope = viewModelScope.hashCode().toString()
-    )
-) { success ->
-    if (success) { /* ... */ }
-}
-```
-
 ### From v1.1.x to v1.2.0+
 
 #### Binary Compatibility
