@@ -6,8 +6,6 @@ android-compileSdk = "36"
 datastorePreferences = "1.2.0"
 kotlinxCoroutinesCore = "1.10.2"
 kotlinxSerializationJson = "1.9.0"
-kotlinxSerialization = "2.2.21"
-kotlinStdlib = "2.2.21"
 orchestrator = "1.6.1"
 runner = "1.7.0"
 core = "1.7.0"
@@ -18,6 +16,7 @@ cryptography = "0.5.0"
 turbine = "1.2.1"
 robolectric = "4.16"
 biometric = "1.1.0"
+playIntegrity = "1.6.0"
 
 [libraries]
 androidx-orchestrator = { module = "androidx.test:orchestrator", version.ref = "orchestrator" }
@@ -27,7 +26,7 @@ turbine = { module = "app.cash.turbine:turbine", version.ref = "turbine" }
 
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutinesCore" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
-kotlin-stdlib = { group = "org.jetbrains.kotlin", name = "kotlin-stdlib", version.ref = "kotlinStdlib" }
+kotlin-stdlib = { group = "org.jetbrains.kotlin", name = "kotlin-stdlib", version.ref = "kotlin" }
 androidx-runner = { group = "androidx.test", name = "runner", version.ref = "runner" }
 androidx-core = { group = "androidx.test", name = "core", version.ref = "core" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junit" }
@@ -47,6 +46,10 @@ androidx-datastore-preferences-core = { module = "androidx.datastore:datastore-p
 # Biometric
 androidx-biometric = { module = "androidx.biometric:biometric", version.ref = "biometric" }
 
+# Play Integrity
+play-integrity = { module = "com.google.android.play:integrity", version.ref = "playIntegrity" }
+play-services-base = { module = "com.google.android.gms:play-services-base", version = "18.9.0" }
+
 
 # Compose
 runtime = { module = "org.jetbrains.compose.runtime:runtime", version.ref = "runtime" }
@@ -59,5 +62,5 @@ vanniktech-mavenPublish = { id = "com.vanniktech.maven.publish", version = "0.35
 
 
 # Serialization
-kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlinxSerialization" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }

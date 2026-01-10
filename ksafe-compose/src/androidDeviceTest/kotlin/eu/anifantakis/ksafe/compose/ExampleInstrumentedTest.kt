@@ -19,6 +19,6 @@ class ExampleInstrumentedTest {
     fun useAppContext() {
         // Context of the app under test.
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
-        assertEquals("eu.anifantakis.ksafe.compose.test", appContext.packageName)
+        assertEquals("eu.anifantakis.lib.ksafe.compose.test", appContext.packageName)
     }
 }

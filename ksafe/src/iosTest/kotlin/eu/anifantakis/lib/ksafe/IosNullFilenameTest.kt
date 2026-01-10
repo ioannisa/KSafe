@@ -4,8 +4,12 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
+/**
+ * iOS-specific test for null filename (default DataStore) behavior.
+ */
 class IosNullFilenameTest {
-    
+
+    /** Verifies KSafe works with null filename (uses default) */
     @Test
     fun testWithNullFilename() = runTest {
         val ksafe = KSafe(null)  // Explicitly passing null

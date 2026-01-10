@@ -50,12 +50,15 @@ internal fun decodeBase64(encoded: String): ByteArray = Base64.decode(encoded)
  * @property fileName Optional namespace for the storage file. Must be lower-case letters only.
  * @property lazyLoad Whether to start the background preloader immediately.
  * @property memoryPolicy Whether to decrypt and store values in RAM, or keep them encrypted in RAM for additional security
+ * @property config Encryption configuration (key size, etc.)
+ * @property securityPolicy Security policy for detecting debuggers, etc.
  */
 actual class KSafe(
     @PublishedApi internal val fileName: String? = null,
     private val lazyLoad: Boolean = false,
     @PublishedApi internal val memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
-    private val config: KSafeConfig = KSafeConfig()
+    private val config: KSafeConfig = KSafeConfig(),
+    private val securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default
 ) {
 
     /**
@@ -67,8 +70,9 @@ actual class KSafe(
         lazyLoad: Boolean = false,
         memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
         config: KSafeConfig = KSafeConfig(),
+        securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
         testEngine: KSafeEncryption
-    ) : this(fileName, lazyLoad, memoryPolicy, config) {
+    ) : this(fileName, lazyLoad, memoryPolicy, config, securityPolicy) {
         _testEngine = testEngine
     }
 
@@ -92,6 +96,9 @@ actual class KSafe(
         if (fileName != null && !fileName.matches(fileNameRegex)) {
             throw IllegalArgumentException("File name must contain only lowercase letters")
         }
+
+        // Validate security policy (may throw SecurityViolationException)
+        validateSecurityPolicy(securityPolicy)
     }
 
     // Use AtomicReference and ConcurrentHashMap for thread safety (matches your working code)

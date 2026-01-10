@@ -9,6 +9,10 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlin.test.assertNull
 
+/**
+ * Abstract base class for KSafe tests.
+ * Platform-specific implementations extend this class to provide actual KSafe instances.
+ */
 abstract class KSafeTest {
     abstract fun createKSafe(fileName: String? = null): KSafe
 

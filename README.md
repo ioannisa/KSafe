@@ -1,6 +1,6 @@
 # KSafe — Secure Persist Library for Kotlin Multiplatform
 
-_**Effortless Enterprise-Grade Encrypted Persistence for Kotlin Multiplatform and Native Android with Hardware-Backed Security.**_
+_**Effortless Enterprise-Grade Encrypted Persistence with Biometric Authentication and Runtime Security for Android, iOS, and Desktop.**_
 
 
 [![Maven Central](https://img.shields.io/maven-central/v/eu.anifantakis/ksafe.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/eu.anifantakis/ksafe)
@@ -9,79 +9,57 @@ _**Effortless Enterprise-Grade Encrypted Persistence for Kotlin Multiplatform an
 
 ![image](https://github.com/user-attachments/assets/692d9066-e953-4f13-9642-87661c5bc248)
 
-[Demo CMP App Using KSafe](https://github.com/ioannisa/KSafeDemo)
+[Demo CMP App Using KSafe](https://github.com/ioannisa/KSafeDemo) | [YouTube Demo](https://youtu.be/mFKGx0DMZEA)
 
-[YouTube Demo](https://youtu.be/mFKGx0DMZEA)
-
-Whether you must squirrel away OAuth tokens in a fintech app or remember the last‑visited screen of your game, KSafe stores the data encrypted with platform-specific secure key storage and hands it back to you like a normal variable.
+Whether you must squirrel away OAuth tokens in a fintech app or remember the last-visited screen of your game, KSafe stores the data encrypted with platform-specific secure key storage and hands it back to you like a normal variable.
 
 ##### Contributors
 Special thanks to [Mark Andrachek](https://github.com/mandrachek) for his contribution!
 
 ***
 
-## Why use KSafe?
+## Quickstart
 
-* **Hardware-backed security** 🔐 AES‑256‑GCM with keys stored in Android Keystore, iOS Keychain, or software-backed on JVM for maximum protection.
-* **Clean reinstalls** 🧹 Automatic cleanup ensures fresh starts after app reinstallation on both platforms.
-* **One code path** No expect/actual juggling—your common code owns the vault.
-* **Ease of use** `var launchCount by ksafe(0)` —that is literally it.
-* **Versatility** Primitives, data classes, sealed hierarchies, lists, sets, and nullable types—all accepted.
-* **Performance** Zero-latency UI reads with the new Hybrid Cache architecture; suspend API keeps the UI thread free.
-* **Desktop Support** Full JVM/Desktop support alongside Android and iOS.
+```kotlin
+// 1. Create instance (Android needs context, iOS/JVM don't)
+val ksafe = KSafe(context) // Android
+val ksafe = KSafe()        // iOS / JVM
 
-## How encryption works under the hood
+// 2. Store & retrieve with property delegation
+var counter by ksafe(0)
+counter++  // Auto-encrypted, auto-persisted
 
-KSafe provides enterprise-grade encrypted persistence using DataStore Preferences with platform-specific secure key storage.
+// 3. Or use suspend API
+viewModelScope.launch {
+    ksafe.put("user_token", token)
+    val token = ksafe.get("user_token", "")
+}
 
-##### Android
-* **Cipher:** AES‑256‑GCM
-* **Key Storage:** Android Keystore (hardware-backed when available)
-* **Security:** Keys are non-exportable, app-bound, and automatically deleted on uninstall
-* **Access Control:** Keys only accessible when device is unlocked
+// 4. Protect actions with biometrics
+ksafe.verifyBiometricDirect("Confirm payment") { success ->
+    if (success) processPayment()
+}
+```
 
-##### iOS
-* **Cipher:** AES‑256‑GCM via CryptoKit provider
-* **Key Storage:** iOS Keychain Services
-* **Security:** Protected by device passcode/biometrics, not included in backups
-* **Access Control**: `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`
-* **Reinstall Handling:** Automatic cleanup of orphaned Keychain entries on first use
-
-##### JVM/Desktop
-* **Cipher:** AES-256-GCM via javax.crypto
-* **Key Storage:** Software-backed keys stored alongside data
-* **Security:** Relies on OS file permissions (0700 on POSIX systems)
-* **Location:** `~/.eu_anifantakis_ksafe/` directory
-
-##### Flow
-* **Serialize value → plaintext bytes** using kotlinx.serialization.
-* **Load (or generate) a random 256‑bit AES key**  from Keystore/Keychain (unique per preference key)
-* **Encrypt with AES‑GCM** (nonce + auth‑tag included).
-* **Persist Base64(ciphertext)** in DataStore under `encrypted_<key>`
-* **Keys managed by platform** - never stored in DataStore
-
-Because GCM carries its own authentication tag, any tampering with data is detected on decryption. Platform-managed keys provide hardware-backed security where available.
+That's it. Your data is now AES-256-GCM encrypted with keys stored in Android Keystore, iOS Keychain, or software-backed on JVM.
 
 ***
 
-## Setup ⚙️
-Add the KSafe dependency to your `build.gradle.kts` (or `build.gradle`) file.
-
-### Library Installation
+## Setup
 
 [![Maven Central](https://img.shields.io/maven-central/v/eu.anifantakis/ksafe.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/eu.anifantakis/ksafe)
 
-#### 1 - Add the Dependency
+### 1 - Add the Dependency
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:1.3.0")
-implementation("eu.anifantakis:ksafe-compose:1.3.0") // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe:1.4.0")
+implementation("eu.anifantakis:ksafe-compose:1.4.0") // ← Compose state (optional)
 ```
 
 > Skip `ksafe-compose` if your project doesn't use Jetpack Compose, or if you don't intend to use the library's `mutableStateOf` persistence option
 
-#### 2 - Apply the kotlinx‑serialization plugin
+### 2 - Apply the kotlinx-serialization plugin
 
 If you want to use the library with data classes, you need to enable Serialization at your project.
 
@@ -102,11 +80,9 @@ plugins {
 }
 ```
 
-*** 
+### 3 - Instantiate with Koin (Recommended)
 
-#### Library Instantiation with Koin
-
-Koin is the defacto DI solution for Kotlin Multiplatform, and is the ideal tool to provde as a singleton the KSafe library.
+Koin is the defacto DI solution for Kotlin Multiplatform, and is the ideal tool to provide KSafe as a singleton.
 
 ```Kotlin
 // common
@@ -128,25 +104,24 @@ actual val platformModule = module {
 }
 ```
 
-And now you're ready to inject KSafe to your ViewModels :)
+Now you're ready to inject KSafe into your ViewModels!
 
-*** 
+***
 
-### Usage 🚀
+## Basic Usage
 
-##### Quick Start (One Liner)
-`var counter by ksafe(0)`
+### Property Delegation (One Liner)
 
-params:
-* `defaultValue` must be declared (type is inferred from it)
-* `key` if not set the variable name is used as a key
-* `encrypted` by default is set to true (uses Keystore/Keychain)
+```kotlin
+var counter by ksafe(0)
+```
 
-The above way is the easiest to utilize the library with property delegation, that provides out of the box, intuitive way to encrypted persisted values.  All you need is `by ksafe(x)`
+Parameters:
+* `defaultValue` - must be declared (type is inferred from it)
+* `key` - if not set, the variable name is used as a key
+* `encrypted` - by default is `true` (uses Keystore/Keychain)
 
 ```Kotlin
-import eu.anifantakis.lib.ksafe.KSafe
-
 class MyViewModel(ksafe: KSafe): ViewModel() {
   var counter by ksafe(0)
 
@@ -157,36 +132,43 @@ class MyViewModel(ksafe: KSafe): ViewModel() {
 }
 ```
 
-> **Important:** The property delegate can ONLY use the default KSafe instance. If you need to use multiple KSafe instances with different file names, you must use the suspend or direct APIs (see below).
+> **Important:** The property delegate can ONLY use the default KSafe instance. If you need to use multiple KSafe instances with different file names, you must use the suspend or direct APIs.
 
-##### Composable State (One Liner)
-`var counter by ksafe.mutableStateOf(0)`
+### Composable State (One Liner)
 
-Recomposition‑proof and survives process death with zero boilerplate.
+```kotlin
+var counter by ksafe.mutableStateOf(0)
+```
 
-That is a composable state, but to make use of it you need to have imported the second dependency in our installation guide that includes compose.
-
-params:
-* `defaultValue` must be declared (type is inferred from it)
-* `key` if not set the variable name is used as a key
-* `encrypted` by default is set to true (uses Keystore/Keychain)
+Recomposition-proof and survives process death with zero boilerplate. Requires the `ksafe-compose` dependency.
 
 ```Kotlin
-import eu.anifantakis.lib.ksafe.KSafe
-
 class MyViewModel(ksafe: KSafe): ViewModel() {
-  // Regular persisted state
   var counter by ksafe.mutableStateOf(0)
     private set
 
   init {
-    // then just use it as a regular variable
     counter++
   }
 }
 ```
 
-#### Storing complex objects
+### Suspend API (non-blocking)
+
+```Kotlin
+// inside coroutine / suspend fn
+ksafe.put("profile", userProfile)          // encrypt & persist
+val cached: User = ksafe.get("profile", User())
+```
+
+### Direct API (Good for Tests)
+
+```Kotlin
+ksafe.putDirect("counter", 42)
+val n = ksafe.getDirect("counter", 0)
+```
+
+### Storing Complex Objects
 
 ```Kotlin
 @Serializable
@@ -201,12 +183,12 @@ var authInfo by ksafe(AuthInfo())   // encryption + JSON automatically
 // Update
 authInfo = authInfo.copy(accessToken = "newToken")
 ```
-> ⚠️ Seeing "Serializer for class X' is not found"?
-Add `@Serializable` and make sure you have added Serialization plugin to your app
 
-#### Nullable Values
+> Seeing "Serializer for class X' is not found"? Add `@Serializable` and make sure you have added the Serialization plugin to your app.
 
-KSafe fully supports nullable types. You can store and retrieve `null` values correctly:
+### Nullable Values
+
+KSafe fully supports nullable types:
 
 ```Kotlin
 // Store null values
@@ -217,115 +199,26 @@ ksafe.put("auth_token", token, encrypted = true)
 val retrieved: String? = ksafe.get("auth_token", "default", encrypted = true)
 // retrieved == null ✓
 
-// Works with all APIs
-ksafe.putDirect("key", null as String?, encrypted = false)
-val value: String? = ksafe.getDirect("key", "default", encrypted = false)
-// value == null ✓
-
 // Nullable fields in serializable classes
 @Serializable
 data class UserProfile(
     val id: Int,
-    val nickname: String?,  // Can be null
-    val bio: String?        // Can be null
+    val nickname: String?,
+    val bio: String?
 )
-
-val profile = UserProfile(1, null, "Hello!")
-ksafe.put("profile", profile, encrypted = true)
 ```
 
-#### Suspend API (non‑blocking)
+### Deleting Data
 
 ```Kotlin
-// inside coroutine / suspend fn
-ksafe.put("profile", userProfile)          // encrypt & persist
-val cached: User = ksafe.get("profile", User())
-```
-
-#### Direct API (Good for Tests)
-```Kotlin
-ksafe.putDirect("counter", 42)
-val n = ksafe.getDirect("counter", 0)
-```
-
-#### Jetpack Compose ♥ KSafe (optional module)
-as already mentioned above, Recomposition‑proof and survives process death with zero boilerplate.
-```Kotlin
-var clicks by ksafe.mutableStateOf(0)  // encrypted backing storage
-actionButton { clicks++ }
-```
-
-#### Deleting data
-```Kotlin
-ksafe.delete("profile")       // suspend (non‑blocking)
+ksafe.delete("profile")       // suspend (non-blocking)
 ksafe.deleteDirect("profile") // blocking
 ```
 
-When you delete a value, both the data and its associated encryption key are removed from the secure storage (Keystore/Keychain).
+When you delete a value, both the data and its associated encryption key are removed from secure storage.
 
-#### Using Multiple KSafe Instances
-by [Mark Andrachek](https://github.com/mandrachek)
+### Full ViewModel Example
 
-You can create multiple KSafe instances with different file names to separate different types of data (e.g., user preferences vs. app settings vs. cache data):
-
-```Kotlin
-class MyViewModel : ViewModel() {
-  // Separate instances for different data domains
-  private val userPrefs = KSafe(fileName = "userpreferences")
-  private val appSettings = KSafe(fileName = "appsettings")
-  private val cacheData = KSafe(fileName = "cache")
-
-  // Note: Property delegation only works with the default instance
-  // For named instances, use suspend or direct APIs:
-
-  suspend fun saveUserToken(token: String) {
-    userPrefs.put("auth_token", token, encrypted = true)
-  }
-
-  fun getCachedData(): String {
-    return cacheData.getDirect("last_sync", "", encrypted = false)
-  }
-
-  suspend fun updateAppTheme(isDark: Boolean) {
-    appSettings.put("dark_mode", isDark)
-  }
-}
-```
-
-**Important Instance Management Rules:**
-- **Each KSafe instance should be a singleton** - Create once and reuse throughout your app
-- **Never create multiple instances pointing to the same file** - This can cause data inconsistency and unexpected behavior
-- Use dependency injection (like Koin) to manage instances as singletons:
-
-```Kotlin
-// ✅ Good Idea: Singleton instances via DI
-val appModule = module {
-  single { KSafe() }  // Default instance
-  single(named("user")) { KSafe(fileName = "userdata") }
-  single(named("cache")) { KSafe(fileName = "cache") }
-}
-
-// ❌ Bad Idea: Creating multiple instances for the same file
-class ScreenA {
-  val prefs = KSafe(fileName = "userdata")  // Instance 1
-}
-class ScreenB {
-  val prefs = KSafe(fileName = "userdata")  // Instance 2 - DON'T DO THIS!
-}
-```
-
-**File Name Requirements:**
-- Must contain only lowercase letters (a-z)
-- No numbers, special characters, or uppercase letters allowed
-- Examples: `"userdata"`, `"settings"`, `"cache"`
-- Invalid: `"userData"`, `"user_data"`, `"user123"`
-
-Each instance creates its own separate DataStore file and encryption keys, allowing you to:
-- Organize data by domain or feature
-- Clear specific data sets independently
-- Apply different encryption strategies per instance
-
-#### Full ViewModel example
 ```Kotlin
 class CounterViewModel(ksafe: KSafe) : ViewModel() {
   // regular Compose state (not persisted)
@@ -336,7 +229,7 @@ class CounterViewModel(ksafe: KSafe) : ViewModel() {
   var persisted by ksafe.mutableStateOf(100)
     private set
 
-  // plain property‑delegate preference
+  // plain property-delegate preference
   var hits by ksafe(0)
 
   fun inc() {
@@ -349,135 +242,97 @@ class CounterViewModel(ksafe: KSafe) : ViewModel() {
 
 ***
 
-## Architecture: Hybrid "Hot Cache" 🚀
+## Why use KSafe?
 
-KSafe 1.2.0 introduced a completely rewritten core architecture focusing on zero-latency UI performance.
-
-### How It Works
-
-**Before (v1.1.x):** Every `getDirect()` call triggered a blocking disk read and decryption on the calling thread. This could cause frame drops in scrollable environments.
-
-**Now (v1.2.0):** Data is preloaded asynchronously immediately upon initialization. `getDirect()` now performs an **Atomic Memory Lookup (O(1))**, returning instantly.
-
-**Safety:** If data is accessed before the preload finishes (Cold Start), the library automatically falls back to a blocking read to ensure you never receive incorrect default values.
-
-### Optimistic Updates
-
-`putDirect()` now updates the in-memory cache **immediately**, allowing your UI to reflect changes instantly while the disk encryption and write happen safely in the background.
+* **Hardware-backed security** - AES-256-GCM with keys stored in Android Keystore, iOS Keychain, or software-backed on JVM
+* **Biometric authentication** - Built-in Face ID, Touch ID, and Fingerprint support with smart auth caching
+* **Root & Jailbreak detection** - Detect compromised devices with configurable WARN/BLOCK actions
+* **Platform Integrity** - Helpers for Google Play Integrity and Apple DeviceCheck
+* **Clean reinstalls** - Automatic cleanup ensures fresh starts after app reinstallation
+* **One code path** - No expect/actual juggling—your common code owns the vault
+* **Ease of use** - `var launchCount by ksafe(0)` —that is literally it
+* **Versatility** - Primitives, data classes, sealed hierarchies, lists, sets, and nullable types
+* **Performance** - Zero-latency UI reads with Hybrid Cache architecture
+* **Desktop Support** - Full JVM/Desktop support alongside Android and iOS
 
 ***
 
-## Memory Security Policy 🔒
+## Compatibility
 
-You can now choose the trade-off between maximum performance and maximum security regarding data resident in RAM.
+| Platform | Minimum Version | Notes |
+|----------|-----------------|-------|
+| **Android** | API 23 (Android 6.0) | Hardware-backed Keystore on supported devices |
+| **iOS** | iOS 13+ | Keychain with Secure Enclave on A7+ chips |
+| **JVM/Desktop** | JDK 11+ | Software-backed encryption |
 
-```Kotlin
-val ksafe = KSafe(
-    fileName = "secrets",
-    memoryPolicy = KSafeMemoryPolicy.ENCRYPTED // (Default) or PLAIN_TEXT
-)
-```
+| Dependency | Tested Version |
+|------------|----------------|
+| Kotlin | 2.0.0+ |
+| Kotlin Coroutines | 1.8.0+ |
+| DataStore Preferences | 1.1.0+ |
+| Compose Multiplatform | 1.6.0+ (for ksafe-compose) |
 
-### Policy Options
+***
 
-| Policy | Best For | Behavior | Performance |
-|--------|----------|----------|-------------|
-| `ENCRYPTED` (Default) | Tokens, passwords, sensitive data | Stores raw ciphertext in RAM. Decrypts on-demand every time you ask for data, then discards the plaintext immediately. | Slightly higher CPU per read |
-| `PLAIN_TEXT` | User settings, themes, preferences | Decrypts once on load, stores plain values in RAM. | Instant reads, zero CPU overhead per call |
+## Using Multiple KSafe Instances
 
-Both policies encrypt data on disk. The difference is how data is handled in memory:
-- **ENCRYPTED:** Maximum security against memory dump attacks
-- **PLAIN_TEXT:** Maximum performance for frequently accessed data
+by [Mark Andrachek](https://github.com/mandrachek)
 
-### Lazy Loading
-
-By default, KSafe eagerly preloads data on initialization. If you want to defer loading until first access:
+You can create multiple KSafe instances with different file names to separate different types of data:
 
 ```Kotlin
-val archive = KSafe(
-    fileName = "archive",
-    lazyLoad = true  // Skip preload, load on first request
-)
+class MyViewModel : ViewModel() {
+  private val userPrefs = KSafe(fileName = "userpreferences")
+  private val appSettings = KSafe(fileName = "appsettings")
+  private val cacheData = KSafe(fileName = "cache")
+
+  // For named instances, use suspend or direct APIs:
+  suspend fun saveUserToken(token: String) {
+    userPrefs.put("auth_token", token, encrypted = true)
+  }
+}
 ```
 
-### Constructor Parameters
+**Important Instance Management Rules:**
+- **Each KSafe instance should be a singleton** - Create once and reuse throughout your app
+- **Never create multiple instances pointing to the same file** - This can cause data inconsistency
 
 ```Kotlin
-// Android
-KSafe(
-    context: Context,
-    fileName: String? = null,          // Optional namespace
-    lazyLoad: Boolean = false,         // Eager (false) or lazy (true) loading
-    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
-    config: KSafeConfig = KSafeConfig()  // Encryption configuration
-)
+// ✅ Good: Singleton instances via DI
+val appModule = module {
+  single { KSafe() }  // Default instance
+  single(named("user")) { KSafe(fileName = "userdata") }
+  single(named("cache")) { KSafe(fileName = "cache") }
+}
 
-// iOS / JVM
-KSafe(
-    fileName: String? = null,
-    lazyLoad: Boolean = false,
-    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
-    config: KSafeConfig = KSafeConfig()  // Encryption configuration
-)
+// ❌ Bad: Creating multiple instances for the same file
+class ScreenA { val prefs = KSafe(fileName = "userdata") }
+class ScreenB { val prefs = KSafe(fileName = "userdata") }  // DON'T DO THIS!
 ```
 
-### Encryption Configuration
+**File Name Requirements:**
+- Must contain only lowercase letters (a-z)
+- No numbers, special characters, or uppercase letters allowed
+- Examples: `"userdata"`, `"settings"`, `"cache"`
 
-`KSafeConfig` allows you to customize encryption parameters while maintaining security:
+***
 
-```Kotlin
-val ksafe = KSafe(
-    context = context,  // Android only
-    config = KSafeConfig(
-        keySize = 256  // AES key size: 128 or 256 bits
-    )
-)
-```
+# Advanced Topics
 
-| Parameter | Values | Default | Description |
-|-----------|--------|---------|-------------|
-| `keySize` | 128, 256 | 256 | AES key size in bits. 256-bit recommended for all modern devices. |
+***
 
-**Note:** The encryption algorithm (AES-GCM) and block mode are intentionally NOT configurable to prevent insecure configurations. Only safe parameters are exposed.
+## Biometric Authentication
 
-### Biometric Authentication Helper
+KSafe provides a **standalone biometric authentication helper** that works on both Android and iOS. This is a general-purpose utility that can protect **any action** in your app—not just KSafe persistence operations.
 
-KSafe provides a **standalone biometric authentication helper** that works on both Android and iOS. This is a general-purpose utility that can be used to protect **any action** in your app—not just KSafe persistence operations.
-
-#### Why Standalone Biometrics?
-
-Biometric authentication is **decoupled from storage** because:
-- You might want to verify identity before performing any sensitive action (API calls, showing data, etc.)
-- You have full control over when and where biometric prompts appear
-- The same biometric helper can protect KSafe operations or any other code
-
-#### Two APIs
+### Two APIs
 
 | Method | Type | Use Case |
 |--------|------|----------|
 | `verifyBiometricDirect(reason, authorizationDuration?) { success -> }` | Callback-based | Simple, non-blocking, works anywhere |
 | `verifyBiometric(reason, authorizationDuration?): Boolean` | Suspend function | Coroutine-based, cleaner async code |
 
-#### Authorization Duration Caching
-
-You can optionally cache successful authentication for a duration, avoiding repeated biometric prompts:
-
-```kotlin
-// Data class for configuring duration caching
-data class BiometricAuthorizationDuration(
-    val duration: Long,       // Duration in milliseconds
-    val scope: String? = null // Optional scope identifier (null = global)
-)
-```
-
-| Parameter | Meaning |
-|-----------|---------|
-| `authorizationDuration = null` | Always prompt (no caching) |
-| `duration > 0` | Cache auth for this many milliseconds |
-| `scope = null` | Global scope - any call benefits from cached auth |
-| `scope = "xyz"` | Scoped auth - only calls with same scope benefit |
-
-#### Basic Usage
+### Basic Usage
 
 ```kotlin
 class MyViewModel(private val ksafe: KSafe) : ViewModel() {
@@ -488,35 +343,7 @@ class MyViewModel(private val ksafe: KSafe) : ViewModel() {
     // Always prompt (no caching)
     fun incrementWithBiometric() {
         ksafe.verifyBiometricDirect("Authenticate to increment") { success ->
-            if (success) {
-                secureCounter++
-            }
-        }
-    }
-
-    // Cache for 60 seconds (global scope)
-    fun incrementWithCachedBiometric() {
-        ksafe.verifyBiometricDirect(
-            reason = "Authenticate to increment",
-            authorizationDuration = BiometricAuthorizationDuration(60_000L)
-        ) { success ->
-            if (success) {
-                secureCounter++
-            }
-        }
-    }
-
-    // Cache for 60 seconds (scoped to this screen)
-    private val screenScope = "counter-screen-${hashCode()}"
-
-    fun incrementWithScopedBiometric() {
-        ksafe.verifyBiometricDirect(
-            reason = "Authenticate to increment",
-            authorizationDuration = BiometricAuthorizationDuration(60_000L, screenScope)
-        ) { success ->
-            if (success) {
-                secureCounter++
-            }
+            if (success) secureCounter++
         }
     }
 
@@ -531,69 +358,67 @@ class MyViewModel(private val ksafe: KSafe) : ViewModel() {
 }
 ```
 
-#### Scoped Authorization Use Cases
+### Authorization Duration Caching
 
-The `scope` parameter lets you control when cached auth is invalidated:
+Avoid repeated biometric prompts by caching successful authentication:
 
 ```kotlin
-// ViewModel-scoped: auth invalidates when ViewModel is recreated (recommended)
-BiometricAuthorizationDuration(60_000L, viewModelScope.hashCode().toString())
+data class BiometricAuthorizationDuration(
+    val duration: Long,       // Duration in milliseconds
+    val scope: String? = null // Optional scope identifier (null = global)
+)
 
-// Screen-scoped: same as above, using ViewModel's hashCode
-BiometricAuthorizationDuration(60_000L, this.hashCode().toString())
+// Cache for 60 seconds (scoped to this ViewModel)
+ksafe.verifyBiometricDirect(
+    reason = "Authenticate",
+    authorizationDuration = BiometricAuthorizationDuration(
+        duration = 60_000L,
+        scope = viewModelScope.hashCode().toString()
+    )
+) { success -> /* ... */ }
+```
+
+| Parameter | Meaning |
+|-----------|---------|
+| `authorizationDuration = null` | Always prompt (no caching) |
+| `duration > 0` | Cache auth for this many milliseconds |
+| `scope = null` | Global scope - any call benefits from cached auth |
+| `scope = "xyz"` | Scoped auth - only calls with same scope benefit |
+
+### Scoped Authorization Use Cases
+
+```kotlin
+// ViewModel-scoped: auth invalidates when ViewModel is recreated
+BiometricAuthorizationDuration(60_000L, viewModelScope.hashCode().toString())
 
 // User-scoped: auth invalidates on user change
 BiometricAuthorizationDuration(300_000L, "user_$userId")
 
 // Flow-scoped: auth shared across a multi-step flow
 BiometricAuthorizationDuration(120_000L, "checkout_flow")
-
-// Always fresh: random scope = always prompt
-BiometricAuthorizationDuration(60_000L, UUID.randomUUID().toString())
 ```
 
-#### Clearing Cached Authorization
-
-Use `clearBiometricAuth()` to force re-authentication (e.g., on logout):
+### Clearing Cached Authorization
 
 ```kotlin
-// Clear all cached authorizations
-ksafe.clearBiometricAuth()
-
-// Clear specific scope only
-ksafe.clearBiometricAuth("settings-screen")
+ksafe.clearBiometricAuth()              // Clear all cached authorizations
+ksafe.clearBiometricAuth("settings")    // Clear specific scope only
 ```
 
-#### Protecting Any Action
-
-Since biometrics is a standalone helper, you can protect **any sensitive operation**:
+### Protecting Any Action
 
 ```kotlin
 // Protect API calls
 fun deleteAccount() {
     ksafe.verifyBiometricDirect("Confirm account deletion") { success ->
-        if (success) {
-            api.deleteAccount()
-        }
+        if (success) api.deleteAccount()
     }
 }
 
 // Protect navigation
 fun navigateToSecrets() {
     ksafe.verifyBiometricDirect("Authenticate to view secrets") { success ->
-        if (success) {
-            navController.navigate("secrets")
-        }
-    }
-}
-
-// Protect data display with 5-minute cache
-fun showSensitiveData() {
-    viewModelScope.launch {
-        val authDuration = BiometricAuthorizationDuration(300_000L, "sensitive-data")
-        if (ksafe.verifyBiometric("Authenticate to view data", authDuration)) {
-            _uiState.value = _uiState.value.copy(showSensitiveData = true)
-        }
+        if (success) navController.navigate("secrets")
     }
 }
 ```
@@ -616,15 +441,7 @@ class MainActivity : ComponentActivity()
 class MainActivity : AppCompatActivity()
 ```
 
-**Theme** - Ensure you're using an AppCompat theme in `themes.xml`:
-```xml
-<style name="Theme.YourApp" parent="Theme.Material3.DayNight.NoActionBar">
-    <!-- or Theme.AppCompat.DayNight.NoActionBar -->
-</style>
-```
-
-**Important:** KSafe must be initialized **before** any Activity is created. If using Koin, initialize it in a custom `Application` class:
-
+**Early Initialization** - KSafe must be initialized before any Activity is created:
 ```kotlin
 class MyApplication : Application() {
     override fun onCreate() {
@@ -633,8 +450,7 @@ class MyApplication : Application() {
             androidContext(this@MyApplication)
             modules(appModule)
         }
-        // Force KSafe initialization to register lifecycle callbacks
-        get<KSafe>()
+        get<KSafe>()  // Force initialization
     }
 }
 ```
@@ -717,17 +533,370 @@ class SecureViewModel(private val ksafe: KSafe) : ViewModel() {
 ```
 
 **Key Points:**
-- ✅ Biometrics is a **helper utility**, not tied to storage
-- ✅ Use it to protect **any action** (persistence, API calls, navigation, etc.)
-- ✅ Two APIs: callback-based (`verifyBiometricDirect`) and suspend (`verifyBiometric`)
-- ✅ Optional duration caching with `BiometricAuthorizationDuration`
-- ✅ Scoped authorization for fine-grained control over cache invalidation
-- ✅ Works on Android (BiometricPrompt) and iOS (LocalAuthentication)
-- ⚠️ On Android, requires `AppCompatActivity` and early KSafe initialization
+- Biometrics is a **helper utility**, not tied to storage
+- Use it to protect **any action** (persistence, API calls, navigation, etc.)
+- Two APIs: callback-based (`verifyBiometricDirect`) and suspend (`verifyBiometric`)
+- Optional duration caching with `BiometricAuthorizationDuration`
+- Scoped authorization for fine-grained control over cache invalidation
+- Works on Android (BiometricPrompt) and iOS (LocalAuthentication)
+- On Android, requires `AppCompatActivity` and early KSafe initialization
+
+***
+
+## Runtime Security Policy
+
+KSafe can detect and respond to runtime security threats:
+
+```kotlin
+val ksafe = KSafe(
+    context = context,
+    securityPolicy = KSafeSecurityPolicy(
+        rootedDevice = SecurityAction.WARN,      // IGNORE, WARN, or BLOCK
+        debuggerAttached = SecurityAction.BLOCK,
+        debugBuild = SecurityAction.WARN,
+        emulator = SecurityAction.IGNORE,
+        onViolation = { violation ->
+            analytics.log("Security: ${violation.name}")
+        }
+    )
+)
+```
+
+| Check | Android | iOS | JVM | Description |
+|-------|---------|-----|-----|-------------|
+| `rootedDevice` | ✅ | ✅ | ❌ | Detects rooted/jailbroken devices |
+| `debuggerAttached` | ✅ | ✅ | ✅ | Detects attached debuggers |
+| `debugBuild` | ✅ | ✅ | ✅ | Detects debug builds |
+| `emulator` | ✅ | ✅ | ❌ | Detects emulators/simulators |
+
+### Actions Explained
+
+| Action | Behavior | Use Case |
+|--------|----------|----------|
+| `IGNORE` | No detection performed | Development, non-sensitive apps |
+| `WARN` | Callback invoked, app continues | Logging/analytics, user warnings |
+| `BLOCK` | Callback invoked, throws `SecurityViolationException` | Banking, enterprise apps |
+
+**Example behavior with `WARN`:**
+```kotlin
+val ksafe = KSafe(
+    context = context,
+    securityPolicy = KSafeSecurityPolicy(
+        rootedDevice = SecurityAction.WARN,
+        onViolation = { violation ->
+            // This is called, but app continues working
+            showWarningDialog("Security risk: ${violation.name}")
+            analytics.log("security_warning", violation.name)
+        }
+    )
+)
+// KSafe initializes successfully, user sees warning
+```
+
+**Example behavior with `BLOCK`:**
+```kotlin
+val ksafe = KSafe(
+    context = context,
+    securityPolicy = KSafeSecurityPolicy(
+        rootedDevice = SecurityAction.BLOCK,
+        onViolation = { violation ->
+            // This is called BEFORE the exception is thrown
+            analytics.log("security_block", violation.name)
+        }
+    )
+)
+// If device is rooted: SecurityViolationException is thrown
+// App must catch this or it will crash
+```
+
+### Preset Policies
+
+```kotlin
+KSafeSecurityPolicy.Default   // All checks ignored (backwards compatible)
+KSafeSecurityPolicy.Strict    // Blocks on root/debugger, warns on debug/emulator
+KSafeSecurityPolicy.WarnOnly  // Warns on everything, never blocks
+```
+
+### Handling BLOCK Exceptions
+
+```kotlin
+try {
+    val ksafe = KSafe(context, securityPolicy = KSafeSecurityPolicy.Strict)
+} catch (e: SecurityViolationException) {
+    showSecurityErrorScreen(e.violation.name)
+}
+```
+
+### Providing User-Friendly Descriptions
+
+Since `SecurityViolation` is an enum without hardcoded messages, provide your own descriptions:
+
+```kotlin
+fun getViolationDescription(violation: SecurityViolation): String {
+    return when (violation) {
+        SecurityViolation.RootedDevice ->
+            "The device is rooted (Android) or jailbroken (iOS). " +
+            "This allows apps to bypass sandboxing and potentially access encrypted data."
+        SecurityViolation.DebuggerAttached ->
+            "A debugger is attached to the process. " +
+            "This allows inspection of memory and runtime values including decrypted secrets."
+        SecurityViolation.DebugBuild ->
+            "The app is running in debug mode. " +
+            "Debug builds may have weaker security settings and expose more information."
+        SecurityViolation.Emulator ->
+            "The app is running on an emulator/simulator. " +
+            "Emulators don't have hardware-backed security like real devices."
+    }
+}
+```
+
+### Collecting Violations for UI Display
+
+Since KSafe initializes before ViewModels, use a holder to bridge violations to your UI:
+
+```kotlin
+// 1. Create a holder to collect violations during initialization
+object SecurityViolationsHolder {
+    private val _violations = mutableListOf<SecurityViolation>()
+    val violations: List<SecurityViolation> get() = _violations.toList()
+
+    fun addViolation(violation: SecurityViolation) {
+        if (violation !in _violations) {
+            _violations.add(violation)
+        }
+    }
+}
+
+// 2. Configure KSafe to populate the holder
+val ksafe = KSafe(
+    context = context,
+    securityPolicy = KSafeSecurityPolicy.Strict.copy(
+        onViolation = { violation ->
+            SecurityViolationsHolder.addViolation(violation)
+        }
+    )
+)
+
+// 3. Read from the holder in your ViewModel
+class SecurityViewModel : ViewModel() {
+    val violations = mutableStateListOf<UiSecurityViolation>()
+
+    init {
+        SecurityViolationsHolder.violations.forEach { violation ->
+            violations.add(UiSecurityViolation(violation))
+        }
+    }
+}
+```
+
+### Compose Stability for SecurityViolation
+
+When using `SecurityViolation` in Jetpack Compose, the Compose compiler treats it as "unstable" because it resides in the core `ksafe` module. The `ksafe-compose` module provides `UiSecurityViolation`—a wrapper marked with `@Immutable`:
+
+```kotlin
+@Immutable
+data class UiSecurityViolation(
+    val violation: SecurityViolation
+)
+```
+
+| Type | Compose Stability |
+|------|------------------|
+| `ImmutableList<SecurityViolation>` | Unstable (causes recomposition) |
+| `ImmutableList<UiSecurityViolation>` | Stable (enables skipping) |
+
+The [KSafeDemo app](https://github.com/ioannisa/KSafeDemo) makes use of `UiSecurityViolation`—visit the demo application's source to see it in action.
+
+### Root Detection Methods (Android)
+
+- `su` binary paths (`/system/bin/su`, `/system/xbin/su`, etc.)
+- Magisk paths (`/sbin/.magisk`, `/data/adb/magisk`, etc.)
+- BusyBox installation paths
+- Xposed Framework files and stack trace detection
+- Root management apps (Magisk Manager, SuperSU, KingRoot, etc.)
+- Build tags (`test-keys`) and dangerous system properties
+
+### Jailbreak Detection Methods (iOS)
+
+- Cydia, Sileo, and other jailbreak app paths
+- System write access test (fails on non-jailbroken devices)
+- Common jailbreak tool paths (`/bin/bash`, `/usr/sbin/sshd`, etc.)
+
+> **Limitation:** Sophisticated root-hiding tools (Magisk DenyList, Shamiko, Zygisk) can bypass most detection methods. For high-security apps, use Platform Integrity Verification.
+
+***
+
+## Platform Integrity Verification (Server-Side)
+
+For stronger device integrity verification, KSafe provides helpers for **Google Play Integrity** (Android) and **Apple DeviceCheck** (iOS). These APIs generate tokens that must be verified **server-side**.
+
+```kotlin
+// Android - requires Google Cloud project number
+val checker = IntegrityChecker(context, cloudProjectNumber = 123456789L)
+
+// iOS - no additional config needed
+val checker = IntegrityChecker()
+
+// Request token (suspend function)
+when (val result = checker.requestIntegrityToken(serverGeneratedNonce)) {
+    is IntegrityResult.Success -> {
+        // Send result.token to YOUR server for verification
+        api.verifyIntegrity(result.token, result.platform)
+    }
+    is IntegrityResult.Error -> {
+        Log.e("Integrity", "Failed: ${result.message}, code: ${result.code}")
+    }
+    is IntegrityResult.NotSupported -> {
+        // JVM/Desktop or device without Google Play Services
+    }
+}
+```
+
+| Platform | API | Server Verification Endpoint |
+|----------|-----|------------------------------|
+| Android | Play Integrity | `playintegrity.googleapis.com/v1/{package}:decodeIntegrityToken` |
+| iOS | DeviceCheck | `api.devicecheck.apple.com/v1/validate_device_token` |
+| JVM | Not supported | - |
+
+> **Important:** Tokens MUST be verified server-side. Client-side verification is insecure.
+
+> **Non-GMS Devices (Huawei, Amazon Fire, etc.):** IntegrityChecker gracefully returns `NotSupported` on devices without Google Play Services.
+
+***
+
+## How Encryption Works
+
+KSafe provides enterprise-grade encrypted persistence using DataStore Preferences with platform-specific secure key storage.
+
+### Platform Details
+
+| Platform | Cipher | Key Storage | Security |
+|----------|--------|-------------|----------|
+| **Android** | AES-256-GCM | Android Keystore (hardware-backed when available) | Keys non-exportable, app-bound, auto-deleted on uninstall |
+| **iOS** | AES-256-GCM via CryptoKit | iOS Keychain Services | Protected by device passcode/biometrics, not in backups |
+| **JVM/Desktop** | AES-256-GCM via javax.crypto | Software-backed in `~/.eu_anifantakis_ksafe/` | Relies on OS file permissions (0700 on POSIX) |
+
+### Encryption Flow
+
+1. **Serialize value → plaintext bytes** using kotlinx.serialization
+2. **Load (or generate) a random 256-bit AES key** from Keystore/Keychain (unique per preference key)
+3. **Encrypt with AES-GCM** (nonce + auth-tag included)
+4. **Persist Base64(ciphertext)** in DataStore under `encrypted_<key>`
+5. **Keys managed by platform** - never stored in DataStore
+
+**What is GCM?** GCM (Galois/Counter Mode) is an authenticated encryption mode that provides both confidentiality and integrity. The authentication tag detects any tampering—if someone modifies even a single bit of the ciphertext, decryption will fail.
+
+### Security Boundaries & Threat Model
+
+**What KSafe protects against:**
+- ✅ Casual file inspection (data at rest is encrypted)
+- ✅ Data extraction from unrooted device backups
+- ✅ App data access by other apps (sandboxing + encryption)
+- ✅ Reinstall data leakage (automatic cleanup)
+- ✅ Tampering detection (GCM authentication tag)
+- ✅ Rooted/jailbroken devices (detection with configurable WARN/BLOCK)
+- ✅ Debugger attachment (detection with configurable WARN/BLOCK)
+- ✅ Emulator/simulator usage (detection with configurable WARN/BLOCK)
+
+**What KSafe does NOT protect against:**
+- ❌ Sophisticated root-hiding tools (e.g., Magisk Hide) — detection can be bypassed
+- ❌ Memory dump attacks while app is running (mitigated by `ENCRYPTED` memory policy)
+- ❌ Device owner with physical access and device unlock credentials
+- ❌ Compromised OS or hardware
+
+**Recommendations:**
+- Use `KSafeSecurityPolicy.Strict` for fintech/enterprise apps
+- Use `KSafeMemoryPolicy.ENCRYPTED` for highly sensitive data (tokens, passwords)
+- Combine with biometric verification for critical operations
+- Never store master secrets client-side; prefer server-derived tokens
+- Consider certificate pinning for API communications
+
+***
+
+## Memory Security Policy
+
+Control the trade-off between performance and security for data in RAM:
+
+```Kotlin
+val ksafe = KSafe(
+    fileName = "secrets",
+    memoryPolicy = KSafeMemoryPolicy.ENCRYPTED // (Default) or PLAIN_TEXT
+)
+```
+
+| Policy | Best For | Behavior | Performance |
+|--------|----------|----------|-------------|
+| `ENCRYPTED` (Default) | Tokens, passwords | Stores ciphertext in RAM, decrypts on-demand | Slightly higher CPU per read |
+| `PLAIN_TEXT` | User settings, themes | Decrypts once on load, stores plain values | Instant reads, zero overhead |
+
+Both policies encrypt data on disk. The difference is how data is handled in memory:
+- **ENCRYPTED:** Maximum security against memory dump attacks
+- **PLAIN_TEXT:** Maximum performance for frequently accessed data
+
+### Lazy Loading
+
+```Kotlin
+val archive = KSafe(
+    fileName = "archive",
+    lazyLoad = true  // Skip preload, load on first request
+)
+```
+
+### Constructor Parameters
+
+```Kotlin
+// Android
+KSafe(
+    context: Context,
+    fileName: String? = null,
+    lazyLoad: Boolean = false,
+    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+    securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
+    config: KSafeConfig = KSafeConfig()
+)
+
+// iOS / JVM
+KSafe(
+    fileName: String? = null,
+    lazyLoad: Boolean = false,
+    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+    securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
+    config: KSafeConfig = KSafeConfig()
+)
+```
+
+### Encryption Configuration
+
+```Kotlin
+val ksafe = KSafe(
+    context = context,
+    config = KSafeConfig(
+        keySize = 256  // AES key size: 128 or 256 bits
+    )
+)
+```
+
+**Note:** The encryption algorithm (AES-GCM) is intentionally NOT configurable to prevent insecure configurations.
+
+***
+
+## Architecture: Hybrid "Hot Cache"
+
+KSafe 1.2.0 introduced a completely rewritten core architecture focusing on zero-latency UI performance.
+
+### How It Works
+
+**Before (v1.1.x):** Every `getDirect()` call triggered a blocking disk read and decryption on the calling thread.
+
+**Now (v1.2.0):** Data is preloaded asynchronously on initialization. `getDirect()` performs an **Atomic Memory Lookup (O(1))**, returning instantly.
+
+**Safety:** If data is accessed before the preload finishes, the library automatically falls back to a blocking read.
+
+### Optimistic Updates
+
+`putDirect()` updates the in-memory cache **immediately**, allowing your UI to reflect changes instantly while disk encryption happens in the background.
 
 ### Encryption Architecture
-
-KSafe uses a layered encryption architecture that separates configuration from implementation:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -756,21 +925,10 @@ KSafe uses a layered encryption architecture that separates configuration from i
 └─────────────────┘ └───────────────┘ └─────────────────┘
 ```
 
-| Layer | Purpose |
-|-------|---------|
-| **KSafe API** | Public interface for encrypted persistence |
-| **KSafeConfig** | User-configurable encryption parameters (key size) |
-| **KSafeEncryption** | Internal interface abstracting platform differences |
-| **Platform Engines** | Hardware-backed (Android/iOS) or software-backed (JVM) encryption |
-
-This architecture ensures:
-- **Security by default:** AES-GCM algorithm is fixed, only safe parameters are configurable
-- **Testability:** Unit tests can use a fake encryption engine without emulators
-- **Extensibility:** Future support for custom encryption providers (e.g., FIPS-compliant libraries)
-
 ***
 
 ## Security Features
+
 ### Platform-Specific Protection
 
 #### Android
@@ -791,26 +949,23 @@ This architecture ensures:
 * Suitable for desktop applications and server-side use
 
 ### Error Handling
+
 If decryption fails (e.g., corrupted data or missing key), KSafe gracefully returns the default value, ensuring your app continues to function.
 
 ### Reinstall Behavior
+
 KSafe ensures clean reinstalls on both platforms:
 * **Android:** Keystore entries automatically deleted on uninstall
 * **iOS:** Orphaned Keychain entries detected and cleaned on first use after reinstall
 
-This means users always get a fresh start when reinstalling your app, with no lingering encrypted data from previous installations.
-
-### Technical Details
-
-#### iOS Keychain Cleanup Mechanism
-On iOS, KSafe uses a smart detection system:
+### iOS Keychain Cleanup Mechanism
 
 * **Installation ID:** Each app install gets a unique ID stored in DataStore
 * **First Access:** On first get/put operation after install, cleanup runs
 * **Orphan Detection:** Compares Keychain entries with DataStore entries
 * **Automatic Removal:** Deletes any Keychain keys without matching DataStore data
 
-#### Known Limitations
+### Known Limitations
 
 * **iOS:** Keychain access requires device to be unlocked
 * **Android:** Some devices may not have hardware-backed keystore
@@ -820,11 +975,10 @@ On iOS, KSafe uses a smart detection system:
 ***
 
 ## Testing & Development
+
 by [Mark Andrachek](https://github.com/mandrachek)
 
 ### Running Tests
-
-KSafe includes comprehensive tests for all platforms. Here are the Gradle commands to run them:
 
 ```bash
 # Run all tests across all platforms
@@ -849,15 +1003,12 @@ KSafe includes comprehensive tests for all platforms. Here are the Gradle comman
 ./gradlew :ksafe:commonTest --tests "*.KSafeTest"
 ```
 
-**Note:** iOS tests on simulator use a mock Keychain implementation since Keychain Services are not available in the iOS Simulator. This validates the encryption logic but not the actual Keychain integration.
+**Note:** iOS Simulator uses real Keychain APIs (software-backed), while real devices use hardware-backed Keychain with Secure Enclave.
 
 ### Building and Running the iOS Test App
 
-The repository includes an iOS test app that demonstrates KSafe's Flow functionality. You can build and run it from the command line:
-
 #### Prerequisites
 ```bash
-# Build the KSafe framework first
 ./gradlew :ksafe:linkDebugFrameworkIosSimulatorArm64  # For simulator
 ./gradlew :ksafe:linkDebugFrameworkIosArm64           # For physical device
 ```
@@ -875,13 +1026,8 @@ xcodebuild -scheme KSafeTestApp \
 
 #### Installing and Running on Simulator
 ```bash
-# Find running simulator
 xcrun simctl list devices | grep "Booted"
-
-# Install app (replace DEVICE_ID with your simulator's ID)
 xcrun simctl install DEVICE_ID build/Build/Products/Debug-iphonesimulator/KSafeTestApp.app
-
-# Launch app
 xcrun simctl launch DEVICE_ID com.example.KSafeTestApp
 ```
 
@@ -895,26 +1041,9 @@ xcodebuild -scheme KSafeTestApp \
            build
 ```
 
-#### Installing on Physical Device
-```bash
-# List connected devices
-xcrun devicectl list devices
-
-# Install app (replace DEVICE_ID with your device's ID)
-xcrun devicectl device install app \
-                --device DEVICE_ID \
-                build/Build/Products/Debug-iphoneos/KSafeTestApp.app
-
-# Launch app (Note: Requires trusted developer profile on device)
-xcrun devicectl device process launch \
-                --device DEVICE_ID \
-                com.example.KSafeTestApp
-```
-
 **Important Notes:**
-- **Simulator:** Tests use a mock Keychain implementation for iOS Simulator compatibility
-- **Physical Device:** Requires developer profile to be trusted in Settings → General → VPN & Device Management
-- **Framework Path:** The Xcode project automatically selects the correct framework (arm64 for device, simulatorArm64 for simulator)
+- **Simulator:** Uses real Keychain APIs (software-backed)
+- **Physical Device:** Uses hardware-backed Keychain (Secure Enclave). Requires developer profile to be trusted in Settings → General → VPN & Device Management
 
 ### Test App Features
 
@@ -947,6 +1076,31 @@ import eu.eu.anifantakis.lib.ksafe.compose.mutableStateOf
 // New (correct)
 import eu.anifantakis.lib.ksafe.compose.mutableStateOf
 ```
+
+***
+
+## Alternatives & Comparison
+
+| Feature | KSafe | EncryptedSharedPrefs | Multiplatform Settings | SQLCipher |
+|---------|-------|---------------------|------------------------|-----------|
+| **KMP Support** | ✅ Android, iOS, JVM | ❌ Android only | ✅ Multi-platform | ⚠️ Limited |
+| **Hardware-backed Keys** | ✅ Keystore/Keychain | ✅ Keystore | ❌ No encryption | ❌ Software |
+| **Zero Boilerplate** | ✅ `by ksafe(0)` | ❌ Verbose API | ⚠️ Moderate | ❌ SQL required |
+| **Biometric Helper** | ✅ Built-in | ❌ Manual | ❌ Manual | ❌ Manual |
+| **Compose State** | ✅ `mutableStateOf` | ❌ Manual | ❌ Manual | ❌ Manual |
+| **Type Safety** | ✅ Reified generics | ⚠️ Limited | ✅ Good | ❌ SQL strings |
+| **Auth Caching** | ✅ Scoped sessions | ❌ No | ❌ No | ❌ No |
+
+**When to choose KSafe:**
+- You need encrypted persistence across Android, iOS, and Desktop
+- You want property delegation (`by ksafe(x)`) for minimal boilerplate
+- You need integrated biometric authentication with smart caching
+- You're using Jetpack Compose and want reactive encrypted state
+
+**When to consider alternatives:**
+- You need complex queries → Consider SQLCipher or Room with encryption
+- Android-only app with simple needs → EncryptedSharedPreferences works
+- No encryption needed → Multiplatform Settings is lighter
 
 ***
 

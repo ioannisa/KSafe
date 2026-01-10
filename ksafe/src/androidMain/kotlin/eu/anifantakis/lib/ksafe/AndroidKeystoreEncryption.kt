@@ -1,6 +1,7 @@
 package eu.anifantakis.lib.ksafe
 
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import java.security.KeyStore
 import javax.crypto.Cipher
@@ -30,6 +31,17 @@ internal class AndroidKeystoreEncryption(
     }
 
     override fun encrypt(identifier: String, data: ByteArray): ByteArray {
+        return try {
+            encryptWithKey(identifier, data)
+        } catch (e: KeyPermanentlyInvalidatedException) {
+            // Key was invalidated (e.g., device security settings changed)
+            // Delete the old key and create a new one
+            deleteKey(identifier)
+            encryptWithKey(identifier, data)
+        }
+    }
+
+    private fun encryptWithKey(identifier: String, data: ByteArray): ByteArray {
         val secretKey = getOrCreateSecretKey(identifier)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, secretKey)
@@ -42,6 +54,18 @@ internal class AndroidKeystoreEncryption(
     }
 
     override fun decrypt(identifier: String, data: ByteArray): ByteArray {
+        return try {
+            decryptWithKey(identifier, data)
+        } catch (e: KeyPermanentlyInvalidatedException) {
+            // Key was invalidated - the encrypted data cannot be recovered
+            // Delete the invalid key so future encryptions can work
+            deleteKey(identifier)
+            // Re-throw to let caller handle (will return default value)
+            throw e
+        }
+    }
+
+    private fun decryptWithKey(identifier: String, data: ByteArray): ByteArray {
         val secretKey = getOrCreateSecretKey(identifier)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
 

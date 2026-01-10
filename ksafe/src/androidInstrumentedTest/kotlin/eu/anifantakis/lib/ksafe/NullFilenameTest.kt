@@ -9,9 +9,14 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import kotlin.test.assertEquals
 
+/**
+ * Android instrumented tests for null filename (default DataStore) behavior.
+ * Verifies KSafe works correctly when no custom filename is provided.
+ */
 @RunWith(AndroidJUnit4::class)
 class NullFilenameTest {
-    
+
+    /** Verifies KSafe works with null filename (uses default DataStore) */
     @Test
     fun testWithNullFilename() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
@@ -28,6 +33,7 @@ class NullFilenameTest {
         assertEquals(value, retrieved)
     }
     
+    /** Verifies property delegation works with null filename */
     @Test
     fun testDelegateWithNullFilename() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()

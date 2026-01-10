@@ -11,7 +11,7 @@ plugins {
 
 // Set the same group and version as your main library
 group = "eu.anifantakis"
-version = "1.3.0"
+version = "1.4.0"
 
 kotlin {
     androidLibrary {
@@ -70,6 +70,7 @@ kotlin {
         commonTest {
             dependencies {
                 implementation(libs.kotlin.test)
+                implementation(libs.runtime)
             }
         }
 
@@ -132,8 +133,8 @@ mavenPublishing {
         url = "https://github.com/ioannisa/ksafe"
         licenses {
             license {
-                name = "MIT"
-                url = "https://opensource.org/licenses/MIT"
+                name = "Apache-2.0"
+                url = "https://www.apache.org/licenses/LICENSE-2.0"
             }
         }
         developers {

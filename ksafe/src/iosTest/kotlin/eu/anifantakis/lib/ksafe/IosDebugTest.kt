@@ -10,8 +10,13 @@ import okio.Path.Companion.toPath
 import okio.FileSystem
 import kotlinx.cinterop.ExperimentalForeignApi
 
+/**
+ * iOS-specific debug test for verifying encryption behavior.
+ * Includes detailed logging and DataStore file inspection.
+ */
 class IosDebugTest {
     
+    /** Debug test verifying encrypted/unencrypted storage with detailed logging */
     @OptIn(ExperimentalForeignApi::class)
     @Test
     fun testSimpleEncryptionDebug() = runTest {

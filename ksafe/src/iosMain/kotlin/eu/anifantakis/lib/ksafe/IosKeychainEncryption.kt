@@ -49,8 +49,8 @@ import kotlin.random.Random
  * - Keys not included in iCloud/iTunes backups
  * - Access control: `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`
  *
- * On iOS Simulator, a mock keychain (NSUserDefaults-based) is used since
- * Keychain Services are not available in the simulator environment.
+ * On real devices, keys are hardware-backed by Secure Enclave.
+ * On iOS Simulator, keys are software-backed but still use the real Keychain APIs.
  *
  * @property config Configuration for encryption (key size)
  * @property serviceName The Keychain service name for key storage
@@ -95,12 +95,6 @@ internal class IosKeychainEncryption(
     }
 
     override fun deleteKey(identifier: String) {
-        // Use mock keychain in simulator
-        if (MockKeychain.isSimulator()) {
-            MockKeychain.delete(identifier)
-            return
-        }
-
         deleteFromKeychain(identifier)
     }
 
@@ -115,21 +109,7 @@ internal class IosKeychainEncryption(
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     internal fun getOrCreateKeychainKey(keyId: String): ByteArray {
-        // Use mock keychain in simulator
-        if (MockKeychain.isSimulator()) {
-            val existingKey = MockKeychain.retrieve(keyId)
-            if (existingKey != null) {
-                return existingKey
-            }
-
-            // Generate new key with configured size
-            val newKey = ByteArray(keySizeBytes)
-            Random.nextBytes(newKey)
-            MockKeychain.store(keyId, newKey)
-            return newKey
-        }
-
-        // First try to retrieve existing key from real Keychain
+        // Try to retrieve existing key from Keychain
         memScoped {
             val query = CFDictionaryCreateMutable(
                 kCFAllocatorDefault,

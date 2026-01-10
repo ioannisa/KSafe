@@ -48,6 +48,7 @@ import platform.Foundation.NSArray
 import platform.Foundation.NSDictionary
 import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.NSFileManager
+import platform.Foundation.NSProcessInfo
 import platform.Foundation.NSURL
 import platform.Foundation.NSUserDomainMask
 import platform.Security.SecItemCopyMatching
@@ -84,12 +85,15 @@ internal fun decodeBase64(encoded: String): ByteArray = Base64.decode(encoded)
  * @property fileName Optional namespace for the storage file. Must be lower-case letters only.
  * @property lazyLoad Whether to start the background preloader immediately.
  * @property memoryPolicy Whether to decrypt and store values in RAM, or keep them encrypted in RAM for additional security
+ * @property config Encryption configuration (key size, etc.)
+ * @property securityPolicy Security policy for detecting jailbroken devices, debuggers, etc.
  */
 actual class KSafe(
     @PublishedApi internal val fileName: String? = null,
     private val lazyLoad: Boolean = false,
     @PublishedApi internal val memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
-    private val config: KSafeConfig = KSafeConfig()
+    private val config: KSafeConfig = KSafeConfig(),
+    private val securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default
 ) {
     /**
      * Internal constructor for testing with custom encryption engine.
@@ -100,8 +104,9 @@ actual class KSafe(
         lazyLoad: Boolean = false,
         memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
         config: KSafeConfig = KSafeConfig(),
+        securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
         testEngine: KSafeEncryption
-    ) : this(fileName, lazyLoad, memoryPolicy, config) {
+    ) : this(fileName, lazyLoad, memoryPolicy, config, securityPolicy) {
         _testEngine = testEngine
     }
 
@@ -117,6 +122,15 @@ actual class KSafe(
         internal const val KEY_PREFIX = "eu.anifantakis.ksafe"
         private const val INSTALLATION_ID_KEY = "ksafe_installation_id"
         private const val BIOMETRIC_CLEANUP_KEY = "ksafe_biometric_cleanup_done"
+
+        /**
+         * Checks if running on iOS Simulator (no biometric hardware available).
+         */
+        @OptIn(ExperimentalForeignApi::class)
+        private fun isSimulator(): Boolean {
+            val environment = NSProcessInfo.processInfo.environment
+            return environment["SIMULATOR_UDID"] != null
+        }
 
         /**
          * Sentinel value used to represent null in storage.
@@ -142,6 +156,9 @@ actual class KSafe(
                 throw IllegalArgumentException("File name must contain only lowercase letters.")
             }
         }
+
+        // Validate security policy (may throw SecurityViolationException)
+        validateSecurityPolicy(securityPolicy)
     }
 
     /**
@@ -218,19 +235,6 @@ actual class KSafe(
 
         // Check if cleanup has already been done
         if (userDefaults.boolForKey(cleanupKey)) {
-            return
-        }
-
-        // Use mock keychain in simulator
-        if (MockKeychain.isSimulator()) {
-            val basePrefix = listOfNotNull(KEY_PREFIX, fileName).joinToString(".")
-            val prefixWithDelimiter = "$basePrefix."
-            MockKeychain.getAllKeys().filter { it.startsWith(prefixWithDelimiter) }.forEach {
-                MockKeychain.delete(it)
-            }
-            // Mark cleanup as done
-            userDefaults.setBool(true, forKey = cleanupKey)
-            userDefaults.synchronize()
             return
         }
 
@@ -351,26 +355,6 @@ actual class KSafe(
      */
     @OptIn(ExperimentalForeignApi::class)
     private fun removeOrphanedKeychainKeys(validKeys: Set<String>) {
-        // Use mock keychain in simulator
-        if (MockKeychain.isSimulator()) {
-            val basePrefix = listOfNotNull(KEY_PREFIX, fileName).joinToString(".")
-            val prefixWithDelimiter = "$basePrefix."
-
-            MockKeychain.getAllKeys().forEach { account ->
-                if (account.startsWith(prefixWithDelimiter)) {
-                    val keyId = account.removePrefix(prefixWithDelimiter)
-
-                    // FIX: Don't delete keys belonging to other KSafe instances
-                    if (fileName == null && keyId.contains('.')) return@forEach
-
-                    if (keyId !in validKeys) {
-                        MockKeychain.delete(account)
-                    }
-                }
-            }
-            return
-        }
-
         val basePrefix = listOfNotNull(KEY_PREFIX, fileName).joinToString(".")
         val prefixWithDelimiter = "$basePrefix."
 
@@ -713,12 +697,6 @@ actual class KSafe(
     internal fun deleteKeychainKey(keyId: String) {
         val account = listOfNotNull(KEY_PREFIX, fileName, keyId).joinToString(".")
 
-        // Use mock keychain in simulator
-        if (MockKeychain.isSimulator()) {
-            MockKeychain.delete(account)
-            return
-        }
-
         memScoped {
             val query = CFDictionaryCreateMutable(
                 kCFAllocatorDefault,
@@ -979,10 +957,6 @@ actual class KSafe(
             engine.deleteKey(keyIdentifier)
         }
 
-        // Clear mock keychain if in simulator
-        if (MockKeychain.isSimulator()) {
-            MockKeychain.clear()
-        }
         memoryCache.value = emptyMap()
     }
 
@@ -1032,7 +1006,7 @@ actual class KSafe(
         }
 
         // In simulator, always return true (no biometric hardware)
-        if (MockKeychain.isSimulator()) {
+        if (isSimulator()) {
             if (authorizationDuration != null) {
                 val scope = authorizationDuration.scope ?: ""
                 updateBiometricSession(scope, currentTimeMillis())
@@ -1078,7 +1052,7 @@ actual class KSafe(
             }
 
             // In simulator, always return true (no biometric hardware)
-            if (MockKeychain.isSimulator()) {
+            if (isSimulator()) {
                 if (authorizationDuration != null) {
                     val scope = authorizationDuration.scope ?: ""
                     updateBiometricSession(scope, currentTimeMillis())

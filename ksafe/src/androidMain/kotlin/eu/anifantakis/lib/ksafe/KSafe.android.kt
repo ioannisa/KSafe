@@ -47,13 +47,16 @@ internal fun decodeBase64(encoded: String): ByteArray = Base64.decode(encoded)
  * @property fileName Optional namespace for the storage file. Must be lower-case letters only.
  * @property lazyLoad Whether to start the background preloader immediately.
  * @property memoryPolicy Whether to decrypt and store values in RAM, or keep them encrypted in RAM for additional security
+ * @property config Encryption configuration (key size, etc.)
+ * @property securityPolicy Security policy for detecting rooted devices, debuggers, etc.
  */
 actual class KSafe(
     private val context: Context,
     @PublishedApi internal val fileName: String? = null,
     private val lazyLoad: Boolean = false,
     @PublishedApi internal val memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
-    private val config: KSafeConfig = KSafeConfig()
+    private val config: KSafeConfig = KSafeConfig(),
+    private val securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default
 ) {
     /**
      * Internal constructor for testing with custom encryption engine.
@@ -65,8 +68,9 @@ actual class KSafe(
         lazyLoad: Boolean = false,
         memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
         config: KSafeConfig = KSafeConfig(),
+        securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
         testEngine: KSafeEncryption
-    ) : this(context, fileName, lazyLoad, memoryPolicy, config) {
+    ) : this(context, fileName, lazyLoad, memoryPolicy, config, securityPolicy) {
         _testEngine = testEngine
     }
 
@@ -103,6 +107,12 @@ actual class KSafe(
         if (app != null) {
             BiometricHelper.init(app)
         }
+
+        // Set application context for security checks
+        SecurityChecker.applicationContext = context.applicationContext
+
+        // Validate security policy (may throw SecurityViolationException)
+        validateSecurityPolicy(securityPolicy)
     }
 
     @PublishedApi

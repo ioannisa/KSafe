@@ -44,18 +44,21 @@ class JvmNullFilenameTest {
 
     // ---------- Basics & defaults ----------
 
+    /** Verifies unencrypted get returns default when key is absent */
     @Test
     fun get_returnsDefault_whenAbsent_unencrypted() = runTest {
         val key = uniqueKey("absent_plain")
         assertEquals("def", ksafe.get(key, "def", encrypted = false))
     }
 
+    /** Verifies encrypted get returns default when key is absent */
     @Test
     fun get_returnsDefault_whenAbsent_encrypted() = runTest {
         val key = uniqueKey("absent_enc")
         assertEquals(42, ksafe.get(key, 42, encrypted = true))
     }
 
+    /** Verifies default encryption mode is encrypted (true) */
     @Test
     fun put_get_defaultEncryption_isEncryptedByDefault() = runTest {
         val key = uniqueKey("default_enc_true")
@@ -64,6 +67,7 @@ class JvmNullFilenameTest {
         assertNotEquals("secret", ksafe.get(key, "x", false)) // unencrypted read must not reveal
     }
 
+    /** Verifies delete removes unencrypted value and returns default */
     @Test
     fun delete_removes_plain_and_returnsDefault() = runTest {
         val key = uniqueKey("plain_delete")
@@ -73,6 +77,7 @@ class JvmNullFilenameTest {
         assertEquals("d", ksafe.get(key, "d", encrypted = false))
     }
 
+    /** Verifies delete removes encrypted value and returns default */
     @Test
     fun delete_removes_encrypted_and_returnsDefault() = runTest {
         val key = uniqueKey("enc_delete")
@@ -84,6 +89,7 @@ class JvmNullFilenameTest {
 
     // ---------- Direct API ----------
 
+    /** Verifies putDirect/getDirect roundtrip for unencrypted data */
     @Test
     fun direct_plain_roundTrip() {
         val key = uniqueKey("direct_plain")
@@ -91,6 +97,7 @@ class JvmNullFilenameTest {
         assertEquals("plain_direct", ksafe.getDirect(key, "d", encrypted = false))
     }
 
+    /** Verifies putDirect/getDirect roundtrip for encrypted data */
     @Test
     fun direct_encrypted_roundTrip() {
         val key = uniqueKey("direct_enc")
@@ -101,6 +108,7 @@ class JvmNullFilenameTest {
 
     // ---------- Delegates ----------
 
+    /** Verifies delegate uses property name as key and encrypts by default */
     @Test
     fun delegate_defaultEncrypted_propertyNameAsKey() = runTest {
         val key = uniqueKey("delegate_default") // only to avoid clashes if reused by name
@@ -115,6 +123,7 @@ class JvmNullFilenameTest {
         assertNotEquals("changed", ksafe.get("secretValue", "x", encrypted = false))
     }
 
+    /** Verifies delegate with explicit key and unencrypted mode */
     @Test
     fun delegate_explicitKey_unencrypted_roundTrip() = runTest {
         val dKey = uniqueKey("delegate_plain")
@@ -128,6 +137,7 @@ class JvmNullFilenameTest {
 
     // ---------- Flows ----------
 
+    /** Verifies unencrypted Flow emits only when value actually changes */
     @Test
     fun flow_unencrypted_emitsOnChange_onlyWhenValueChanges() = runTest {
         val key = uniqueKey("flow_plain")
@@ -144,6 +154,7 @@ class JvmNullFilenameTest {
         }
     }
 
+    /** Verifies encrypted Flow emits only when value actually changes */
     @Test
     fun flow_encrypted_emitsOnChange_onlyWhenValueChanges() = runTest {
         val key = uniqueKey("flow_enc")
@@ -162,6 +173,7 @@ class JvmNullFilenameTest {
 
     // ---------- Type coverage ----------
 
+    /** Verifies Boolean type roundtrip with encryption */
     @Test
     fun types_boolean_roundTrip() = runTest {
         val key = uniqueKey("bool")
@@ -170,6 +182,7 @@ class JvmNullFilenameTest {
         assertEquals(false, ksafe.get(key, false, encrypted = false))
     }
 
+    /** Verifies all primitive types roundtrip without encryption */
     @Test
     fun types_int_long_float_double_string_roundTrip_unencrypted() = runTest {
         val iK = uniqueKey("int");    ksafe.put(iK, 123, encrypted = false);    assertEquals(123, ksafe.get(iK, 0, false))
@@ -182,6 +195,7 @@ class JvmNullFilenameTest {
     @Serializable
     data class User(val id: Int, val name: String)
 
+    /** Verifies @Serializable data class roundtrip with encryption */
     @Test
     fun types_serializable_roundTrip_encrypted() = runTest {
         val key = uniqueKey("user")
@@ -200,6 +214,7 @@ class JvmNullFilenameTest {
         var launchCount: Int by store(defaultValue = 0, key = "launchCount", encrypted = false)
     }
 
+    /** Verifies multiple delegated properties work independently */
     @Test
     fun composition_multipleDelegatedProperties_workIndependently() = runTest {
         val s = Settings(ksafe)
@@ -222,6 +237,7 @@ class JvmNullFilenameTest {
         assertEquals("tkn123", ksafe.get("token", "x", encrypted = true))
     }
 
+    /** Verifies writes to one key don't affect other keys */
     @Test
     fun composition_independentKeys_doNotInterfere() = runTest {
         val s = Settings(ksafe)
@@ -235,6 +251,7 @@ class JvmNullFilenameTest {
         assertEquals(10, s.launchCount)
     }
 
+    /** Verifies put/get roundtrip for unencrypted String */
     @Test
     fun testPutAndGetUnencryptedString() = runTest {
         val ksafe = createKSafe()
@@ -247,6 +264,7 @@ class JvmNullFilenameTest {
         assertEquals(value, retrieved)
     }
 
+    /** Verifies put/get roundtrip for encrypted String */
     @Test
     fun testPutAndGetEncryptedString() = runTest {
         val ksafe = createKSafe()
@@ -259,6 +277,7 @@ class JvmNullFilenameTest {
         assertEquals(value, retrieved)
     }
 
+    /** Verifies put/get roundtrip for unencrypted Int */
     @Test
     fun testPutAndGetUnencryptedInt() = runTest {
         val ksafe = createKSafe()
@@ -271,6 +290,7 @@ class JvmNullFilenameTest {
         assertEquals(value, retrieved)
     }
 
+    /** Verifies put/get roundtrip for encrypted Int */
     @Test
     fun testPutAndGetEncryptedInt() = runTest {
         val ksafe = createKSafe()
@@ -283,6 +303,7 @@ class JvmNullFilenameTest {
         assertEquals(value, retrieved)
     }
 
+    /** Verifies put/get roundtrip for unencrypted Boolean */
     @Test
     fun testPutAndGetUnencryptedBoolean() = runTest {
         val ksafe = createKSafe()
@@ -295,6 +316,7 @@ class JvmNullFilenameTest {
         assertEquals(value, retrieved)
     }
 
+    /** Verifies put/get roundtrip for encrypted Boolean */
     @Test
     fun testPutAndGetEncryptedBoolean() = runTest {
         val ksafe = createKSafe()
@@ -307,6 +329,7 @@ class JvmNullFilenameTest {
         assertEquals(value, retrieved)
     }
 
+    /** Verifies put/get roundtrip for unencrypted Long */
     @Test
     fun testPutAndGetUnencryptedLong() = runTest {
         val ksafe = createKSafe()
@@ -319,6 +342,7 @@ class JvmNullFilenameTest {
         assertEquals(value, retrieved)
     }
 
+    /** Verifies put/get roundtrip for encrypted Long */
     @Test
     fun testPutAndGetEncryptedLong() = runTest {
         val ksafe = createKSafe()
@@ -331,6 +355,7 @@ class JvmNullFilenameTest {
         assertEquals(value, retrieved)
     }
 
+    /** Verifies put/get roundtrip for unencrypted Float */
     @Test
     fun testPutAndGetUnencryptedFloat() = runTest {
         val ksafe = createKSafe()
@@ -343,6 +368,7 @@ class JvmNullFilenameTest {
         assertEquals(value, retrieved)
     }
 
+    /** Verifies put/get roundtrip for encrypted Float */
     @Test
     fun testPutAndGetEncryptedFloat() = runTest {
         val ksafe = createKSafe()
@@ -355,6 +381,7 @@ class JvmNullFilenameTest {
         assertEquals(value, retrieved)
     }
 
+    /** Verifies put/get roundtrip for unencrypted Double */
     @Test
     fun testPutAndGetUnencryptedDouble() = runTest {
         val ksafe = createKSafe()
@@ -367,6 +394,7 @@ class JvmNullFilenameTest {
         assertEquals(value, retrieved)
     }
 
+    /** Verifies put/get roundtrip for encrypted Double */
     @Test
     fun testPutAndGetEncryptedDouble() = runTest {
         val ksafe = createKSafe()
@@ -379,6 +407,7 @@ class JvmNullFilenameTest {
         assertEquals(value, retrieved)
     }
 
+    /** Verifies get returns default for non-existent unencrypted key */
     @Test
     fun testGetWithDefaultValue() = runTest {
         val ksafe = createKSafe()
@@ -389,6 +418,7 @@ class JvmNullFilenameTest {
         assertEquals(defaultValue, retrieved)
     }
 
+    /** Verifies get returns default for non-existent encrypted key */
     @Test
     fun testGetEncryptedWithDefaultValue() = runTest {
         val ksafe = createKSafe()
@@ -399,6 +429,7 @@ class JvmNullFilenameTest {
         assertEquals(defaultValue, retrieved)
     }
 
+    /** Verifies delete removes unencrypted value */
     @Test
     fun testDelete() = runTest {
         val ksafe = createKSafe()
@@ -413,6 +444,7 @@ class JvmNullFilenameTest {
         assertEquals(defaultValue, ksafe.get(key, defaultValue, encrypted = false))
     }
 
+    /** Verifies delete removes encrypted value */
     @Test
     fun testDeleteEncrypted() = runTest {
         val ksafe = createKSafe()
@@ -427,6 +459,7 @@ class JvmNullFilenameTest {
         assertEquals(defaultValue, ksafe.get(key, defaultValue, encrypted = true))
     }
 
+    /** Verifies put overwrites existing unencrypted value */
     @Test
     fun testOverwriteValue() = runTest {
         val ksafe = createKSafe()
@@ -442,6 +475,7 @@ class JvmNullFilenameTest {
         assertEquals(value2, ksafe.get(key, defaultValue, encrypted = false))
     }
 
+    /** Verifies put overwrites existing encrypted value */
     @Test
     fun testOverwriteEncryptedValue() = runTest {
         val ksafe = createKSafe()
@@ -457,6 +491,7 @@ class JvmNullFilenameTest {
         assertEquals(value2, ksafe.get(key, defaultValue, encrypted = true))
     }
 
+    /** Verifies Flow emits updates for unencrypted values */
     @Test
     fun testFlowUnencrypted() = runTest {
         val ksafe = createKSafe()
@@ -483,6 +518,7 @@ class JvmNullFilenameTest {
         }
     }
 
+    /** Verifies Flow emits updates for encrypted values */
     @Test
     fun testFlowEncrypted() = runTest {
         val ksafe = createKSafe()
@@ -509,6 +545,7 @@ class JvmNullFilenameTest {
         }
     }
 
+    /** Verifies Flow skips duplicate consecutive values */
     @Test
     fun testFlowDistinctUntilChanged() = runTest {
         val ksafe = createKSafe()
@@ -534,6 +571,7 @@ class JvmNullFilenameTest {
         }
     }
 
+    /** Verifies multiple keys are stored independently */
     @Test
     fun testMultipleKeysIndependence() = runTest {
         val ksafe = createKSafe()
@@ -554,6 +592,7 @@ class JvmNullFilenameTest {
         assertEquals(value2, ksafe.get(key2, defaultValue, encrypted = false))
     }
 
+    /** Verifies encrypted data is not readable as unencrypted */
     @Test
     fun testEncryptedDataIsDifferentFromPlaintext() = runTest {
         val ksafe = createKSafe()
@@ -573,6 +612,7 @@ class JvmNullFilenameTest {
         assertEquals(value, encryptedRetrieve)
     }
 
+    /** Verifies complex @Serializable object roundtrip */
     @Test
     fun testComplexObject() = runTest {
         val ksafe = createKSafe()
@@ -604,6 +644,7 @@ class JvmNullFilenameTest {
         assertEquals(value, encryptedRetrieved)
     }
 
+    /** Verifies nullable values are handled correctly */
     @Test
     fun testNullableValues() = runTest {
         val ksafe = createKSafe()
@@ -617,6 +658,7 @@ class JvmNullFilenameTest {
         assertEquals(value, retrieved)
     }
 
+    /** Verifies empty string roundtrip */
     @Test
     fun testEmptyString() = runTest {
         val ksafe = createKSafe()
@@ -629,6 +671,7 @@ class JvmNullFilenameTest {
         assertEquals(value, retrieved)
     }
 
+    /** Verifies special characters roundtrip */
     @Test
     fun testSpecialCharacters() = runTest {
         val ksafe = createKSafe()
@@ -646,6 +689,7 @@ class JvmNullFilenameTest {
         assertEquals(value, ksafe.get(encryptedKey, defaultValue, encrypted = true))
     }
 
+    /** Verifies Unicode characters roundtrip */
     @Test
     fun testUnicodeCharacters() = runTest {
         val ksafe = createKSafe()
@@ -663,6 +707,7 @@ class JvmNullFilenameTest {
         assertEquals(value, ksafe.get(encryptedKey, defaultValue, encrypted = true))
     }
 
+    /** Verifies large data (10KB) roundtrip */
     @Test
     fun testLargeData() = runTest {
         val ksafe = createKSafe()
@@ -680,6 +725,7 @@ class JvmNullFilenameTest {
         assertEquals(value, ksafe.get(encryptedKey, defaultValue, encrypted = true))
     }
 
+    /** Verifies concurrent put/get operations work correctly */
     @Test
     fun testConcurrentAccess() = runTest {
         val ksafe = createKSafe()
@@ -699,6 +745,7 @@ class JvmNullFilenameTest {
         assertTrue(results.all { it })
     }
 
+    /** Verifies different file names store data independently */
     @Test
     fun testFileNameIsolation() = runTest {
         val ksafe1 = createKSafe("fileone")
@@ -715,6 +762,7 @@ class JvmNullFilenameTest {
         assertEquals(value2, ksafe2.get(key, defaultValue, encrypted = false))
     }
 
+    /** Verifies negative number roundtrip for all numeric types */
     @Test
     fun testNegativeNumbers() = runTest {
         val ksafe = createKSafe()
@@ -744,6 +792,7 @@ class JvmNullFilenameTest {
         assertEquals(doubleValue, ksafe.get(doubleKey, 0.0, encrypted = false))
     }
 
+    /** Verifies Int/Long boundary values (MIN_VALUE, MAX_VALUE) */
     @Test
     fun testEdgeCaseNumbers() = runTest {
         val ksafe = createKSafe()
@@ -767,6 +816,7 @@ class JvmNullFilenameTest {
         assertEquals(Long.MIN_VALUE, ksafe.get(minLongKey, 0L, encrypted = false))
     }
 
+    /** Verifies getDirect reflects value written by suspend put() */
     @Test
     fun testGetDirectReflectsSuspendingPut() = runTest {
         val ksafe = createKSafe()
@@ -785,6 +835,7 @@ class JvmNullFilenameTest {
         assertEquals(value, result)
     }
 
+    /** Verifies putDirect followed by getDirect roundtrip */
     @Test
     fun testPutDirect() = runTest {
         val ksafe = createKSafe()
@@ -803,6 +854,7 @@ class JvmNullFilenameTest {
         assertEquals(value, result)
     }
 
+    /** Verifies putDirect eventually becomes visible via getDirect */
     @Test
     fun testPutDirectEventuallyUpdatesValue() = runTest {
         val ksafe = createKSafe()
