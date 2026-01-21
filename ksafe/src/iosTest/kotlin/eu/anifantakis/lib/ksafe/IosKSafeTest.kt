@@ -17,6 +17,11 @@ class IosKSafeTest : KSafeTest() {
             .lowercase()
             .filter { it in 'a'..'z' }
             .take(20) // Limit length to keep it reasonable
-        return KSafe(actualFileName)
+            
+        // Use FakeEncryption to bypass Keychain entitlement issues in test environment
+        return KSafe(
+            fileName = actualFileName,
+            testEngine = FakeEncryption()
+        )
     }
 }

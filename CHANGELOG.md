@@ -2,6 +2,188 @@
 
 All notable changes to KSafe will be documented in this file.
 
+## [1.4.1] - 2025-01-21
+
+### Performance Improvements
+
+KSafe 1.4.1 delivers **massive performance improvements**, making it faster than EncryptedSharedPreferences and KVault for encrypted operations while maintaining hardware-backed security.
+
+#### Benchmark Results (1.4.0 → 1.4.1)
+
+| Metric | 1.4.0 | 1.4.1 | Improvement |
+|--------|-------|-------|-------------|
+| Unencrypted Write | 0.23 ms | 0.0115 ms | **20x faster** |
+| Encrypted Write (ENCRYPTED mem) | 0.44 ms | 0.053 ms | **8x faster** |
+| Encrypted Write (PLAIN_TEXT mem) | 0.70 ms | 0.012 ms | **58x faster** |
+| Encrypted Write vs ESP | 2.4x slower | **17x faster** | Now beats ESP! |
+| DataStore Write Acceleration | 20x | 327x | **16x more** |
+
+#### Comparison with Other Libraries (Unencrypted)
+
+| Library | Read | Write | Notes |
+|---------|------|-------|-------|
+| SharedPreferences | 0.0006 ms | 0.0152 ms | Android only, no encryption |
+| MMKV | 0.0007 ms | 0.0577 ms | Fast, but no KMP, no hardware encryption |
+| Multiplatform Settings | 0.0009 ms | 0.0192 ms | KMP, but no encryption |
+| **KSafe 1.4.1** | **0.0016 ms** | **0.0115 ms** | KMP + encryption + biometrics |
+| DataStore | 1.10 ms | 3.76 ms | Safe but slow |
+
+> **Note:** KSafe unencrypted writes are now **faster than SharedPreferences**!
+
+#### Comparison with Other Libraries (Encrypted)
+
+| Library | Read | Write | vs KSafe |
+|---------|------|-------|----------|
+| **KSafe (PLAIN_TEXT memory)** | **0.0058 ms** | **0.0123 ms** | — |
+| KSafe (ENCRYPTED memory) | 0.0276 ms | 0.0531 ms | *(decrypts on-demand)* |
+| KVault | 0.6003 ms | 1.05 ms | KSafe is **103x/85x faster** |
+| EncryptedSharedPrefs | 0.6817 ms | 0.2064 ms | KSafe is **117x/17x faster** |
+
+**vs KVault (encrypted KMP storage):**
+- **103x faster encrypted reads** (0.60 ms → 0.0058 ms with PLAIN_TEXT memory)
+- **85x faster encrypted writes** (1.05 ms → 0.0123 ms)
+
+**vs multiplatform-settings (Russell Wolf):**
+- **1.7x faster writes** (0.0192 ms → 0.0115 ms)
+- Similar read performance (0.0016 ms vs 0.0009 ms)
+- KSafe adds: hardware-backed encryption, biometric auth, auto-serialization
+
+#### Cold Start / Reinitialization Performance
+
+| Library | Keys | Time |
+|---------|------|------|
+| SharedPreferences | 201 | 0.0315 ms |
+| Multiplatform Settings | 201 | 0.0400 ms |
+| MMKV | 201 | 0.0402 ms |
+| DataStore | 201 | 0.4901 ms |
+| **KSafe (ENCRYPTED)** | 603 | **1.26 ms** |
+| KVault | 320 | 4.77 ms |
+| EncryptedSharedPrefs | 201 | 6.41 ms |
+| KSafe (PLAIN_TEXT) | 1206 | 6.49 ms |
+
+> **Note:** KSafe ENCRYPTED mode is **5x faster** to cold-start than PLAIN_TEXT mode (defers decryption until access).
+
+#### Optimizations Implemented
+
+1. **ConcurrentHashMap for Hot Cache**
+   - Replaced `AtomicReference<Map>` with `ConcurrentHashMap`
+   - O(1) per-key updates instead of copy-on-write
+   - Eliminates full map copy on every write
+
+2. **ConcurrentHashMap for Dirty Keys**
+   - Replaced `AtomicReference` with CAS loops with `ConcurrentHashMap.newKeySet()`
+   - O(1) add/remove operations for tracking pending writes
+   - Prevents stale data overwrites during async persistence
+
+3. **Write Coalescing**
+   - New `Channel<WriteOperation>` for queuing writes
+   - Single consumer coroutine batches operations within 16ms window
+   - Multiple writes coalesced into single `DataStore.edit{}` call
+   - Reduces disk I/O overhead significantly
+
+4. **Deferred Encryption**
+   - Encryption moved from UI thread to background batch processor
+   - `putDirect()` queues plaintext, returns immediately
+   - `processBatch()` encrypts all pending operations before DataStore write
+   - UI thread no longer blocked by Android Keystore operations
+
+5. **SecretKey Caching (Android)**
+   - Added `ConcurrentHashMap<String, SecretKey>` cache in `AndroidKeystoreEncryption`
+   - Avoids repeated Android Keystore lookups
+   - Double-checked locking with `synchronized(keyAlias.intern())`
+   - Cache cleared when keys are deleted
+
+6. **Shared Write Scope**
+   - Reuses single `CoroutineScope(Dispatchers.IO + SupervisorJob())` for all write operations
+   - Avoids object allocation overhead of creating new scope per `putDirect()` call
+
+7. **Simplified Cache Updates**
+   - `updateMemoryCache()` now uses O(1) direct `ConcurrentHashMap` operations
+   - Eliminated CAS loops and map copying previously required with `AtomicReference<Map>`
+
+### Technical Details
+
+**Write Flow Before (1.4.0):**
+```
+putDirect() → encrypt (BLOCKING) → launch coroutine → DataStore.edit()
+             ↑ 4-6ms on UI thread!
+```
+
+**Write Flow After (1.4.1):**
+```
+putDirect() → update cache → queue WriteOperation → return (~13µs)
+                                     ↓
+Background: collect 16ms window → encrypt all → single DataStore.edit()
+```
+
+### Fixed
+
+- **Critical Data Integrity Fix (Hot Cache)** - Fixed a bug where plaintext values like `"true"`, `"false"`, or numbers (which are valid Base64) were incorrectly attempted to be decrypted during optimistic reads.
+  - Previously, "decrypting" these values produced garbage which failed JSON parsing outside the recovery block.
+  - Now validates JSON structure post-decryption; invalid results trigger the correct plaintext fallback.
+  - Fixes potential read failures for specific primitive values immediately after writing.
+
+- **ConcurrentHashMap iteration race condition (JVM)** - Fixed `NoSuchElementException` crash during rapid concurrent writes
+
+- **HashMap concurrency crash (iOS)** - Fixed `IllegalStateException` ("Have object hashCodes changed?") crash during concurrent cache access
+  - Kotlin/Native's HashMap is not thread-safe unlike JVM's ConcurrentHashMap
+  - Implemented proper copy-on-write semantics with AtomicReference for all cache mutations
+  - Added synchronized access to dirty keys set
+  - Background collector can no longer corrupt cache while UI reads values
+
+- **Dirty keys race condition** - Fixed cache corruption where keys could be removed prematurely
+  - Dirty flags are now intentionally NOT cleared after persistence
+  - Prevents stale DataStore snapshots from overwriting optimistic cache values
+  - Trade-off: Small memory overhead (~10KB for 1000 keys) for guaranteed correctness
+
+- **Self-Healing Key Recovery (Android)** - Fixed rare crash when Android Keystore keys become invalidated
+  - **This is rare**: KSafe keys are configured WITHOUT these flags:
+    - `setUserAuthenticationRequired(true)` - NOT set (keys usable without unlocking device)
+    - `setInvalidatedByBiometricEnrollment(true)` - NOT set (keys survive biometric changes)
+  - This means KSafe keys are stable and always accessible
+  - Invalidation only occurs in edge cases: factory reset, OEM Keystore bugs, or system corruption
+  - Now catches `KeyPermanentlyInvalidatedException` during encrypt/decrypt operations
+  - **Self-healing behavior**: Automatically deletes invalidated key and regenerates a fresh one
+  - Encryption: Seamlessly retries with new key (data preserved)
+  - Decryption: Returns default value (old encrypted data cannot be recovered with destroyed key)
+
+- **iOS Keychain error handling** - Improved error handling to prevent silent data loss
+  - `errSecItemNotFound` → Creates new key (correct - key doesn't exist)
+  - `errSecInteractionNotAllowed` → Throws error (device locked - key exists but inaccessible)
+  - Other errors → Throws error with status code (prevents silent key regeneration)
+  - Previously, ANY error would silently create a new key, potentially causing data loss
+
+### Added (Testing)
+
+- **Concurrency stress tests** in `JvmKSafeTest`:
+  - `testConcurrentPutDirectStress` - 10 writers × 500 iterations
+  - `testConcurrentEncryptedPutDirectStress` - 5 writers × 100 encrypted iterations
+  - `testConcurrentReadWriteStress` - Simultaneous read/write on shared keys
+  - `testDirtyKeysStress` - 20 writers × 1000 iterations targeting dirty key mechanism
+- **iOS Keychain error handling tests** in `IosKeychainEncryptionTest`:
+  - `testThrowsOnKeychainErrorInTestEnvironment` - Verifies errors throw (not silently create keys)
+  - `testDecryptThrowsOnKeychainError` - Verifies decrypt fails safely
+  - `testDeleteKeyDoesNotThrow` - Verifies delete is safe (no data loss risk)
+  - `testCustomConfigIsAccepted` - Verifies 128-bit and 256-bit config
+  - Documentation tests for error codes and device-locked scenario
+
+### Changed
+
+- `WriteOperation.Encrypted` now carries plaintext + keyAlias instead of pre-computed ciphertext
+- Encryption happens in `processBatch()` instead of `putDirect()`
+- All three platforms (Android, iOS, JVM) use consistent write coalescing architecture
+
+### Documentation
+
+- **Added Direct API recommendation** for bulk/concurrent operations (~950x faster than Coroutine API)
+- Added Cold Start / Reinitialization benchmark results
+- Added comprehensive comparison table (KSafe vs SharedPreferences vs DataStore vs KVault)
+- Added performance benchmarks section with detailed results including KVault
+- Added explanation of hot cache architecture
+- Updated "Alternatives & Comparison" section with KVault
+
+---
+
 ## [1.4.0] - 2025-01-11
 
 ### Added

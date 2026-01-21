@@ -826,11 +826,7 @@ class JvmNullFilenameTest {
         // 1. Write using suspend function (waits for disk write)
         ksafe.put(key, value, encrypted = true)
 
-        // 2. Allow a brief moment for the internal cache observer to update
-        // (Necessary because the cache update happens on a background job after the write)
-        //delay(50)
-
-        // 3. Read using non-blocking getDirect
+        // 2. Read using non-blocking getDirect (cache updated synchronously by put)
         val result = ksafe.getDirect(key, "default", encrypted = true)
         assertEquals(value, result)
     }
@@ -842,38 +838,27 @@ class JvmNullFilenameTest {
         val key = "direct_read_test"
         val value = "read_me_now"
 
-        // 1. Write using suspend function (waits for disk write)
+        // 1. Write using putDirect (optimistic cache update is immediate)
         ksafe.putDirect(key, value, encrypted = true)
 
-        // 2. Allow a brief moment for the internal cache observer to update
-        // (Necessary because the cache update happens on a background job after the write)
-        //delay(50)
-
-        // 3. Read using non-blocking getDirect
+        // 2. Read using non-blocking getDirect (cache already updated)
         val result = ksafe.getDirect(key, "default", encrypted = true)
         assertEquals(value, result)
     }
 
-    /** Verifies putDirect eventually becomes visible via getDirect */
+    /** Verifies putDirect is immediately visible via getDirect (optimistic update) */
     @Test
     fun testPutDirectEventuallyUpdatesValue() = runTest {
         val ksafe = createKSafe()
         val key = "put_direct_test"
-        val value = "eventual_consistency"
+        val value = "immediate_consistency"
 
-        // 1. Fire and forget write
+        // Write using putDirect (optimistic cache update is immediate)
         ksafe.putDirect(key, value, encrypted = true)
 
-        // 2. Poll until consistency is reached
-        // Since putDirect launches a coroutine, we can't predict exactly when it finishes.
-        var attempts = 0
-        var result: String
-        do {
-            //delay(50) // Wait 50ms between checks
-            result = ksafe.getDirect(key, "default", encrypted = true)
-            attempts++
-        } while (result != value && attempts < 20) // Timeout after 1 second
+        // Read immediately - no polling needed due to optimistic cache update
+        val result = ksafe.getDirect(key, "default", encrypted = true)
 
-        assertEquals(value, result, "getDirect should eventually return the value set by putDirect")
+        assertEquals(value, result, "getDirect should immediately return the value set by putDirect")
     }
 }

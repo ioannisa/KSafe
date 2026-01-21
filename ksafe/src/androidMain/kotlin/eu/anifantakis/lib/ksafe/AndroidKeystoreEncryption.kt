@@ -30,13 +30,19 @@ internal class AndroidKeystoreEncryption(
         private const val GCM_IV_LENGTH = 12
     }
 
+    /**
+     * Thread-safe cache for SecretKey objects to avoid repeated Keystore lookups.
+     * Keys are cached after first access and remain valid until explicitly deleted.
+     */
+    private val keyCache = java.util.concurrent.ConcurrentHashMap<String, SecretKey>()
+
     override fun encrypt(identifier: String, data: ByteArray): ByteArray {
         return try {
             encryptWithKey(identifier, data)
         } catch (e: KeyPermanentlyInvalidatedException) {
             // Key was invalidated (e.g., device security settings changed)
             // Delete the old key and create a new one
-            deleteKey(identifier)
+            deleteKeyInternal(identifier)
             encryptWithKey(identifier, data)
         }
     }
@@ -59,14 +65,15 @@ internal class AndroidKeystoreEncryption(
         } catch (e: KeyPermanentlyInvalidatedException) {
             // Key was invalidated - the encrypted data cannot be recovered
             // Delete the invalid key so future encryptions can work
-            deleteKey(identifier)
+            deleteKeyInternal(identifier)
             // Re-throw to let caller handle (will return default value)
             throw e
         }
     }
 
     private fun decryptWithKey(identifier: String, data: ByteArray): ByteArray {
-        val secretKey = getOrCreateSecretKey(identifier)
+        // Key was created with its accessibility setting - just retrieve it
+        val secretKey = getExistingSecretKey(identifier)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
 
         // Extract IV (first 12 bytes) and ciphertext
@@ -80,6 +87,13 @@ internal class AndroidKeystoreEncryption(
     }
 
     override fun deleteKey(identifier: String) {
+        deleteKeyInternal(identifier)
+    }
+
+    private fun deleteKeyInternal(identifier: String) {
+        // Remove from cache first
+        keyCache.remove(identifier)
+
         try {
             val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
             if (keyStore.containsAlias(identifier)) {
@@ -91,37 +105,80 @@ internal class AndroidKeystoreEncryption(
     }
 
     /**
+     * Gets an existing key from the Keystore (for decryption).
+     * Does not create a new key - if the key doesn't exist, throws an exception.
+     *
+     * @param identifier The key identifier/alias
+     * @throws IllegalStateException if the key doesn't exist
+     */
+    private fun getExistingSecretKey(identifier: String): SecretKey {
+        // Fast path: return cached key
+        keyCache[identifier]?.let { return it }
+
+        // Slow path: load from Keystore
+        synchronized(identifier.intern()) {
+            // Double-check after acquiring lock
+            keyCache[identifier]?.let { return it }
+
+            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+
+            if (!keyStore.containsAlias(identifier)) {
+                throw IllegalStateException("KSafe: No encryption key found for identifier: $identifier")
+            }
+
+            val key = keyStore.getKey(identifier, null) as SecretKey
+            keyCache[identifier] = key
+            return key
+        }
+    }
+
+    /**
      * Gets an existing key from the Keystore or creates a new one if it doesn't exist.
+     * Uses in-memory cache to avoid repeated Keystore lookups.
      *
      * Key generation parameters:
      * - Algorithm: AES
      * - Block Mode: GCM (hardcoded for security)
      * - Padding: None (hardcoded for security)
      * - Key Size: Configurable via [KSafeConfig.keySize]
+     *
+     * @param identifier The key identifier/alias
      */
-    private fun getOrCreateSecretKey(keyAlias: String): SecretKey {
-        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+    private fun getOrCreateSecretKey(identifier: String): SecretKey {
+        // Fast path: return cached key
+        keyCache[identifier]?.let { return it }
 
-        // Return existing key if available
-        if (keyStore.containsAlias(keyAlias)) {
-            return keyStore.getKey(keyAlias, null) as SecretKey
+        // Slow path: load from Keystore (synchronized to prevent duplicate generation)
+        synchronized(identifier.intern()) {
+            // Double-check after acquiring lock
+            keyCache[identifier]?.let { return it }
+
+            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+
+            val key = if (keyStore.containsAlias(identifier)) {
+                keyStore.getKey(identifier, null) as SecretKey
+            } else {
+                // Generate new key with configured parameters
+                val keyGenerator = KeyGenerator.getInstance(
+                    KeyProperties.KEY_ALGORITHM_AES,
+                    ANDROID_KEYSTORE
+                )
+
+                val builder = KeyGenParameterSpec.Builder(
+                    identifier,
+                    KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+                )
+                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                    .setKeySize(config.keySize)
+
+                keyGenerator.init(builder.build())
+                keyGenerator.generateKey()
+            }
+
+            // Cache the key for future use
+            keyCache[identifier] = key
+            return key
         }
-
-        // Generate new key with configured parameters
-        val keyGenerator = KeyGenerator.getInstance(
-            KeyProperties.KEY_ALGORITHM_AES,
-            ANDROID_KEYSTORE
-        )
-
-        val builder = KeyGenParameterSpec.Builder(
-            keyAlias,
-            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
-        )
-            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-            .setKeySize(config.keySize)
-
-        keyGenerator.init(builder.build())
-        return keyGenerator.generateKey()
     }
 }

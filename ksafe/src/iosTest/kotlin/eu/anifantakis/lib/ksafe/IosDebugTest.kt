@@ -24,7 +24,8 @@ class IosDebugTest {
         
         // Create a KSafe instance with a specific filename
         val testFileName = "debugtest"
-        val ksafe = KSafe(testFileName)
+        // Use FakeEncryption to bypass Keychain entitlement issues in test environment
+        val ksafe = KSafe(fileName = testFileName, testEngine = FakeEncryption())
         println("Created KSafe with filename: $testFileName")
         
         // Store an unencrypted value

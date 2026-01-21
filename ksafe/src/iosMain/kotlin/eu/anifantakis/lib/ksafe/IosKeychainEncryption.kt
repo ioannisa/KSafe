@@ -27,6 +27,7 @@ import platform.Foundation.create
 import platform.Security.SecItemAdd
 import platform.Security.SecItemCopyMatching
 import platform.Security.SecItemDelete
+import platform.Security.errSecInteractionNotAllowed
 import platform.Security.errSecSuccess
 import platform.Security.kSecAttrAccessible
 import platform.Security.kSecAttrAccessibleWhenUnlockedThisDeviceOnly
@@ -54,18 +55,15 @@ import kotlin.random.Random
  *
  * @property config Configuration for encryption (key size)
  * @property serviceName The Keychain service name for key storage
- * @property keyPrefix Prefix for key identifiers
  */
 @PublishedApi
 internal class IosKeychainEncryption(
     private val config: KSafeConfig = KSafeConfig(),
-    private val serviceName: String = SERVICE_NAME,
-    private val keyPrefix: String = KEY_PREFIX
+    private val serviceName: String = SERVICE_NAME
 ) : KSafeEncryption {
 
     companion object {
         private const val SERVICE_NAME = "eu.anifantakis.ksafe"
-        private const val KEY_PREFIX = "eu.anifantakis.ksafe"
     }
 
     // Key size in bytes (256 bits = 32 bytes, 128 bits = 16 bytes)
@@ -84,7 +82,8 @@ internal class IosKeychainEncryption(
     }
 
     override fun decrypt(identifier: String, data: ByteArray): ByteArray {
-        val keyBytes = getOrCreateKeychainKey(identifier)
+        // Key was created with its accessibility setting - just retrieve it
+        val keyBytes = getExistingKeychainKey(identifier)
 
         return runBlocking {
             val aesGcm = CryptographyProvider.CryptoKit.get(AES.GCM)
@@ -96,6 +95,52 @@ internal class IosKeychainEncryption(
 
     override fun deleteKey(identifier: String) {
         deleteFromKeychain(identifier)
+    }
+
+    /**
+     * Gets an existing encryption key from iOS Keychain (for decryption).
+     * Does not create a new key - if the key doesn't exist, throws an exception.
+     *
+     * @param keyId The key identifier (will be used as the Keychain account)
+     * @return The encryption key bytes
+     * @throws IllegalStateException if the key doesn't exist or is inaccessible
+     */
+    @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
+    internal fun getExistingKeychainKey(keyId: String): ByteArray {
+        memScoped {
+            val query = CFDictionaryCreateMutable(
+                kCFAllocatorDefault,
+                0,
+                null,
+                null
+            ).apply {
+                CFDictionarySetValue(this, kSecClass, kSecClassGenericPassword)
+                CFDictionarySetValue(this, kSecAttrService, CFBridgingRetain(serviceName))
+                CFDictionarySetValue(this, kSecAttrAccount, CFBridgingRetain(keyId))
+                CFDictionarySetValue(this, kSecReturnData, kCFBooleanTrue)
+                CFDictionarySetValue(this, kSecMatchLimit, kSecMatchLimitOne)
+            }
+
+            val resultRef = alloc<CFTypeRefVar>()
+            val status = SecItemCopyMatching(query, resultRef.ptr)
+            CFRelease(query as CFTypeRef?)
+
+            when (status) {
+                errSecSuccess -> {
+                    val data = CFBridgingRelease(resultRef.value) as NSData
+                    return data.toByteArray()
+                }
+                platform.Security.errSecItemNotFound -> {
+                    throw IllegalStateException("KSafe: No encryption key found for identifier: $keyId")
+                }
+                errSecInteractionNotAllowed -> {
+                    throw IllegalStateException("KSafe: Cannot access Keychain - device is locked. Key exists but is inaccessible.")
+                }
+                else -> {
+                    throw IllegalStateException("KSafe: Keychain error $status for key $keyId")
+                }
+            }
+        }
     }
 
     /**
@@ -137,9 +182,14 @@ internal class IosKeychainEncryption(
                 platform.Security.errSecItemNotFound -> {
                     // Continue to key generation
                 }
-                // Other errors - log and continue to key generation
+                // Device is locked - key exists but cannot be accessed right now
+                // Do NOT create a new key, throw error to avoid data loss
+                errSecInteractionNotAllowed -> {
+                    throw IllegalStateException("KSafe: Cannot access Keychain - device is locked. Key exists but is inaccessible.")
+                }
+                // Other errors - log and throw to avoid silent data loss
                 else -> {
-                    println("KSafe: Keychain query returned status $status, creating new key")
+                    throw IllegalStateException("KSafe: Keychain error $status for key $keyId")
                 }
             }
         }
@@ -172,11 +222,7 @@ internal class IosKeychainEncryption(
                 CFDictionarySetValue(this, kSecAttrService, CFBridgingRetain(serviceName))
                 CFDictionarySetValue(this, kSecAttrAccount, CFBridgingRetain(keyId))
                 CFDictionarySetValue(this, kSecValueData, CFBridgingRetain(nsData))
-                CFDictionarySetValue(
-                    this,
-                    kSecAttrAccessible,
-                    kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-                )
+                CFDictionarySetValue(this, kSecAttrAccessible, kSecAttrAccessibleWhenUnlockedThisDeviceOnly)
             }
 
             // First delete any existing item with the same key
@@ -194,10 +240,7 @@ internal class IosKeychainEncryption(
             CFRelease(deleteQuery as CFTypeRef?)
 
             // Now add the new item
-            val status = SecItemAdd(addQuery, null)
-            if (status != errSecSuccess) {
-                println("KSafe: SecItemAdd failed with status $status for key $keyId")
-            }
+            SecItemAdd(addQuery, null)
 
             CFRelease(addQuery as CFTypeRef?)
         }

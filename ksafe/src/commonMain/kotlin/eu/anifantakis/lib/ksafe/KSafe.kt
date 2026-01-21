@@ -63,6 +63,11 @@ expect class KSafe {
      * Because the cache update is instant, subsequent calls to [getDirect] will return the new value
      * immediately, even before the disk write completes. This prevents race conditions and UI flicker.
      *
+     * ## Example
+     * ```kotlin
+     * ksafe.putDirect("api_token", token, encrypted = true)
+     * ```
+     *
      * @param T The type of value to store.
      * @param key The unique key for the value.
      * @param value The value to store.

@@ -23,14 +23,36 @@ import kotlinx.serialization.Serializable
 @OptIn(ExperimentalCoroutinesApi::class)
 class JvmFileNameTest {
 
-    private fun randomName(prefix: String): String {
-        val rnd = kotlin.random.Random
-        val sb = StringBuilder(prefix)
-        repeat(8) { sb.append(('a' + rnd.nextInt(26))) }
-        return sb.toString()
+    companion object {
+        // Atomic counter to ensure unique file names across all tests in a single run
+        private val testCounter = java.util.concurrent.atomic.AtomicInteger(0)
+
+        // Timestamp prefix ensures uniqueness across test runs
+        // Convert to base-26 letters since KSafe only allows [a-z]+
+        private val runId: String = numberToLetters(System.currentTimeMillis())
+
+        /**
+         * Generates a unique file name using only lowercase letters.
+         * KSafe requires file names to match regex [a-z]+
+         */
+        private fun generateUniqueFileName(): String {
+            val count = testCounter.incrementAndGet()
+            return "fnrun${runId}test${numberToLetters(count.toLong())}"
+        }
+
+        private fun numberToLetters(num: Long): String {
+            var n = num
+            val sb = StringBuilder()
+            while (n > 0) {
+                n-- // Adjust for 0-based indexing
+                sb.insert(0, ('a' + (n % 26).toInt()))
+                n /= 26
+            }
+            return if (sb.isEmpty()) "a" else sb.toString()
+        }
     }
 
-    private fun newStore(): KSafe = KSafe(randomName("store"))
+    private fun newStore(): KSafe = KSafe(generateUniqueFileName())
 
     // ---------- Filename validation ----------
 
