@@ -124,7 +124,6 @@ actual class KSafe(
         @PublishedApi
         internal const val KEY_PREFIX = "eu.anifantakis.ksafe"
         private const val INSTALLATION_ID_KEY = "ksafe_installation_id"
-        private const val BIOMETRIC_CLEANUP_KEY = "ksafe_biometric_cleanup_done"
 
         /**
          * Checks if running on iOS Simulator (no biometric hardware available).
@@ -386,53 +385,11 @@ actual class KSafe(
         registerAppleProvider()
         forceAesGcmRegistration()
 
-        // CRITICAL: Clear ALL keychain entries synchronously on startup.
-        // This ensures old biometric-protected entries are removed before any property access.
-        // Data encrypted with old keys will be lost, but this is necessary to prevent
-        // biometric prompts from old library versions.
-        clearAllKeychainEntriesSync()
-
         // HYBRID CACHE: Start Background Preload immediately.
         // If this finishes before the user calls getDirect, the cache will be ready instantly.
         if (!lazyLoad) {
             startBackgroundCollector()
         }
-    }
-
-    /**
-     * Synchronously clears ALL keychain entries for this KSafe instance (ONE TIME ONLY).
-     * This prevents old biometric-protected entries from triggering unwanted prompts.
-     * Uses NSUserDefaults to track if cleanup has been performed.
-     */
-    @OptIn(ExperimentalForeignApi::class)
-    private fun clearAllKeychainEntriesSync() {
-        val userDefaults = platform.Foundation.NSUserDefaults.standardUserDefaults
-        val cleanupKey = fileName?.let { "${BIOMETRIC_CLEANUP_KEY}_$it" } ?: BIOMETRIC_CLEANUP_KEY
-
-        // Check if cleanup has already been done
-        if (userDefaults.boolForKey(cleanupKey)) {
-            return
-        }
-
-        // Delete all keychain entries for our service
-        memScoped {
-            val query = CFDictionaryCreateMutable(
-                kCFAllocatorDefault,
-                0,
-                null,
-                null
-            ).apply {
-                CFDictionarySetValue(this, kSecClass, kSecClassGenericPassword)
-                CFDictionarySetValue(this, kSecAttrService, CFBridgingRetain(SERVICE_NAME))
-            }
-
-            SecItemDelete(query)
-            CFRelease(query as CFTypeRef?)
-        }
-
-        // Mark cleanup as done
-        userDefaults.setBool(true, forKey = cleanupKey)
-        userDefaults.synchronize()
     }
 
     private fun startBackgroundCollector() {

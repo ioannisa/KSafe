@@ -53,8 +53,8 @@ That's it. Your data is now AES-256-GCM encrypted with keys stored in Android Ke
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:1.4.1")
-implementation("eu.anifantakis:ksafe-compose:1.4.1") // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe:1.4.2")
+implementation("eu.anifantakis:ksafe-compose:1.4.2) // ← Compose state (optional)
 ```
 
 > Skip `ksafe-compose` if your project doesn't use Jetpack Compose, or if you don't intend to use the library's `mutableStateOf` persistence option
