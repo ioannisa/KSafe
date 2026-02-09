@@ -34,6 +34,8 @@ val ksafe = KSafe(
 - New `KSafeEncryption.updateKeyAccessibility()` interface method (default no-op, overridden on iOS)
 - Migration marker `__ksafe_access_policy__` stored in DataStore (skipped by `updateCache()` on all platforms)
 
+**Error behavior when locked:** When `requireUnlockedDevice = true` and the device is locked, encrypted reads (`getDirect`, `get`, `getFlow`) and suspend writes (`put`) throw `IllegalStateException` instead of silently returning default values. `putDirect` does not throw — the background write consumer logs the error and drops the batch while staying alive for future writes. On Android, `InvalidKeyException` from `Cipher.init()` is wrapped as `IllegalStateException("device is locked")` and propagated through `resolveFromCache` and `getEncryptedFlow`. Apps can catch this exception to detect and handle locked-device scenarios.
+
 #### New Memory Policy: `ENCRYPTED_WITH_TIMED_CACHE`
 
 A third memory policy that balances security and performance. The primary `memoryCache` still holds ciphertext (like `ENCRYPTED`), but a secondary plaintext cache stores recently-decrypted values for a configurable TTL.
@@ -109,19 +111,10 @@ private fun startBackgroundCollector() {
 
 ### Fixed
 
-#### Locked-device exceptions now propagate correctly
+#### iOS Keychain operations now check return values
 
-When `requireUnlockedDevice = true` and the device is locked, encrypted reads (`getDirect`, `get`, `getFlow`) and suspend writes (`put`) now throw `IllegalStateException` instead of silently returning default values. `putDirect` does not throw to the caller — the background write consumer logs the error and drops the batch while staying alive for future writes.
-
-**Android:**
-- `encryptWithKey()` and `decryptWithKey()` now catch `InvalidKeyException` from `Cipher.init()` (thrown when `setUnlockedDeviceRequired(true)` keys are used while locked) and wrap it as `IllegalStateException("KSafe: Cannot access Keystore key - device is locked.")`
-- `resolveFromCache` and `getEncryptedFlow` now re-throw `IllegalStateException` containing "device is locked" instead of swallowing it in the generic `catch (_: Exception)` handler
-
-**iOS:**
-- `storeInKeychain()` now checks the `SecItemAdd` return value — previously it was silently ignored, meaning key storage could fail while the device was locked without any error
+- `storeInKeychain()` now checks the `SecItemAdd` return value — previously it was silently ignored, meaning key storage could fail without any error
 - `updateKeyAccessibility()` now checks the `SecItemUpdate` return value and throws on failure
-
-These fixes ensure that apps using `requireUnlockedDevice = true` can reliably detect and handle locked-device scenarios (e.g., showing a "device is locked" message) instead of silently returning default values.
 
 #### Suspend API no longer blocks the calling dispatcher during encryption/decryption
 
