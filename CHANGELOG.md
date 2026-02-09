@@ -2,6 +2,201 @@
 
 All notable changes to KSafe will be documented in this file.
 
+## [1.5.0] - 2025-02-09
+
+### Added
+
+#### Configurable Device Lock-State Policy: `requireUnlockedDevice`
+
+New `KSafeConfig.requireUnlockedDevice: Boolean = false` property that controls whether encrypted data should only be accessible when the device is unlocked.
+
+| Platform | `false` (default) | `true` |
+|----------|-------------------|--------|
+| **Android** | Keys accessible at any time | Keys created with `setUnlockedDeviceRequired(true)` (API 28+) |
+| **iOS** | `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` | `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` |
+| **JVM** | No effect (software-backed keys) | No effect (software-backed keys) |
+
+**Automatic migration:** Changing this value in either direction triggers a one-time migration on the next KSafe initialization:
+- **Android:** Existing encrypted values are decrypted with the old key, the old Keystore key is deleted, and values are re-encrypted with a new key that has the updated policy. This applies in both directions (`false→true` and `true→false`). Migration is atomic — the policy marker is only written on success, so a crash safely retries.
+- **iOS:** Existing Keychain items have their `kSecAttrAccessible` attribute updated in-place via `SecItemUpdate` (no re-encryption needed). The migration marker is only written if all key updates succeed — if any fail (e.g., device is locked), migration retries on next launch.
+- **JVM:** Only the policy marker is written (no lock concept on JVM).
+
+```kotlin
+// Require device to be unlocked for all encrypted data access
+val ksafe = KSafe(
+    context = context,
+    config = KSafeConfig(requireUnlockedDevice = true)
+)
+```
+
+**Breaking change (iOS default behavior):** Previously, iOS always used `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, meaning Keychain items were only accessible when the device was unlocked. With `requireUnlockedDevice = false` (the new default), iOS now uses `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, making items accessible after the first unlock — matching Android's existing behavior and enabling background access patterns.
+
+- New `KSafeEncryption.updateKeyAccessibility()` interface method (default no-op, overridden on iOS)
+- Migration marker `__ksafe_access_policy__` stored in DataStore (skipped by `updateCache()` on all platforms)
+
+#### New Memory Policy: `ENCRYPTED_WITH_TIMED_CACHE`
+
+A third memory policy that balances security and performance. The primary `memoryCache` still holds ciphertext (like `ENCRYPTED`), but a secondary plaintext cache stores recently-decrypted values for a configurable TTL.
+
+**Why this matters:** Under `ENCRYPTED` policy, every read triggers AES-GCM decryption. In UI frameworks like Jetpack Compose or SwiftUI, the same encrypted property may be read multiple times during a single recomposition/re-render cycle. This causes redundant crypto operations that waste CPU and can drop frames on lower-end devices.
+
+`ENCRYPTED_WITH_TIMED_CACHE` eliminates this: only the first read decrypts; subsequent reads within the TTL window are pure memory lookups. After the TTL expires, the plaintext is evicted and the next read decrypts again.
+
+```kotlin
+// Android
+val ksafe = KSafe(
+    context = context,
+    memoryPolicy = KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE,
+    plaintextCacheTtl = 5.seconds  // default
+)
+
+// JVM
+val ksafe = KSafe(
+    memoryPolicy = KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE,
+    plaintextCacheTtl = 10.seconds
+)
+
+// iOS
+val ksafe = KSafe(
+    memoryPolicy = KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE,
+    plaintextCacheTtl = 3.seconds
+)
+```
+
+**How the three policies compare:**
+
+| Policy | RAM contents | Read cost | Security |
+|--------|-------------|-----------|----------|
+| `PLAIN_TEXT` | Plaintext (forever) | O(1) lookup | Low — all data exposed in memory |
+| `ENCRYPTED` | Ciphertext | AES-GCM decrypt every read | High — nothing plaintext in RAM |
+| `ENCRYPTED_WITH_TIMED_CACHE` | Ciphertext + short-lived plaintext | First read decrypts, then O(1) for TTL | Medium — plaintext only for recently-accessed keys, only for seconds |
+
+**Race condition safety:** Reads capture a local reference to the cached entry atomically. There is no background sweeper — expired entries are simply ignored on the next access. Even under concurrent reads and writes, the worst case is a single extra decryption, never a crash or data corruption.
+
+- New `plaintextCacheTtl: Duration` constructor parameter (default: 5 seconds) on all platforms
+- Uses `kotlin.time.TimeSource.Monotonic` for cross-platform monotonic timestamps
+- Thread-safe: `ConcurrentHashMap` on Android/JVM, `AtomicReference<Map>` on iOS
+
+#### Orphaned Ciphertext Cleanup on Startup
+
+After uninstalling an app and reinstalling, Android Auto Backup restores the DataStore file (containing ciphertext) but **not** the Android Keystore keys (hardware-bound). This leaves orphaned ciphertext that wastes space and creates confusion — encrypted values silently return defaults because the key is gone. On iOS, a similar scenario occurs if Keychain entries are cleared during a device reset.
+
+KSafe now proactively detects and removes orphaned ciphertext on startup. A new `cleanupOrphanedCiphertext()` method runs once in `startBackgroundCollector()` after migration and before the DataStore `collect`:
+
+```kotlin
+private fun startBackgroundCollector() {
+    CoroutineScope(Dispatchers.Default + SupervisorJob()).launch {
+        migrateAccessPolicyIfNeeded()
+        cleanupOrphanedCiphertext()   // ← NEW
+        dataStore.data.collect { updateCache(it) }
+    }
+}
+```
+
+**How it works:**
+1. Reads all DataStore entries with the `encrypted_` prefix
+2. Attempts to decrypt each entry using the platform's encryption engine
+3. If decryption permanently fails (key gone, invalidated, or wrong key) → marks for removal
+4. If decryption temporarily fails (device is locked) → skips, retries next launch
+5. Atomically removes all orphaned entries from DataStore and memory cache
+
+**Error classification by platform:**
+- **Android:** "device is locked" → skip (temporary). `KeyPermanentlyInvalidatedException`, `AEADBadTagException`, "No encryption key found" → orphaned.
+- **iOS:** "device is locked" or "Keychain" errors → skip (temporary). All others → orphaned.
+- **JVM:** All decrypt failures → orphaned (no device lock concept).
+
+> **Note on unencrypted values:** This cleanup targets only encrypted entries (those with the `encrypted_` prefix in DataStore). Unencrypted values (`encrypted = false`) are not affected. On Android, if `android:allowBackup="true"` is set in the manifest, Auto Backup may restore unencrypted DataStore entries after reinstall with stale values from the last backup snapshot.
+
+### Fixed
+
+#### Locked-device exceptions now propagate correctly
+
+When `requireUnlockedDevice = true` and the device is locked, encrypted reads (`getDirect`, `get`, `getFlow`) and suspend writes (`put`) now throw `IllegalStateException` instead of silently returning default values. `putDirect` does not throw to the caller — the background write consumer logs the error and drops the batch while staying alive for future writes.
+
+**Android:**
+- `encryptWithKey()` and `decryptWithKey()` now catch `InvalidKeyException` from `Cipher.init()` (thrown when `setUnlockedDeviceRequired(true)` keys are used while locked) and wrap it as `IllegalStateException("KSafe: Cannot access Keystore key - device is locked.")`
+- `resolveFromCache` and `getEncryptedFlow` now re-throw `IllegalStateException` containing "device is locked" instead of swallowing it in the generic `catch (_: Exception)` handler
+
+**iOS:**
+- `storeInKeychain()` now checks the `SecItemAdd` return value — previously it was silently ignored, meaning key storage could fail while the device was locked without any error
+- `updateKeyAccessibility()` now checks the `SecItemUpdate` return value and throws on failure
+
+These fixes ensure that apps using `requireUnlockedDevice = true` can reliably detect and handle locked-device scenarios (e.g., showing a "device is locked" message) instead of silently returning default values.
+
+#### Suspend API no longer blocks the calling dispatcher during encryption/decryption
+
+The suspend functions `put(encrypted = true)` and `get(encrypted = true)` previously called `engine.encrypt()`/`engine.decrypt()` directly on the caller's coroutine dispatcher. If called from `Dispatchers.Main` (e.g., inside `viewModelScope.launch`), the blocking AES-GCM operation would run on the main thread. On Android, first-time Keystore key generation can take 50–200ms — enough to drop frames.
+
+**Before (broken):**
+```kotlin
+// In ViewModel — encryption runs on Main thread!
+viewModelScope.launch {
+    ksafe.put("token", myToken, encrypted = true)
+}
+```
+
+**After (fixed):**
+- `putEncrypted` now wraps `engine.encrypt()` in `withContext(Dispatchers.Default)`
+- `getEncrypted` now wraps `resolveFromCache()` in `withContext(Dispatchers.Default)`
+- Applied consistently across all three platforms (Android, JVM, iOS)
+- `Dispatchers.Default` is correct because encryption is CPU-bound, not I/O-bound
+
+**Note:** `putDirect` was already safe — it defers encryption to `processBatch()` on a background scope. This fix brings the suspend API (`put`/`get`) to the same level of thread safety.
+
+#### ENCRYPTED mode plaintext leak via Direct API
+
+`putDirect()` stored plaintext JSON in `memoryCache` for instant read-back, but `processBatch()` never replaced it with ciphertext after encryption completed. Because dirty keys are permanent (by design), `updateCache()` couldn't fix this either. Result: `ENCRYPTED` mode advertised "ciphertext in RAM" but Direct API writes left plaintext in RAM permanently.
+
+**Fixed:** After `processBatch()` encrypts and persists data to DataStore, it now atomically replaces plaintext with ciphertext in the memory cache using compare-and-swap (CAS):
+- **Android/JVM**: `ConcurrentHashMap.replace(key, oldValue, newValue)` — atomic, no-op if a newer `putDirect()` wrote a different value
+- **iOS**: `AtomicReference.compareAndSet` loop with same "skip if newer write" semantics
+
+A brief plaintext window (~16ms write coalescing) remains inherent to deferred encryption — it keeps `putDirect()` at ~13μs instead of 4-6ms. The suspend API (`put()`) does not have this window; it encrypts immediately via `withContext(Dispatchers.Default)`.
+
+#### Long values silently stored as Int in unencrypted suspend writes (Android + iOS)
+
+`putUnencrypted` coerced small Long values (those fitting in Int range) to Int before storing. On Android, this created a type mismatch — `getUnencryptedKey` correctly selected `longPreferencesKey` but the stored value was an Int. On iOS, both key selection and value were coerced to Int, silently changing the stored type. The in-memory cache masked the issue during runtime (because `resolveFromCache` handles Int-to-Long conversion), but DataStore's typed key system could not round-trip the value correctly from disk after a restart.
+
+**Fixed:** All primitives are now stored as their declared type — a Long stays a Long, an Int stays an Int. No `Number` coercion. JVM was already correct. Existing data is safe: `resolveFromCache` already handles Int-to-Long conversion on read, so old values stored as Int will still be read correctly as Long through the cache layer.
+
+#### Redundant serialization and cache write in `putDirect`
+
+The encrypted branch of `putDirect()` previously called `json.encodeToString()` twice and `updateMemoryCache()` twice with the same value. The shared `toCache` computation was wasted for encrypted writes because the encrypted branch recomputed it independently. Restructured so encrypted and unencrypted branches are fully independent — each computes its own cache value and calls `updateMemoryCache()` once. Applied across all three platforms.
+
+#### Stale comment in `updateCache` (Android + JVM)
+
+A comment in `updateCache()` incorrectly stated "Dirty flags are cleared in processBatch after successful persistence." In reality, dirty flags are intentionally kept permanently to prevent race conditions. Updated the comment to reflect the actual behavior.
+
+#### Background write consumer dies on encryption failure
+
+If `processBatch()` threw an exception (e.g., device locked with `requireUnlockedDevice = true`), the Channel consumer coroutine would crash and never restart — all future `putDirect` writes would silently queue up and never persist. Now `processBatch()` is wrapped in a try-catch: the failed batch is dropped with a log message, and the consumer stays alive for future writes after the device is unlocked.
+
+#### Nullable primitive retrieval returns default instead of stored value (all platforms)
+
+When retrieving an unencrypted primitive with a nullable type and `null` default (e.g., `get<String?>(key, defaultValue = null, encrypted = false)`), KSafe always returned `null` even when a value was stored. The `when(defaultValue)` dispatch in `convertStoredValue` matched `null` against `is String` — which fails because `null` is not a `String` instance — falling through to the `else` branch that attempted JSON deserialization on a plain string like `"hello"`. Since `"hello"` is not valid JSON, deserialization silently failed and the catch returned `null`.
+
+**Fixed:** The `else` branch now tries a direct cast (`storedValue as T`) before JSON deserialization. For primitives (String, Int, Boolean, etc.), the cast succeeds and the value is returned immediately. JSON deserialization is only attempted as a fallback for complex types (data classes). Applied on Android, iOS, and JVM.
+
+#### Cache cleanup evicts newly-written keys (all platforms)
+
+`updateCache()` removed any key from `memoryCache` that wasn't present in the DataStore snapshot. But between `putDirect()` and `processBatch()` flushing to DataStore, newly-written keys exist only in the cache — the DataStore snapshot doesn't contain them yet. A concurrent `updateCache()` would evict these keys, causing the next `getDirect()` to return the default value instead of the just-written value.
+
+**Fixed:** The key-removal filter in `updateCache()` now also checks `dirtyKeys`, preserving any key that has a pending write. Applied on Android, iOS, and JVM.
+
+### Added (Testing)
+
+- `testNewKeysSurviveCacheCleanup` — stress test: 10 writers × 200 iterations verifying that `putDirect` + immediate `getDirect` never returns default (targets the cache cleanup race condition)
+- `testOrphanedCiphertextIsCleanedUpOnStartup` — uses a togglable fake engine to simulate lost encryption keys after backup restore; verifies orphaned ciphertext is detected and that unencrypted data is left untouched
+- `testValidCiphertextIsNotCleanedUp` — verifies that valid encrypted entries survive the startup cleanup
+- `testEncryptedPutGetNeverReturnsDefault` — 5 concurrent readers + writers verifying encrypted values never transiently return defaults
+
+### Dependencies
+
+- `play-services-base` 18.9.0 → 18.10.0
+- `vanniktech-mavenPublish` 0.35.0 → 0.36.0
+
+---
+
 ## [1.4.2] - 2025-01-26
 
 ### Fixed
@@ -288,7 +483,7 @@ Background: collect 16ms window → encrypt all → single DataStore.edit()
 ### Changed
 - **iOS Simulator uses real Keychain** - Removed `MockKeychain` in favor of actual iOS Keychain APIs
   - Simulator: Software-backed Keychain
-  - Real device: Hardware-backed Keychain (Secure Enclave)
+  - Real device: Hardware-encrypted Keychain (protected by device passcode)
   - Added threat model and security boundaries
   - Added compatibility matrix
   - Added GCM (Galois/Counter Mode) explanation

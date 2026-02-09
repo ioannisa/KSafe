@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.Flow
  *
  * **Security:**
  * - **Android:** Uses AES-256-GCM with keys stored in the hardware-backed Android Keystore.
- * - **iOS:** Uses AES-256-GCM with keys stored in the Secure Enclave-protected Keychain.
+ * - **iOS:** Uses AES-256-GCM with symmetric keys stored as Keychain generic-password items (protected by device passcode).
  * - **JVM:** Uses AES-256-GCM with software-backed keys, relying on OS file permissions (0700).
  *
  * **Architecture:**
@@ -290,5 +290,21 @@ enum class KSafeMemoryPolicy {
      * **Trade-off:** Increases CPU usage and latency per read.
      * Use this for sensitive tokens, passwords, or financial data.
      */
-    ENCRYPTED
+    ENCRYPTED,
+
+    /**
+     * **Balanced Security & Performance.**
+     * Data remains encrypted (Base64 ciphertext) in the primary RAM cache, just like [ENCRYPTED].
+     * A secondary plaintext cache stores recently-decrypted values for a configurable TTL.
+     *
+     * Repeated reads within the TTL window skip decryption entirely (pure memory lookup).
+     * After the TTL expires, the plaintext is evicted and the next read decrypts again.
+     *
+     * **Use case:** Compose/SwiftUI screens that read the same encrypted property multiple
+     * times during recomposition/re-render. Only the first read decrypts; subsequent reads
+     * within the TTL are instant.
+     *
+     * Configure the TTL via the `plaintextCacheTtl` constructor parameter (default: 5 seconds).
+     */
+    ENCRYPTED_WITH_TIMED_CACHE
 }

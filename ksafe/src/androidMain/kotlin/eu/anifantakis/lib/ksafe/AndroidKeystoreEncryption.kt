@@ -50,7 +50,12 @@ internal class AndroidKeystoreEncryption(
     private fun encryptWithKey(identifier: String, data: ByteArray): ByteArray {
         val secretKey = getOrCreateSecretKey(identifier)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+
+        try {
+            cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+        } catch (e: java.security.InvalidKeyException) {
+            throw IllegalStateException("KSafe: Cannot access Keystore key - device is locked.", e)
+        }
 
         val iv = cipher.iv
         val ciphertext = cipher.doFinal(data)
@@ -81,7 +86,12 @@ internal class AndroidKeystoreEncryption(
         val ciphertext = data.sliceArray(GCM_IV_LENGTH until data.size)
 
         val spec = GCMParameterSpec(GCM_TAG_LENGTH, iv)
-        cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)
+
+        try {
+            cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)
+        } catch (e: java.security.InvalidKeyException) {
+            throw IllegalStateException("KSafe: Cannot access Keystore key - device is locked.", e)
+        }
 
         return cipher.doFinal(ciphertext)
     }
@@ -171,6 +181,10 @@ internal class AndroidKeystoreEncryption(
                     .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                     .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                     .setKeySize(config.keySize)
+
+                if (config.requireUnlockedDevice && android.os.Build.VERSION.SDK_INT >= 28) {
+                    builder.setUnlockedDeviceRequired(true)
+                }
 
                 keyGenerator.init(builder.build())
                 keyGenerator.generateKey()

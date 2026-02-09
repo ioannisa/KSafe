@@ -48,7 +48,7 @@ androidx-biometric = { module = "androidx.biometric:biometric", version.ref = "b
 
 # Play Integrity
 play-integrity = { module = "com.google.android.play:integrity", version.ref = "playIntegrity" }
-play-services-base = { module = "com.google.android.gms:play-services-base", version = "18.9.0" }
+play-services-base = { module = "com.google.android.gms:play-services-base", version = "18.10.0" }
 
 
 # Compose
@@ -58,7 +58,7 @@ runtime = { module = "org.jetbrains.compose.runtime:runtime", version.ref = "run
 [plugins]
 androidLibrary = { id = "com.android.library", version.ref = "agp" }
 kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
-vanniktech-mavenPublish = { id = "com.vanniktech.maven.publish", version = "0.35.0" }
+vanniktech-mavenPublish = { id = "com.vanniktech.maven.publish", version = "0.36.0" }
 
 
 # Serialization

@@ -74,4 +74,16 @@ internal interface KSafeEncryption {
      * @param identifier Unique identifier for the key to delete.
      */
     fun deleteKey(identifier: String)
+
+    /**
+     * Updates the accessibility/lock-state policy for an existing key.
+     *
+     * Only meaningful on iOS where Keychain items have an accessibility attribute
+     * that can be changed via `SecItemUpdate`. Android re-creates keys instead,
+     * and JVM has no lock concept.
+     *
+     * @param identifier Unique identifier for the key to update.
+     * @param requireUnlocked If true, restrict access to when the device is unlocked.
+     */
+    fun updateKeyAccessibility(identifier: String, requireUnlocked: Boolean) { /* no-op by default */ }
 }

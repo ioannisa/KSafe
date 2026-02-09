@@ -33,6 +33,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
@@ -67,6 +68,10 @@ import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.random.Random
 import kotlin.concurrent.AtomicReference
+import kotlin.time.ComparableTimeMark
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 @OptIn(ExperimentalEncodingApi::class)
 @PublishedApi
@@ -96,7 +101,8 @@ actual class KSafe(
     private val lazyLoad: Boolean = false,
     @PublishedApi internal val memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
     private val config: KSafeConfig = KSafeConfig(),
-    private val securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default
+    private val securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
+    @PublishedApi internal val plaintextCacheTtl: Duration = 5.seconds
 ) {
     /**
      * Internal constructor for testing with custom encryption engine.
@@ -108,8 +114,9 @@ actual class KSafe(
         memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
         config: KSafeConfig = KSafeConfig(),
         securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
+        plaintextCacheTtl: Duration = 5.seconds,
         testEngine: KSafeEncryption
-    ) : this(fileName, lazyLoad, memoryPolicy, config, securityPolicy) {
+    ) : this(fileName, lazyLoad, memoryPolicy, config, securityPolicy, plaintextCacheTtl) {
         _testEngine = testEngine
     }
 
@@ -140,6 +147,10 @@ actual class KSafe(
          */
         @PublishedApi
         internal const val NULL_SENTINEL = "__KSAFE_NULL_VALUE__"
+
+        private const val ACCESS_POLICY_KEY = "__ksafe_access_policy__"
+        private const val ACCESS_POLICY_UNLOCKED = "unlocked"
+        private const val ACCESS_POLICY_DEFAULT = "default"
     }
 
     // Encryption engine - uses test engine if provided, or creates default IosKeychainEncryption
@@ -178,6 +189,15 @@ actual class KSafe(
      * Holds a map of pre-decrypted values. Uses AtomicReference with optimized updates.
      */
     @PublishedApi internal val memoryCache = AtomicReference<MutableMap<String, Any>>(mutableMapOf())
+
+    /**
+     * **Short-lived plaintext cache for [KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE].**
+     */
+    @PublishedApi
+    internal class CachedPlaintext(val value: String, val expiresAt: ComparableTimeMark)
+
+    @PublishedApi
+    internal val plaintextCache = AtomicReference<Map<String, CachedPlaintext>>(emptyMap())
 
     /**
      * **Cache Initialization Flag.**
@@ -290,8 +310,15 @@ actual class KSafe(
                     }
                 }
 
-                // Process the batch
-                processBatch(batch)
+                // Process the batch — catch errors to keep the consumer alive.
+                // If encryption fails (e.g., device locked with requireUnlockedDevice),
+                // we log the error and drop the batch. The consumer must survive so
+                // future writes (after device unlock) can still be processed.
+                try {
+                    processBatch(batch)
+                } catch (e: Exception) {
+                    println("KSafe: processBatch failed, dropping ${batch.size} writes: ${e.message}")
+                }
                 batch.clear()
             }
         }
@@ -346,6 +373,27 @@ actual class KSafe(
             val keyId = listOfNotNull(KEY_PREFIX, fileName, key).joinToString(".")
             engine.deleteKey(keyId)
         }
+
+        // Restore ENCRYPTED semantics: replace plaintext with ciphertext in cache.
+        // Uses CAS to avoid overwriting newer putDirect values.
+        if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED
+            || memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE
+        ) {
+            for (op in batch) {
+                if (op is WriteOperation.Encrypted) {
+                    val ciphertext = encryptedData[op.key]!!
+                    val base64Ciphertext = encodeBase64(ciphertext)
+                    while (true) {
+                        val current = memoryCache.value
+                        if (current[op.rawKey] != op.jsonString) break  // newer write, skip
+                        val updated = current.toMutableMap()
+                        updated[op.rawKey] = base64Ciphertext
+                        if (memoryCache.compareAndSet(current, updated)) break
+                    }
+                }
+            }
+        }
+
         // NOTE: Dirty flags are intentionally NOT cleared here.
         // Clearing dirty flags creates race conditions where updateCache runs
         // with stale data after the flag is cleared but before the collector
@@ -394,7 +442,125 @@ actual class KSafe(
 
     private fun startBackgroundCollector() {
         CoroutineScope(Dispatchers.Default + SupervisorJob()).launch {
+            migrateAccessPolicyIfNeeded()
+            cleanupOrphanedCiphertext()
             dataStore.data.collect { updateCache(it) }
+        }
+    }
+
+    /**
+     * Detects and removes orphaned ciphertext entries from DataStore.
+     *
+     * After device reset or Keychain clearing, encrypted entries become permanently
+     * undecryptable. This method probes each encrypted entry and removes those whose
+     * keys are gone.
+     *
+     * Entries that fail with "device is locked" or "Keychain" errors are skipped
+     * (temporary failure, retry next launch).
+     */
+    private suspend fun cleanupOrphanedCiphertext() {
+        val prefs = dataStore.data.first()
+        val encryptedPrefix = fileName?.let { "${fileName}_" } ?: "encrypted_"
+        val orphanedKeys = mutableListOf<String>()
+
+        for ((key, value) in prefs.asMap()) {
+            val keyName = key.name
+            if (!keyName.startsWith(encryptedPrefix)) continue
+            if (keyName.startsWith("__ksafe_")) continue
+
+            val originalKey = keyName.removePrefix(encryptedPrefix)
+            val encryptedString = value as? String ?: continue
+            val keyId = listOfNotNull(KEY_PREFIX, fileName, originalKey).joinToString(".")
+
+            try {
+                val ciphertext = decodeBase64(encryptedString)
+                engine.decrypt(keyId, ciphertext)
+            } catch (e: Exception) {
+                val msg = e.message ?: ""
+                if (msg.contains("device is locked", ignoreCase = true) ||
+                    msg.contains("Keychain", ignoreCase = true)) {
+                    continue
+                }
+                orphanedKeys.add(keyName)
+            }
+        }
+
+        if (orphanedKeys.isNotEmpty()) {
+            dataStore.edit { mutablePrefs ->
+                for (keyName in orphanedKeys) {
+                    mutablePrefs.remove(stringPreferencesKey(keyName))
+                }
+            }
+            while (true) {
+                val current = memoryCache.value
+                val updated = current.toMutableMap()
+                orphanedKeys.forEach { updated.remove(it) }
+                if (memoryCache.compareAndSet(current, updated)) break
+            }
+        }
+    }
+
+    /**
+     * One-time migration of Keychain key accessibility policy.
+     *
+     * When [KSafeConfig.requireUnlockedDevice] changes, existing Keychain items
+     * need their `kSecAttrAccessible` attribute updated. This is much cheaper than
+     * Android's re-encryption — it uses `SecItemUpdate` to change the attribute in-place.
+     *
+     * Migration is idempotent: calling `SecItemUpdate` on an already-migrated item is a no-op.
+     * If the app crashes before the marker is written, migration safely re-runs on next launch.
+     */
+    private suspend fun migrateAccessPolicyIfNeeded() {
+        val targetPolicy = if (config.requireUnlockedDevice) ACCESS_POLICY_UNLOCKED else ACCESS_POLICY_DEFAULT
+        val markerKey = stringPreferencesKey(ACCESS_POLICY_KEY)
+
+        // Check current marker.
+        // Treat null (pre-1.5.0, no marker) the same as ACCESS_POLICY_DEFAULT
+        // to avoid unnecessary SecItemUpdate calls on upgrade when requireUnlockedDevice=false.
+        val currentPolicy = dataStore.data.first()[markerKey]
+        val effectiveCurrent = currentPolicy ?: ACCESS_POLICY_DEFAULT
+        if (effectiveCurrent == targetPolicy) {
+            // Still write the marker if it was null (first launch after upgrade)
+            if (currentPolicy == null) {
+                dataStore.edit { it[markerKey] = targetPolicy }
+            }
+            return
+        }
+
+        // Update accessibility on all existing encrypted keys
+        val prefs = dataStore.data.first()
+        val encryptedPrefix = fileName?.let { "${fileName}_" } ?: "encrypted_"
+        var allSucceeded = true
+
+        for ((key, _) in prefs.asMap()) {
+            val keyName = key.name
+            if (!keyName.startsWith(encryptedPrefix)) continue
+            if (keyName.startsWith("__ksafe_")) continue
+
+            val originalKey = keyName.removePrefix(encryptedPrefix)
+            val keyId = listOfNotNull(KEY_PREFIX, fileName, originalKey).joinToString(".")
+
+            try {
+                engine.updateKeyAccessibility(keyId, config.requireUnlockedDevice)
+            } catch (e: Exception) {
+                // Key may not exist (errSecItemNotFound) — that's OK, skip it.
+                // But if the device is locked (errSecInteractionNotAllowed) or another
+                // real failure occurred, mark as failed so the marker is NOT written
+                // and migration retries on next launch.
+                val msg = e.message ?: ""
+                if (msg.contains("device is locked") || msg.contains("Keychain")) {
+                    allSucceeded = false
+                }
+                // Other errors (e.g., item not found) are fine to skip
+            }
+        }
+
+        // Only write marker if all updates succeeded.
+        // If any failed (e.g., device locked), migration retries on next launch.
+        if (allSucceeded) {
+            dataStore.edit { mutablePrefs ->
+                mutablePrefs[markerKey] = targetPolicy
+            }
         }
     }
 
@@ -582,6 +748,9 @@ actual class KSafe(
         for ((key, value) in prefsMap) {
             val keyName = key.name
 
+            // Skip internal KSafe metadata keys (e.g., migration markers)
+            if (keyName.startsWith("__ksafe_")) continue
+
             // Dirty Check: If a local write was pending at snapshot time,
             // skip updating from disk (preserve optimistic value).
             if (currentDirty.contains(keyName)) {
@@ -591,7 +760,7 @@ actual class KSafe(
 
             if (keyName.startsWith(encryptedPrefix)) {
                 validKeys.add(keyName)
-                if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED) {
+                if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED || memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
                     // SECURITY MODE: Store raw Ciphertext in RAM.
                     newCache[keyName] = value
                 } else {
@@ -682,7 +851,22 @@ actual class KSafe(
             var deserializedValue: T? = null
             var success = false
 
-            if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED) {
+            if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED || memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
+                // TIMED_CACHE: check plaintext cache first (avoids decryption on repeated reads)
+                if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
+                    val cached = plaintextCache.value[cacheKey]
+                    if (cached != null && TimeSource.Monotonic.markNow() < cached.expiresAt) {
+                        val cachedJson = cached.value
+                        if (cachedJson == NULL_SENTINEL) {
+                            @Suppress("UNCHECKED_CAST")
+                            return null as T
+                        }
+                        try {
+                            return json.decodeFromString(serializer<T>(), cachedJson)
+                        } catch (_: Exception) { /* fall through to decrypt */ }
+                    }
+                }
+
                 // SECURITY MODE: Decrypt On-Demand
                 try {
                     val encryptedString = cachedValue as? String
@@ -704,6 +888,13 @@ actual class KSafe(
                             deserializedValue = json.decodeFromString(serializer<T>(), candidateJson)
                         }
                         success = true
+
+                        // Populate the timed plaintext cache on successful decrypt
+                        if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
+                            val newMap = plaintextCache.value.toMutableMap()
+                            newMap[cacheKey] = CachedPlaintext(candidateJson, TimeSource.Monotonic.markNow() + plaintextCacheTtl)
+                            plaintextCache.value = newMap
+                        }
                     }
                 } catch (e: IllegalStateException) {
                     // Re-throw security-critical errors (device locked, keychain inaccessible)
@@ -779,22 +970,24 @@ actual class KSafe(
             is String -> (storedValue as? String ?: defaultValue) as T
             is Double -> (storedValue as? Double ?: defaultValue) as T
             else -> {
-                // For nullable types where defaultValue is null, we need special handling
-                if (defaultValue == null) {
-                    val jsonString = storedValue as? String ?: return defaultValue
-                    if (jsonString == NULL_SENTINEL) return null as T
-                    try {
-                        json.decodeFromString(serializer<T>(), jsonString)
-                    } catch (_: Exception) {
-                        defaultValue
-                    }
-                } else {
-                    val jsonString = storedValue as? String ?: return defaultValue
-                    try {
-                        json.decodeFromString(serializer<T>(), jsonString)
-                    } catch (_: Exception) {
-                        defaultValue
-                    }
+                // For nullable types where defaultValue is null, we need special handling.
+                // Try direct cast first — storedValue may be a primitive (String, Boolean, etc.)
+                // that matches T without JSON deserialization.
+                try {
+                    @Suppress("UNCHECKED_CAST")
+                    val direct = storedValue as T
+                    if (direct != null) return direct
+                } catch (_: ClassCastException) { /* fall through to JSON */ }
+
+                val jsonString = storedValue as? String ?: return defaultValue
+                if (jsonString == NULL_SENTINEL) {
+                    @Suppress("UNCHECKED_CAST")
+                    return null as T
+                }
+                try {
+                    json.decodeFromString(serializer<T>(), jsonString)
+                } catch (_: Exception) {
+                    defaultValue
                 }
             }
         }
@@ -832,32 +1025,16 @@ actual class KSafe(
 
         val preferencesKey: Preferences.Key<Any> = when (value) {
             is Boolean -> booleanPreferencesKey(key)
-            is Number -> {
-                when {
-                    value is Int || (value is Long && value in Int.MIN_VALUE..Int.MAX_VALUE) ->
-                        intPreferencesKey(key)
-
-                    value is Long -> longPreferencesKey(key)
-                    value is Float -> floatPreferencesKey(key)
-                    value is Double -> doublePreferencesKey(key)
-                    else -> stringPreferencesKey(key)
-                }
-            }
-
+            is Int -> intPreferencesKey(key)
+            is Long -> longPreferencesKey(key)
+            is Float -> floatPreferencesKey(key)
+            is Double -> doublePreferencesKey(key)
             is String -> stringPreferencesKey(key)
             else -> stringPreferencesKey(key)
         } as Preferences.Key<Any>
 
         val storedValue: Any = when (value) {
-            is Boolean -> value
-            is Number -> {
-                when {
-                    value is Int || (value is Long && value in Int.MIN_VALUE..Int.MAX_VALUE) -> value.toInt()
-                    else -> value
-                }
-            }
-
-            is String -> value
+            is Boolean, is Int, is Long, is Float, is Double, is String -> value
             else -> json.encodeToString(serializer<T>(), value)
         }
 
@@ -931,34 +1108,46 @@ actual class KSafe(
         }
         val plaintext = jsonString.encodeToByteArray()
 
-        // Encrypt using the engine
+        // Encrypt using the engine (switch to Default dispatcher — encryption is CPU-bound)
         val keyId = listOfNotNull(KEY_PREFIX, fileName, key).joinToString(".")
-        val ciphertext = engine.encrypt(keyId, plaintext)
+        val ciphertext = withContext(Dispatchers.Default) {
+            engine.encrypt(keyId, plaintext)
+        }
 
         storeEncryptedData(key, ciphertext)
 
         // Sync cache:
-        // If ENCRYPTED policy, store Ciphertext (Base64) so reads hit the Keychain.
-        // If PLAIN_TEXT policy, store JSON for instant reads.
+        // If ENCRYPTED or TIMED_CACHE policy, store Ciphertext (Base64). If PLAIN_TEXT, store JSON.
         val rawKey = fileName?.let { "${fileName}_$key" } ?: "encrypted_$key"
-        val cacheValue = if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED) {
+        val cacheValue = if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED || memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
             encodeBase64(ciphertext)
         } else {
             jsonString
         }
         updateMemoryCache(rawKey, cacheValue)
+
+        // For TIMED_CACHE, also populate the plaintext cache (we already have the plaintext)
+        if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
+            val newMap = plaintextCache.value.toMutableMap()
+            newMap[rawKey] = CachedPlaintext(jsonString, TimeSource.Monotonic.markNow() + plaintextCacheTtl)
+            plaintextCache.value = newMap
+        }
     }
 
     suspend inline fun <reified T> getEncrypted(key: String, defaultValue: T): T {
         if (cacheInitialized.value) {
-            return resolveFromCache(memoryCache.value, key, defaultValue, encrypted = true)
+            return withContext(Dispatchers.Default) {
+                resolveFromCache(memoryCache.value, key, defaultValue, encrypted = true)
+            }
         }
 
         ensureCleanupPerformed()
 
         val prefs = dataStore.data.first()
         updateCache(prefs) // Waits for Mutex
-        return resolveFromCache(memoryCache.value, key, defaultValue, encrypted = true)
+        return withContext(Dispatchers.Default) {
+            resolveFromCache(memoryCache.value, key, defaultValue, encrypted = true)
+        }
     }
 
     actual suspend inline fun <reified T> get(
@@ -1080,22 +1269,9 @@ actual class KSafe(
         val rawKey = if (encrypted) (fileName?.let { "${fileName}_$key" } ?: "encrypted_$key") else key
         addDirtyKey(rawKey)
 
-        val toCache: Any = if (value == null) {
-            NULL_SENTINEL
-        } else if (encrypted) {
-            json.encodeToString(serializer<T>(), value)
-        } else {
-            when (value) {
-                is Boolean, is Int, is Long, is Float, is Double, is String -> value as Any
-                else -> json.encodeToString(serializer<T>(), value)
-            }
-        }
-        updateMemoryCache(rawKey, toCache)
-
-        // Queue write operation for batched processing
+        // Optimistic update + queue write operation
         if (encrypted) {
-            // For encrypted writes, defer encryption to background batch processor
-            // This keeps the UI thread fast - encryption happens in processBatch()
+            // Single serialization for encrypted writes
             val jsonString = if (value == null) NULL_SENTINEL else json.encodeToString(serializer<T>(), value)
             val keyId = listOfNotNull(KEY_PREFIX, fileName, key).joinToString(".")
 
@@ -1103,9 +1279,27 @@ actual class KSafe(
             // (resolveFromCache handles both plaintext JSON and encrypted Base64)
             updateMemoryCache(rawKey, jsonString)
 
+            // For TIMED_CACHE, also populate the plaintext cache
+            if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
+                val newMap = plaintextCache.value.toMutableMap()
+                newMap[rawKey] = CachedPlaintext(jsonString, TimeSource.Monotonic.markNow() + plaintextCacheTtl)
+                plaintextCache.value = newMap
+            }
+
             // Queue the encrypted write (encryption deferred to background)
             writeChannel.trySend(WriteOperation.Encrypted(rawKey, key, jsonString, keyId))
         } else {
+            // Optimistic update for unencrypted writes
+            val toCache: Any = if (value == null) {
+                NULL_SENTINEL
+            } else {
+                when (value) {
+                    is Boolean, is Int, is Long, is Float, is Double, is String -> value as Any
+                    else -> json.encodeToString(serializer<T>(), value)
+                }
+            }
+            updateMemoryCache(rawKey, toCache)
+
             // For unencrypted writes, determine the proper DataStore key type
             val storedValue: Any? = when (value) {
                 null -> null
@@ -1150,6 +1344,12 @@ actual class KSafe(
         val encKeyName = fileName?.let { "${fileName}_$key" } ?: "encrypted_$key"
         updateMemoryCache(key, null)
         updateMemoryCache(encKeyName, null)
+
+        // Clear from plaintext cache
+        val newMap = plaintextCache.value.toMutableMap()
+        newMap.remove(key)
+        newMap.remove(encKeyName)
+        plaintextCache.value = newMap
     }
 
     /**
@@ -1170,6 +1370,12 @@ actual class KSafe(
         // Optimistic cache update
         updateMemoryCache(key, null)
         updateMemoryCache(encKeyName, null)
+
+        // Clear from plaintext cache
+        val newPtMap = plaintextCache.value.toMutableMap()
+        newPtMap.remove(rawKey)
+        newPtMap.remove(encKeyName)
+        plaintextCache.value = newPtMap
 
         // Queue delete operation for batched processing
         writeChannel.trySend(WriteOperation.Delete(rawKey, key))
@@ -1204,6 +1410,7 @@ actual class KSafe(
 
         // Thread-safe clear using atomic swap
         memoryCache.value = mutableMapOf()
+        plaintextCache.value = emptyMap()
     }
 
     /**

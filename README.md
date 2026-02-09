@@ -53,8 +53,8 @@ That's it. Your data is now AES-256-GCM encrypted with keys stored in Android Ke
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:1.4.2")
-implementation("eu.anifantakis:ksafe-compose:1.4.2) // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe:1.5.0")
+implementation("eu.anifantakis:ksafe-compose:1.5.0") // ← Compose state (optional)
 ```
 
 > Skip `ksafe-compose` if your project doesn't use Jetpack Compose, or if you don't intend to use the library's `mutableStateOf` persistence option
@@ -277,7 +277,7 @@ class CounterViewModel(ksafe: KSafe) : ViewModel() {
 | **Nullable support** | :x: No | :x: No | :white_check_mark: Yes | :white_check_mark: Yes | :white_check_mark: Full support |
 | **Complex types** | :x: Manual | :x: Manual/Proto | :x: Manual | :x: Manual | :white_check_mark: Auto-serialization |
 | **Biometric auth** | :x: Manual | :x: Manual | :x: Manual | :x: Manual | :white_check_mark: Built-in |
-| **Memory policy** | N/A | N/A | N/A | N/A | :white_check_mark: ENCRYPTED/PLAIN_TEXT |
+| **Memory policy** | N/A | N/A | N/A | N/A | :white_check_mark: 3 policies (PLAIN_TEXT / ENCRYPTED / TIMED_CACHE) |
 | **Hot cache** | :white_check_mark: Yes | :x: No | :white_check_mark: Yes | :x: No | :white_check_mark: ConcurrentHashMap |
 | **Write batching** | :x: No | :x: No | :x: No | :x: No | :white_check_mark: 16ms coalescing |
 
@@ -396,7 +396,7 @@ This means KSafe gives you DataStore's safety guarantees (atomic transactions, t
 | Platform | Minimum Version | Notes |
 |----------|-----------------|-------|
 | **Android** | API 23 (Android 6.0) | Hardware-backed Keystore on supported devices |
-| **iOS** | iOS 13+ | Keychain with Secure Enclave on A7+ chips |
+| **iOS** | iOS 13+ | Keychain-backed symmetric keys (protected by device passcode) |
 | **JVM/Desktop** | JDK 11+ | Software-backed encryption |
 
 | Dependency | Tested Version |
@@ -934,16 +934,19 @@ KSafe provides enterprise-grade encrypted persistence using DataStore Preference
 
 **What KSafe does NOT protect against:**
 - ❌ Sophisticated root-hiding tools (e.g., Magisk Hide) — detection can be bypassed
-- ❌ Memory dump attacks while app is running (mitigated by `ENCRYPTED` memory policy)
+- ❌ Memory dump attacks while app is running (mitigated by `ENCRYPTED` or `ENCRYPTED_WITH_TIMED_CACHE` memory policy)
 - ❌ Device owner with physical access and device unlock credentials
 - ❌ Compromised OS or hardware
 
 **Recommendations:**
 - Use `KSafeSecurityPolicy.Strict` for high-security apps (Banking, Medical, Enterprise)
 - Use `KSafeMemoryPolicy.ENCRYPTED` for highly sensitive data (tokens, passwords)
+- Use `KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE` for encrypted data accessed frequently during UI rendering (Compose recomposition, SwiftUI re-render)
 - Combine with biometric verification for critical operations
 - Never store master secrets client-side; prefer server-derived tokens
 - Consider certificate pinning for API communications
+
+**A note on iOS and the Secure Enclave:** Android's TEE/StrongBox can perform AES encryption entirely in hardware — the key never enters app memory. iOS's Secure Enclave only supports asymmetric keys (EC P-256), so symmetric AES keys must be stored as Keychain items and loaded into app memory for use by CryptoKit. The Keychain database itself is encrypted by Secure Enclave-derived class keys, providing strong at-rest protection. This is not a KSafe limitation — it's how all iOS AES encryption works, including banking apps and Apple's own frameworks. See our [detailed article](KSafe_Article_v1.5.0.md) for a full comparison of the two hardware security models.
 
 ***
 
@@ -954,18 +957,43 @@ Control the trade-off between performance and security for data in RAM:
 ```Kotlin
 val ksafe = KSafe(
     fileName = "secrets",
-    memoryPolicy = KSafeMemoryPolicy.ENCRYPTED // (Default) or PLAIN_TEXT
+    memoryPolicy = KSafeMemoryPolicy.ENCRYPTED // Default
 )
 ```
 
-| Policy | Best For | Behavior | Performance |
-|--------|----------|----------|-------------|
-| `ENCRYPTED` (Default) | Tokens, passwords | Stores ciphertext in RAM, decrypts on-demand | Slightly higher CPU per read |
-| `PLAIN_TEXT` | User settings, themes | Decrypts once on load, stores plain values | Instant reads, zero overhead |
+| Policy | Best For | RAM Contents | Read Cost | Security |
+|--------|----------|-------------|-----------|----------|
+| `PLAIN_TEXT` | User settings, themes | Plaintext (forever) | O(1) lookup | Low — all data exposed in memory |
+| `ENCRYPTED` (Default) | Tokens, passwords | Ciphertext only | AES-GCM decrypt every read | High — nothing plaintext in RAM |
+| `ENCRYPTED_WITH_TIMED_CACHE` | Compose/SwiftUI screens | Ciphertext + short-lived plaintext | First read decrypts, then O(1) for TTL | Medium — plaintext only for recently-accessed keys, only for seconds |
 
-Both policies encrypt data on disk. The difference is how data is handled in memory:
-- **ENCRYPTED:** Maximum security against memory dump attacks
-- **PLAIN_TEXT:** Maximum performance for frequently accessed data
+All three policies encrypt data on disk. The difference is how data is handled in memory:
+- **PLAIN_TEXT:** Maximum performance — decrypts once on load, stores plain values forever
+- **ENCRYPTED:** Maximum security — stores ciphertext in RAM, decrypts on-demand every read
+- **ENCRYPTED_WITH_TIMED_CACHE:** Best balance — stores ciphertext in RAM, but caches decrypted values for a configurable TTL
+
+### ENCRYPTED_WITH_TIMED_CACHE — The Balanced Policy
+
+Under `ENCRYPTED` policy, every read triggers AES-GCM decryption. In UI frameworks like Jetpack Compose or SwiftUI, the same encrypted property may be read multiple times during a single recomposition/re-render. `ENCRYPTED_WITH_TIMED_CACHE` eliminates redundant crypto: only the first read decrypts; subsequent reads within the TTL window are pure memory lookups.
+
+```kotlin
+val ksafe = KSafe(
+    context = context,
+    memoryPolicy = KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE,
+    plaintextCacheTtl = 5.seconds  // default; how long plaintext stays cached
+)
+```
+
+**How it works internally:**
+```
+Read 1: decrypt → cache plaintext (TTL=5s) → return       ← one crypto operation
+Read 2 (50ms later):  cache hit → return                   ← no decryption
+Read 3 (100ms later): cache hit → return                   ← no decryption
+...TTL expires...
+Read 4: decrypt → cache plaintext (TTL=5s) → return        ← one crypto operation
+```
+
+**Thread safety:** Reads capture a local reference to the cached entry atomically. No background sweeper — expired entries are simply ignored on the next access. No race conditions possible.
 
 ### Lazy Loading
 
@@ -985,8 +1013,9 @@ KSafe(
     fileName: String? = null,
     lazyLoad: Boolean = false,
     memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+    config: KSafeConfig = KSafeConfig(),
     securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
-    config: KSafeConfig = KSafeConfig()
+    plaintextCacheTtl: Duration = 5.seconds  // only used with ENCRYPTED_WITH_TIMED_CACHE
 )
 
 // iOS / JVM
@@ -994,8 +1023,9 @@ KSafe(
     fileName: String? = null,
     lazyLoad: Boolean = false,
     memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+    config: KSafeConfig = KSafeConfig(),
     securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
-    config: KSafeConfig = KSafeConfig()
+    plaintextCacheTtl: Duration = 5.seconds  // only used with ENCRYPTED_WITH_TIMED_CACHE
 )
 ```
 
@@ -1005,12 +1035,74 @@ KSafe(
 val ksafe = KSafe(
     context = context,
     config = KSafeConfig(
-        keySize = 256  // AES key size: 128 or 256 bits
+        keySize = 256,                  // AES key size: 128 or 256 bits
+        requireUnlockedDevice = false   // Require device unlock for key access
     )
 )
 ```
 
 **Note:** The encryption algorithm (AES-GCM) is intentionally NOT configurable to prevent insecure configurations.
+
+### Device Lock-State Policy
+
+Control whether encrypted data is only accessible when the device is unlocked:
+
+```kotlin
+val ksafe = KSafe(
+    context = context,
+    config = KSafeConfig(requireUnlockedDevice = true)
+)
+```
+
+| Platform | `false` (default) | `true` |
+|----------|-------------------|--------|
+| **Android** | Keys accessible at any time | `setUnlockedDeviceRequired(true)` (API 28+) |
+| **iOS** | `AfterFirstUnlockThisDeviceOnly` | `WhenUnlockedThisDeviceOnly` |
+| **JVM** | No effect (marker-only) | No effect (marker-only) |
+
+**JVM note:** Desktop/server environments have no OS-level device lock concept. The `requireUnlockedDevice` setting is accepted but has no runtime effect — encrypted data is always accessible. A migration marker is written for consistency with Android/iOS, so switching between platforms doesn't trigger repeated migrations.
+
+Changing this value in either direction triggers an automatic one-time migration on the next KSafe initialization. Android re-encrypts existing values with a new Keystore key (both `false`&rarr;`true` and `true`&rarr;`false`); iOS updates Keychain accessibility in-place via `SecItemUpdate`. The migration marker is only written on success, so a crash or locked-device failure safely retries on the next launch.
+
+**Error behavior when locked:** When `requireUnlockedDevice = true` and the device is locked, encrypted **reads** (`getDirect`, `get`, `getFlow`) throw `IllegalStateException`. The suspend `put(encrypted = true)` also throws. However, `putDirect` does **not** throw to the caller — it queues the write to a background consumer that logs the error and drops the batch (the consumer stays alive for future writes after the device is unlocked). Your app can catch read-side exceptions to show a "device is locked" message instead of silently receiving default values.
+
+#### Multiple Safes with Different Lock Policies
+
+Because KSafe supports [multiple instances](#using-multiple-ksafe-instances), you can assign different lock policies to different data categories — keeping sensitive data locked while allowing less-sensitive data to remain accessible in the background:
+
+```kotlin
+// Android example with Koin
+actual val platformModule = module {
+    // Sensitive data: only accessible when device is unlocked
+    single(named("secure")) {
+        KSafe(
+            context = androidApplication(),
+            fileName = "secure",
+            config = KSafeConfig(requireUnlockedDevice = true)
+        )
+    }
+
+    // General preferences: accessible even when locked (e.g., for background sync)
+    single(named("prefs")) {
+        KSafe(
+            context = androidApplication(),
+            fileName = "prefs",
+            config = KSafeConfig(requireUnlockedDevice = false)
+        )
+    }
+}
+
+// Usage in ViewModel
+class MyViewModel(
+    private val secureSafe: KSafe,  // tokens, passwords — locked when device is locked
+    private val prefsSafe: KSafe    // settings, cache — always accessible
+) : ViewModel() {
+    var authToken by secureSafe("")
+    var lastSyncTime by prefsSafe(0L)
+}
+```
+
+This pattern is especially useful for apps that perform background work (push notifications, sync) while the device is locked — the background-safe instance can still access its data, while the secure instance protects sensitive values.
 
 ***
 
@@ -1086,11 +1178,16 @@ KSafe 1.2.0 introduced a completely rewritten core architecture focusing on zero
 
 If decryption fails (e.g., corrupted data or missing key), KSafe gracefully returns the default value, ensuring your app continues to function.
 
+**Exception:** When `requireUnlockedDevice = true` and the device is locked, KSafe throws `IllegalStateException` instead of returning the default value. This allows your app to detect and handle the locked state explicitly (e.g., showing a "device is locked" message).
+
 ### Reinstall Behavior
 
-KSafe ensures clean reinstalls on both platforms:
-* **Android:** Keystore entries automatically deleted on uninstall
-* **iOS:** Orphaned Keychain entries detected and cleaned on first use after reinstall
+KSafe ensures clean reinstalls on all platforms:
+* **Android:** Keystore entries automatically deleted on uninstall. If Auto Backup restores the DataStore file without Keystore keys, orphaned ciphertext is detected and removed on next startup.
+* **iOS:** Orphaned Keychain entries (keys without data) detected and cleaned on first use. Orphaned ciphertext (data without keys) detected and cleaned on startup.
+* **JVM:** Orphaned ciphertext detected and cleaned on startup if encryption key files are lost.
+
+> **Note on unencrypted values:** The orphaned ciphertext cleanup targets only encrypted entries (those with the `encrypted_` prefix in DataStore). Unencrypted values (`encrypted = false`) are not affected by this cleanup. On Android, if `android:allowBackup="true"` is set in the manifest, Auto Backup may restore unencrypted DataStore entries after reinstall with stale values from the last backup snapshot.
 
 ### iOS Keychain Cleanup Mechanism
 
@@ -1099,10 +1196,17 @@ KSafe ensures clean reinstalls on both platforms:
 * **Orphan Detection:** Compares Keychain entries with DataStore entries
 * **Automatic Removal:** Deletes any Keychain keys without matching DataStore data
 
+### Orphaned Ciphertext Cleanup (All Platforms)
+
+On startup, KSafe probes each encrypted DataStore entry by attempting decryption:
+* **Permanent failure** (key gone, invalidated, wrong key): entry removed from DataStore
+* **Temporary failure** (device locked): skipped, retried on next launch
+* Runs once per startup, after migration and before the DataStore collector begins
+
 ### Known Limitations
 
-* **iOS:** Keychain access requires device to be unlocked
-* **Android:** Some devices may not have hardware-backed keystore
+* **iOS:** Keychain access may require device to be unlocked depending on `requireUnlockedDevice` setting (default: accessible after first unlock)
+* **Android:** Some devices may not have hardware-backed keystore; `setUnlockedDeviceRequired` requires API 28+
 * **JVM:** No hardware security module; relies on file system permissions
 * **All Platforms:** Encrypted data is lost if encryption keys are deleted (by design for security)
 
@@ -1137,7 +1241,7 @@ by [Mark Andrachek](https://github.com/mandrachek)
 ./gradlew :ksafe:commonTest --tests "*.KSafeTest"
 ```
 
-**Note:** iOS Simulator uses real Keychain APIs (software-backed), while real devices use hardware-backed Keychain with Secure Enclave.
+**Note:** iOS Simulator uses real Keychain APIs (software-backed), while real devices store Keychain data in a hardware-encrypted container protected by the device passcode.
 
 ### Building and Running the iOS Test App
 
@@ -1177,7 +1281,7 @@ xcodebuild -scheme KSafeTestApp \
 
 **Important Notes:**
 - **Simulator:** Uses real Keychain APIs (software-backed)
-- **Physical Device:** Uses hardware-backed Keychain (Secure Enclave). Requires developer profile to be trusted in Settings → General → VPN & Device Management
+- **Physical Device:** Uses hardware-encrypted Keychain (protected by device passcode). Requires developer profile to be trusted in Settings → General → VPN & Device Management
 
 ### Test App Features
 

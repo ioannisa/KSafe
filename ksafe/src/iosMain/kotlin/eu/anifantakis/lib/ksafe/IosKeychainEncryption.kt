@@ -30,7 +30,9 @@ import platform.Security.SecItemDelete
 import platform.Security.errSecInteractionNotAllowed
 import platform.Security.errSecSuccess
 import platform.Security.kSecAttrAccessible
+import platform.Security.kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 import platform.Security.kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+import platform.Security.SecItemUpdate
 import platform.Security.kSecAttrAccount
 import platform.Security.kSecAttrService
 import platform.Security.kSecClass
@@ -46,12 +48,14 @@ import kotlin.random.Random
  * iOS implementation of [KSafeEncryption] using iOS Keychain Services and CryptoKit.
  *
  * This provides secure encryption with:
- * - Keys stored in the iOS Keychain (protected by device passcode)
- * - Keys not included in iCloud/iTunes backups
- * - Access control: `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`
+ * - Symmetric AES keys stored as Keychain generic-password items (protected by device passcode)
+ * - Keys not included in iCloud/iTunes backups (`ThisDeviceOnly` accessibility)
+ * - Access control: configurable via [KSafeConfig.requireUnlockedDevice]
+ *   (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly` or `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`)
  *
- * On real devices, keys are hardware-backed by Secure Enclave.
- * On iOS Simulator, keys are software-backed but still use the real Keychain APIs.
+ * Note: These are software-backed symmetric keys stored in the Keychain, not Secure Enclave keys.
+ * The Secure Enclave only supports asymmetric keys (EC P-256). The Keychain itself is encrypted
+ * by the OS and protected by the device passcode, providing strong at-rest protection.
  *
  * @property config Configuration for encryption (key size)
  * @property serviceName The Keychain service name for key storage
@@ -222,7 +226,11 @@ internal class IosKeychainEncryption(
                 CFDictionarySetValue(this, kSecAttrService, CFBridgingRetain(serviceName))
                 CFDictionarySetValue(this, kSecAttrAccount, CFBridgingRetain(keyId))
                 CFDictionarySetValue(this, kSecValueData, CFBridgingRetain(nsData))
-                CFDictionarySetValue(this, kSecAttrAccessible, kSecAttrAccessibleWhenUnlockedThisDeviceOnly)
+                val accessibility = if (config.requireUnlockedDevice)
+                    kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+                else
+                    kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+                CFDictionarySetValue(this, kSecAttrAccessible, accessibility)
             }
 
             // First delete any existing item with the same key
@@ -240,9 +248,60 @@ internal class IosKeychainEncryption(
             CFRelease(deleteQuery as CFTypeRef?)
 
             // Now add the new item
-            SecItemAdd(addQuery, null)
-
+            val addStatus = SecItemAdd(addQuery, null)
             CFRelease(addQuery as CFTypeRef?)
+
+            if (addStatus != errSecSuccess) {
+                when (addStatus) {
+                    errSecInteractionNotAllowed -> throw IllegalStateException(
+                        "KSafe: Cannot store key in Keychain - device is locked."
+                    )
+                    else -> throw IllegalStateException(
+                        "KSafe: Failed to store key in Keychain, status: $addStatus"
+                    )
+                }
+            }
+        }
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    override fun updateKeyAccessibility(identifier: String, requireUnlocked: Boolean) {
+        memScoped {
+            // Build query to find the existing Keychain item
+            val query = CFDictionaryCreateMutable(
+                kCFAllocatorDefault, 0, null, null
+            ).apply {
+                CFDictionarySetValue(this, kSecClass, kSecClassGenericPassword)
+                CFDictionarySetValue(this, kSecAttrService, CFBridgingRetain(serviceName))
+                CFDictionarySetValue(this, kSecAttrAccount, CFBridgingRetain(identifier))
+            }
+
+            // Build update dictionary with the new accessibility attribute
+            val update = CFDictionaryCreateMutable(
+                kCFAllocatorDefault, 0, null, null
+            ).apply {
+                val accessibility = if (requireUnlocked)
+                    kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+                else
+                    kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+                CFDictionarySetValue(this, kSecAttrAccessible, accessibility)
+            }
+
+            val updateStatus = SecItemUpdate(query, update)
+
+            CFRelease(query as CFTypeRef?)
+            CFRelease(update as CFTypeRef?)
+
+            if (updateStatus != errSecSuccess && updateStatus != platform.Security.errSecItemNotFound) {
+                when (updateStatus) {
+                    errSecInteractionNotAllowed -> throw IllegalStateException(
+                        "KSafe: Cannot update Keychain accessibility - device is locked."
+                    )
+                    else -> throw IllegalStateException(
+                        "KSafe: Failed to update Keychain accessibility, status: $updateStatus"
+                    )
+                }
+            }
         }
     }
 

@@ -50,10 +50,21 @@ package eu.anifantakis.lib.ksafe
  *           **Note:** 128-bit keys may offer marginally faster encryption on very old devices,
  *           but 256-bit is strongly recommended for all modern devices (negligible performance difference).
  * @property androidAuthValiditySeconds Reserved for future use. Default is 30 seconds.
+ * @property requireUnlockedDevice Whether encrypted data should only be accessible when the device is unlocked.
+ *
+ *   | Platform    | `false` (default)                                  | `true`                                           |
+ *   |-------------|----------------------------------------------------|-------------------------------------------------|
+ *   | **Android** | Keys accessible at any time (no lock restriction)  | Keys created with `setUnlockedDeviceRequired(true)` (API 28+) |
+ *   | **iOS**     | `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` | `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`   |
+ *   | **JVM**     | No effect (software-backed keys)                   | No effect (software-backed keys)                 |
+ *
+ *   Changing this value triggers an automatic one-time migration on the next KSafe initialization.
+ *   Existing encryption keys are re-created (Android) or updated in-place (iOS) to match the new policy.
  */
 data class KSafeConfig(
     val keySize: Int = 256,
-    val androidAuthValiditySeconds: Int = 30
+    val androidAuthValiditySeconds: Int = 30,
+    val requireUnlockedDevice: Boolean = false
 ) {
     init {
         require(keySize == 128 || keySize == 256) {
