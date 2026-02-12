@@ -5,6 +5,7 @@ import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.Serializable
 import kotlin.test.Test
@@ -339,6 +340,64 @@ abstract class KSafeTest {
             // Writing same value should not emit
             ksafe.put(key, value, encrypted = false)
             expectNoEvents()
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    // ============ STATE FLOW API TESTS ============
+
+    /** Verifies that StateFlow has defaultValue as initial value (unencrypted) */
+    @Test
+    fun testStateFlowUnencrypted() = runTest {
+        val ksafe = createKSafe()
+        val key = "test_stateflow"
+        val defaultValue = "default"
+
+        val stateFlow = ksafe.getStateFlow(key, defaultValue, scope = this, encrypted = false)
+        assertEquals(defaultValue, stateFlow.value)
+
+        ksafe.put(key, "updated", encrypted = false)
+        stateFlow.test {
+            assertEquals("updated", awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /** Verifies that StateFlow has defaultValue as initial value (encrypted) */
+    @Test
+    fun testStateFlowEncrypted() = runTest {
+        val ksafe = createKSafe()
+        val key = "test_stateflow_encrypted"
+        val defaultValue = "default"
+
+        val stateFlow = ksafe.getStateFlow(key, defaultValue, scope = this, encrypted = true)
+        assertEquals(defaultValue, stateFlow.value)
+
+        ksafe.put(key, "secret", encrypted = true)
+        stateFlow.test {
+            assertEquals("secret", awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /** Verifies that StateFlow reflects updates reactively */
+    @Test
+    fun testStateFlowReflectsUpdates() = runTest {
+        val ksafe = createKSafe()
+        val key = "test_stateflow_updates"
+        val defaultValue = "default"
+
+        val stateFlow = ksafe.getStateFlow(key, defaultValue, scope = this, encrypted = false)
+
+        stateFlow.test {
+            assertEquals(defaultValue, awaitItem())
+
+            ksafe.put(key, "value1", encrypted = false)
+            assertEquals("value1", awaitItem())
+
+            ksafe.put(key, "value2", encrypted = false)
+            assertEquals("value2", awaitItem())
 
             cancelAndIgnoreRemainingEvents()
         }

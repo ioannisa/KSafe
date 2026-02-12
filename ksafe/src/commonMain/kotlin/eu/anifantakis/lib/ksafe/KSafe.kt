@@ -1,6 +1,10 @@
 package eu.anifantakis.lib.ksafe
 
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
 
 /**
  * An API for secure key–value storage.
@@ -308,3 +312,34 @@ enum class KSafeMemoryPolicy {
      */
     ENCRYPTED_WITH_TIMED_CACHE
 }
+
+/**
+ * Returns a [StateFlow] that holds the current value and emits updates whenever it changes.
+ *
+ * This is a convenience wrapper around [KSafe.getFlow] that converts the cold [Flow] into
+ * a hot [StateFlow] using [stateIn] with [SharingStarted.Eagerly]. The [defaultValue] is
+ * used both as the fallback for missing keys and as the initial value of the [StateFlow],
+ * preventing mismatched-initial-value bugs.
+ *
+ * ## Example
+ * ```kotlin
+ * val username: StateFlow<String> = ksafe.getStateFlow(
+ *     key = "username",
+ *     defaultValue = "Guest",
+ *     scope = viewModelScope
+ * )
+ * ```
+ *
+ * @param T The type of value.
+ * @param key The unique key.
+ * @param defaultValue The fallback value and initial [StateFlow] value.
+ * @param scope The [CoroutineScope] used to share the flow (e.g., `viewModelScope`).
+ * @param encrypted Whether the value is encrypted. Defaults to `true`.
+ */
+inline fun <reified T> KSafe.getStateFlow(
+    key: String,
+    defaultValue: T,
+    scope: CoroutineScope,
+    encrypted: Boolean = true
+): StateFlow<T> = getFlow(key, defaultValue, encrypted)
+    .stateIn(scope, SharingStarted.Eagerly, defaultValue)

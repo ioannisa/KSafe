@@ -171,6 +171,74 @@ class JvmNullFilenameTest {
         }
     }
 
+    // ---------- StateFlow ----------
+
+    /** Verifies StateFlow has defaultValue as initial value (unencrypted) */
+    @Test
+    fun stateFlow_unencrypted_hasDefaultAsInitialValue() = runTest {
+        val key = uniqueKey("sf_plain")
+        val stateFlow = ksafe.getStateFlow(key, "def", scope = this, encrypted = false)
+        assertEquals("def", stateFlow.value)
+
+        ksafe.put(key, "updated", encrypted = false)
+        stateFlow.test {
+            assertEquals("updated", awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /** Verifies StateFlow has defaultValue as initial value (encrypted) */
+    @Test
+    fun stateFlow_encrypted_hasDefaultAsInitialValue() = runTest {
+        val key = uniqueKey("sf_enc")
+        val stateFlow = ksafe.getStateFlow(key, "def", scope = this, encrypted = true)
+        assertEquals("def", stateFlow.value)
+
+        ksafe.put(key, "secret", encrypted = true)
+        stateFlow.test {
+            assertEquals("secret", awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /** Verifies StateFlow reflects reactive updates */
+    @Test
+    fun stateFlow_emitsUpdates() = runTest {
+        val key = uniqueKey("sf_updates")
+        val stateFlow = ksafe.getStateFlow(key, "def", scope = this, encrypted = false)
+
+        stateFlow.test {
+            assertEquals("def", awaitItem())
+
+            ksafe.put(key, "a", encrypted = false)
+            assertEquals("a", awaitItem())
+
+            ksafe.put(key, "b", encrypted = false)
+            assertEquals("b", awaitItem())
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /** Verifies StateFlow does not emit duplicate values */
+    @Test
+    fun stateFlow_distinctUntilChanged() = runTest {
+        val key = uniqueKey("sf_distinct")
+        val stateFlow = ksafe.getStateFlow(key, "def", scope = this, encrypted = false)
+
+        stateFlow.test {
+            assertEquals("def", awaitItem())
+
+            ksafe.put(key, "a", encrypted = false)
+            assertEquals("a", awaitItem())
+
+            ksafe.put(key, "a", encrypted = false) // no change
+            expectNoEvents()
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
     // ---------- Type coverage ----------
 
     /** Verifies Boolean type roundtrip with encryption */
