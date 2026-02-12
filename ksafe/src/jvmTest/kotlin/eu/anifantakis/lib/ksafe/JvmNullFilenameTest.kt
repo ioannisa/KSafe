@@ -1,13 +1,17 @@
 package eu.anifantakis.lib.ksafe
 
 import app.cash.turbine.test
-import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlin.test.*
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.plus
+import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.Serializable
 import org.junit.BeforeClass
-import kotlin.test.Ignore
 import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
+import kotlin.test.assertTrue
 
 /**
  * Exhaustive tests for a single DataStore (fileName = null).
@@ -177,7 +181,9 @@ class JvmNullFilenameTest {
     @Test
     fun stateFlow_unencrypted_hasDefaultAsInitialValue() = runTest {
         val key = uniqueKey("sf_plain")
-        val stateFlow = ksafe.getStateFlow(key, "def", scope = this, encrypted = false)
+        val sharingScope = this + Job()
+
+        val stateFlow = ksafe.getStateFlow(key, "def", scope = sharingScope, encrypted = false)
         assertEquals("def", stateFlow.value)
 
         ksafe.put(key, "updated", encrypted = false)
@@ -185,13 +191,16 @@ class JvmNullFilenameTest {
             assertEquals("updated", awaitItem())
             cancelAndIgnoreRemainingEvents()
         }
+        sharingScope.cancel()
     }
 
     /** Verifies StateFlow has defaultValue as initial value (encrypted) */
     @Test
     fun stateFlow_encrypted_hasDefaultAsInitialValue() = runTest {
         val key = uniqueKey("sf_enc")
-        val stateFlow = ksafe.getStateFlow(key, "def", scope = this, encrypted = true)
+        val sharingScope = this + Job()
+
+        val stateFlow = ksafe.getStateFlow(key, "def", scope = sharingScope, encrypted = true)
         assertEquals("def", stateFlow.value)
 
         ksafe.put(key, "secret", encrypted = true)
@@ -199,13 +208,16 @@ class JvmNullFilenameTest {
             assertEquals("secret", awaitItem())
             cancelAndIgnoreRemainingEvents()
         }
+        sharingScope.cancel()
     }
 
     /** Verifies StateFlow reflects reactive updates */
     @Test
     fun stateFlow_emitsUpdates() = runTest {
         val key = uniqueKey("sf_updates")
-        val stateFlow = ksafe.getStateFlow(key, "def", scope = this, encrypted = false)
+        val sharingScope = this + Job()
+
+        val stateFlow = ksafe.getStateFlow(key, "def", scope = sharingScope, encrypted = false)
 
         stateFlow.test {
             assertEquals("def", awaitItem())
@@ -218,13 +230,16 @@ class JvmNullFilenameTest {
 
             cancelAndIgnoreRemainingEvents()
         }
+        sharingScope.cancel()
     }
 
     /** Verifies StateFlow does not emit duplicate values */
     @Test
     fun stateFlow_distinctUntilChanged() = runTest {
         val key = uniqueKey("sf_distinct")
-        val stateFlow = ksafe.getStateFlow(key, "def", scope = this, encrypted = false)
+        val sharingScope = this + Job()
+
+        val stateFlow = ksafe.getStateFlow(key, "def", scope = sharingScope, encrypted = false)
 
         stateFlow.test {
             assertEquals("def", awaitItem())
@@ -237,6 +252,7 @@ class JvmNullFilenameTest {
 
             cancelAndIgnoreRemainingEvents()
         }
+        sharingScope.cancel()
     }
 
     // ---------- Type coverage ----------

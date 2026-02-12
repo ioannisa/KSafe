@@ -1,18 +1,17 @@
 package eu.anifantakis.lib.ksafe
 
 import app.cash.turbine.test
-import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.plus
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.Serializable
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
-import kotlin.test.assertTrue
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * Abstract base class for KSafe tests.
@@ -353,8 +352,9 @@ abstract class KSafeTest {
         val ksafe = createKSafe()
         val key = "test_stateflow"
         val defaultValue = "default"
+        val sharingScope = this + Job()
 
-        val stateFlow = ksafe.getStateFlow(key, defaultValue, scope = this, encrypted = false)
+        val stateFlow = ksafe.getStateFlow(key, defaultValue, scope = sharingScope, encrypted = false)
         assertEquals(defaultValue, stateFlow.value)
 
         ksafe.put(key, "updated", encrypted = false)
@@ -362,6 +362,7 @@ abstract class KSafeTest {
             assertEquals("updated", awaitItem())
             cancelAndIgnoreRemainingEvents()
         }
+        sharingScope.cancel()
     }
 
     /** Verifies that StateFlow has defaultValue as initial value (encrypted) */
@@ -370,8 +371,9 @@ abstract class KSafeTest {
         val ksafe = createKSafe()
         val key = "test_stateflow_encrypted"
         val defaultValue = "default"
+        val sharingScope = this + Job()
 
-        val stateFlow = ksafe.getStateFlow(key, defaultValue, scope = this, encrypted = true)
+        val stateFlow = ksafe.getStateFlow(key, defaultValue, scope = sharingScope, encrypted = true)
         assertEquals(defaultValue, stateFlow.value)
 
         ksafe.put(key, "secret", encrypted = true)
@@ -379,6 +381,7 @@ abstract class KSafeTest {
             assertEquals("secret", awaitItem())
             cancelAndIgnoreRemainingEvents()
         }
+        sharingScope.cancel()
     }
 
     /** Verifies that StateFlow reflects updates reactively */
@@ -387,8 +390,9 @@ abstract class KSafeTest {
         val ksafe = createKSafe()
         val key = "test_stateflow_updates"
         val defaultValue = "default"
+        val sharingScope = this + Job()
 
-        val stateFlow = ksafe.getStateFlow(key, defaultValue, scope = this, encrypted = false)
+        val stateFlow = ksafe.getStateFlow(key, defaultValue, scope = sharingScope, encrypted = false)
 
         stateFlow.test {
             assertEquals(defaultValue, awaitItem())
@@ -401,6 +405,7 @@ abstract class KSafeTest {
 
             cancelAndIgnoreRemainingEvents()
         }
+        sharingScope.cancel()
     }
 
     // ============ KEY INDEPENDENCE TESTS ============
