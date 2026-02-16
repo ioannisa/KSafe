@@ -8,25 +8,37 @@ package eu.anifantakis.lib.ksafe
  * These functions provide synchronous access to the browser's localStorage API.
  * localStorage is scoped per origin and persists across browser sessions.
  *
- * Marked `@PublishedApi` so they can be called from public inline functions in KSafe.
+ * External functions are private (Kotlin/WASM requirement: external functions
+ * cannot be internal due to name mangling). Internal delegating functions are
+ * marked `@PublishedApi` so they can be called from public inline functions in KSafe.
  */
 
 @JsFun("(key) => { const v = window.localStorage.getItem(key); return v === null ? null : v; }")
-@PublishedApi
-internal external fun localStorageGet(key: String): String?
+private external fun _localStorageGet(key: String): String?
 
 @JsFun("(key, value) => { window.localStorage.setItem(key, value); }")
-@PublishedApi
-internal external fun localStorageSet(key: String, value: String)
+private external fun _localStorageSet(key: String, value: String)
 
 @JsFun("(key) => { window.localStorage.removeItem(key); }")
-@PublishedApi
-internal external fun localStorageRemove(key: String)
+private external fun _localStorageRemove(key: String)
 
 @JsFun("() => { return window.localStorage.length; }")
-@PublishedApi
-internal external fun localStorageLength(): Int
+private external fun _localStorageLength(): Int
 
 @JsFun("(index) => { const k = window.localStorage.key(index); return k === null ? null : k; }")
+private external fun _localStorageKey(index: Int): String?
+
 @PublishedApi
-internal external fun localStorageKey(index: Int): String?
+internal fun localStorageGet(key: String): String? = _localStorageGet(key)
+
+@PublishedApi
+internal fun localStorageSet(key: String, value: String) = _localStorageSet(key, value)
+
+@PublishedApi
+internal fun localStorageRemove(key: String) = _localStorageRemove(key)
+
+@PublishedApi
+internal fun localStorageLength(): Int = _localStorageLength()
+
+@PublishedApi
+internal fun localStorageKey(index: Int): String? = _localStorageKey(index)
