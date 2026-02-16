@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
+import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -10,7 +11,7 @@ plugins {
 }
 
 group = "eu.anifantakis"
-version = "1.5.0"
+version = "1.6.0"
 
 kotlin {
     androidTarget {
@@ -38,13 +39,17 @@ kotlin {
         }
     }
 
+    // Add a WASM/JS target for browser-based web apps.
+    @OptIn(ExperimentalWasmDsl::class)
+    wasmJs {
+        browser()
+    }
+
     sourceSets {
         androidMain.dependencies {
             implementation(libs.androidx.datastore.preferences)
             implementation(libs.cryptography.provider.jdk)
             implementation(libs.androidx.biometric)
-            implementation(libs.play.integrity)
-            implementation(libs.play.services.base)
         }
         @Suppress("unused")
         val commonMain by getting {
@@ -52,13 +57,12 @@ kotlin {
                 implementation(libs.kotlinx.serialization.json)
                 implementation(libs.kotlinx.coroutines.core)
 
-                implementation(libs.androidx.datastore.preferences.core)
-
                 implementation(libs.cryptography.core)
                 implementation(libs.cryptography.provider.base)
             }
         }
         iosMain.dependencies {
+            implementation(libs.androidx.datastore.preferences.core)
             implementation(libs.cryptography.provider.cryptokit)
         }
 
@@ -72,6 +76,19 @@ kotlin {
         }
 
         val jvmTest by getting {
+            dependencies {
+                implementation(kotlin("test"))
+            }
+        }
+
+        // Dependencies for the WASM/JS target
+        val wasmJsMain by getting {
+            dependencies {
+                implementation(libs.cryptography.provider.webcrypto)
+            }
+        }
+
+        val wasmJsTest by getting {
             dependencies {
                 implementation(kotlin("test"))
             }

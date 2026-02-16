@@ -16,7 +16,6 @@ cryptography = "0.5.0"
 turbine = "1.2.1"
 robolectric = "4.16"
 biometric = "1.1.0"
-playIntegrity = "1.6.0"
 
 [libraries]
 androidx-orchestrator = { module = "androidx.test:orchestrator", version.ref = "orchestrator" }
@@ -37,6 +36,7 @@ cryptography-core = { module = "dev.whyoleg.cryptography:cryptography-core", ver
 cryptography-provider-base = { module = "dev.whyoleg.cryptography:cryptography-provider-base", version.ref = "cryptography" }
 cryptography-provider-jdk = { module = "dev.whyoleg.cryptography:cryptography-provider-jdk", version.ref = "cryptography" }
 cryptography-provider-cryptokit = { module = "dev.whyoleg.cryptography:cryptography-provider-cryptokit", version.ref = "cryptography" }
+cryptography-provider-webcrypto = { module = "dev.whyoleg.cryptography:cryptography-provider-webcrypto", version.ref = "cryptography" }
 #cryptography-provider-optimal = { module = "dev.whyoleg.cryptography:cryptography-provider-optimal", version.ref = "cryptography" }
 
 # DataStore Preferences
@@ -46,9 +46,6 @@ androidx-datastore-preferences-core = { module = "androidx.datastore:datastore-p
 # Biometric
 androidx-biometric = { module = "androidx.biometric:biometric", version.ref = "biometric" }
 
-# Play Integrity
-play-integrity = { module = "com.google.android.play:integrity", version.ref = "playIntegrity" }
-play-services-base = { module = "com.google.android.gms:play-services-base", version = "18.10.0" }
 
 
 # Compose

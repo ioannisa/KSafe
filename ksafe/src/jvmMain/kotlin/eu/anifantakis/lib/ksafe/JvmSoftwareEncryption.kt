@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import java.security.SecureRandom
+import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -42,6 +43,13 @@ internal class JvmSoftwareEncryption(
         private const val KEY_PREFIX = "ksafe_key_"
     }
 
+    /** In-memory cache to avoid repeated DataStore reads + key deserialization. */
+    private val keyCache = ConcurrentHashMap<String, SecretKey>()
+
+    /** Per-alias lock objects — avoids `intern()` pool pressure with dynamic key sets. */
+    private val locks = ConcurrentHashMap<String, Any>()
+    private fun lockFor(alias: String): Any = locks.computeIfAbsent(alias) { Any() }
+
     override fun encrypt(identifier: String, data: ByteArray): ByteArray {
         val secretKey = runBlocking { getOrCreateSecretKey(identifier) }
 
@@ -73,10 +81,13 @@ internal class JvmSoftwareEncryption(
     }
 
     override fun deleteKey(identifier: String) {
-        runBlocking {
-            val keyPref = stringPreferencesKey("$KEY_PREFIX$identifier")
-            dataStore.edit { prefs ->
-                prefs.remove(keyPref)
+        synchronized(lockFor(identifier)) {
+            keyCache.remove(identifier)
+            runBlocking {
+                val keyPref = stringPreferencesKey("$KEY_PREFIX$identifier")
+                dataStore.edit { prefs ->
+                    prefs.remove(keyPref)
+                }
             }
         }
     }
@@ -84,33 +95,48 @@ internal class JvmSoftwareEncryption(
     /**
      * Gets an existing key from DataStore or creates a new one if it doesn't exist.
      *
-     * Keys are stored as Base64-encoded byte arrays in DataStore preferences.
+     * Uses [ConcurrentHashMap] for in-memory caching and a per-alias lock to prevent
+     * concurrent key generation from overwriting a just-created key.
+     * The same lock is held by [deleteKey] to prevent cache repopulation races.
      *
      * @param alias The key identifier
      * @return The secret key for encryption/decryption
      */
     @OptIn(ExperimentalEncodingApi::class)
     private suspend fun getOrCreateSecretKey(alias: String): SecretKey {
-        val keyPref = stringPreferencesKey("$KEY_PREFIX$alias")
-        val preferences = dataStore.data.first()
-        val existing = preferences[keyPref]
+        // Fast path: return cached key
+        keyCache[alias]?.let { return it }
 
-        if (existing != null) {
-            val keyBytes = Base64.decode(existing)
-            return SecretKeySpec(keyBytes, "AES")
+        // Slow path: load or generate (synchronized to prevent duplicate generation)
+        return synchronized(lockFor(alias)) {
+            // Double-check after acquiring lock
+            keyCache[alias]?.let { return it }
+
+            val keyPref = stringPreferencesKey("$KEY_PREFIX$alias")
+            val preferences = runBlocking { dataStore.data.first() }
+            val existing = preferences[keyPref]
+
+            val key = if (existing != null) {
+                val keyBytes = Base64.decode(existing)
+                SecretKeySpec(keyBytes, "AES")
+            } else {
+                // Generate new key with configured size
+                val keyGen = KeyGenerator.getInstance("AES")
+                keyGen.init(config.keySize)
+                val secretKey = keyGen.generateKey()
+
+                // Store in DataStore
+                val encoded = Base64.encode(secretKey.encoded)
+                runBlocking {
+                    dataStore.edit { prefs ->
+                        prefs[keyPref] = encoded
+                    }
+                }
+                secretKey
+            }
+
+            keyCache[alias] = key
+            key
         }
-
-        // Generate new key with configured size
-        val keyGen = KeyGenerator.getInstance("AES")
-        keyGen.init(config.keySize)
-        val secretKey = keyGen.generateKey()
-
-        // Store in DataStore
-        val encoded = Base64.encode(secretKey.encoded)
-        dataStore.edit { prefs ->
-            prefs[keyPref] = encoded
-        }
-
-        return secretKey
     }
 }

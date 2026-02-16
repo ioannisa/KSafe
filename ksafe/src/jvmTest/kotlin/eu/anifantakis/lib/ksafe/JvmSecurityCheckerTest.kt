@@ -1,12 +1,11 @@
 package eu.anifantakis.lib.ksafe
 
-import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 
 /**
- * JVM-specific tests for SecurityChecker and IntegrityChecker.
+ * JVM-specific tests for SecurityChecker.
  */
 class JvmSecurityCheckerTest {
 
@@ -44,24 +43,6 @@ class JvmSecurityCheckerTest {
         // This may return true or false depending on test environment
         val result = SecurityChecker.isDebugBuild()
         assertIs<Boolean>(result)
-    }
-
-    // ============ INTEGRITY CHECKER JVM BEHAVIOR ============
-
-    /** Verifies IntegrityChecker is not available on JVM platform */
-    @Test
-    fun integrityChecker_isAvailable_returnsFalseOnJvm() {
-        val checker = IntegrityChecker()
-        assertFalse(checker.isAvailable(), "IntegrityChecker should not be available on JVM")
-    }
-
-    /** Verifies IntegrityChecker returns NotSupported on JVM */
-    @Test
-    fun integrityChecker_requestToken_returnsNotSupportedOnJvm() = runTest {
-        val checker = IntegrityChecker()
-        val result = checker.requestIntegrityToken("test_nonce")
-
-        assertIs<IntegrityResult.NotSupported>(result)
     }
 
     // ============ VALIDATE SECURITY POLICY (JVM-SPECIFIC) ============

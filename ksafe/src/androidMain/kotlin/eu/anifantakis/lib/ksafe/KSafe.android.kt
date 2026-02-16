@@ -104,6 +104,8 @@ actual class KSafe(
         private const val ACCESS_POLICY_KEY = "__ksafe_access_policy__"
         private const val ACCESS_POLICY_UNLOCKED = "unlocked"
         private const val ACCESS_POLICY_DEFAULT = "default"
+
+        private val dataStoreCache = ConcurrentHashMap<String, DataStore<Preferences>>()
     }
 
     // Encryption engine - uses test engine if provided, or creates default AndroidKeystoreEncryption
@@ -133,16 +135,20 @@ actual class KSafe(
     @PublishedApi
     internal val json = Json { ignoreUnknownKeys = true }
 
-    // Create a DataStore for our preferences.
+    // Create a DataStore for our preferences (cached per file to avoid "multiple active instances" crash on DI re-init).
     @PublishedApi
-    internal val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
-        scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
-        produceFile = {
-            val file =
-                fileName?.let { "eu_anifantakis_ksafe_datastore_${fileName}" } ?: "eu_anifantakis_ksafe_datastore"
-            context.preferencesDataStoreFile(file)
-        }
-    )
+    internal val dataStore: DataStore<Preferences> = dataStoreCache.getOrPut(
+        fileName ?: "default"
+    ) {
+        PreferenceDataStoreFactory.create(
+            scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+            produceFile = {
+                val file =
+                    fileName?.let { "eu_anifantakis_ksafe_datastore_${fileName}" } ?: "eu_anifantakis_ksafe_datastore"
+                context.preferencesDataStoreFile(file)
+            }
+        )
+    }
 
     /**
      * **Thread-Safe In-Memory Cache (Hot State).**

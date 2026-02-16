@@ -1,6 +1,6 @@
 # KSafe — Secure Persist Library for Kotlin Multiplatform
 
-_**Effortless Enterprise-Grade Encrypted Persistence with Biometric Authentication and Runtime Security for Android, iOS, and Desktop.**_
+_**Effortless Enterprise-Grade Encrypted Persistence with Biometric Authentication and Runtime Security for Android, iOS, Desktop, and Web.**_
 
 
 [![Maven Central](https://img.shields.io/maven-central/v/eu.anifantakis/ksafe.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/eu.anifantakis/ksafe)
@@ -21,9 +21,9 @@ Special thanks to [Mark Andrachek](https://github.com/mandrachek) for his contri
 ## Quickstart
 
 ```kotlin
-// 1. Create instance (Android needs context, iOS/JVM don't)
+// 1. Create instance (Android needs context, others don't)
 val ksafe = KSafe(context) // Android
-val ksafe = KSafe()        // iOS / JVM
+val ksafe = KSafe()        // iOS / JVM / WASM
 
 // 2. Store & retrieve with property delegation
 var counter by ksafe(0)
@@ -41,7 +41,7 @@ ksafe.verifyBiometricDirect("Confirm payment") { success ->
 }
 ```
 
-That's it. Your data is now AES-256-GCM encrypted with keys stored in Android Keystore, iOS Keychain, or software-backed on JVM.
+That's it. Your data is now AES-256-GCM encrypted with keys stored in Android Keystore, iOS Keychain, software-backed on JVM, or WebCrypto on WASM.
 
 ***
 
@@ -53,8 +53,8 @@ That's it. Your data is now AES-256-GCM encrypted with keys stored in Android Ke
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:1.5.0")
-implementation("eu.anifantakis:ksafe-compose:1.5.0") // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe:1.6.0")
+implementation("eu.anifantakis:ksafe-compose:1.6.0") // ← Compose state (optional)
 ```
 
 > Skip `ksafe-compose` if your project doesn't use Jetpack Compose, or if you don't intend to use the library's `mutableStateOf` persistence option
@@ -99,6 +99,11 @@ actual val platformModule = module {
 }
 
 // JVM/Desktop
+actual val platformModule = module {
+  single { KSafe() }
+}
+
+// WASM
 actual val platformModule = module {
   single { KSafe() }
 }
@@ -251,16 +256,15 @@ class CounterViewModel(ksafe: KSafe) : ViewModel() {
 
 ## Why use KSafe?
 
-* **Hardware-backed security** - AES-256-GCM with keys stored in Android Keystore, iOS Keychain, or software-backed on JVM
+* **Hardware-backed security** - AES-256-GCM with keys stored in Android Keystore, iOS Keychain, software-backed on JVM, or WebCrypto on WASM
 * **Biometric authentication** - Built-in Face ID, Touch ID, and Fingerprint support with smart auth caching
 * **Root & Jailbreak detection** - Detect compromised devices with configurable WARN/BLOCK actions
-* **Platform Integrity** - Helpers for Google Play Integrity and Apple DeviceCheck
 * **Clean reinstalls** - Automatic cleanup ensures fresh starts after app reinstallation
 * **One code path** - No expect/actual juggling—your common code owns the vault
 * **Ease of use** - `var launchCount by ksafe(0)` —that is literally it
 * **Versatility** - Primitives, data classes, sealed hierarchies, lists, sets, and nullable types
 * **Performance** - Zero-latency UI reads with Hybrid Cache architecture
-* **Desktop Support** - Full JVM/Desktop support alongside Android and iOS
+* **Desktop & Web Support** - Full JVM/Desktop and WASM/Browser support alongside Android and iOS
 
 ***
 
@@ -273,7 +277,7 @@ class CounterViewModel(ksafe: KSafe) : ViewModel() {
 | **Data corruption** | :x: Crash = data loss | :white_check_mark: Atomic | :x: Platform-dependent | :white_check_mark: Atomic | :white_check_mark: Uses DataStore atomicity |
 | **API style** | :x: Callbacks | :white_check_mark: Flow | :white_check_mark: Sync | :white_check_mark: Sync | :white_check_mark: Both sync & async |
 | **Encryption** | :x: None | :x: None | :x: None | :white_check_mark: Hardware-backed | :white_check_mark: Hardware-backed |
-| **Cross-platform** | :x: Android only | :x: Android only | :white_check_mark: KMP | :white_check_mark: KMP | :white_check_mark: Android/iOS/JVM |
+| **Cross-platform** | :x: Android only | :x: Android only | :white_check_mark: KMP | :white_check_mark: KMP | :white_check_mark: Android/iOS/JVM/WASM |
 | **Nullable support** | :x: No | :x: No | :white_check_mark: Yes | :white_check_mark: Yes | :white_check_mark: Full support |
 | **Complex types** | :x: Manual | :x: Manual/Proto | :x: Manual | :x: Manual | :white_check_mark: Auto-serialization |
 | **Biometric auth** | :x: Manual | :x: Manual | :x: Manual | :x: Manual | :white_check_mark: Built-in |
@@ -398,6 +402,7 @@ This means KSafe gives you DataStore's safety guarantees (atomic transactions, t
 | **Android** | API 23 (Android 6.0) | Hardware-backed Keystore on supported devices |
 | **iOS** | iOS 13+ | Keychain-backed symmetric keys (protected by device passcode) |
 | **JVM/Desktop** | JDK 11+ | Software-backed encryption |
+| **WASM/Browser** | Any modern browser | WebCrypto API + localStorage |
 
 | Dependency | Tested Version |
 |------------|----------------|
@@ -696,12 +701,12 @@ val ksafe = KSafe(
 )
 ```
 
-| Check | Android | iOS | JVM | Description |
-|-------|---------|-----|-----|-------------|
-| `rootedDevice` | ✅ | ✅ | ❌ | Detects rooted/jailbroken devices |
-| `debuggerAttached` | ✅ | ✅ | ✅ | Detects attached debuggers |
-| `debugBuild` | ✅ | ✅ | ✅ | Detects debug builds |
-| `emulator` | ✅ | ✅ | ❌ | Detects emulators/simulators |
+| Check | Android | iOS | JVM | WASM | Description |
+|-------|---------|-----|-----|------|-------------|
+| `rootedDevice` | ✅ | ✅ | ❌ | ❌ | Detects rooted/jailbroken devices |
+| `debuggerAttached` | ✅ | ✅ | ✅ | ❌ | Detects attached debuggers |
+| `debugBuild` | ✅ | ✅ | ✅ | ❌ | Detects debug builds |
+| `emulator` | ✅ | ✅ | ❌ | ❌ | Detects emulators/simulators |
 
 ### Actions Explained
 
@@ -856,45 +861,7 @@ The [KSafeDemo app](https://github.com/ioannisa/KSafeDemo) makes use of `UiSecur
 - System write access test (fails on non-jailbroken devices)
 - Common jailbreak tool paths (`/bin/bash`, `/usr/sbin/sshd`, etc.)
 
-> **Limitation:** Sophisticated root-hiding tools (Magisk DenyList, Shamiko, Zygisk) can bypass most detection methods. For high-security apps, use Platform Integrity Verification.
-
-***
-
-## Platform Integrity Verification (Server-Side)
-
-For stronger device integrity verification, KSafe provides helpers for **Google Play Integrity** (Android) and **Apple DeviceCheck** (iOS). These APIs generate tokens that must be verified **server-side**.
-
-```kotlin
-// Android - requires Google Cloud project number
-val checker = IntegrityChecker(context, cloudProjectNumber = 123456789L)
-
-// iOS - no additional config needed
-val checker = IntegrityChecker()
-
-// Request token (suspend function)
-when (val result = checker.requestIntegrityToken(serverGeneratedNonce)) {
-    is IntegrityResult.Success -> {
-        // Send result.token to YOUR server for verification
-        api.verifyIntegrity(result.token, result.platform)
-    }
-    is IntegrityResult.Error -> {
-        Log.e("Integrity", "Failed: ${result.message}, code: ${result.code}")
-    }
-    is IntegrityResult.NotSupported -> {
-        // JVM/Desktop or device without Google Play Services
-    }
-}
-```
-
-| Platform | API | Server Verification Endpoint |
-|----------|-----|------------------------------|
-| Android | Play Integrity | `playintegrity.googleapis.com/v1/{package}:decodeIntegrityToken` |
-| iOS | DeviceCheck | `api.devicecheck.apple.com/v1/validate_device_token` |
-| JVM | Not supported | - |
-
-> **Important:** Tokens MUST be verified server-side. Client-side verification is insecure.
-
-> **Non-GMS Devices (Huawei, Amazon Fire, etc.):** IntegrityChecker gracefully returns `NotSupported` on devices without Google Play Services.
+> **Limitation:** Sophisticated root-hiding tools (Magisk DenyList, Shamiko, Zygisk) can bypass most client-side detection methods.
 
 ***
 
@@ -909,6 +876,7 @@ KSafe provides enterprise-grade encrypted persistence using DataStore Preference
 | **Android** | AES-256-GCM | Android Keystore (hardware-backed when available) | Keys non-exportable, app-bound, auto-deleted on uninstall |
 | **iOS** | AES-256-GCM via CryptoKit | iOS Keychain Services | Protected by device passcode/biometrics, not in backups |
 | **JVM/Desktop** | AES-256-GCM via javax.crypto | Software-backed in `~/.eu_anifantakis_ksafe/` | Relies on OS file permissions (0700 on POSIX) |
+| **WASM/Browser** | AES-256-GCM via WebCrypto | `localStorage` (Base64-encoded) | Scoped per origin, ~5-10 MB limit |
 
 ### Encryption Flow
 
@@ -946,7 +914,7 @@ KSafe provides enterprise-grade encrypted persistence using DataStore Preference
 - Never store master secrets client-side; prefer server-derived tokens
 - Consider certificate pinning for API communications
 
-**A note on iOS and the Secure Enclave:** Android's TEE/StrongBox can perform AES encryption entirely in hardware — the key never enters app memory. iOS's Secure Enclave only supports asymmetric keys (EC P-256), so symmetric AES keys must be stored as Keychain items and loaded into app memory for use by CryptoKit. The Keychain database itself is encrypted by Secure Enclave-derived class keys, providing strong at-rest protection. This is not a KSafe limitation — it's how all iOS AES encryption works, including banking apps and Apple's own frameworks. See our [detailed article](KSafe_Article_v1.5.0.md) for a full comparison of the two hardware security models.
+**A note on iOS and the Secure Enclave:** Android's TEE/StrongBox can perform AES encryption entirely in hardware — the key never enters app memory. iOS's Secure Enclave only supports asymmetric keys (EC P-256), so symmetric AES keys must be stored as Keychain items and loaded into app memory for use by CryptoKit. The Keychain database itself is encrypted by Secure Enclave-derived class keys, providing strong at-rest protection. This is not a KSafe limitation — it's how all iOS AES encryption works, including banking apps and Apple's own frameworks. See our [detailed article](KSafe_Article_v1.6.0.md) for a full comparison of the two hardware security models.
 
 ***
 
@@ -1018,7 +986,7 @@ KSafe(
     plaintextCacheTtl: Duration = 5.seconds  // only used with ENCRYPTED_WITH_TIMED_CACHE
 )
 
-// iOS / JVM
+// iOS / JVM / WASM
 KSafe(
     fileName: String? = null,
     lazyLoad: Boolean = false,
@@ -1059,6 +1027,7 @@ val ksafe = KSafe(
 | **Android** | Keys accessible at any time | `setUnlockedDeviceRequired(true)` (API 28+) |
 | **iOS** | `AfterFirstUnlockThisDeviceOnly` | `WhenUnlockedThisDeviceOnly` |
 | **JVM** | No effect (marker-only) | No effect (marker-only) |
+| **WASM** | No effect (browser has no lock concept) | No effect |
 
 **JVM note:** Desktop/server environments have no OS-level device lock concept. The `requireUnlockedDevice` setting is accepted but has no runtime effect — encrypted data is always accessible. A migration marker is written for consistency with Android/iOS, so switching between platforms doesn't trigger repeated migrations.
 
@@ -1142,13 +1111,13 @@ KSafe 1.2.0 introduced a completely rewritten core architecture focusing on zero
 │            encrypt() / decrypt() / deleteKey()              │
 └─────────────────────────┬───────────────────────────────────┘
                           │
-          ┌───────────────┼───────────────┐
-          ▼               ▼               ▼
-┌─────────────────┐ ┌───────────────┐ ┌─────────────────┐
-│    Android      │ │     iOS       │ │      JVM        │
-│    Keystore     │ │   Keychain    │ │   Software      │
-│   Encryption    │ │  Encryption   │ │   Encryption    │
-└─────────────────┘ └───────────────┘ └─────────────────┘
+          ┌───────────────┼───────────────┬───────────────┐
+          ▼               ▼               ▼               ▼
+┌─────────────────┐ ┌───────────────┐ ┌─────────────┐ ┌─────────────┐
+│    Android      │ │     iOS       │ │     JVM     │ │    WASM     │
+│    Keystore     │ │   Keychain    │ │  Software   │ │  WebCrypto  │
+│   Encryption    │ │  Encryption   │ │  Encryption │ │  Encryption │
+└─────────────────┘ └───────────────┘ └─────────────┘ └─────────────┘
 ```
 
 ***
@@ -1173,6 +1142,12 @@ KSafe 1.2.0 introduced a completely rewritten core architecture focusing on zero
 * AES-256-GCM encryption via standard javax.crypto
 * Keys stored in user home directory with restricted permissions
 * Suitable for desktop applications and server-side use
+
+#### WASM/Browser
+* AES-256-GCM encryption via WebCrypto API
+* Keys and data stored in browser `localStorage` (Base64-encoded)
+* Scoped per origin (~5-10 MB storage limit)
+* Memory policy always `PLAIN_TEXT` internally (WebCrypto is async-only)
 
 ### Error Handling
 
@@ -1208,6 +1183,7 @@ On startup, KSafe probes each encrypted DataStore entry by attempting decryption
 * **iOS:** Keychain access may require device to be unlocked depending on `requireUnlockedDevice` setting (default: accessible after first unlock)
 * **Android:** Some devices may not have hardware-backed keystore; `setUnlockedDeviceRequired` requires API 28+
 * **JVM:** No hardware security module; relies on file system permissions
+* **WASM:** No hardware security; relies on browser `localStorage` which can be cleared by the user. Security checks (root, debugger, emulator) are no-ops
 * **All Platforms:** Encrypted data is lost if encryption keys are deleted (by design for security)
 
 ***
@@ -1321,7 +1297,7 @@ import eu.anifantakis.lib.ksafe.compose.mutableStateOf
 
 | Feature | KSafe | EncryptedSharedPrefs | KVault | Multiplatform Settings | SQLCipher |
 |---------|-------|---------------------|--------|------------------------|-----------|
-| **KMP Support** | ✅ Android, iOS, JVM | ❌ Android only | ✅ Android, iOS | ✅ Multi-platform | ⚠️ Limited |
+| **KMP Support** | ✅ Android, iOS, JVM, WASM | ❌ Android only | ✅ Android, iOS | ✅ Multi-platform | ⚠️ Limited |
 | **Hardware-backed Keys** | ✅ Keystore/Keychain | ✅ Keystore | ✅ Keystore/Keychain | ❌ No encryption | ❌ Software |
 | **Zero Boilerplate** | ✅ `by ksafe(0)` | ❌ Verbose API | ⚠️ Moderate | ⚠️ Moderate | ❌ SQL required |
 | **Biometric Helper** | ✅ Built-in | ❌ Manual | ❌ Manual | ❌ Manual | ❌ Manual |
@@ -1330,7 +1306,7 @@ import eu.anifantakis.lib.ksafe.compose.mutableStateOf
 | **Auth Caching** | ✅ Scoped sessions | ❌ No | ❌ No | ❌ No | ❌ No |
 
 **When to choose KSafe:**
-- You need encrypted persistence across Android, iOS, and Desktop
+- You need encrypted persistence across Android, iOS, Desktop, and Web
 - You want property delegation (`by ksafe(x)`) for minimal boilerplate
 - You need integrated biometric authentication with smart caching
 - You're using Jetpack Compose and want reactive encrypted state

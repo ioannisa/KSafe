@@ -36,6 +36,10 @@ internal class AndroidKeystoreEncryption(
      */
     private val keyCache = java.util.concurrent.ConcurrentHashMap<String, SecretKey>()
 
+    /** Per-alias lock objects — avoids `intern()` pool pressure with dynamic key sets. */
+    private val locks = java.util.concurrent.ConcurrentHashMap<String, Any>()
+    private fun lockFor(alias: String): Any = locks.computeIfAbsent(alias) { Any() }
+
     override fun encrypt(identifier: String, data: ByteArray): ByteArray {
         return try {
             encryptWithKey(identifier, data)
@@ -101,16 +105,17 @@ internal class AndroidKeystoreEncryption(
     }
 
     private fun deleteKeyInternal(identifier: String) {
-        // Remove from cache first
-        keyCache.remove(identifier)
+        synchronized(lockFor(identifier)) {
+            keyCache.remove(identifier)
 
-        try {
-            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-            if (keyStore.containsAlias(identifier)) {
-                keyStore.deleteEntry(identifier)
+            try {
+                val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+                if (keyStore.containsAlias(identifier)) {
+                    keyStore.deleteEntry(identifier)
+                }
+            } catch (_: Exception) {
+                // Silently ignore - key may not exist or keystore may be unavailable
             }
-        } catch (_: Exception) {
-            // Silently ignore - key may not exist or keystore may be unavailable
         }
     }
 
@@ -126,7 +131,7 @@ internal class AndroidKeystoreEncryption(
         keyCache[identifier]?.let { return it }
 
         // Slow path: load from Keystore
-        synchronized(identifier.intern()) {
+        synchronized(lockFor(identifier)) {
             // Double-check after acquiring lock
             keyCache[identifier]?.let { return it }
 
@@ -159,7 +164,7 @@ internal class AndroidKeystoreEncryption(
         keyCache[identifier]?.let { return it }
 
         // Slow path: load from Keystore (synchronized to prevent duplicate generation)
-        synchronized(identifier.intern()) {
+        synchronized(lockFor(identifier)) {
             // Double-check after acquiring lock
             keyCache[identifier]?.let { return it }
 

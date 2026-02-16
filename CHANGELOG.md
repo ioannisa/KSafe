@@ -2,6 +2,99 @@
 
 All notable changes to KSafe will be documented in this file.
 
+## [1.6.0] - 2025-02-16
+
+### Added
+
+#### WASM/JS Target
+
+KSafe now runs in the browser. New platform source sets (`wasmJsMain`, `wasmJsTest`) and a `ksafe-compose` WASM target bring encrypted key-value storage to Kotlin/WASM.
+
+- **Storage:** Browser `localStorage` via `@JsFun` externals (in `LocalStorage.kt`)
+- **Encryption:** WebCrypto AES-256-GCM via `cryptography-provider-webcrypto`
+- **Memory policy:** Always `PLAIN_TEXT` internally — WebCrypto is async-only, so all values are decrypted at init and held as plaintext in a `HashMap`
+- **Key namespace:** `ksafe_{fileName}_{key}` for data, `ksafe_key_{alias}` for encryption keys
+- **Mutex-protected key generation** to prevent race conditions in single-threaded coroutine environments
+- **Per-operation error isolation** in batch writes — a single failed operation doesn't discard the entire batch
+- **`yield()`-based StateFlow propagation** — required because WASM is single-threaded and has no implicit suspension points like JVM's DataStore I/O
+- **No** `runBlocking`, `ConcurrentHashMap`, `Dispatchers.IO`, or `AtomicBoolean` — all replaced with WASM-compatible equivalents
+- New WASM-specific `actual` implementations: `KSafe.wasmJs.kt`, `WasmSoftwareEncryption.kt`, `LocalStorage.kt`, `SecurityChecker.wasmJs.kt`
+
+#### StateFlow API
+
+New reactive API for observing KSafe values as flows, available on all four platforms:
+
+- `getFlow(key, defaultValue, encrypted)` — returns a cold `Flow<T>` that emits whenever the underlying value changes
+- `getStateFlow(key, defaultValue, encrypted, scope)` — convenience extension that converts the cold flow into a hot `StateFlow<T>` using `stateIn(scope, SharingStarted.Eagerly, defaultValue)`
+- Works with both encrypted and unencrypted values
+- On DataStore platforms (Android, JVM, iOS), backed by `DataStore.data.map {}` with `distinctUntilChanged()`
+- On WASM, backed by a `MutableStateFlow` that is updated on writes
+
+#### ksafe-compose WASM Target
+
+The `ksafe-compose` module now includes a `wasmJs` target, enabling `mutableStateOf` persistence in Compose for Web.
+
+### Fixed
+
+#### Android: DataStore "multiple active instances" crash on DI re-initialization
+
+When using Koin Compose Multiplatform (`KoinMultiplatformApplication {}`), the Koin application context can be recreated on Activity restart (configuration changes such as rotation, locale change, or dark mode toggle). This causes all `single {}` definitions to be re-instantiated, including KSafe. Each new KSafe instance created a new DataStore for the same file, triggering:
+
+```
+IllegalStateException: There are multiple DataStores active for the same file
+```
+
+**Root cause:** Each `KSafe` constructor eagerly created its own `DataStore` instance. DataStore enforces a single-instance-per-file invariant. When Koin re-created KSafe with the same `fileName`, a second DataStore was created for the same file.
+
+**Fix:** Added a process-level `ConcurrentHashMap<String, DataStore<Preferences>>` cache in the Android `companion object`. If a DataStore already exists for a given file name, it is reused instead of creating a new one. This fix is Android-only because configuration changes (Activity recreation) are an Android-specific lifecycle concept — iOS, JVM, and WASM do not re-initialize their DI containers during normal operation.
+
+#### Key generation race condition (JVM)
+
+Concurrent `putEncrypted` calls for the same key alias could trigger parallel key generation in `JvmSoftwareEncryption`, producing different AES keys. One key would be stored in DataStore while a different one was used to encrypt data, causing permanent data loss on the next read.
+
+**Fix:** Added a `ConcurrentHashMap<String, SecretKey>` in-memory key cache and per-alias `synchronized` locks to `JvmSoftwareEncryption.getOrCreateSecretKey()`. The first caller generates and caches the key; subsequent callers return the cached key immediately.
+
+#### deleteKey race with key cache repopulation (Android + JVM)
+
+`deleteKey()` removed the key from the Keystore/DataStore but not from the in-memory cache (Android) or had no cache at all (JVM). A concurrent `encrypt()` call could re-cache the stale key before the delete completed, causing subsequent encryptions to use a key that no longer existed in persistent storage.
+
+**Fix:** `deleteKey()` now holds the same per-alias lock as `getOrCreateKey()` and removes the key from both the persistent store and the in-memory cache atomically. Applied to both `AndroidKeystoreEncryption` and `JvmSoftwareEncryption`.
+
+#### Replaced `intern()` lock strategy with dedicated lock map (Android + JVM)
+
+Both `AndroidKeystoreEncryption` and `JvmSoftwareEncryption` used `synchronized(identifier.intern())` for per-alias locking. `String.intern()` adds strings to the JVM's permanent string pool, which is never garbage collected. With dynamic key aliases (e.g., per-user keys), this caused unbounded memory growth.
+
+**Fix:** Replaced with `ConcurrentHashMap<String, Any>` lock maps and a `lockFor(alias)` helper. Lock objects are scoped to the encryption engine instance and eligible for GC when the engine is collected.
+
+### Removed
+
+- **`IntegrityChecker`** — Removed from all platforms (Android, iOS, JVM, WASM). This was a wrapper around Google Play Integrity (Android) and Apple DeviceCheck (iOS) that generated tokens for server-side device verification. It had no connection to KSafe's core encrypted storage functionality and added transitive dependencies (`play-integrity`, `play-services-base`) to every consumer. Client-side root/jailbreak detection remains available via `SecurityChecker` and `KSafeSecurityPolicy`.
+- Removed `play-integrity` and `play-services-base` dependencies from Android
+
+### Changed
+
+- `datastore-preferences-core` dependency moved from `commonMain` to per-platform source sets (Android, JVM, iOS) — WASM uses `localStorage` and does not depend on DataStore
+
+### Added (Testing)
+
+- `Jvm160FixesTest` — 9 new JVM tests covering the three encryption engine fixes:
+  - `testConcurrentEncryptedWritesSameKey_noDataLoss` — verifies concurrent encrypted writes to the same key all produce readable values
+  - `testConcurrentEncryptedWritesDifferentKeys_allReadable` — verifies concurrent writes to different keys don't interfere
+  - `testKeyGenerationRaceStress` — stress test with 20 threads writing to the same key
+  - `testDeleteKeyDoesNotLeaveStaleCache` — verifies deleted keys return default on re-read
+  - `testDeleteKeyRaceWithConcurrentEncryption` — verifies delete + encrypt race doesn't corrupt data
+  - `testRepeatedDeleteAndRewriteCycles` — 50 cycles of delete + rewrite with integrity checks
+  - `testManyUniqueAliasesWork` — 100 unique aliases to verify lock map scalability
+  - `testLockMapSerializesPerAlias` — verifies per-alias serialization with concurrent readers/writers
+  - `testDynamicStringAliasesShareLock` — verifies dynamically constructed alias strings share the same lock
+- `WasmJsKSafeTest` — WASM test suite extending `KSafeTest` with `FakeEncryption` (WebCrypto requires browser)
+
+### Dependencies
+
+- Added `cryptography-provider-webcrypto` for WASM target
+
+---
+
 ## [1.5.0] - 2025-02-09
 
 ### Added
@@ -428,29 +521,6 @@ Background: collect 16ms window → encrypt all → single DataStore.edit()
 - **Emulator detection** - Detect emulators/simulators (Android & iOS)
 - **Debug build detection** - Detect debug builds
 
-#### Platform Integrity Verification
-- **New `IntegrityChecker`** class for server-side device verification
-- **Google Play Integrity** (Android) - Generates tokens for server verification
-  - Requires Google Cloud project number
-  - Graceful fallback on non-GMS devices (Huawei, Amazon Fire)
-- **Apple DeviceCheck** (iOS) - Generates tokens for server verification
-  - No additional configuration needed
-- **JVM** - Returns `IntegrityResult.NotSupported`
-  ```kotlin
-  // Android
-  val checker = IntegrityChecker(context, cloudProjectNumber = 123456789L)
-
-  // iOS
-  val checker = IntegrityChecker()
-
-  when (val result = checker.requestIntegrityToken(nonce)) {
-      is IntegrityResult.Success -> sendToServer(result.token)
-      is IntegrityResult.Error -> handleError(result.message)
-      is IntegrityResult.NotSupported -> fallback()
-  }
-  ```
-- ⚠️ **Important**: Tokens MUST be verified server-side. Client-side verification is insecure.
-
 #### Compose Support
 - **New `UiSecurityViolation`** - Immutable wrapper for `SecurityViolation` ensuring Compose stability
   ```kotlin
@@ -463,7 +533,6 @@ Background: collect 16ms window → encrypt all → single DataStore.edit()
 ### Added (Testing)
 - **Comprehensive test suite** for new security features:
   - `KSafeSecurityPolicyTest` - SecurityAction, SecurityViolation, presets
-  - `IntegrityCheckerTest` - IntegrityResult sealed class behavior
   - `BiometricAuthorizationDurationTest` - Duration and scope patterns
   - `KSafeMemoryPolicyTest` - Memory policy enum
   - `JvmSecurityCheckerTest` - JVM-specific security behavior
