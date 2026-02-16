@@ -9,12 +9,32 @@ _**Effortless Enterprise-Grade Encrypted Persistence with Biometric Authenticati
 
 ![image](https://github.com/user-attachments/assets/692d9066-e953-4f13-9642-87661c5bc248)
 
-[Demo CMP App Using KSafe](https://github.com/ioannisa/KSafeDemo) | [YouTube Demo](https://youtu.be/mFKGx0DMZEA)
+## Demo Application
+To see KSafe in action on several scenarios, I invite you to check out my demo application here:
+[Demo CMP App Using KSafe](https://github.com/ioannisa/KSafeDemo) 
+
+## YouTube Demos
+Check out my own video about how easy it is to adapt KSafe into your project and get seamless encrypted persistence, but also more videos from other content creators.
+
+| Author's Video | Philipp Lackner's Video | Jimmy Plazas's Video |
+|:--------------:|:---------------:|:---------------:|
+| [<img width="270" alt="image" src="https://github.com/user-attachments/assets/8c317a36-4baa-491e-8c88-4c44b8545bad" />](https://youtu.be/mFKGx0DMZEA) | [<img width="270" alt="image" src="https://github.com/user-attachments/assets/59cce32b-634e-4b17-bb5f-5e084dff899f" />](https://youtu.be/cLyxWGV6GKg) | [<img width="270" alt="image" src="https://github.com/user-attachments/assets/65dba780-9c80-470c-9ad0-927a86510a26" />](https://youtu.be/M4U06OnAl-I) | 
+| [KSafe - Kotlin Multiplatform Encrypted DataStore Persistence Library](https://youtu.be/mFKGx0DMZEA) | [How to Encrypt Local Preferences In KMP With KSafe](https://youtu.be/cLyxWGV6GKg) | [Encripta datos localmente en Kotlin Multiplatform con KSafe - Ejemplo + Arquitectura](https://youtu.be/M4U06OnAl-I) |
+
+## What is KSafe
+
+KSafe is the **easiest and most secure** way to persist encrypted data in Kotlin Multiplatform. 
+
+With simple property delegation, encrypted values feel like normal variables — you just read and write them, and KSafe handles encryption, decryption, and persistence transparently across all four platforms: **Android**, **iOS**, **JVM/Desktop**, and **WASM/JS (Browser)**.
+
+```kotlin
+var token by ksafe("")   // encrypted, persisted, works on all 4 platforms
+token = "abc123"         // that's it
+```
+
+Under the hood, each platform uses its native crypto engine — Android Keystore, iOS Keychain + CryptoKit, JVM's javax.crypto, and browser WebCrypto — unified behind a single API. Values are AES-256-GCM encrypted and persisted to DataStore (or localStorage on WASM). Beyond property delegation, KSafe also offers Compose state integration (`ksafe.mutableStateOf()`), reactive flows (`getFlow()` / `getStateFlow()`), built-in biometric authentication, configurable memory policies, and runtime security detection (root/jailbreak, debugger, emulator) — all out of the box.
 
 Whether you need to secure OAuth tokens in a banking app or remember the last-visited screen of your game, KSafe stores the data encrypted with platform-specific secure key storage and hands it back to you like a normal variable.
-
-##### Contributors
-Special thanks to [Mark Andrachek](https://github.com/mandrachek) for his contribution!
 
 ***
 
