@@ -109,6 +109,8 @@ actual val platformModule = module {
 }
 ```
 
+#### `ksafe.awaitCacheReady()` Required ONLY at WasmJs
+
 > **WASM/JS:** WebCrypto encryption is async-only, so KSafe must finish decrypting its cache before your UI reads any encrypted values. Call `awaitCacheReady()` before rendering content.
 >
 > **With `startKoin` (classic):**
