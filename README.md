@@ -103,14 +103,39 @@ actual val platformModule = module {
   single { KSafe() }
 }
 
-// WASM
+// WASM — call ksafe.awaitCacheReady() before first encrypted read (see note below)
 actual val platformModule = module {
   single { KSafe() }
 }
 ```
 
-> **WASM/JS:** WebCrypto encryption is async-only, so KSafe must finish decrypting its cache before your UI reads any encrypted values. Call `awaitCacheReady()` after Koin is initialized but before rendering content. In a Compose for Web app, the recommended pattern is:
+> **WASM/JS:** WebCrypto encryption is async-only, so KSafe must finish decrypting its cache before your UI reads any encrypted values. Call `awaitCacheReady()` before rendering content.
 >
+> **With `startKoin` (classic):**
+> ```kotlin
+> fun main() {
+>     startKoin {
+>         modules(sharedModule, platformModule)
+>     }
+>
+>     val body = document.body ?: return
+>     ComposeViewport(body) {
+>         var cacheReady by remember { mutableStateOf(false) }
+>
+>         LaunchedEffect(Unit) {
+>             val ksafe: KSafe = getKoin().get()
+>             ksafe.awaitCacheReady()
+>             cacheReady = true
+>         }
+>
+>         if (cacheReady) {
+>             App()
+>         }
+>     }
+> }
+> ```
+>
+> **With `KoinMultiplatformApplication` (Compose):**
 > ```kotlin
 > fun main() {
 >     val body = document.body ?: return
@@ -125,14 +150,14 @@ actual val platformModule = module {
 >             }
 >
 >             if (cacheReady) {
->                 AppContent() // your app's UI
+>                 AppContent() // your app's UI (without KoinMultiplatformApplication wrapper)
 >             }
 >         }
 >     }
 > }
 > ```
 >
-> Koin must be running before `getKoin().get()` can retrieve KSafe, so `awaitCacheReady()` goes **inside** `KoinMultiplatformApplication`, not before it.
+> With `startKoin`, Koin is initialized before `ComposeViewport`, so `getKoin()` works immediately. With `KoinMultiplatformApplication`, `awaitCacheReady()` must go **inside** the composable — Koin isn't available until that scope.
 
 Now you're ready to inject KSafe into your ViewModels!
 
