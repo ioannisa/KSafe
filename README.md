@@ -109,6 +109,31 @@ actual val platformModule = module {
 }
 ```
 
+> **WASM/JS:** WebCrypto encryption is async-only, so KSafe must finish decrypting its cache before your UI reads any encrypted values. Call `awaitCacheReady()` after Koin is initialized but before rendering content. In a Compose for Web app, the recommended pattern is:
+>
+> ```kotlin
+> fun main() {
+>     val body = document.body ?: return
+>     ComposeViewport(body) {
+>         KoinMultiplatformApplication(config = createKoinConfiguration()) {
+>             var cacheReady by remember { mutableStateOf(false) }
+>
+>             LaunchedEffect(Unit) {
+>                 val ksafe: KSafe = getKoin().get()
+>                 ksafe.awaitCacheReady()
+>                 cacheReady = true
+>             }
+>
+>             if (cacheReady) {
+>                 AppContent() // your app's UI
+>             }
+>         }
+>     }
+> }
+> ```
+>
+> Koin must be running before `getKoin().get()` can retrieve KSafe, so `awaitCacheReady()` goes **inside** `KoinMultiplatformApplication`, not before it.
+
 Now you're ready to inject KSafe into your ViewModels!
 
 ***
