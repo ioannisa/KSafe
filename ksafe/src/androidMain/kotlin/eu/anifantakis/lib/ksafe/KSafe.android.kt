@@ -58,6 +58,10 @@ internal fun decodeBase64(encoded: String): ByteArray = Base64.decode(encoded)
  * @property memoryPolicy Whether to decrypt and store values in RAM, or keep them encrypted in RAM for additional security
  * @property config Encryption configuration (key size, etc.)
  * @property securityPolicy Security policy for detecting rooted devices, debuggers, etc.
+ * @property useStrongBox When true, attempts to generate new encryption keys in StrongBox
+ *   hardware (a physically separate security chip). Falls back to TEE automatically if the
+ *   device doesn't have StrongBox. Existing keys are unaffected — they remain in whatever
+ *   hardware they were originally generated in. Android-only parameter (API 28+).
  */
 actual class KSafe(
     private val context: Context,
@@ -66,7 +70,8 @@ actual class KSafe(
     @PublishedApi internal val memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
     private val config: KSafeConfig = KSafeConfig(),
     private val securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
-    @PublishedApi internal val plaintextCacheTtl: Duration = 5.seconds
+    @PublishedApi internal val plaintextCacheTtl: Duration = 5.seconds,
+    private val useStrongBox: Boolean = false
 ) {
     /**
      * Internal constructor for testing with custom encryption engine.
@@ -80,8 +85,9 @@ actual class KSafe(
         config: KSafeConfig = KSafeConfig(),
         securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
         plaintextCacheTtl: Duration = 5.seconds,
+        useStrongBox: Boolean = false,
         testEngine: KSafeEncryption
-    ) : this(context, fileName, lazyLoad, memoryPolicy, config, securityPolicy, plaintextCacheTtl) {
+    ) : this(context, fileName, lazyLoad, memoryPolicy, config, securityPolicy, plaintextCacheTtl, useStrongBox) {
         _testEngine = testEngine
     }
 
@@ -111,7 +117,7 @@ actual class KSafe(
     // Encryption engine - uses test engine if provided, or creates default AndroidKeystoreEncryption
     @PublishedApi
     internal val engine: KSafeEncryption by lazy {
-        _testEngine ?: AndroidKeystoreEncryption(config)
+        _testEngine ?: AndroidKeystoreEncryption(config, useStrongBox)
     }
 
     init {

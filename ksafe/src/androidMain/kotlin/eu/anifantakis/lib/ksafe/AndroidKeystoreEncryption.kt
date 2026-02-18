@@ -3,6 +3,7 @@ package eu.anifantakis.lib.ksafe
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
+import android.security.keystore.StrongBoxUnavailableException
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -21,7 +22,8 @@ import javax.crypto.spec.GCMParameterSpec
  */
 @PublishedApi
 internal class AndroidKeystoreEncryption(
-    private val config: KSafeConfig = KSafeConfig()
+    private val config: KSafeConfig = KSafeConfig(),
+    private val useStrongBox: Boolean = false
 ) : KSafeEncryption {
 
     companion object {
@@ -148,6 +150,52 @@ internal class AndroidKeystoreEncryption(
     }
 
     /**
+     * Generates a new AES key in the Android Keystore.
+     *
+     * When [useStrongBox] is true, attempts to generate the key in StrongBox hardware
+     * (a physically separate security chip). If StrongBox is unavailable on the device,
+     * falls back to the TEE (Trusted Execution Environment) automatically.
+     *
+     * @param identifier The key alias in the Keystore
+     */
+    private fun generateNewKey(identifier: String): SecretKey {
+        val keyGenerator = KeyGenerator.getInstance(
+            KeyProperties.KEY_ALGORITHM_AES,
+            ANDROID_KEYSTORE
+        )
+
+        val builder = KeyGenParameterSpec.Builder(
+            identifier,
+            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+        )
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setKeySize(config.keySize)
+
+        if (config.requireUnlockedDevice && android.os.Build.VERSION.SDK_INT >= 28) {
+            builder.setUnlockedDeviceRequired(true)
+        }
+
+        // StrongBox: physically separate security chip (API 28+)
+        // Falls back to TEE if the device doesn't have StrongBox hardware
+        if (useStrongBox && android.os.Build.VERSION.SDK_INT >= 28) {
+            builder.setIsStrongBoxBacked(true)
+            return try {
+                keyGenerator.init(builder.build())
+                keyGenerator.generateKey()
+            } catch (e: StrongBoxUnavailableException) {
+                // Device doesn't have StrongBox — fall back to TEE
+                builder.setIsStrongBoxBacked(false)
+                keyGenerator.init(builder.build())
+                keyGenerator.generateKey()
+            }
+        }
+
+        keyGenerator.init(builder.build())
+        return keyGenerator.generateKey()
+    }
+
+    /**
      * Gets an existing key from the Keystore or creates a new one if it doesn't exist.
      * Uses in-memory cache to avoid repeated Keystore lookups.
      *
@@ -173,26 +221,7 @@ internal class AndroidKeystoreEncryption(
             val key = if (keyStore.containsAlias(identifier)) {
                 keyStore.getKey(identifier, null) as SecretKey
             } else {
-                // Generate new key with configured parameters
-                val keyGenerator = KeyGenerator.getInstance(
-                    KeyProperties.KEY_ALGORITHM_AES,
-                    ANDROID_KEYSTORE
-                )
-
-                val builder = KeyGenParameterSpec.Builder(
-                    identifier,
-                    KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
-                )
-                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                    .setKeySize(config.keySize)
-
-                if (config.requireUnlockedDevice && android.os.Build.VERSION.SDK_INT >= 28) {
-                    builder.setUnlockedDeviceRequired(true)
-                }
-
-                keyGenerator.init(builder.build())
-                keyGenerator.generateKey()
+                generateNewKey(identifier)
             }
 
             // Cache the key for future use
