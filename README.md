@@ -23,18 +23,51 @@ Check out my own video about how easy it is to adapt KSafe into your project and
 
 ## What is KSafe
 
-KSafe is the **easiest and most secure** way to persist encrypted data in Kotlin Multiplatform. 
+#### KSafe is the
+1. **easiest to use**
+2. **most secure**
+3. **fastest**
+
+library to persist encrypted and unencrypted data in Kotlin Multiplatform.
 
 With simple property delegation, encrypted values feel like normal variables — you just read and write them, and KSafe handles encryption, decryption, and persistence transparently across all four platforms: **Android**, **iOS**, **JVM/Desktop**, and **WASM/JS (Browser)**.
 
+Here's what that looks like in a real app — Ktor bearer authentication with **zero encryption boilerplate**:
+
 ```kotlin
-var token by ksafe("")   // encrypted, persisted, works on all 4 platforms
-token = "abc123"         // that's it
+@Serializable
+data class AuthTokens(
+  val accessToken: String = "",
+  val refreshToken: String = ""
+)
+
+// One line to encrypt, persist, and serialize the whole object
+var tokens by ksafe(AuthTokens())
+
+install(Auth) {
+  bearer {
+    loadTokens {
+      // Reads atomic object from hot cache (~0.002ms). No disk. No suspend.
+      BearerTokens(tokens.accessToken, tokens.refreshToken)
+    }
+    refreshTokens {
+      val newInfo = api.refreshAuth(tokens.refreshToken)
+
+      // Atomic update: encrypts & persists as JSON in background (~13μs)
+      tokens = AuthTokens(
+        accessToken = newInfo.accessToken,
+        refreshToken = newInfo.refreshToken
+      )
+
+      BearerTokens(tokens.accessToken, tokens.refreshToken)
+    }
+  }
+}
 ```
 
-Under the hood, each platform uses its native crypto engine — Android Keystore, iOS Keychain + CryptoKit, JVM's javax.crypto, and browser WebCrypto — unified behind a single API. Values are AES-256-GCM encrypted and persisted to DataStore (or localStorage on WASM). Beyond property delegation, KSafe also offers Compose state integration (`ksafe.mutableStateOf()`), reactive flows (`getFlow()` / `getStateFlow()`), built-in biometric authentication, configurable memory policies, and runtime security detection (root/jailbreak, debugger, emulator) — all out of the box.
+No explicit encrypt/decrypt calls. No DataStore boilerplate. No `runBlocking`. Tokens are AES-256-GCM encrypted at rest, served from the hot cache at runtime, and survive process death — all through regular Kotlin property access.
 
-Whether you need to secure OAuth tokens in a banking app or remember the last-visited screen of your game, KSafe stores the data encrypted with platform-specific secure key storage and hands it back to you like a normal variable.
+Under the hood, each platform uses its native crypto engine — Android Keystore, iOS Keychain + CryptoKit, JVM's javax.crypto, and browser WebCrypto — unified behind a single API. Values are AES-256-GCM encrypted and persisted to DataStore (or localStorage on WASM). Beyond property delegation, KSafe also offers Compose state integration (`ksafe.mutableStateOf()`), reactive flows (`getFlow()` / `getStateFlow()`), built-in biometric authentication, configurable memory policies, and runtime security detection (root/jailbreak, debugger, emulator) — all out of the box.
 
 ***
 
