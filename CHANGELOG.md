@@ -2,23 +2,120 @@
 
 All notable changes to KSafe will be documented in this file.
 
-## [1.7.0] - 2025-02-22
+## [1.7.0] - 2025-02-16
 
 ### Added
 
-#### Device Key Storage Query API
+#### Per-Property Protection Level (`KSafeProtection`)
 
-New read-only properties on `KSafe` that let app code query the hardware security capabilities of the device and the protection level of the current instance:
+New `KSafeProtection` enum replaces the `encrypted: Boolean` parameter on all public API methods, enabling per-property control over encryption and hardware isolation:
 
 ```kotlin
-val ksafe = KSafe(context, useStrongBox = true)
+enum class KSafeProtection {
+    NONE,               // no encryption (was encrypted=false)
+    DEFAULT,            // platform-default encryption (was encrypted=true)
+    HARDWARE_ISOLATED   // StrongBox / Secure Enclave with automatic fallback
+}
+```
 
+All five public methods now accept `protection: KSafeProtection = KSafeProtection.DEFAULT`:
+
+```kotlin
+// Per-property hardware isolation — no separate KSafe instance needed
+var counter by ksafe(0)                                                // DEFAULT encryption
+var secret by ksafe(0, protection = KSafeProtection.HARDWARE_ISOLATED) // StrongBox / SE
+var setting by ksafe("default", protection = KSafeProtection.NONE)     // no encryption
+
+// Suspend API
+ksafe.put("token", value, protection = KSafeProtection.HARDWARE_ISOLATED)
+val token = ksafe.get("token", "", protection = KSafeProtection.HARDWARE_ISOLATED)
+
+// Direct API
+ksafe.putDirect("pref", value, protection = KSafeProtection.NONE)
+val pref = ksafe.getDirect("pref", "", protection = KSafeProtection.NONE)
+
+// Flow API
+val flow = ksafe.getFlow("token", "", protection = KSafeProtection.HARDWARE_ISOLATED)
+```
+
+**`HARDWARE_ISOLATED` behavior by platform:**
+
+| Platform | Behavior |
+|----------|----------|
+| **Android** | Generates AES key in StrongBox (dedicated security chip). Falls back to TEE if StrongBox unavailable. |
+| **iOS** | Uses Secure Enclave envelope encryption (SE EC P-256 wraps AES key). Falls back to plain Keychain if SE unavailable. |
+| **JVM** | Ignored — always software-backed. |
+| **WASM** | Ignored — always WebCrypto. |
+
+**Compose and delegate support:**
+
+```kotlin
+// Property delegation
+var secret by ksafe("", protection = KSafeProtection.HARDWARE_ISOLATED)
+
+// Compose state (requires ksafe-compose)
+var secret by ksafe.mutableStateOf("", protection = KSafeProtection.HARDWARE_ISOLATED)
+```
+
+### Deprecated
+
+#### `encrypted: Boolean` parameter on all public API methods
+
+The `encrypted: Boolean` parameter on `getDirect`, `putDirect`, `get`, `put`, `getFlow`, `getStateFlow`, property delegation (`invoke`), and Compose `mutableStateOf` is deprecated in favor of `KSafeProtection`:
+
+```kotlin
+// Old (deprecated)
+ksafe.put("key", value, encrypted = true)
+ksafe.put("key", value, encrypted = false)
+var token by ksafe("", encrypted = true)
+
+// New
+ksafe.put("key", value)  // DEFAULT (encrypted) is the default
+ksafe.put("key", value, protection = KSafeProtection.NONE)
+var token by ksafe("")  // DEFAULT is the default
+```
+
+The deprecated overloads map `encrypted = true` → `KSafeProtection.DEFAULT` and `encrypted = false` → `KSafeProtection.NONE`. They will be removed in a future major version.
+
+### Changed
+
+#### iOS Secure Enclave error messages now include CFError details
+
+`createSecureEnclaveKeyPair()` and `wrapAesKey()` now include the `NSError.localizedDescription` from the underlying `CFError` in their exception messages. This prevents the string-based fallback logic in `getOrCreateKeychainKey()` from misclassifying transient SE failures (e.g., device locked, interaction not allowed) as "SE unavailable" and silently downgrading to plain Keychain storage. The fallback check also now re-throws errors containing "interaction" (matching `errSecInteractionNotAllowed` from CFError descriptions).
+
+#### Per-key protection metadata for migration safety
+
+Every encrypted write now persists a `__ksafe_prot_{key}__` metadata entry in DataStore alongside the ciphertext, recording whether the key was encrypted with `DEFAULT` or `HARDWARE_ISOLATED`. This metadata is used during `requireUnlockedDevice` migration (Android) to re-encrypt each key at its original hardware isolation level, preventing silent downgrades.
+
+- **Android:** `migrateAccessPolicyIfNeeded()` reads per-key metadata to determine the correct `hardwareIsolated` flag for each key during re-encryption. Pre-1.7.0 keys without metadata default to `DEFAULT` (TEE) since hardware isolation was not available before 1.7.0.
+- **iOS:** Metadata is recorded for forward compatibility. iOS migration currently uses in-place `SecItemUpdate` (no re-encryption), so the metadata isn't consumed today but is available if future migration logic requires it.
+- **JVM/WASM:** No metadata written (no hardware isolation capability).
+- Metadata keys use the `__ksafe_` prefix and are automatically skipped by `updateCache()`, `cleanupOrphanedCiphertext()`, and migration iteration.
+- Metadata is removed atomically alongside data on `delete()` and `deleteDirect()`.
+
+#### Android access-policy migration preserves StrongBox backing
+
+`migrateAccessPolicyIfNeeded()` now reads per-key protection metadata (see above) when re-encrypting keys during `requireUnlockedDevice` policy changes. Each key is re-encrypted at its original hardware isolation level. Pre-1.7.0 keys without metadata default to `DEFAULT` (TEE) since hardware isolation was not available before 1.7.0.
+
+### Added (continued)
+
+#### Device Key Storage Query API
+
+New read-only properties and methods on `KSafe` that let app code query the hardware security capabilities of the device and the storage location of individual keys:
+
+```kotlin
+val ksafe = KSafe(context)
+
+// Device-level: what hardware is available?
 ksafe.deviceKeyStorages  // e.g. {HARDWARE_BACKED, HARDWARE_ISOLATED}
-ksafe.activeKeyStorage   // e.g. HARDWARE_ISOLATED
+ksafe.deviceKeyStorages.max()  // HARDWARE_ISOLATED (highest available)
+
+// Per-key: where is a specific key actually stored?
+ksafe.getKeyStorage("auth_token")  // e.g. HARDWARE_BACKED, or null if key doesn't exist
 ```
 
 - **`deviceKeyStorages: Set<KSafeKeyStorage>`** — the set of key storage levels the current device supports. Always contains at least one element. Use `deviceKeyStorages.max()` to get the highest available level.
-- **`activeKeyStorage: KSafeKeyStorage`** — the protection level this KSafe instance is actually using, based on constructor parameters and device capabilities.
+- **`getKeyStorage(key: String): KSafeKeyStorage?`** — returns the actual storage location of a specific key's encryption material, or `null` if the key doesn't exist. On Android/iOS, encrypted keys return `HARDWARE_BACKED` (or `HARDWARE_ISOLATED` if written with `KSafeProtection.HARDWARE_ISOLATED` and the device supports it). On JVM/WASM, always returns `SOFTWARE`. Unencrypted keys always return `SOFTWARE`.
 
 New `KSafeKeyStorage` enum with natural ordinal ordering (`SOFTWARE < HARDWARE_BACKED < HARDWARE_ISOLATED`):
 
@@ -30,56 +127,37 @@ New `KSafeKeyStorage` enum with natural ordinal ordering (`SOFTWARE < HARDWARE_B
 
 **Platform behavior:**
 
-| Platform | `deviceKeyStorages` | `activeKeyStorage` |
-|----------|--------------------|--------------------|
-| **Android** | Always `{HARDWARE_BACKED}`. Adds `HARDWARE_ISOLATED` if `PackageManager.FEATURE_STRONGBOX_KEYSTORE` is present (API 28+). | `HARDWARE_ISOLATED` if `useStrongBox = true` and device has StrongBox, else `HARDWARE_BACKED`. |
-| **iOS** | Always `{HARDWARE_BACKED}`. Adds `HARDWARE_ISOLATED` on real devices (not simulator). | `HARDWARE_ISOLATED` if `useSecureEnclave = true` and not on simulator, else `HARDWARE_BACKED`. |
-| **JVM** | `{SOFTWARE}` | `SOFTWARE` |
-| **WASM** | `{SOFTWARE}` | `SOFTWARE` |
+| Platform | `deviceKeyStorages` |
+|----------|---------------------|
+| **Android** | Always `{HARDWARE_BACKED}`. Adds `HARDWARE_ISOLATED` if `PackageManager.FEATURE_STRONGBOX_KEYSTORE` is present (API 28+). |
+| **iOS** | Always `{HARDWARE_BACKED}`. Adds `HARDWARE_ISOLATED` on real devices (not simulator). |
+| **JVM** | `{SOFTWARE}` |
+| **WASM** | `{SOFTWARE}` |
 
 Instance-level (not static/companion) because Android needs `Context` for StrongBox detection via `PackageManager`.
 
-#### StrongBox Opt-In (Android)
+#### Hardware Isolation Details
 
-New `useStrongBox: Boolean = false` parameter on the Android `KSafe` constructor. When enabled, AES keys are generated inside the device's StrongBox security chip — a physically separate, tamper-resistant hardware module (available on Pixel 3+, some Samsung flagships, and other devices with StrongBox support).
+`KSafeProtection.HARDWARE_ISOLATED` uses platform-specific hardware security:
 
-```kotlin
-val ksafe = KSafe(
-    context = context,
-    useStrongBox = true  // request StrongBox; falls back to TEE if unavailable
-)
-```
+**Android (StrongBox):** AES keys are generated inside the device's StrongBox security chip — a physically separate, tamper-resistant hardware module (available on Pixel 3+, some Samsung flagships, and other devices with StrongBox support). If the device lacks StrongBox, `StrongBoxUnavailableException` is caught and the key is regenerated in the standard TEE — no code changes or user-facing errors.
 
-- **Automatic TEE fallback:** If the device lacks StrongBox, `StrongBoxUnavailableException` is caught and the key is regenerated in the standard TEE — no code changes or user-facing errors
-- **Existing keys unaffected:** `useStrongBox` only applies to new key generation (`KeyGenParameterSpec.Builder`). Keys already stored in the Keystore are loaded from wherever they were originally generated (TEE or StrongBox) regardless of this setting. This means enabling `useStrongBox = true` on an existing installation won't migrate previously-generated TEE keys to StrongBox — those keys continue working in TEE. To migrate existing data to StrongBox-backed keys, delete the KSafe data (or the specific keys) and reinitialize — new keys will be generated in StrongBox
-- **Performance trade-off:** StrongBox key generation is slower (1–5s vs 50–200ms for TEE) and per-operation latency is higher (~10–50ms vs <1ms). KSafe's memory policies mitigate read-side latency since most reads come from the hot cache
-
-#### Secure Enclave Opt-In (iOS)
-
-New `useSecureEnclave: Boolean = false` parameter on the iOS `KSafe` constructor. When enabled, AES encryption keys are wrapped (encrypted) by an EC P-256 key pair that lives inside the Secure Enclave hardware — Apple's dedicated security coprocessor.
-
-```kotlin
-val ksafe = KSafe(
-    useSecureEnclave = true  // request SE envelope encryption; falls back to plain Keychain if unavailable
-)
-```
-
-**Envelope encryption architecture:** The Secure Enclave only supports asymmetric keys (EC P-256), not AES. KSafe bridges this gap with envelope encryption:
+**iOS (Secure Enclave):** The Secure Enclave only supports asymmetric keys (EC P-256), not AES. KSafe bridges this gap with envelope encryption:
 
 1. An EC P-256 key pair is created inside the Secure Enclave hardware
 2. The AES-256 symmetric key is wrapped (encrypted) by the SE public key using ECIES (`ECIESEncryptionCofactorX963SHA256AESGCM`)
 3. The wrapped AES key is stored in the Keychain as a generic-password item
 4. On decrypt, the SE private key unwraps the AES key, which then decrypts data via CryptoKit as before
 
-This means the raw AES key bytes are only exposed in app memory during the actual CryptoKit encrypt/decrypt call — they can no longer be extracted directly from the Keychain.
+If the Secure Enclave is unavailable (simulator, older device without SE), KSafe catches the error and falls back to plain Keychain storage — same pattern as Android's StrongBox fallback.
 
-- **Automatic Keychain fallback:** If the Secure Enclave is unavailable (simulator, older device without SE), KSafe catches the error and falls back to plain Keychain storage — same pattern as Android's StrongBox fallback
-- **Existing keys unaffected:** `useSecureEnclave` only applies to new key creation. Pre-existing plain Keychain keys are still readable — KSafe checks for legacy (unwrapped) keys before creating new SE-wrapped keys. No automatic migration
-- **Memory-safe:** All `SecKeyRef` references from Core Foundation are properly released via `try/finally { CFRelease() }` to prevent memory leaks
-- **Performance trade-off:** The SE wrapping/unwrapping step adds latency to key retrieval. KSafe's memory policies and hot cache mitigate this since most reads come from the in-memory cache, not from repeated key unwrapping
+- **Existing keys unaffected:** `HARDWARE_ISOLATED` only applies to new key generation. Keys already stored are loaded from wherever they were originally generated regardless of the protection level. To migrate existing data to hardware-isolated keys, delete the specific keys and reinitialize
+- **Memory-safe (iOS):** All `SecKeyRef` references from Core Foundation are properly released via `try/finally { CFRelease() }` to prevent memory leaks
+- **Performance trade-off:** Hardware-isolated key generation is slower (Android: 1–5s vs 50–200ms for TEE; iOS: SE wrapping adds latency). KSafe's memory policies and hot cache mitigate read-side latency since most reads come from the in-memory cache
 
 ### Removed
 
+- **`activeKeyStorage`** — Property that reported the storage level of the KSafe instance itself. Removed because storage is now per-property (via `KSafeProtection`), not per-instance. Use `deviceKeyStorages` to query device capabilities and `getKeyStorage(key)` to query individual keys. Never included in a published release.
 - **`iosTestApp/`** — iOS test app that imported `ksafe` but never instantiated `KSafe`. Used a plain Swift `Dictionary` instead. Added by an external contributor; superseded by the Kotlin test suite in `ksafe/src/iosTest/` and the [KSafeDemo](https://github.com/ioannisa/KSafeDemo) app
 - **`KoinInit.kt`** — Placeholder function (`initKoin()` with a `println`) in `iosMain` that shipped with the iOS framework to all consumers. No functionality
 - **`ExampleInstrumentedTest.kt`** — Default Android Studio template test in `ksafe-compose` that only asserted the package name. No KSafe coverage
@@ -87,7 +165,7 @@ This means the raw AES key bytes are only exposed in app memory during the actua
 
 ### Added (Testing)
 
-- `KSafeKeyStorageTest` — 3 JVM tests for the Key Storage Query API: `deviceKeyStorages_returnsOnlySoftware`, `activeKeyStorage_returnsSoftware`, `enumOrdinalOrdering`
+- `KSafeKeyStorageTest` — 5 JVM tests for the Key Storage Query API: `deviceKeyStorages_returnsOnlySoftware`, `enumOrdinalOrdering`, `getKeyStorage_returnsNullForNonExistentKey`, `getKeyStorage_returnsSoftwareForUnencryptedKey`, `getKeyStorage_returnsSoftwareForEncryptedKey`
 - Secure Enclave tests in `IosKeychainEncryptionTest`:
   - `testSecureEnclaveThrowsInTestEnvironment` — verifies SE encrypt falls back and throws in entitlement-less test runner
   - `testSecureEnclaveDeleteDoesNotThrow` — verifies SE delete is permissive

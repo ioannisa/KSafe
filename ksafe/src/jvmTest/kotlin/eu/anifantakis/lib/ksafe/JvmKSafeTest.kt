@@ -21,6 +21,7 @@ import kotlin.test.assertNull
  *
  * We also need unique names ACROSS test runs because files persist on disk.
  */
+@Suppress("DEPRECATION")
 class JvmKSafeTest : KSafeTest() {
 
     companion object {
@@ -309,8 +310,8 @@ class JvmKSafeTest : KSafeTest() {
             private val delegate = FakeEncryption()
             @Volatile var failOnDecrypt = false
 
-            override fun encrypt(identifier: String, data: ByteArray): ByteArray =
-                delegate.encrypt(identifier, data)
+            override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean): ByteArray =
+                delegate.encrypt(identifier, data, hardwareIsolated)
 
             override fun decrypt(identifier: String, data: ByteArray): ByteArray {
                 if (failOnDecrypt) throw IllegalStateException("No encryption key found")
@@ -360,8 +361,8 @@ class JvmKSafeTest : KSafeTest() {
             private val delegate = FakeEncryption()
             @Volatile var failOnDecrypt = false
 
-            override fun encrypt(identifier: String, data: ByteArray): ByteArray =
-                delegate.encrypt(identifier, data)
+            override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean): ByteArray =
+                delegate.encrypt(identifier, data, hardwareIsolated)
 
             override fun decrypt(identifier: String, data: ByteArray): ByteArray {
                 if (failOnDecrypt) throw IllegalStateException("No encryption key found")

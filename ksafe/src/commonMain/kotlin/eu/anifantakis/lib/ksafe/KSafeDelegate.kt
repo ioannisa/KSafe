@@ -16,8 +16,11 @@ import kotlin.reflect.KProperty
  * // Property name "mySetting" is used as the key
  * var mySetting: String by ksafe(defaultValue = "default")
  *
- * // Explicit key "custom_key" is used
- * var counter: Int by ksafe(defaultValue = 0, key = "custom_key", encrypted = false)
+ * // Explicit key "custom_key" is used, no encryption
+ * var counter: Int by ksafe(defaultValue = 0, key = "custom_key", protection = KSafeProtection.NONE)
+ *
+ * // Hardware-isolated encryption (StrongBox / Secure Enclave)
+ * var secret: String by ksafe(defaultValue = "", protection = KSafeProtection.HARDWARE_ISOLATED)
  * ```
  *
  * **For biometric protection**, use [KSafe.verifyBiometric] or [KSafe.verifyBiometricDirect]
@@ -33,13 +36,13 @@ import kotlin.reflect.KProperty
  * @param T The type of the property.
  * @param defaultValue The default value to return if the key is not found.
  * @param key Optional explicit key. If null, the property name is used.
- * @param encrypted Whether the value should be encrypted (defaults to true).
+ * @param protection The encryption/storage protection level. Defaults to [KSafeProtection.DEFAULT].
  * @return A [ReadWriteProperty] delegate.
  */
 inline operator fun <reified T> KSafe.invoke(
     defaultValue: T,
     key: String? = null,
-    encrypted: Boolean = true
+    protection: KSafeProtection = KSafeProtection.DEFAULT
 ): ReadWriteProperty<Any?, T> {
     val ksafeInstance = this
 
@@ -47,13 +50,25 @@ inline operator fun <reified T> KSafe.invoke(
         override fun getValue(thisRef: Any?, property: KProperty<*>): T {
             // Because this object expression is inside an inline function with reified T,
             // T is reified here. We explicitly pass it to getDirect.
-            return ksafeInstance.getDirect<T>(key = key ?: property.name, defaultValue, encrypted)
+            return ksafeInstance.getDirect<T>(key = key ?: property.name, defaultValue, protection)
         }
 
         override fun setValue(thisRef: Any?, property: KProperty<*>, value: T) {
             // Similarly, T is reified here. We explicitly pass it to putDirect.
             // Updates memory cache instantly and writes to disk in background (Async)
-            ksafeInstance.putDirect<T>(key = key ?: property.name, value, encrypted)
+            ksafeInstance.putDirect<T>(key = key ?: property.name, value, protection)
         }
     }
 }
+
+/** @deprecated Use [invoke] with [KSafeProtection] parameter instead. */
+@Deprecated(
+    "Use protection parameter instead.",
+    ReplaceWith("invoke(defaultValue, key, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)")
+)
+inline operator fun <reified T> KSafe.invoke(
+    defaultValue: T,
+    key: String? = null,
+    encrypted: Boolean
+): ReadWriteProperty<Any?, T> =
+    invoke(defaultValue, key, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)

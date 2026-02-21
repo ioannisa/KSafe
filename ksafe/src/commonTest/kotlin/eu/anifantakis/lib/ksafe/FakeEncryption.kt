@@ -53,7 +53,7 @@ internal class FakeEncryption : KSafeEncryption {
      * The XOR key is derived from the identifier, making the encryption deterministic
      * and allowing the same data to be "decrypted" by applying the same operation.
      */
-    override fun encrypt(identifier: String, data: ByteArray): ByteArray {
+    override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean): ByteArray {
         encryptedKeys.add(identifier)
         val key = deriveKey(identifier)
         return xorWithKey(data, key)

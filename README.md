@@ -1,6 +1,6 @@
 # KSafe — Secure Persist Library for Kotlin Multiplatform
 
-_**Effortless Enterprise-Grade Encrypted Persistence with Biometric Authentication and Runtime Security for Android, iOS, Desktop, and Web.**_
+_**The Universal Persistence Layer: Effortless Enterprise-Grade Security AND Lightning-Fast Plain-Text Storage for Android, iOS, Desktop, and Web.**_
 
 
 [![Maven Central](https://img.shields.io/maven-central/v/eu.anifantakis/ksafe.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/eu.anifantakis/ksafe)
@@ -30,8 +30,19 @@ Check out my own video about how easy it is to adapt KSafe into your project and
 
 library to persist encrypted and unencrypted data in Kotlin Multiplatform.
 
-With simple property delegation, encrypted values feel like normal variables — you just read and write them, and KSafe handles encryption, decryption, and persistence transparently across all four platforms: **Android**, **iOS**, **JVM/Desktop**, and **WASM/JS (Browser)**.
+With simple property delegation, values feel like normal variables — you just read and write them, and KSafe handles the underlying cryptography, caching, and atomic DataStore persistence transparently across all four platforms: **Android**, **iOS**, **JVM/Desktop**, and **WASM/JS (Browser)**.
 
+### ⚡ The Dual-Purpose Advantage: Not Just for Secrets
+
+Think KSafe is overkill for a simple "Dark Mode" toggle? Think again.
+
+By setting `protection = KSafeProtection.NONE`, KSafe completely bypasses the cryptographic engine. What remains is a lightning-fast, zero-boilerplate wrapper around AndroidX DataStore with a concurrent hot-cache.
+
+Setting up raw KMP DataStore requires writing `expect/actual` file paths across 4 platforms, managing `CoroutineScopes`, and dealing with async-only Flow reads. KSafe abstracts 100% of that. You get synchronous, O(1) reads backed by asynchronous disk writes—all in one line of code. **Unencrypted KSafe writes are actually benchmarked to be faster than native Android SharedPreferences.**
+
+Whether you are storing a harmless UI state or a highly sensitive biometric token, KSafe is the only local persistence dependency your KMP app needs.
+
+### Real-World Example
 Here's what that looks like in a real app — Ktor bearer authentication with **zero encryption boilerplate**:
 
 ```kotlin
@@ -138,7 +149,7 @@ plugins {
 Koin is the defacto DI solution for Kotlin Multiplatform, and is the ideal tool to provide KSafe as a singleton.
 
 > **Performance guidance — "prefs" vs "vault":**
-> Encryption adds overhead to every write (AES-GCM + Keystore/Keychain round-trip). For data that doesn't need confidentiality — theme preferences, last-visited screen, UI flags — use `encrypted = false` to get SharedPreferences-level speed. Reserve encryption for secrets like tokens, passwords, and PII. The easiest way to enforce this is to create **two named singletons**:
+> Encryption adds overhead to every write (AES-GCM + Keystore/Keychain round-trip). For data that doesn't need confidentiality — theme preferences, last-visited screen, UI flags — use `protection = KSafeProtection.NONE` to get SharedPreferences-level speed. Reserve encryption for secrets like tokens, passwords, and PII. The easiest way to enforce this is to create **two named singletons**:
 
 ```Kotlin
 // ──────────────────────────────────────────────
@@ -163,8 +174,7 @@ actual val platformModule = module {
     single(named("vault")) {
         KSafe(
             context = androidApplication(),
-            fileName = "vault",
-            useStrongBox = true  // optional: hardware security chip
+            fileName = "vault"
         )
     }
 }
@@ -182,8 +192,7 @@ actual val platformModule = module {
 
     single(named("vault")) {
         KSafe(
-            fileName = "vault",
-            useSecureEnclave = true  // optional: Secure Enclave envelope encryption
+            fileName = "vault"
         )
     }
 }
@@ -229,14 +238,14 @@ class MyViewModel(
 ) : ViewModel() {
 
     // UI preferences — no encryption overhead
-    var theme      by prefs("dark", encrypted = false)
-    var lastScreen by prefs("home", encrypted = false)
-    var onboarded  by prefs(false, encrypted = false)
+    var theme      by prefs("dark", protection = KSafeProtection.NONE)
+    var lastScreen by prefs("home", protection = KSafeProtection.NONE)
+    var onboarded  by prefs(false, protection = KSafeProtection.NONE)
 
     // Secrets — AES-256-GCM encrypted, hardware-backed keys
     var authToken    by vault("")
     var refreshToken by vault("")
-    var userPin      by vault("")
+    var userPin      by vault("", protection = KSafeProtection.HARDWARE_ISOLATED)  // StrongBox / SE
 }
 ```
 
@@ -322,7 +331,7 @@ var counter by ksafe(0)
 Parameters:
 * `defaultValue` - must be declared (type is inferred from it)
 * `key` - if not set, the variable name is used as a key
-* `encrypted` - by default is `true` (uses Keystore/Keychain)
+* `protection` - `KSafeProtection.DEFAULT` (encrypted, default), `.NONE` (no encryption), or `.HARDWARE_ISOLATED` (StrongBox / Secure Enclave)
 
 ```Kotlin
 class MyViewModel(ksafe: KSafe): ViewModel() {
@@ -403,10 +412,10 @@ KSafe fully supports nullable types:
 ```Kotlin
 // Store null values
 val token: String? = null
-ksafe.put("auth_token", token, encrypted = true)
+ksafe.put("auth_token", token)
 
 // Retrieve null values (returns null, not defaultValue)
-val retrieved: String? = ksafe.get("auth_token", "default", encrypted = true)
+val retrieved: String? = ksafe.get("auth_token", "default")
 // retrieved == null ✓
 
 // Nullable fields in serializable classes
@@ -454,7 +463,7 @@ class CounterViewModel(ksafe: KSafe) : ViewModel() {
 
 ## Why use KSafe?
 
-* **Hardware-backed security** - AES-256-GCM with keys stored in Android Keystore, iOS Keychain, software-backed on JVM, or WebCrypto on WASM. Query capabilities at runtime via `deviceKeyStorages` and `activeKeyStorage`
+* **Hardware-backed security** - AES-256-GCM with keys stored in Android Keystore, iOS Keychain, software-backed on JVM, or WebCrypto on WASM. Per-property protection levels via `KSafeProtection` — mix `NONE`, `DEFAULT`, and `HARDWARE_ISOLATED` in a single instance
 * **Biometric authentication** - Built-in Face ID, Touch ID, and Fingerprint support with smart auth caching
 * **Root & Jailbreak detection** - Detect compromised devices with configurable WARN/BLOCK actions
 * **Clean reinstalls** - Automatic cleanup ensures fresh starts after app reinstallation
@@ -625,7 +634,7 @@ class MyViewModel : ViewModel() {
 
   // For named instances, use suspend or direct APIs:
   suspend fun saveUserToken(token: String) {
-    userPrefs.put("auth_token", token, encrypted = true)
+    userPrefs.put("auth_token", token)
   }
 }
 ```
@@ -1112,42 +1121,36 @@ KSafe provides enterprise-grade encrypted persistence using DataStore Preference
 - Never store master secrets client-side; prefer server-derived tokens
 - Consider certificate pinning for API communications
 
-**A note on hardware security models:** By default, Android stores AES keys in the TEE (Trusted Execution Environment) — a hardware-isolated zone on the main processor where encryption happens entirely on-chip and the key never enters app memory. With `useStrongBox = true`, KSafe targets a physically separate security chip (available on Pixel 3+, some Samsung flagships) with automatic TEE fallback. On iOS, with `useSecureEnclave = true`, KSafe uses **envelope encryption**: an EC P-256 key pair in the Secure Enclave wraps/unwraps the AES symmetric key via ECIES, so the AES key material is hardware-protected even though AES-GCM itself runs in CryptoKit. Without Secure Enclave, AES keys are stored as Keychain items — still encrypted by the OS and protected by the device passcode.
+**A note on hardware security models:** By default, Android stores AES keys in the TEE (Trusted Execution Environment) — a hardware-isolated zone on the main processor where encryption happens entirely on-chip and the key never enters app memory. With `protection = KSafeProtection.HARDWARE_ISOLATED`, KSafe targets a physically separate security chip (StrongBox on Android, Secure Enclave on iOS) with automatic fallback to default hardware. On iOS, `HARDWARE_ISOLATED` uses **envelope encryption**: an EC P-256 key pair in the Secure Enclave wraps/unwraps the AES symmetric key via ECIES, so the AES key material is hardware-protected even though AES-GCM itself runs in CryptoKit. Without hardware isolation, AES keys are stored as Keychain items — still encrypted by the OS and protected by the device passcode.
 
-**StrongBox opt-in (Android):**
+**Hardware isolation (per-property):**
 ```kotlin
-val ksafe = KSafe(
-    context = context,
-    useStrongBox = true  // request StrongBox; falls back to TEE if unavailable
-)
+// StrongBox on Android, Secure Enclave on iOS
+var secret by ksafe("", protection = KSafeProtection.HARDWARE_ISOLATED)
+
+// Or with suspend/direct API
+ksafe.put("secret", value, protection = KSafeProtection.HARDWARE_ISOLATED)
+ksafe.putDirect("secret", value, protection = KSafeProtection.HARDWARE_ISOLATED)
 ```
-StrongBox provides the highest Android security level — keys live on a dedicated chip that is physically separate from the main processor. If the device lacks StrongBox, KSafe automatically falls back to TEE with no code changes required. Note that StrongBox key generation is slower (1–5 seconds vs 50–200ms for TEE) and per-operation latency is higher (~10–50ms vs <1ms), so only enable it for high-security use cases like banking or fintech. KSafe's memory policies (`PLAIN_TEXT`, `ENCRYPTED_WITH_TIMED_CACHE`) mitigate read-side latency since most reads come from the hot cache.
+Hardware isolation provides the highest security level — keys live on a dedicated chip that is physically separate from the main processor. If the device lacks the hardware, KSafe automatically falls back to the platform default with no code changes required. Note that hardware-isolated key generation is slower and per-operation latency is higher, so only enable it for high-security use cases. KSafe's memory policies mitigate read-side latency since most reads come from the hot cache.
 
-**Migrating existing keys to StrongBox:** Enabling `useStrongBox = true` only affects *new* key generation. Existing TEE-backed keys continue working in TEE — `keyStore.getKey()` loads keys from wherever they were originally generated. To migrate existing data to StrongBox-backed keys, delete the KSafe data and reinitialize — the new keys will be generated in StrongBox.
+**Migrating existing keys to hardware isolation:** Using `HARDWARE_ISOLATED` only affects *new* key generation. Existing keys continue working from wherever they were originally generated. To migrate existing data to hardware-isolated keys, delete the KSafe data (or the specific keys) and reinitialize.
 
-**Secure Enclave opt-in (iOS):**
-```kotlin
-val ksafe = KSafe(
-    useSecureEnclave = true  // request Secure Enclave; falls back to Keychain if unavailable
-)
-```
-With Secure Enclave enabled, KSafe uses **envelope encryption**: a hardware-bound EC P-256 key pair wraps/unwraps the AES-256 symmetric key using ECIES (`eciesEncryptionCofactorX963SHA256AESGCM`). The AES key is stored encrypted in the Keychain and can only be unwrapped by the SE private key — the raw AES key material never persists outside of app memory. If the Secure Enclave is unavailable (simulator, old device), KSafe falls back to regular Keychain storage automatically.
+**Per-key protection metadata:** Each encrypted key's protection level (`DEFAULT` or `HARDWARE_ISOLATED`) is recorded in DataStore alongside the ciphertext. This metadata is used during `requireUnlockedDevice` migration on Android to re-encrypt each key with the correct hardware backing, and is available for future migration scenarios on all platforms. Metadata entries use the `__ksafe_` prefix and are automatically excluded from cache iteration, cleanup, and migration loops.
 
-**Migrating existing keys to Secure Enclave:** Enabling `useSecureEnclave = true` only affects *new* key generation. Existing plain Keychain keys continue working as-is — KSafe checks for SE-wrapped keys first, then falls through to legacy keys. To migrate existing data to SE-backed keys, delete the KSafe data and reinitialize.
+### Querying Device Security Capabilities
 
-### Querying Device Key Storage Capabilities
-
-KSafe exposes two read-only properties that let you query what security hardware is available and what your instance is actually using:
+KSafe exposes properties and methods to query what security hardware is available on the device and where individual keys are actually stored:
 
 ```kotlin
-val ksafe = KSafe(context, useStrongBox = true)
+val ksafe = KSafe(context)
 
-// What the device supports
+// Device-level: what hardware is available?
 ksafe.deviceKeyStorages  // e.g. {HARDWARE_BACKED, HARDWARE_ISOLATED}
 ksafe.deviceKeyStorages.max()  // HARDWARE_ISOLATED (highest available)
 
-// What this instance uses
-ksafe.activeKeyStorage   // HARDWARE_ISOLATED (if StrongBox available)
+// Per-key: where is a specific key actually stored?
+ksafe.getKeyStorage("auth_token")  // e.g. HARDWARE_BACKED, or null if key doesn't exist
 ```
 
 The `KSafeKeyStorage` enum has three levels with natural ordinal ordering:
@@ -1158,23 +1161,55 @@ The `KSafeKeyStorage` enum has three levels with natural ordinal ordering:
 | `HARDWARE_BACKED` | On-chip hardware (TEE / Keychain) | Android, iOS |
 | `HARDWARE_ISOLATED` | Dedicated security chip (StrongBox / Secure Enclave) | Android (if available), iOS (real devices) |
 
+#### `deviceKeyStorages` — Device Capabilities
+
+Query what hardware security levels the device supports:
+
+| Platform | `deviceKeyStorages` |
+|----------|---------------------|
+| **Android** | Always `{HARDWARE_BACKED}`. Adds `HARDWARE_ISOLATED` if `PackageManager.FEATURE_STRONGBOX_KEYSTORE` is present (API 28+). |
+| **iOS** | Always `{HARDWARE_BACKED}`. Adds `HARDWARE_ISOLATED` on real devices (not simulator). |
+| **JVM** | `{SOFTWARE}` |
+| **WASM** | `{SOFTWARE}` |
+
+#### `getKeyStorage(key)` — Per-Key Storage Location
+
+Query where a specific key's encryption material is actually stored:
+
+```kotlin
+ksafe.getKeyStorage("auth_token")    // HARDWARE_BACKED (encrypted, Android/iOS)
+ksafe.getKeyStorage("theme")         // SOFTWARE (unencrypted, any platform)
+ksafe.getKeyStorage("nonexistent")   // null (key doesn't exist)
+```
+
+| Scenario | Return value |
+|----------|-------------|
+| Key not found | `null` |
+| Unencrypted key (`KSafeProtection.NONE`) | `SOFTWARE` |
+| Encrypted key (Android/iOS) | `HARDWARE_BACKED` |
+| Encrypted key (JVM/WASM) | `SOFTWARE` |
+| `HARDWARE_ISOLATED` key (device supports it) | `HARDWARE_ISOLATED` |
+| `HARDWARE_ISOLATED` key (device lacks it, fell back) | `HARDWARE_BACKED` |
+
 **Use cases:**
-- Display a security badge in your UI based on the active protection level
-- Choose which KSafe instance to use for sensitive data based on device capabilities
+- Display a security badge in your UI based on device capabilities
+- Verify that a specific key is stored at the expected hardware level
+- Choose the appropriate `KSafeProtection` level based on what the device supports
 - Log/report the security posture of the device for compliance
 
 ```kotlin
-// Show security status in UI
-val securityLevel = when (ksafe.activeKeyStorage) {
-    KSafeKeyStorage.HARDWARE_ISOLATED -> "Maximum (dedicated security chip)"
-    KSafeKeyStorage.HARDWARE_BACKED   -> "High (hardware-backed)"
-    KSafeKeyStorage.SOFTWARE          -> "Standard (software encryption)"
-}
+// Adaptive protection based on device capabilities
+val protection = if (KSafeKeyStorage.HARDWARE_ISOLATED in ksafe.deviceKeyStorages)
+    KSafeProtection.HARDWARE_ISOLATED
+else
+    KSafeProtection.DEFAULT
 
-// Check if hardware isolation is available before storing high-value secrets
-if (KSafeKeyStorage.HARDWARE_ISOLATED in ksafe.deviceKeyStorages) {
-    // Device supports StrongBox/Secure Enclave
-}
+var secret by ksafe("", protection = protection)
+
+// Verify a key's actual storage level after writing
+ksafe.putDirect("secret", "value", protection = KSafeProtection.HARDWARE_ISOLATED)
+val storage = ksafe.getKeyStorage("secret")
+// storage == HARDWARE_ISOLATED on devices with StrongBox/SE, HARDWARE_BACKED otherwise
 ```
 
 ***
@@ -1244,22 +1279,10 @@ KSafe(
     memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
     config: KSafeConfig = KSafeConfig(),
     securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
-    plaintextCacheTtl: Duration = 5.seconds,  // only used with ENCRYPTED_WITH_TIMED_CACHE
-    useStrongBox: Boolean = false              // opt-in to StrongBox hardware security chip
+    plaintextCacheTtl: Duration = 5.seconds  // only used with ENCRYPTED_WITH_TIMED_CACHE
 )
 
-// iOS
-KSafe(
-    fileName: String? = null,
-    lazyLoad: Boolean = false,
-    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
-    config: KSafeConfig = KSafeConfig(),
-    securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
-    plaintextCacheTtl: Duration = 5.seconds,  // only used with ENCRYPTED_WITH_TIMED_CACHE
-    useSecureEnclave: Boolean = false          // opt-in to Secure Enclave envelope encryption
-)
-
-// JVM / WASM
+// iOS / JVM / WASM
 KSafe(
     fileName: String? = null,
     lazyLoad: Boolean = false,
@@ -1306,7 +1329,9 @@ val ksafe = KSafe(
 
 Changing this value in either direction triggers an automatic one-time migration on the next KSafe initialization. Android re-encrypts existing values with a new Keystore key (both `false`&rarr;`true` and `true`&rarr;`false`); iOS updates Keychain accessibility in-place via `SecItemUpdate`. The migration marker is only written on success, so a crash or locked-device failure safely retries on the next launch.
 
-**Error behavior when locked:** When `requireUnlockedDevice = true` and the device is locked, encrypted **reads** (`getDirect`, `get`, `getFlow`) throw `IllegalStateException`. The suspend `put(encrypted = true)` also throws. However, `putDirect` does **not** throw to the caller — it queues the write to a background consumer that logs the error and drops the batch (the consumer stays alive for future writes after the device is unlocked). Your app can catch read-side exceptions to show a "device is locked" message instead of silently receiving default values.
+**Per-key protection metadata:** KSafe records the protection level used for each key (`__ksafe_prot_{key}__`) in DataStore. During Android migration, this metadata ensures each key is re-encrypted with the correct hardware isolation level — keys originally written with `HARDWARE_ISOLATED` are re-encrypted to StrongBox, while `DEFAULT` keys stay in the TEE. Pre-1.7.0 keys without metadata fall back to the global constructor flag for backward compatibility.
+
+**Error behavior when locked:** When `requireUnlockedDevice = true` and the device is locked, encrypted **reads** (`getDirect`, `get`, `getFlow`) throw `IllegalStateException`. The suspend `put()` also throws for encrypted data. However, `putDirect` does **not** throw to the caller — it queues the write to a background consumer that logs the error and drops the batch (the consumer stays alive for future writes after the device is unlocked). Your app can catch read-side exceptions to show a "device is locked" message instead of silently receiving default values.
 
 #### Multiple Safes with Different Lock Policies
 
@@ -1401,14 +1426,14 @@ KSafe 1.2.0 introduced a completely rewritten core architecture focusing on zero
 
 #### Android
 * Keys stored in Android Keystore (TEE by default)
-* Optional StrongBox support via `useStrongBox = true` — uses a physically separate security chip with automatic TEE fallback on devices without StrongBox
+* Optional StrongBox support via `KSafeProtection.HARDWARE_ISOLATED` — uses a physically separate security chip with automatic TEE fallback on devices without StrongBox
 * Hardware-backed encryption when available
 * Keys bound to your application
 * Automatic cleanup on app uninstall
 
 #### iOS
 * Keys stored in iOS Keychain Services
-* Optional Secure Enclave support via `useSecureEnclave = true` — uses envelope encryption (SE-backed EC P-256 wraps/unwraps the AES key) with automatic Keychain fallback on devices without SE
+* Optional Secure Enclave support via `KSafeProtection.HARDWARE_ISOLATED` — uses envelope encryption (SE-backed EC P-256 wraps/unwraps the AES key) with automatic Keychain fallback on devices without SE
 * Protected by device authentication
 * Not included in iCloud/iTunes backups
 * Automatic cleanup of orphaned keys on first app use after reinstall
@@ -1555,6 +1580,30 @@ The iOS test app demonstrates:
 ***
 
 ## Migration Guide
+
+### From v1.6.x to v1.7.0
+
+#### `encrypted: Boolean` → `KSafeProtection`
+
+All API methods (`get`, `put`, `getDirect`, `putDirect`, `getFlow`, `getStateFlow`) now use `protection: KSafeProtection` instead of `encrypted: Boolean`. The old API is deprecated but still works:
+
+```kotlin
+// Old (deprecated, still compiles)
+ksafe.put("key", value, encrypted = true)
+ksafe.put("key", value, encrypted = false)
+var token by ksafe("", encrypted = true)
+
+// New
+ksafe.put("key", value)  // KSafeProtection.DEFAULT (encrypted)
+ksafe.put("key", value, protection = KSafeProtection.NONE)
+var token by ksafe("")  // KSafeProtection.DEFAULT
+```
+
+The mapping is: `encrypted = true` → `KSafeProtection.DEFAULT`, `encrypted = false` → `KSafeProtection.NONE`.
+
+#### Binary Compatibility
+
+All existing code using `encrypted = true/false` continues to compile with deprecation warnings. No runtime behavior changes — the deprecated overloads delegate to the new API.
 
 ### From v1.1.x to v1.2.0+
 

@@ -23,6 +23,14 @@ import kotlinx.coroutines.flow.stateIn
  *
  * **The default behavior is to encrypt all data.**
  *
+ * **Per-Property Protection:**
+ * Use [KSafeProtection] to control encryption per-property:
+ * ```kotlin
+ * var counter by ksafe(0)                                                // DEFAULT encryption
+ * var secret by ksafe(0, protection = KSafeProtection.HARDWARE_ISOLATED) // StrongBox / Secure Enclave
+ * var setting by ksafe("default", protection = KSafeProtection.NONE)     // no encryption
+ * ```
+ *
  * **Biometric Authentication:**
  * For biometric verification, use [verifyBiometric] or [verifyBiometricDirect] independently
  * from storage operations. This gives you full control over when biometrics are required.
@@ -47,13 +55,21 @@ expect class KSafe {
     val deviceKeyStorages: Set<KSafeKeyStorage>
 
     /**
-     * The key storage level actually used by this KSafe instance.
+     * Returns the actual storage location of a specific key's encryption material.
      *
-     * Reflects the constructor parameters (`useStrongBox` on Android, `useSecureEnclave` on iOS)
-     * combined with what the device supports. If hardware-isolated storage was requested but is
-     * unavailable, this falls back to [KSafeKeyStorage.HARDWARE_BACKED].
+     * | Scenario | Return value |
+     * |----------|-------------|
+     * | Key not found | `null` |
+     * | Unencrypted key (NONE) | [KSafeKeyStorage.SOFTWARE] |
+     * | Encrypted (Android/iOS) | [KSafeKeyStorage.HARDWARE_BACKED] or [KSafeKeyStorage.HARDWARE_ISOLATED] |
+     * | Encrypted (JVM/WASM) | [KSafeKeyStorage.SOFTWARE] |
+     *
+     * Same cold-start behavior as [getDirect] — blocks once if cache hasn't initialized.
+     *
+     * @param key The key name to look up.
+     * @return The [KSafeKeyStorage] level, or `null` if the key doesn't exist.
      */
-    val activeKeyStorage: KSafeKeyStorage
+    fun getKeyStorage(key: String): KSafeKeyStorage?
 
     // --- NON-BLOCKING API (UI Safe) ---
 
@@ -70,19 +86,20 @@ expect class KSafe {
      * ## Example
      * ```kotlin
      * val username = ksafe.getDirect("username", "Guest")
-     * val token = ksafe.getDirect("auth_token", "", encrypted = true)
+     * val token = ksafe.getDirect("auth_token", "")
+     * val setting = ksafe.getDirect("setting", "", protection = KSafeProtection.NONE)
      * ```
      *
      * @param T The type of value to retrieve. Supported: [Boolean], [Int], [Long],
      *          [Float], [Double], [String], and `@Serializable` objects.
      * @param key The unique key for the value.
      * @param defaultValue The value to return if the key doesn't exist or decryption fails.
-     * @param encrypted Whether the value is stored encrypted. Defaults to `true`.
+     * @param protection The encryption/storage protection level. Defaults to [KSafeProtection.DEFAULT].
      * @return The stored value or [defaultValue].
      * @see putDirect for the corresponding write operation
      * @see get for the suspending alternative
      */
-    inline fun <reified T> getDirect(key: String, defaultValue: T, encrypted: Boolean = true): T
+    inline fun <reified T> getDirect(key: String, defaultValue: T, protection: KSafeProtection = KSafeProtection.DEFAULT): T
 
     /**
      * Updates a value asynchronously with optimistic caching.
@@ -95,15 +112,16 @@ expect class KSafe {
      *
      * ## Example
      * ```kotlin
-     * ksafe.putDirect("api_token", token, encrypted = true)
+     * ksafe.putDirect("api_token", token)
+     * ksafe.putDirect("setting", value, protection = KSafeProtection.NONE)
      * ```
      *
      * @param T The type of value to store.
      * @param key The unique key for the value.
      * @param value The value to store.
-     * @param encrypted Whether to encrypt the value before storage. Defaults to `true`.
+     * @param protection The encryption/storage protection level. Defaults to [KSafeProtection.DEFAULT].
      */
-    inline fun <reified T> putDirect(key: String, value: T, encrypted: Boolean = true)
+    inline fun <reified T> putDirect(key: String, value: T, protection: KSafeProtection = KSafeProtection.DEFAULT)
 
     /**
      * Deletes a value and its associated encryption key asynchronously.
@@ -126,10 +144,10 @@ expect class KSafe {
      * @param T The type of value to retrieve.
      * @param key The unique key.
      * @param defaultValue The fallback value.
-     * @param encrypted Whether the value is encrypted. Defaults to `true`.
+     * @param protection The encryption/storage protection level. Defaults to [KSafeProtection.DEFAULT].
      * @return The stored value.
      */
-    suspend inline fun <reified T> get(key: String, defaultValue: T, encrypted: Boolean = true): T
+    suspend inline fun <reified T> get(key: String, defaultValue: T, protection: KSafeProtection = KSafeProtection.DEFAULT): T
 
     /**
      * Returns a [Flow] that emits the value whenever it changes.
@@ -140,9 +158,9 @@ expect class KSafe {
      * @param T The type of value.
      * @param key The unique key.
      * @param defaultValue The fallback value.
-     * @param encrypted Whether the value is encrypted. Defaults to `true`.
+     * @param protection The encryption/storage protection level. Defaults to [KSafeProtection.DEFAULT].
      */
-    inline fun <reified T> getFlow(key: String, defaultValue: T, encrypted: Boolean = true): Flow<T>
+    inline fun <reified T> getFlow(key: String, defaultValue: T, protection: KSafeProtection = KSafeProtection.DEFAULT): Flow<T>
 
     /**
      * Persists a value to disk suspending-ly.
@@ -153,9 +171,9 @@ expect class KSafe {
      * @param T The type of value.
      * @param key The unique key.
      * @param value The value to store.
-     * @param encrypted Whether to encrypt. Defaults to `true`.
+     * @param protection The encryption/storage protection level. Defaults to [KSafeProtection.DEFAULT].
      */
-    suspend inline fun <reified T> put(key: String, value: T, encrypted: Boolean = true)
+    suspend inline fun <reified T> put(key: String, value: T, protection: KSafeProtection = KSafeProtection.DEFAULT)
 
     /**
      * Deletes a value and its associated encryption key (if any) from storage.
@@ -173,6 +191,43 @@ expect class KSafe {
      * This operation is destructive and cannot be undone.
      */
     suspend fun clearAll()
+
+    // --- DEPRECATED OVERLOADS (encrypted: Boolean) ---
+
+    /** @deprecated Use [getDirect] with [KSafeProtection] parameter instead. */
+    @Deprecated(
+        "Use protection parameter instead.",
+        ReplaceWith("getDirect(key, defaultValue, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)")
+    )
+    inline fun <reified T> getDirect(key: String, defaultValue: T, encrypted: Boolean): T
+
+    /** @deprecated Use [putDirect] with [KSafeProtection] parameter instead. */
+    @Deprecated(
+        "Use protection parameter instead.",
+        ReplaceWith("putDirect(key, value, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)")
+    )
+    inline fun <reified T> putDirect(key: String, value: T, encrypted: Boolean)
+
+    /** @deprecated Use [get] with [KSafeProtection] parameter instead. */
+    @Deprecated(
+        "Use protection parameter instead.",
+        ReplaceWith("get(key, defaultValue, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)")
+    )
+    suspend inline fun <reified T> get(key: String, defaultValue: T, encrypted: Boolean): T
+
+    /** @deprecated Use [put] with [KSafeProtection] parameter instead. */
+    @Deprecated(
+        "Use protection parameter instead.",
+        ReplaceWith("put(key, value, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)")
+    )
+    suspend inline fun <reified T> put(key: String, value: T, encrypted: Boolean)
+
+    /** @deprecated Use [getFlow] with [KSafeProtection] parameter instead. */
+    @Deprecated(
+        "Use protection parameter instead.",
+        ReplaceWith("getFlow(key, defaultValue, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)")
+    )
+    inline fun <reified T> getFlow(key: String, defaultValue: T, encrypted: Boolean): Flow<T>
 
     // --- BIOMETRIC API ---
 
@@ -360,12 +415,25 @@ enum class KSafeMemoryPolicy {
  * @param key The unique key.
  * @param defaultValue The fallback value and initial [StateFlow] value.
  * @param scope The [CoroutineScope] used to share the flow (e.g., `viewModelScope`).
- * @param encrypted Whether the value is encrypted. Defaults to `true`.
+ * @param protection The encryption/storage protection level. Defaults to [KSafeProtection.DEFAULT].
  */
 inline fun <reified T> KSafe.getStateFlow(
     key: String,
     defaultValue: T,
     scope: CoroutineScope,
-    encrypted: Boolean = true
-): StateFlow<T> = getFlow(key, defaultValue, encrypted)
+    protection: KSafeProtection = KSafeProtection.DEFAULT
+): StateFlow<T> = getFlow(key, defaultValue, protection)
+    .stateIn(scope, SharingStarted.Eagerly, defaultValue)
+
+/** @deprecated Use [getStateFlow] with [KSafeProtection] parameter instead. */
+@Deprecated(
+    "Use protection parameter instead.",
+    ReplaceWith("getStateFlow(key, defaultValue, scope, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)")
+)
+inline fun <reified T> KSafe.getStateFlow(
+    key: String,
+    defaultValue: T,
+    scope: CoroutineScope,
+    encrypted: Boolean
+): StateFlow<T> = getFlow(key, defaultValue, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)
     .stateIn(scope, SharingStarted.Eagerly, defaultValue)

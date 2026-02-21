@@ -72,7 +72,7 @@ internal fun validateSecurityPolicy(policy: KSafeSecurityPolicy) {
         }
     }
 
-    // Block if any violation required it
+    // Block if any violation required dit
     if (shouldBlock && firstBlockingViolation != null) {
         throw SecurityViolationException(firstBlockingViolation)
     }

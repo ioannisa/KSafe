@@ -42,10 +42,13 @@ internal interface KSafeEncryption {
      *                   - iOS: Keychain account name
      *                   - JVM: Key identifier in storage
      * @param data The plaintext bytes to encrypt.
+     * @param hardwareIsolated When true, attempt to use hardware-isolated key storage
+     *   (StrongBox on Android, Secure Enclave on iOS). Falls back to default storage
+     *   if hardware isolation is unavailable. Ignored on JVM/WASM.
      * @return The encrypted bytes (typically IV || ciphertext).
      * @throws Exception if encryption fails (key generation error, hardware unavailable, etc.)
      */
-    fun encrypt(identifier: String, data: ByteArray): ByteArray
+    fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean = false): ByteArray
 
     /**
      * Decrypts ciphertext data.

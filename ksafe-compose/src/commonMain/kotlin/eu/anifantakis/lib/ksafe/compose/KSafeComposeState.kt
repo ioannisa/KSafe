@@ -1,6 +1,7 @@
 package eu.anifantakis.lib.ksafe.compose
 
 import eu.anifantakis.lib.ksafe.KSafe
+import eu.anifantakis.lib.ksafe.KSafeProtection
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.SnapshotMutationPolicy
 import androidx.compose.runtime.mutableStateOf
@@ -68,7 +69,8 @@ class KSafeComposeState<T>(
  * // In a Composable or ViewModel
  * var username by ksafe.mutableStateOf("Guest")
  * var counter by ksafe.mutableStateOf(0, key = "my_counter")
- * var settings by ksafe.mutableStateOf(Settings(), encrypted = false)
+ * var settings by ksafe.mutableStateOf(Settings(), protection = KSafeProtection.NONE)
+ * var secret by ksafe.mutableStateOf("", protection = KSafeProtection.HARDWARE_ISOLATED)
  * ```
  *
  * **For biometric protection**, use [KSafe.verifyBiometric] or [KSafe.verifyBiometricDirect]
@@ -84,14 +86,14 @@ class KSafeComposeState<T>(
  * @param T The type of the state value.
  * @param defaultValue The default value if no value is found in KSafe.
  * @param key Optional explicit key for storing the value. If null, the property name is used.
- * @param encrypted Whether the value should be encrypted (defaults to true).
+ * @param protection The encryption/storage protection level. Defaults to [KSafeProtection.DEFAULT].
  * @param policy The [SnapshotMutationPolicy] for the [MutableState] (defaults to [structuralEqualityPolicy]).
  * @return A [PropertyDelegateProvider] ensuring this is used with `by` delegation.
  */
 inline fun <reified T> KSafe.mutableStateOf(
     defaultValue: T,
     key: String? = null,
-    encrypted: Boolean = true,
+    protection: KSafeProtection = KSafeProtection.DEFAULT,
     policy: SnapshotMutationPolicy<T> = structuralEqualityPolicy()
 ): PropertyDelegateProvider<Any?, ReadWriteProperty<Any?, T>> {
     // 'this' is the KSafe instance
@@ -101,11 +103,11 @@ inline fun <reified T> KSafe.mutableStateOf(
         val actualKey = key ?: property.name
 
         // Load initial value from storage
-        val initialValue = ksafe.getDirect<T>(actualKey, defaultValue, encrypted)
+        val initialValue = ksafe.getDirect<T>(actualKey, defaultValue, protection)
 
         val saver: (newValue: T) -> Unit = { newValueToSave ->
             try {
-                ksafe.putDirect<T>(actualKey, newValueToSave, encrypted)
+                ksafe.putDirect<T>(actualKey, newValueToSave, protection)
             } catch (e: Exception) {
                 println("KSafe: Failed to save value for key '$actualKey': ${e.message}")
             }
@@ -118,3 +120,18 @@ inline fun <reified T> KSafe.mutableStateOf(
         )
     }
 }
+
+/**
+ * @deprecated Use [mutableStateOf] with [KSafeProtection] parameter instead.
+ */
+@Deprecated(
+    "Use protection parameter instead.",
+    ReplaceWith("mutableStateOf(defaultValue, key, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE, policy)")
+)
+inline fun <reified T> KSafe.mutableStateOf(
+    defaultValue: T,
+    key: String? = null,
+    encrypted: Boolean,
+    policy: SnapshotMutationPolicy<T> = structuralEqualityPolicy()
+): PropertyDelegateProvider<Any?, ReadWriteProperty<Any?, T>> =
+    mutableStateOf(defaultValue, key, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE, policy)

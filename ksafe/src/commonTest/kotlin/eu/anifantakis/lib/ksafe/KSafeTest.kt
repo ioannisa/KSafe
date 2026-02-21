@@ -17,6 +17,7 @@ import kotlin.test.assertTrue
  * Abstract base class for KSafe tests.
  * Platform-specific implementations extend this class to provide actual KSafe instances.
  */
+@Suppress("DEPRECATION")
 abstract class KSafeTest {
     abstract fun createKSafe(fileName: String? = null): KSafe
 

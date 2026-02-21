@@ -90,8 +90,7 @@ import kotlin.random.Random
 @PublishedApi
 internal class IosKeychainEncryption(
     private val config: KSafeConfig = KSafeConfig(),
-    private val serviceName: String = SERVICE_NAME,
-    private val useSecureEnclave: Boolean = false
+    private val serviceName: String = SERVICE_NAME
 ) : KSafeEncryption {
 
     companion object {
@@ -101,15 +100,13 @@ internal class IosKeychainEncryption(
         /**
          * Returns Keychain account lookup order for a given key id.
          *
-         * With Secure Enclave enabled, lookup is:
+         * Always checks SE-wrapped path first, then falls back to plain:
          * 1) SE-wrapped key account: `se.{keyId}`
          * 2) Legacy plain key account: `{keyId}`
-         *
-         * With Secure Enclave disabled, lookup is plain-only: `{keyId}`.
          */
-        internal fun keychainLookupOrder(keyId: String, useSecureEnclave: Boolean): List<String> {
+        internal fun keychainLookupOrder(keyId: String): List<String> {
             val wrapped = "$SE_KEY_TAG_PREFIX$keyId"
-            return if (useSecureEnclave) listOf(wrapped, keyId) else listOf(keyId)
+            return listOf(wrapped, keyId)
         }
 
         /**
@@ -126,8 +123,8 @@ internal class IosKeychainEncryption(
     // Key size in bytes (256 bits = 32 bytes, 128 bits = 16 bytes)
     private val keySizeBytes: Int = config.keySize / 8
 
-    override fun encrypt(identifier: String, data: ByteArray): ByteArray {
-        val keyBytes = getOrCreateKeychainKey(identifier)
+    override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean): ByteArray {
+        val keyBytes = getOrCreateKeychainKey(identifier, hardwareIsolated)
 
         // Use runBlocking because the cryptography library uses suspend functions
         return runBlocking {
@@ -218,9 +215,17 @@ internal class IosKeychainEncryption(
             CFRelease(privateKeyAttrs as CFTypeRef?)
             CFRelease(attributes as CFTypeRef?)
 
-            privateKey ?: throw IllegalStateException(
-                "KSafe: Failed to create Secure Enclave key"
-            )
+            if (privateKey == null) {
+                val cfError = keyErrorRef.value
+                val errorDesc = if (cfError != null) {
+                    val nsError = CFBridgingRelease(cfError) as? platform.Foundation.NSError
+                    nsError?.localizedDescription ?: "unknown error"
+                } else "no error details"
+                throw IllegalStateException(
+                    "KSafe: Failed to create Secure Enclave key: $errorDesc"
+                )
+            }
+            privateKey
         }
     }
 
@@ -297,9 +302,17 @@ internal class IosKeychainEncryption(
                     kSecKeyAlgorithmECIESEncryptionCofactorX963SHA256AESGCM,
                     cfData,
                     errorRef.ptr
-                ) ?: throw IllegalStateException(
-                    "KSafe: Failed to wrap AES key with Secure Enclave"
                 )
+                if (encrypted == null) {
+                    val cfError = errorRef.value
+                    val errorDesc = if (cfError != null) {
+                        val nsError = CFBridgingRelease(cfError) as? platform.Foundation.NSError
+                        nsError?.localizedDescription ?: "unknown error"
+                    } else "no error details"
+                    throw IllegalStateException(
+                        "KSafe: Failed to wrap AES key with Secure Enclave: $errorDesc"
+                    )
+                }
 
                 (CFBridgingRelease(encrypted) as NSData).toByteArray()
             } finally {
@@ -433,19 +446,18 @@ internal class IosKeychainEncryption(
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     internal fun getExistingKeychainKey(keyId: String): ByteArray {
-        if (useSecureEnclave) {
-            // Try SE-wrapped key first
-            val wrappedBytes = getExistingKeychainKeyRaw(seWrappedAccount(keyId))
-            if (wrappedBytes != null) {
-                val sePrivateKey = getSecureEnclaveKey(seTag(keyId))
-                    ?: throw IllegalStateException("KSafe: SE key missing for wrapped AES key: $keyId")
-                try {
-                    return unwrapAesKey(sePrivateKey, wrappedBytes)
-                } finally {
-                    CFRelease(sePrivateKey)
-                }
+        // Always check SE-wrapped path first regardless of hardwareIsolated flag.
+        // This ensures decrypt works for ANY key, even if the current call doesn't
+        // request hardware isolation (the key may have been created with it).
+        val wrappedBytes = getExistingKeychainKeyRaw(seWrappedAccount(keyId))
+        if (wrappedBytes != null) {
+            val sePrivateKey = getSecureEnclaveKey(seTag(keyId))
+                ?: throw IllegalStateException("KSafe: SE key missing for wrapped AES key: $keyId")
+            try {
+                return unwrapAesKey(sePrivateKey, wrappedBytes)
+            } finally {
+                CFRelease(sePrivateKey)
             }
-            // Fall through to plain key (pre-SE legacy data)
         }
 
         // Plain key lookup (original behavior)
@@ -503,17 +515,20 @@ internal class IosKeychainEncryption(
      * @return The encryption key bytes
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
-    internal fun getOrCreateKeychainKey(keyId: String): ByteArray {
-        if (useSecureEnclave) {
+    internal fun getOrCreateKeychainKey(keyId: String, hardwareIsolated: Boolean = false): ByteArray {
+        if (hardwareIsolated) {
             return try {
                 getOrCreateKeychainKeyWithSE(keyId)
             } catch (e: IllegalStateException) {
-                // Re-throw device-locked and keychain errors (not SE-specific)
                 val msg = e.message ?: ""
-                if (msg.contains("device is locked") || msg.contains("Keychain error")) {
+                // Re-throw transient / access errors — these are NOT "SE unavailable"
+                // and should not silently downgrade to plain Keychain storage.
+                if (msg.contains("device is locked") ||
+                    msg.contains("Keychain error") ||
+                    msg.contains("interaction", ignoreCase = true)) {
                     throw e
                 }
-                // SE unavailable (simulator, old device, no entitlements) — fall back to plain
+                // SE genuinely unavailable (simulator, old device, no entitlements) — fall back to plain
                 getOrCreateKeychainKeyPlain(keyId)
             }
         }
@@ -697,13 +712,10 @@ internal class IosKeychainEncryption(
         // Update the plain key
         updateKeychainItemAccessibility(identifier, requireUnlocked)
 
-        // Also update SE artifacts if Secure Enclave is enabled
-        if (useSecureEnclave) {
-            // Update SE-wrapped AES key (generic-password with se. prefix)
-            updateKeychainItemAccessibility(seWrappedAccount(identifier), requireUnlocked)
-            // Update SE EC private key (kSecClassKey with se. applicationTag)
-            updateSecureEnclaveKeyAccessibility(seTag(identifier), requireUnlocked)
-        }
+        // Always update SE artifacts too (they may exist from a previous HARDWARE_ISOLATED write).
+        // SecItemUpdate on nonexistent items returns errSecItemNotFound which we already handle.
+        updateKeychainItemAccessibility(seWrappedAccount(identifier), requireUnlocked)
+        updateSecureEnclaveKeyAccessibility(seTag(identifier), requireUnlocked)
     }
 
     /**
