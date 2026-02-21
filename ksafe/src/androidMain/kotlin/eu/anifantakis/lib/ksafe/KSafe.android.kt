@@ -1,6 +1,8 @@
 package eu.anifantakis.lib.ksafe
 
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
@@ -119,6 +121,19 @@ actual class KSafe(
     internal val engine: KSafeEncryption by lazy {
         _testEngine ?: AndroidKeystoreEncryption(config, useStrongBox)
     }
+
+    private val hasStrongBox: Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+                context.packageManager.hasSystemFeature(PackageManager.FEATURE_STRONGBOX_KEYSTORE)
+
+    actual val deviceKeyStorages: Set<KSafeKeyStorage> = buildSet {
+        add(KSafeKeyStorage.HARDWARE_BACKED)
+        if (hasStrongBox) add(KSafeKeyStorage.HARDWARE_ISOLATED)
+    }
+
+    actual val activeKeyStorage: KSafeKeyStorage =
+        if (useStrongBox && hasStrongBox) KSafeKeyStorage.HARDWARE_ISOLATED
+        else KSafeKeyStorage.HARDWARE_BACKED
 
     init {
         if (fileName != null && !fileName.matches(fileNameRegex)) {

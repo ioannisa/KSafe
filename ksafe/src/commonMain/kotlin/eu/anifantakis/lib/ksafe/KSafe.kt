@@ -29,6 +29,32 @@ import kotlinx.coroutines.flow.stateIn
  */
 @Suppress("unused")
 expect class KSafe {
+    // --- KEY STORAGE INFO ---
+
+    /**
+     * The set of key storage levels supported by the current device.
+     *
+     * Always contains at least one element. Use `deviceKeyStorages.max()` to get the
+     * highest available protection level.
+     *
+     * | Platform | Possible values |
+     * |----------|----------------|
+     * | Android  | `{HARDWARE_BACKED}` or `{HARDWARE_BACKED, HARDWARE_ISOLATED}` |
+     * | iOS      | `{HARDWARE_BACKED}` or `{HARDWARE_BACKED, HARDWARE_ISOLATED}` |
+     * | JVM      | `{SOFTWARE}` |
+     * | WASM     | `{SOFTWARE}` |
+     */
+    val deviceKeyStorages: Set<KSafeKeyStorage>
+
+    /**
+     * The key storage level actually used by this KSafe instance.
+     *
+     * Reflects the constructor parameters (`useStrongBox` on Android, `useSecureEnclave` on iOS)
+     * combined with what the device supports. If hardware-isolated storage was requested but is
+     * unavailable, this falls back to [KSafeKeyStorage.HARDWARE_BACKED].
+     */
+    val activeKeyStorage: KSafeKeyStorage
+
     // --- NON-BLOCKING API (UI Safe) ---
 
     /**

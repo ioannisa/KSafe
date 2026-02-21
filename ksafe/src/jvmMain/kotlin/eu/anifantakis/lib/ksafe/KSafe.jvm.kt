@@ -106,6 +106,9 @@ actual class KSafe(
         private const val ACCESS_POLICY_DEFAULT = "default"
     }
 
+    actual val deviceKeyStorages: Set<KSafeKeyStorage> = setOf(KSafeKeyStorage.SOFTWARE)
+    actual val activeKeyStorage: KSafeKeyStorage = KSafeKeyStorage.SOFTWARE
+
     init {
         if (fileName != null && !fileName.matches(fileNameRegex)) {
             throw IllegalArgumentException("File name must contain only lowercase letters")

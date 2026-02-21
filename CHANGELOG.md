@@ -2,6 +2,99 @@
 
 All notable changes to KSafe will be documented in this file.
 
+## [1.7.0] - 2025-02-22
+
+### Added
+
+#### Device Key Storage Query API
+
+New read-only properties on `KSafe` that let app code query the hardware security capabilities of the device and the protection level of the current instance:
+
+```kotlin
+val ksafe = KSafe(context, useStrongBox = true)
+
+ksafe.deviceKeyStorages  // e.g. {HARDWARE_BACKED, HARDWARE_ISOLATED}
+ksafe.activeKeyStorage   // e.g. HARDWARE_ISOLATED
+```
+
+- **`deviceKeyStorages: Set<KSafeKeyStorage>`** — the set of key storage levels the current device supports. Always contains at least one element. Use `deviceKeyStorages.max()` to get the highest available level.
+- **`activeKeyStorage: KSafeKeyStorage`** — the protection level this KSafe instance is actually using, based on constructor parameters and device capabilities.
+
+New `KSafeKeyStorage` enum with natural ordinal ordering (`SOFTWARE < HARDWARE_BACKED < HARDWARE_ISOLATED`):
+
+| Value | Meaning | Platforms |
+|-------|---------|-----------|
+| `SOFTWARE` | Software-only encryption | JVM, WASM |
+| `HARDWARE_BACKED` | On-chip hardware (TEE / Keychain) | Android, iOS |
+| `HARDWARE_ISOLATED` | Dedicated security chip (StrongBox / Secure Enclave) | Android (if available), iOS (real devices) |
+
+**Platform behavior:**
+
+| Platform | `deviceKeyStorages` | `activeKeyStorage` |
+|----------|--------------------|--------------------|
+| **Android** | Always `{HARDWARE_BACKED}`. Adds `HARDWARE_ISOLATED` if `PackageManager.FEATURE_STRONGBOX_KEYSTORE` is present (API 28+). | `HARDWARE_ISOLATED` if `useStrongBox = true` and device has StrongBox, else `HARDWARE_BACKED`. |
+| **iOS** | Always `{HARDWARE_BACKED}`. Adds `HARDWARE_ISOLATED` on real devices (not simulator). | `HARDWARE_ISOLATED` if `useSecureEnclave = true` and not on simulator, else `HARDWARE_BACKED`. |
+| **JVM** | `{SOFTWARE}` | `SOFTWARE` |
+| **WASM** | `{SOFTWARE}` | `SOFTWARE` |
+
+Instance-level (not static/companion) because Android needs `Context` for StrongBox detection via `PackageManager`.
+
+#### StrongBox Opt-In (Android)
+
+New `useStrongBox: Boolean = false` parameter on the Android `KSafe` constructor. When enabled, AES keys are generated inside the device's StrongBox security chip — a physically separate, tamper-resistant hardware module (available on Pixel 3+, some Samsung flagships, and other devices with StrongBox support).
+
+```kotlin
+val ksafe = KSafe(
+    context = context,
+    useStrongBox = true  // request StrongBox; falls back to TEE if unavailable
+)
+```
+
+- **Automatic TEE fallback:** If the device lacks StrongBox, `StrongBoxUnavailableException` is caught and the key is regenerated in the standard TEE — no code changes or user-facing errors
+- **Existing keys unaffected:** `useStrongBox` only applies to new key generation (`KeyGenParameterSpec.Builder`). Keys already stored in the Keystore are loaded from wherever they were originally generated (TEE or StrongBox) regardless of this setting. This means enabling `useStrongBox = true` on an existing installation won't migrate previously-generated TEE keys to StrongBox — those keys continue working in TEE. To migrate existing data to StrongBox-backed keys, delete the KSafe data (or the specific keys) and reinitialize — new keys will be generated in StrongBox
+- **Performance trade-off:** StrongBox key generation is slower (1–5s vs 50–200ms for TEE) and per-operation latency is higher (~10–50ms vs <1ms). KSafe's memory policies mitigate read-side latency since most reads come from the hot cache
+
+#### Secure Enclave Opt-In (iOS)
+
+New `useSecureEnclave: Boolean = false` parameter on the iOS `KSafe` constructor. When enabled, AES encryption keys are wrapped (encrypted) by an EC P-256 key pair that lives inside the Secure Enclave hardware — Apple's dedicated security coprocessor.
+
+```kotlin
+val ksafe = KSafe(
+    useSecureEnclave = true  // request SE envelope encryption; falls back to plain Keychain if unavailable
+)
+```
+
+**Envelope encryption architecture:** The Secure Enclave only supports asymmetric keys (EC P-256), not AES. KSafe bridges this gap with envelope encryption:
+
+1. An EC P-256 key pair is created inside the Secure Enclave hardware
+2. The AES-256 symmetric key is wrapped (encrypted) by the SE public key using ECIES (`ECIESEncryptionCofactorX963SHA256AESGCM`)
+3. The wrapped AES key is stored in the Keychain as a generic-password item
+4. On decrypt, the SE private key unwraps the AES key, which then decrypts data via CryptoKit as before
+
+This means the raw AES key bytes are only exposed in app memory during the actual CryptoKit encrypt/decrypt call — they can no longer be extracted directly from the Keychain.
+
+- **Automatic Keychain fallback:** If the Secure Enclave is unavailable (simulator, older device without SE), KSafe catches the error and falls back to plain Keychain storage — same pattern as Android's StrongBox fallback
+- **Existing keys unaffected:** `useSecureEnclave` only applies to new key creation. Pre-existing plain Keychain keys are still readable — KSafe checks for legacy (unwrapped) keys before creating new SE-wrapped keys. No automatic migration
+- **Memory-safe:** All `SecKeyRef` references from Core Foundation are properly released via `try/finally { CFRelease() }` to prevent memory leaks
+- **Performance trade-off:** The SE wrapping/unwrapping step adds latency to key retrieval. KSafe's memory policies and hot cache mitigate this since most reads come from the in-memory cache, not from repeated key unwrapping
+
+### Removed
+
+- **`iosTestApp/`** — iOS test app that imported `ksafe` but never instantiated `KSafe`. Used a plain Swift `Dictionary` instead. Added by an external contributor; superseded by the Kotlin test suite in `ksafe/src/iosTest/` and the [KSafeDemo](https://github.com/ioannisa/KSafeDemo) app
+- **`KoinInit.kt`** — Placeholder function (`initKoin()` with a `println`) in `iosMain` that shipped with the iOS framework to all consumers. No functionality
+- **`ExampleInstrumentedTest.kt`** — Default Android Studio template test in `ksafe-compose` that only asserted the package name. No KSafe coverage
+- **`IosDebugTest.kt`** — Debug-oriented iOS test with `println` hex dumps. All meaningful assertions already covered by `IosKSafeTest` (which extends the shared `KSafeTest` suite)
+
+### Added (Testing)
+
+- `KSafeKeyStorageTest` — 3 JVM tests for the Key Storage Query API: `deviceKeyStorages_returnsOnlySoftware`, `activeKeyStorage_returnsSoftware`, `enumOrdinalOrdering`
+- Secure Enclave tests in `IosKeychainEncryptionTest`:
+  - `testSecureEnclaveThrowsInTestEnvironment` — verifies SE encrypt falls back and throws in entitlement-less test runner
+  - `testSecureEnclaveDeleteDoesNotThrow` — verifies SE delete is permissive
+  - `documentSecureEnclaveBehavior` — documents envelope encryption architecture and manual test steps
+
+---
+
 ## [1.6.0] - 2025-02-16
 
 ### Added

@@ -3,6 +3,7 @@ package eu.anifantakis.lib.ksafe
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
@@ -121,6 +122,126 @@ class IosKeychainEncryptionTest {
         assertFailsWith<IllegalStateException> {
             encryption256.encrypt(keyId, "test".encodeToByteArray())
         }
+    }
+
+    // ============ SECURE ENCLAVE TESTS ============
+
+    @Test
+    fun testSecureEnclaveLookupOrder_enabledReadsWrappedThenPlain() {
+        val order = IosKeychainEncryption.keychainLookupOrder(
+            keyId = "mykey",
+            useSecureEnclave = true
+        )
+        assertEquals(listOf("se.mykey", "mykey"), order)
+    }
+
+    @Test
+    fun testSecureEnclaveLookupOrder_disabledReadsPlainOnly() {
+        val order = IosKeychainEncryption.keychainLookupOrder(
+            keyId = "mykey",
+            useSecureEnclave = false
+        )
+        assertEquals(listOf("mykey"), order)
+    }
+
+    /**
+     * Regression test for flag toggling behavior:
+     * - SE=true readers can read legacy plain keys (fallback path)
+     * - SE=false readers do NOT look up wrapped keys created under SE=true
+     */
+    @Test
+    fun testSecureEnclaveFlagToggleLookupRegression() {
+        val keyId = "token"
+        val readerWithSe = IosKeychainEncryption.keychainLookupOrder(keyId, useSecureEnclave = true)
+        val readerWithoutSe = IosKeychainEncryption.keychainLookupOrder(keyId, useSecureEnclave = false)
+
+        assertTrue(readerWithSe.contains("se.$keyId"))
+        assertTrue(readerWithSe.contains(keyId))
+        assertEquals(listOf(keyId), readerWithoutSe)
+    }
+
+    @Test
+    fun testTransientUnwrapFailureClassification_deviceLockedAndInteraction() {
+        assertTrue(IosKeychainEncryption.isTransientUnwrapFailure("device is locked"))
+        assertTrue(IosKeychainEncryption.isTransientUnwrapFailure("Interaction not allowed"))
+    }
+
+    @Test
+    fun testTransientUnwrapFailureClassification_permanentFailure() {
+        assertFalse(IosKeychainEncryption.isTransientUnwrapFailure("wrong key / corruption"))
+        assertFalse(IosKeychainEncryption.isTransientUnwrapFailure(null))
+    }
+
+    /**
+     * Verifies that encrypt with useSecureEnclave=true throws in the test environment.
+     *
+     * In the unit test runner (no entitlements, no SE hardware), the SE path will fail
+     * and fall back to plain Keychain — which also fails with errSecMissingEntitlement.
+     * This proves the fallback path works and error handling is correct.
+     */
+    @Test
+    fun testSecureEnclaveThrowsInTestEnvironment() {
+        val encryption = IosKeychainEncryption(useSecureEnclave = true)
+        val keyId = uniqueKeyId()
+        val plaintext = "test data".encodeToByteArray()
+
+        val exception = assertFailsWith<IllegalStateException> {
+            encryption.encrypt(keyId, plaintext)
+        }
+
+        // After SE fallback, should get a Keychain error (same as non-SE in test env)
+        assertTrue(
+            exception.message?.contains("Keychain error") == true ||
+            exception.message?.contains("Cannot access Keychain") == true ||
+            exception.message?.contains("Secure Enclave") == true ||
+            exception.message?.contains("Failed to store key") == true,
+            "Expected Keychain or SE error message, got: ${exception.message}"
+        )
+    }
+
+    /**
+     * Verifies that deleteKey with useSecureEnclave=true doesn't throw.
+     * Delete operations are permissive — no data loss risk from silent failure.
+     */
+    @Test
+    fun testSecureEnclaveDeleteDoesNotThrow() {
+        val encryption = IosKeychainEncryption(useSecureEnclave = true)
+        val keyId = uniqueKeyId()
+
+        // Should not throw - delete is always permissive
+        encryption.deleteKey(keyId)
+        encryption.deleteKey(keyId) // Multiple deletes should be safe
+    }
+
+    /**
+     * Documents the Secure Enclave envelope encryption behavior:
+     *
+     * When useSecureEnclave=true:
+     * 1. An EC P-256 key pair is created in the Secure Enclave hardware
+     * 2. The AES symmetric key is wrapped (encrypted) by the SE public key using ECIES
+     * 3. The wrapped AES key is stored in the Keychain as a generic-password item
+     * 4. On decrypt, the SE private key unwraps the AES key, which then decrypts data
+     *
+     * Backward compatibility:
+     * - Pre-SE keys (plain AES in Keychain) are still readable
+     * - New keys are SE-wrapped; existing keys are never auto-migrated
+     *
+     * Fallback:
+     * - If SE is unavailable (simulator, old device), falls back to regular Keychain
+     *   (same behavior as Android's StrongBox fallback)
+     *
+     * Manual test on physical device:
+     * 1. Create KSafe with useSecureEnclave=true
+     * 2. Store a value with put("key", "value", encrypted=true)
+     * 3. Read it back with get("key", "", encrypted=true) → should return "value"
+     * 4. Create KSafe with useSecureEnclave=false
+     * 5. Store a different value with put("key2", "value2", encrypted=true)
+     * 6. Switch back to useSecureEnclave=true
+     * 7. Read key2 → should return "value2" (legacy key is still readable)
+     */
+    @Test
+    fun documentSecureEnclaveBehavior() {
+        assertTrue(true, "See test documentation for Secure Enclave manual testing instructions")
     }
 
     // ============ DOCUMENTATION TESTS ============

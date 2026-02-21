@@ -14,9 +14,11 @@ import dev.whyoleg.cryptography.CryptographyProvider
 import dev.whyoleg.cryptography.algorithms.AES
 import dev.whyoleg.cryptography.providers.cryptokit.CryptoKit
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
+import kotlinx.cinterop.usePinned
 import kotlinx.cinterop.value
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -63,6 +65,10 @@ import platform.Security.kSecClass
 import platform.Security.kSecClassGenericPassword
 import platform.Security.kSecMatchLimit
 import platform.Security.kSecMatchLimitAll
+import platform.Security.kSecAttrApplicationTag
+import platform.Security.kSecAttrKeyType
+import platform.Security.kSecAttrKeyTypeECSECPrimeRandom
+import platform.Security.kSecClassKey
 import platform.Security.kSecReturnAttributes
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
@@ -95,6 +101,10 @@ internal fun decodeBase64(encoded: String): ByteArray = Base64.decode(encoded)
  * @property memoryPolicy Whether to decrypt and store values in RAM, or keep them encrypted in RAM for additional security
  * @property config Encryption configuration (key size, etc.)
  * @property securityPolicy Security policy for detecting jailbroken devices, debuggers, etc.
+ * @property useSecureEnclave When true, protects encryption keys using the Secure Enclave via
+ *   envelope encryption (an EC P-256 key pair in the SE wraps/unwraps the AES symmetric key).
+ *   Falls back to regular Keychain storage if the Secure Enclave is unavailable (simulator, old device).
+ *   Existing keys are unaffected — they remain in whatever storage they were originally created in.
  */
 actual class KSafe(
     @PublishedApi internal val fileName: String? = null,
@@ -102,7 +112,8 @@ actual class KSafe(
     @PublishedApi internal val memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
     private val config: KSafeConfig = KSafeConfig(),
     private val securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
-    @PublishedApi internal val plaintextCacheTtl: Duration = 5.seconds
+    @PublishedApi internal val plaintextCacheTtl: Duration = 5.seconds,
+    private val useSecureEnclave: Boolean = false
 ) {
     /**
      * Internal constructor for testing with custom encryption engine.
@@ -115,8 +126,9 @@ actual class KSafe(
         config: KSafeConfig = KSafeConfig(),
         securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
         plaintextCacheTtl: Duration = 5.seconds,
+        useSecureEnclave: Boolean = false,
         testEngine: KSafeEncryption
-    ) : this(fileName, lazyLoad, memoryPolicy, config, securityPolicy, plaintextCacheTtl) {
+    ) : this(fileName, lazyLoad, memoryPolicy, config, securityPolicy, plaintextCacheTtl, useSecureEnclave) {
         _testEngine = testEngine
     }
 
@@ -158,9 +170,21 @@ actual class KSafe(
     internal val engine: KSafeEncryption by lazy {
         _testEngine ?: IosKeychainEncryption(
             config = config,
-            serviceName = SERVICE_NAME
+            serviceName = SERVICE_NAME,
+            useSecureEnclave = useSecureEnclave
         )
     }
+
+    private val hasSecureEnclave: Boolean = !isSimulator()
+
+    actual val deviceKeyStorages: Set<KSafeKeyStorage> = buildSet {
+        add(KSafeKeyStorage.HARDWARE_BACKED)
+        if (hasSecureEnclave) add(KSafeKeyStorage.HARDWARE_ISOLATED)
+    }
+
+    actual val activeKeyStorage: KSafeKeyStorage =
+        if (useSecureEnclave && hasSecureEnclave) KSafeKeyStorage.HARDWARE_ISOLATED
+        else KSafeKeyStorage.HARDWARE_BACKED
 
     init {
         if (fileName != null) {
@@ -544,11 +568,13 @@ actual class KSafe(
                 engine.updateKeyAccessibility(keyId, config.requireUnlockedDevice)
             } catch (e: Exception) {
                 // Key may not exist (errSecItemNotFound) — that's OK, skip it.
-                // But if the device is locked (errSecInteractionNotAllowed) or another
-                // real failure occurred, mark as failed so the marker is NOT written
-                // and migration retries on next launch.
+                // But if the device is locked or a real update failure occurred,
+                // mark as failed so the marker is NOT written and migration
+                // retries on next launch.
                 val msg = e.message ?: ""
-                if (msg.contains("device is locked") || msg.contains("Keychain")) {
+                if (msg.contains("device is locked") ||
+                    msg.contains("Keychain") ||
+                    msg.contains("Failed to update")) {
                     allSucceeded = false
                 }
                 // Other errors (e.g., item not found) are fine to skip
@@ -650,20 +676,29 @@ actual class KSafe(
     }
 
     /**
-     * Remove Keychain entries that don't have corresponding encrypted data in DataStore
+     * Remove Keychain entries that don't have corresponding encrypted data in DataStore.
+     *
+     * Scans two Keychain item classes:
+     * 1. `kSecClassGenericPassword` — discovers plain AES keys and SE-wrapped AES keys
+     * 2. `kSecClassKey` — discovers orphaned SE EC private keys that may exist
+     *    without a corresponding generic-password item (e.g., crash between SE key
+     *    creation and wrapped-key storage)
+     *
+     * Uses [engine.deleteKey] which unconditionally cleans up all three artifact types
+     * (plain key + SE-wrapped key + SE EC key) per identifier.
      */
-    @OptIn(ExperimentalForeignApi::class)
+    @OptIn(ExperimentalForeignApi::class, kotlinx.cinterop.BetaInteropApi::class)
     private fun removeOrphanedKeychainKeys(validKeys: Set<String>) {
         val basePrefix = listOfNotNull(KEY_PREFIX, fileName).joinToString(".")
         val prefixWithDelimiter = "$basePrefix."
+        val sePrefixWithDelimiter = "${IosKeychainEncryption.SE_KEY_TAG_PREFIX}$prefixWithDelimiter"
 
+        val orphanedKeyIds = mutableSetOf<String>()
+
+        // --- Scan 1: generic-password items (plain keys + SE-wrapped keys) ---
         memScoped {
-            // Query for all our Keychain items
             val query = CFDictionaryCreateMutable(
-                kCFAllocatorDefault,
-                0,
-                null,
-                null
+                kCFAllocatorDefault, 0, null, null
             ).apply {
                 CFDictionarySetValue(this, kSecClass, kSecClassGenericPassword)
                 CFDictionarySetValue(this, kSecAttrService, CFBridgingRetain(SERVICE_NAME))
@@ -681,17 +716,74 @@ actual class KSafe(
                     for (i in 0 until array.count.toInt()) {
                         val dict = array.objectAtIndex(i.toULong()) as? NSDictionary
                         val account = dict?.objectForKey(kSecAttrAccount as Any) as? String
-                        if (account != null && account.startsWith(prefixWithDelimiter)) {
+                            ?: continue
+
+                        // Match plain keys: {prefix}.{keyId}
+                        if (account.startsWith(prefixWithDelimiter)) {
                             val keyId = account.removePrefix(prefixWithDelimiter)
-
-                            // FIX: Don't delete keys belonging to other KSafe instances
                             if (fileName == null && keyId.contains('.')) continue
-
-                            if (keyId !in validKeys) deleteKeychainKey(keyId)
+                            if (keyId !in validKeys) orphanedKeyIds.add(keyId)
+                        }
+                        // Match SE-wrapped keys: se.{prefix}.{keyId}
+                        else if (account.startsWith(sePrefixWithDelimiter)) {
+                            val keyId = account.removePrefix(sePrefixWithDelimiter)
+                            if (fileName == null && keyId.contains('.')) continue
+                            if (keyId !in validKeys) orphanedKeyIds.add(keyId)
                         }
                     }
                 }
             }
+        }
+
+        // --- Scan 2: kSecClassKey items (SE EC private keys) ---
+        // Catches orphaned SE keys that exist without a matching generic-password item,
+        // e.g., if a crash occurred between SE key creation and wrapped-key storage.
+        memScoped {
+            val query = CFDictionaryCreateMutable(
+                kCFAllocatorDefault, 0, null, null
+            ).apply {
+                CFDictionarySetValue(this, kSecClass, kSecClassKey)
+                CFDictionarySetValue(this, kSecAttrKeyType, kSecAttrKeyTypeECSECPrimeRandom)
+                CFDictionarySetValue(this, kSecReturnAttributes, kCFBooleanTrue)
+                CFDictionarySetValue(this, kSecMatchLimit, kSecMatchLimitAll)
+            }
+
+            val resultRef = alloc<CFTypeRefVar>()
+            val status = SecItemCopyMatching(query, resultRef.ptr)
+            CFRelease(query as CFTypeRef?)
+
+            if (status == errSecSuccess) {
+                val items = CFBridgingRelease(resultRef.value) as? NSArray
+                items?.let { array ->
+                    for (i in 0 until array.count.toInt()) {
+                        val dict = array.objectAtIndex(i.toULong()) as? NSDictionary
+                        // SE EC keys use applicationTag (NSData) not account (NSString)
+                        val tagData = dict?.objectForKey(kSecAttrApplicationTag as Any)
+                            as? platform.Foundation.NSData ?: continue
+                        val tagBytes = ByteArray(tagData.length.toInt())
+                        if (tagBytes.isNotEmpty()) {
+                            tagBytes.usePinned { pinned ->
+                                platform.posix.memcpy(pinned.addressOf(0), tagData.bytes, tagData.length)
+                            }
+                        }
+                        val tag = tagBytes.decodeToString()
+
+                        // Match SE tags: se.{prefix}.{keyId}
+                        if (tag.startsWith(sePrefixWithDelimiter)) {
+                            val keyId = tag.removePrefix(sePrefixWithDelimiter)
+                            if (fileName == null && keyId.contains('.')) continue
+                            if (keyId !in validKeys) orphanedKeyIds.add(keyId)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Delete all artifacts for each orphaned key via engine.
+        // engine.deleteKey unconditionally handles plain key + SE-wrapped key + SE EC key.
+        for (keyId in orphanedKeyIds) {
+            val fullIdentifier = "$prefixWithDelimiter$keyId"
+            engine.deleteKey(fullIdentifier)
         }
     }
 
