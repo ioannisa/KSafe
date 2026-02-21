@@ -30,7 +30,19 @@ Check out my own video about how easy it is to adapt KSafe into your project and
 
 library to persist encrypted and unencrypted data in Kotlin Multiplatform.
 
-With simple property delegation, encrypted values feel like normal variables — you just read and write them, and KSafe handles encryption, decryption, and persistence transparently across all four platforms: **Android**, **iOS**, **JVM/Desktop**, and **WASM/JS (Browser)**.
+With simple property delegation, values feel like normal variables — you just read and write them, and KSafe handles the underlying cryptography, caching, and atomic DataStore persistence transparently across all four platforms: **Android**, **iOS**, **JVM/Desktop**, and **WASM/JS (Browser)**.
+
+### ⚡ The Dual-Purpose Advantage: Not Just for Secrets
+
+Think KSafe is overkill for a simple "Dark Mode" toggle? Think again.
+
+By setting `protection = KSafeProtection.NONE`, KSafe completely bypasses the cryptographic engine. What remains is a lightning-fast, zero-boilerplate wrapper around AndroidX DataStore with a concurrent hot-cache.
+
+Setting up raw KMP DataStore requires writing `expect/actual` file paths across 4 platforms, managing `CoroutineScopes`, and dealing with async-only Flow reads. KSafe abstracts 100% of that. You get synchronous, O(1) reads backed by asynchronous disk writes—all in one line of code. **Unencrypted KSafe writes are actually benchmarked to be faster than native Android SharedPreferences.**
+
+Whether you are storing a harmless UI state or a highly sensitive biometric token, KSafe is the only local persistence dependency your KMP app needs.
+
+### Real-World Example
 
 Here's what that looks like in a real app — Ktor bearer authentication with **zero encryption boilerplate**:
 
