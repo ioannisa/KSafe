@@ -66,6 +66,12 @@ object BiometricHelper {
     var promptSubtitle: String = "Authenticate to access secure data"
 
     /**
+     * Whether users must explicitly confirm after successful biometric recognition.
+     * Keep `true` for sensitive actions; set `false` to allow faster passive-auth flows.
+     */
+    var confirmationRequired: Boolean = true
+
+    /**
      * Initialize activity tracking. Called automatically by KSafe.
      */
     fun init(application: Application) {
@@ -292,6 +298,7 @@ object BiometricHelper {
                 val promptInfo = BiometricPrompt.PromptInfo.Builder()
                     .setTitle(promptTitle)
                     .setSubtitle(subtitle)
+                    .setConfirmationRequired(confirmationRequired)
                     .setAllowedAuthenticators(
                         BiometricManager.Authenticators.BIOMETRIC_STRONG or
                         BiometricManager.Authenticators.DEVICE_CREDENTIAL
