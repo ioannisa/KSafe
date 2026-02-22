@@ -79,8 +79,8 @@ class AndroidConcurrencyTest {
                         val value = "written${writerId}x$i"
                         val default = "DEFAULT"
 
-                        ksafe.putDirect(key, value, encrypted = true)
-                        val readBack = ksafe.getDirect(key, default, encrypted = true)
+                        ksafe.putDirect(key, value)
+                        val readBack = ksafe.getDirect(key, default)
                         if (readBack == default) {
                             defaultsReturned.incrementAndGet()
                         }
@@ -113,7 +113,7 @@ class AndroidConcurrencyTest {
 
         // Pre-populate encrypted values using suspend put (durable)
         repeat(keyCount) { i ->
-            ksafe.put("stablekey$i", "stablevalue$i", encrypted = true)
+            ksafe.put("stablekey$i", "stablevalue$i")
         }
 
         // Let persistence complete
@@ -127,7 +127,7 @@ class AndroidConcurrencyTest {
                 while (running.get()) {
                     repeat(keyCount) { i ->
                         try {
-                            val result = ksafe.getDirect("stablekey$i", "DEFAULT", encrypted = true)
+                            val result = ksafe.getDirect("stablekey$i", "DEFAULT")
                             if (result == "DEFAULT") {
                                 defaultsReturned.incrementAndGet()
                             }
@@ -144,7 +144,7 @@ class AndroidConcurrencyTest {
             launch(Dispatchers.Default) {
                 repeat(50) { i ->
                     try {
-                        ksafe.putDirect("churn${writerId}x$i", "churn$i", encrypted = true)
+                        ksafe.putDirect("churn${writerId}x$i", "churn$i")
                     } catch (e: Exception) {
                         errors.incrementAndGet()
                     }
@@ -185,12 +185,12 @@ class AndroidConcurrencyTest {
                         val encValue = "encrypted${writerId}x$i"
                         val plainValue = "plain${writerId}x$i"
 
-                        ksafe.putDirect(key, encValue, encrypted = true)
-                        ksafe.putDirect("plain$key", plainValue, encrypted = false)
+                        ksafe.putDirect(key, encValue)
+                        ksafe.putDirect("plain$key", plainValue, KSafeProtection.NONE)
 
                         // Read back both
-                        val encRead = ksafe.getDirect(key, "ENCDEFAULT", encrypted = true)
-                        val plainRead = ksafe.getDirect("plain$key", "PLAINDEFAULT", encrypted = false)
+                        val encRead = ksafe.getDirect(key, "ENCDEFAULT")
+                        val plainRead = ksafe.getDirect("plain$key", "PLAINDEFAULT")
 
                         if (encRead == "ENCDEFAULT" || plainRead == "PLAINDEFAULT") {
                             errors.incrementAndGet()
@@ -226,14 +226,14 @@ class AndroidConcurrencyTest {
         delay(200)
 
         // Write initial value
-        ksafe.putDirect(key, "initial", encrypted = true)
+        ksafe.putDirect(key, "initial")
 
         // Rapid overwrite from multiple coroutines
         val jobs = (0 until 10).map { writerId ->
             launch(Dispatchers.Default) {
                 repeat(50) { i ->
                     try {
-                        ksafe.putDirect(key, "w${writerId}i$i", encrypted = true)
+                        ksafe.putDirect(key, "w${writerId}i$i")
                     } catch (e: Exception) {
                         errors.incrementAndGet()
                     }
@@ -244,7 +244,7 @@ class AndroidConcurrencyTest {
         jobs.forEach { it.join() }
 
         // The value should be SOMETHING written, never the default
-        val finalValue = ksafe.getDirect(key, default, encrypted = true)
+        val finalValue = ksafe.getDirect(key, default)
         assertNotEquals(default, finalValue, "Contended key must never revert to default")
         assertEquals(0, errors.get(), "No exceptions during rapid overwrite")
     }
@@ -263,13 +263,13 @@ class AndroidConcurrencyTest {
         delay(200)
 
         // Write via putDirect
-        ksafe.putDirect("persistkey", "persistvalue", encrypted = true)
+        ksafe.putDirect("persistkey", "persistvalue")
 
         // Wait for background flush (16ms coalesce + DataStore write)
         delay(1000)
 
         // Read via suspend get (reads from cache which should have the persisted value)
-        val result = ksafe.get("persistkey", "DEFAULT", encrypted = true)
+        val result = ksafe.get("persistkey", "DEFAULT")
         assertEquals("persistvalue", result, "putDirect value must be readable via suspend get after flush")
     }
 
@@ -284,7 +284,7 @@ class AndroidConcurrencyTest {
     fun testGetDirectBeforeCacheInitReturnsDefault() = runTest {
         val ksafe = createKSafe()
         // No delay — read immediately
-        val result = ksafe.getDirect("nonexistent", "DEFAULT", encrypted = true)
+        val result = ksafe.getDirect("nonexistent", "DEFAULT")
         assertEquals("DEFAULT", result, "getDirect on non-existent key should return default")
     }
 }

@@ -21,29 +21,29 @@ class NullFilenameTest {
     fun testWithNullFilename() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val ksafe = KSafe(context, null)  // Explicitly passing null
-        
+
         val key = "test_key"
         val value = "test_value"
-        
+
         Log.d("NullFilenameTest", "Putting value with null filename")
-        ksafe.put(key, value, encrypted = false)
-        
-        val retrieved = ksafe.get(key, "default", encrypted = false)
+        ksafe.put(key, value, KSafeProtection.NONE)
+
+        val retrieved = ksafe.get(key, "default")
         Log.d("NullFilenameTest", "Retrieved: $retrieved")
         assertEquals(value, retrieved)
     }
-    
+
     /** Verifies property delegation works with null filename */
     @Test
     fun testDelegateWithNullFilename() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val ksafe = KSafe(context, null)  // Explicitly passing null
-        
-        var myProperty: String by ksafe(defaultValue = "default", encrypted = false)
-        
+
+        var myProperty: String by ksafe(defaultValue = "default", protection = KSafeProtection.NONE)
+
         Log.d("NullFilenameTest", "Initial delegate value: $myProperty")
         assertEquals("default", myProperty)
-        
+
         myProperty = "new value"
         Log.d("NullFilenameTest", "After setting delegate: $myProperty")
         assertEquals("new value", myProperty)

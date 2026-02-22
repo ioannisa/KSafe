@@ -18,7 +18,7 @@ enum class KSafeProtection {
 }
 ```
 
-All five public methods now accept `protection: KSafeProtection = KSafeProtection.DEFAULT`:
+Write methods accept `protection: KSafeProtection = KSafeProtection.DEFAULT`. Read methods auto-detect protection from stored metadata — no `protection` parameter needed:
 
 ```kotlin
 // Per-property hardware isolation — no separate KSafe instance needed
@@ -26,16 +26,16 @@ var counter by ksafe(0)                                                // DEFAUL
 var secret by ksafe(0, protection = KSafeProtection.HARDWARE_ISOLATED) // StrongBox / SE
 var setting by ksafe("default", protection = KSafeProtection.NONE)     // no encryption
 
-// Suspend API
+// Suspend API — writes specify protection, reads auto-detect
 ksafe.put("token", value, protection = KSafeProtection.HARDWARE_ISOLATED)
-val token = ksafe.get("token", "", protection = KSafeProtection.HARDWARE_ISOLATED)
+val token = ksafe.get("token", "")  // auto-detects HARDWARE_ISOLATED
 
 // Direct API
 ksafe.putDirect("pref", value, protection = KSafeProtection.NONE)
-val pref = ksafe.getDirect("pref", "", protection = KSafeProtection.NONE)
+val pref = ksafe.getDirect("pref", "")  // auto-detects NONE
 
 // Flow API
-val flow = ksafe.getFlow("token", "", protection = KSafeProtection.HARDWARE_ISOLATED)
+val flow = ksafe.getFlow("token", "")  // auto-detects per emission
 ```
 
 **`HARDWARE_ISOLATED` behavior by platform:**
@@ -50,32 +50,48 @@ val flow = ksafe.getFlow("token", "", protection = KSafeProtection.HARDWARE_ISOL
 **Compose and delegate support:**
 
 ```kotlin
-// Property delegation
+// Property delegation (protection applies to writes; reads auto-detect)
 var secret by ksafe("", protection = KSafeProtection.HARDWARE_ISOLATED)
 
 // Compose state (requires ksafe-compose)
 var secret by ksafe.mutableStateOf("", protection = KSafeProtection.HARDWARE_ISOLATED)
 ```
 
-### Deprecated
+#### Auto-Detection on Reads
 
-#### `encrypted: Boolean` parameter on all public API methods
-
-The `encrypted: Boolean` parameter on `getDirect`, `putDirect`, `get`, `put`, `getFlow`, `getStateFlow`, property delegation (`invoke`), and Compose `mutableStateOf` is deprecated in favor of `KSafeProtection`:
+Read APIs (`getDirect`, `get`, `getFlow`, `getStateFlow`) no longer require a `protection` or `encrypted` parameter. KSafe automatically detects whether stored data is encrypted by checking persisted `__ksafe_prot_{key}__` metadata, with a heuristic fallback for legacy data (checks if `encrypted_{key}` exists in cache).
 
 ```kotlin
-// Old (deprecated)
-ksafe.put("key", value, encrypted = true)
-ksafe.put("key", value, encrypted = false)
-var token by ksafe("", encrypted = true)
+// Writes specify protection level
+ksafe.putDirect("token", value)                                        // DEFAULT (encrypted)
+ksafe.putDirect("setting", value, protection = KSafeProtection.NONE)   // unencrypted
 
-// New
-ksafe.put("key", value)  // DEFAULT (encrypted) is the default
-ksafe.put("key", value, protection = KSafeProtection.NONE)
-var token by ksafe("")  // DEFAULT is the default
+// Reads auto-detect — just provide key + default
+val token = ksafe.getDirect("token", "")      // auto-detects encrypted
+val setting = ksafe.getDirect("setting", "")  // auto-detects unencrypted
+val flow = ksafe.getFlow("token", "")         // auto-detects per emission
 ```
 
-The deprecated overloads map `encrypted = true` → `KSafeProtection.DEFAULT` and `encrypted = false` → `KSafeProtection.NONE`. They will be removed in a future major version.
+This eliminates the risk of mismatched put/get protection levels and simplifies the read API.
+
+### Deprecated
+
+#### `encrypted: Boolean` parameter (ERROR level)
+
+The `encrypted: Boolean` parameter on all public API methods is deprecated at `DeprecationLevel.ERROR` (won't compile). This applies to `getDirect`, `putDirect`, `get`, `put`, `getFlow`, `getStateFlow`, property delegation (`invoke`), and Compose `mutableStateOf`.
+
+```kotlin
+// Old (ERROR — won't compile)
+ksafe.put("key", value, encrypted = true)
+ksafe.get("key", "", encrypted = true)
+
+// New
+ksafe.put("key", value)                                     // DEFAULT (encrypted)
+ksafe.put("key", value, protection = KSafeProtection.NONE)  // unencrypted
+val v = ksafe.get("key", "")                                // auto-detects
+```
+
+The `encrypted = true` → `KSafeProtection.DEFAULT` and `encrypted = false` → `KSafeProtection.NONE` mapping is preserved in the deprecated overloads for source reference, but callers must migrate to the new API.
 
 ### Changed
 
@@ -83,15 +99,22 @@ The deprecated overloads map `encrypted = true` → `KSafeProtection.DEFAULT` an
 
 `createSecureEnclaveKeyPair()` and `wrapAesKey()` now include the `NSError.localizedDescription` from the underlying `CFError` in their exception messages. This prevents the string-based fallback logic in `getOrCreateKeychainKey()` from misclassifying transient SE failures (e.g., device locked, interaction not allowed) as "SE unavailable" and silently downgrading to plain Keychain storage. The fallback check also now re-throws errors containing "interaction" (matching `errSecInteractionNotAllowed` from CFError descriptions).
 
-#### Per-key protection metadata for migration safety
+#### Per-key protection metadata for migration safety and auto-detection
 
-Every encrypted write now persists a `__ksafe_prot_{key}__` metadata entry in DataStore alongside the ciphertext, recording whether the key was encrypted with `DEFAULT` or `HARDWARE_ISOLATED`. This metadata is used during `requireUnlockedDevice` migration (Android) to re-encrypt each key at its original hardware isolation level, preventing silent downgrades.
+Every write (both `putDirect` via `processBatch` and suspend `put`) now persists a `__ksafe_prot_{key}__` metadata entry alongside the data, recording the protection level (`DEFAULT`, `HARDWARE_ISOLATED`, or `NONE`). This metadata serves two purposes:
+1. **Auto-detection on reads** — read APIs use it to determine whether to decrypt without caller input
+2. **Migration safety** — `requireUnlockedDevice` migration uses it to re-encrypt each key at its original hardware isolation level
 
-- **Android:** `migrateAccessPolicyIfNeeded()` reads per-key metadata to determine the correct `hardwareIsolated` flag for each key during re-encryption. Pre-1.7.0 keys without metadata default to `DEFAULT` (TEE) since hardware isolation was not available before 1.7.0.
-- **iOS:** Metadata is recorded for forward compatibility. iOS migration currently uses in-place `SecItemUpdate` (no re-encryption), so the metadata isn't consumed today but is available if future migration logic requires it.
-- **JVM/WASM:** No metadata written (no hardware isolation capability).
+- **All platforms:** Both `putDirect` (background batch) and suspend `put` paths persist metadata atomically alongside data writes. Previously only `processBatch` wrote metadata.
+- **JVM/WASM:** Now store protection metadata (previously only Android and iOS). JVM uses `protectionMetaKey(key)` in DataStore; WASM uses `${storagePrefix}__ksafe_prot_${key}__` in localStorage.
+- **Android:** `migrateAccessPolicyIfNeeded()` reads per-key metadata to determine the correct `hardwareIsolated` flag for each key during re-encryption. Pre-1.7.0 keys without metadata default to `DEFAULT` (TEE).
+- **iOS:** Metadata is recorded for forward compatibility and auto-detection. iOS migration uses in-place `SecItemUpdate` (no re-encryption).
 - Metadata keys use the `__ksafe_` prefix and are automatically skipped by `updateCache()`, `cleanupOrphanedCiphertext()`, and migration iteration.
 - Metadata is removed atomically alongside data on `delete()` and `deleteDirect()`.
+
+#### Dirty-key guard for protectionMap on all platforms
+
+`updateCache()` (DataStore platforms: Android, JVM, iOS) now skips overwriting `protectionMap` entries for keys with pending writes (dirty keys). On WASM, `loadCacheFromStorage()` skips `protectionMap` entries that were already set by optimistic `putDirect` writes. This prevents stale emissions from clobbering metadata set during the optimistic write window.
 
 #### Android access-policy migration preserves StrongBox backing
 

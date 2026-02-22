@@ -103,7 +103,7 @@ inline fun <reified T> KSafe.mutableStateOf(
         val actualKey = key ?: property.name
 
         // Load initial value from storage
-        val initialValue = ksafe.getDirect<T>(actualKey, defaultValue, protection)
+        val initialValue = ksafe.getDirect<T>(actualKey, defaultValue)
 
         val saver: (newValue: T) -> Unit = { newValueToSave ->
             try {

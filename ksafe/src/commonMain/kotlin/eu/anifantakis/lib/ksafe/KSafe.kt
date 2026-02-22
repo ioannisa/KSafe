@@ -78,6 +78,8 @@ expect class KSafe {
      *
      * This method is **non-blocking** and safe to call on the Main/UI thread.
      * It reads directly from an atomic memory reference, ensuring zero UI freeze.
+     * Protection is auto-detected from stored metadata — no need to specify
+     * whether the value was encrypted or not.
      *
      * **Cold Start Behavior:** On the very first app launch, if the cache has not
      * finished initializing, this will block once to ensure data consistency.
@@ -87,19 +89,18 @@ expect class KSafe {
      * ```kotlin
      * val username = ksafe.getDirect("username", "Guest")
      * val token = ksafe.getDirect("auth_token", "")
-     * val setting = ksafe.getDirect("setting", "", protection = KSafeProtection.NONE)
      * ```
      *
      * @param T The type of value to retrieve. Supported: [Boolean], [Int], [Long],
      *          [Float], [Double], [String], and `@Serializable` objects.
      * @param key The unique key for the value.
      * @param defaultValue The value to return if the key doesn't exist or decryption fails.
-     * @param protection The encryption/storage protection level. Defaults to [KSafeProtection.DEFAULT].
      * @return The stored value or [defaultValue].
      * @see putDirect for the corresponding write operation
      * @see get for the suspending alternative
      */
-    inline fun <reified T> getDirect(key: String, defaultValue: T, protection: KSafeProtection = KSafeProtection.DEFAULT): T
+    inline fun <reified T> getDirect(key: String, defaultValue: T): T
+
 
     /**
      * Updates a value asynchronously with optimistic caching.
@@ -140,27 +141,29 @@ expect class KSafe {
      *
      * Like [getDirect], this checks the memory cache first for performance.
      * If the cache is not ready, it suspends (instead of blocking) until data is loaded.
+     * Protection is auto-detected from stored metadata.
      *
      * @param T The type of value to retrieve.
      * @param key The unique key.
      * @param defaultValue The fallback value.
-     * @param protection The encryption/storage protection level. Defaults to [KSafeProtection.DEFAULT].
      * @return The stored value.
      */
-    suspend inline fun <reified T> get(key: String, defaultValue: T, protection: KSafeProtection = KSafeProtection.DEFAULT): T
+    suspend inline fun <reified T> get(key: String, defaultValue: T): T
+
 
     /**
      * Returns a [Flow] that emits the value whenever it changes.
      *
      * The Flow emits the current value immediately and then emits any subsequent updates.
      * It is distinct-until-changed, meaning it only emits when the value actually changes.
+     * Protection is auto-detected from stored metadata per emission.
      *
      * @param T The type of value.
      * @param key The unique key.
      * @param defaultValue The fallback value.
-     * @param protection The encryption/storage protection level. Defaults to [KSafeProtection.DEFAULT].
      */
-    inline fun <reified T> getFlow(key: String, defaultValue: T, protection: KSafeProtection = KSafeProtection.DEFAULT): Flow<T>
+    inline fun <reified T> getFlow(key: String, defaultValue: T): Flow<T>
+
 
     /**
      * Persists a value to disk suspending-ly.
@@ -194,38 +197,43 @@ expect class KSafe {
 
     // --- DEPRECATED OVERLOADS (encrypted: Boolean) ---
 
-    /** @deprecated Use [getDirect] with [KSafeProtection] parameter instead. */
+    /** @deprecated Use [getDirect] without protection/encrypted parameter. */
     @Deprecated(
-        "Use protection parameter instead.",
-        ReplaceWith("getDirect(key, defaultValue, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)")
+        "Use getDirect(key, defaultValue) instead. Protection is auto-detected on reads.",
+        ReplaceWith("getDirect(key, defaultValue)"),
+        level = DeprecationLevel.ERROR
     )
     inline fun <reified T> getDirect(key: String, defaultValue: T, encrypted: Boolean): T
 
     /** @deprecated Use [putDirect] with [KSafeProtection] parameter instead. */
     @Deprecated(
         "Use protection parameter instead.",
-        ReplaceWith("putDirect(key, value, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)")
+        ReplaceWith("putDirect(key, value, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)"),
+        level = DeprecationLevel.ERROR
     )
     inline fun <reified T> putDirect(key: String, value: T, encrypted: Boolean)
 
-    /** @deprecated Use [get] with [KSafeProtection] parameter instead. */
+    /** @deprecated Use [get] without protection/encrypted parameter. */
     @Deprecated(
-        "Use protection parameter instead.",
-        ReplaceWith("get(key, defaultValue, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)")
+        "Use get(key, defaultValue) instead. Protection is auto-detected on reads.",
+        ReplaceWith("get(key, defaultValue)"),
+        level = DeprecationLevel.ERROR
     )
     suspend inline fun <reified T> get(key: String, defaultValue: T, encrypted: Boolean): T
 
     /** @deprecated Use [put] with [KSafeProtection] parameter instead. */
     @Deprecated(
         "Use protection parameter instead.",
-        ReplaceWith("put(key, value, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)")
+        ReplaceWith("put(key, value, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)"),
+        level = DeprecationLevel.ERROR
     )
     suspend inline fun <reified T> put(key: String, value: T, encrypted: Boolean)
 
-    /** @deprecated Use [getFlow] with [KSafeProtection] parameter instead. */
+    /** @deprecated Use [getFlow] without protection/encrypted parameter. */
     @Deprecated(
-        "Use protection parameter instead.",
-        ReplaceWith("getFlow(key, defaultValue, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)")
+        "Use getFlow(key, defaultValue) instead. Protection is auto-detected on reads.",
+        ReplaceWith("getFlow(key, defaultValue)"),
+        level = DeprecationLevel.ERROR
     )
     inline fun <reified T> getFlow(key: String, defaultValue: T, encrypted: Boolean): Flow<T>
 
@@ -400,7 +408,7 @@ enum class KSafeMemoryPolicy {
  * This is a convenience wrapper around [KSafe.getFlow] that converts the cold [Flow] into
  * a hot [StateFlow] using [stateIn] with [SharingStarted.Eagerly]. The [defaultValue] is
  * used both as the fallback for missing keys and as the initial value of the [StateFlow],
- * preventing mismatched-initial-value bugs.
+ * preventing mismatched-initial-value bugs. Protection is auto-detected from stored metadata.
  *
  * ## Example
  * ```kotlin
@@ -415,25 +423,38 @@ enum class KSafeMemoryPolicy {
  * @param key The unique key.
  * @param defaultValue The fallback value and initial [StateFlow] value.
  * @param scope The [CoroutineScope] used to share the flow (e.g., `viewModelScope`).
- * @param protection The encryption/storage protection level. Defaults to [KSafeProtection.DEFAULT].
  */
 inline fun <reified T> KSafe.getStateFlow(
     key: String,
     defaultValue: T,
     scope: CoroutineScope,
-    protection: KSafeProtection = KSafeProtection.DEFAULT
-): StateFlow<T> = getFlow(key, defaultValue, protection)
+): StateFlow<T> = getFlow(key, defaultValue)
     .stateIn(scope, SharingStarted.Eagerly, defaultValue)
 
-/** @deprecated Use [getStateFlow] with [KSafeProtection] parameter instead. */
+/** @deprecated Protection is now auto-detected on reads. */
 @Deprecated(
-    "Use protection parameter instead.",
-    ReplaceWith("getStateFlow(key, defaultValue, scope, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)")
+    "Protection is now auto-detected on reads. Use getStateFlow(key, defaultValue, scope) instead.",
+    ReplaceWith("getStateFlow(key, defaultValue, scope)"),
+    level = DeprecationLevel.ERROR
+)
+inline fun <reified T> KSafe.getStateFlow(
+    key: String,
+    defaultValue: T,
+    scope: CoroutineScope,
+    protection: KSafeProtection = KSafeProtection.DEFAULT
+): StateFlow<T> = getFlow(key, defaultValue)
+    .stateIn(scope, SharingStarted.Eagerly, defaultValue)
+
+/** @deprecated Use [getStateFlow] without encrypted parameter. */
+@Deprecated(
+    "Use getStateFlow(key, defaultValue, scope) instead. Protection is auto-detected on reads.",
+    ReplaceWith("getStateFlow(key, defaultValue, scope)"),
+    level = DeprecationLevel.ERROR
 )
 inline fun <reified T> KSafe.getStateFlow(
     key: String,
     defaultValue: T,
     scope: CoroutineScope,
     encrypted: Boolean
-): StateFlow<T> = getFlow(key, defaultValue, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)
+): StateFlow<T> = getFlow(key, defaultValue)
     .stateIn(scope, SharingStarted.Eagerly, defaultValue)

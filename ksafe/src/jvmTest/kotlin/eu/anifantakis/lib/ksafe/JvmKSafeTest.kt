@@ -6,11 +6,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.CountDownLatch
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.test.assertEquals
-import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 
 /**
@@ -21,7 +19,6 @@ import kotlin.test.assertNull
  *
  * We also need unique names ACROSS test runs because files persist on disk.
  */
-@Suppress("DEPRECATION")
 class JvmKSafeTest : KSafeTest() {
 
     companion object {
@@ -94,7 +91,7 @@ class JvmKSafeTest : KSafeTest() {
             launch(Dispatchers.Default) {
                 repeat(iterations) { i ->
                     try {
-                        ksafe.putDirect("writer${writerId}_key$i", "value_$i", encrypted = false)
+                        ksafe.putDirect("writer${writerId}_key$i", "value_$i", KSafeProtection.NONE)
                         successfulWrites.incrementAndGet()
                     } catch (e: Exception) {
                         errors.incrementAndGet()
@@ -135,7 +132,7 @@ class JvmKSafeTest : KSafeTest() {
             launch(Dispatchers.Default) {
                 repeat(iterations) { i ->
                     try {
-                        ksafe.putDirect("enc_writer${writerId}_key$i", "encrypted_value_$i", encrypted = true)
+                        ksafe.putDirect("enc_writer${writerId}_key$i", "encrypted_value_$i")
                         successfulWrites.incrementAndGet()
                     } catch (e: Exception) {
                         errors.incrementAndGet()
@@ -164,14 +161,14 @@ class JvmKSafeTest : KSafeTest() {
 
         // Pre-populate some data
         repeat(50) { i ->
-            ksafe.putDirect("shared_key_$i", "initial_$i", encrypted = false)
+            ksafe.putDirect("shared_key_$i", "initial_$i", KSafeProtection.NONE)
         }
 
         // Writer coroutine
         val writer = launch(Dispatchers.Default) {
             repeat(iterations) { i ->
                 try {
-                    ksafe.putDirect("shared_key_${i % 50}", "updated_$i", encrypted = false)
+                    ksafe.putDirect("shared_key_${i % 50}", "updated_$i", KSafeProtection.NONE)
                 } catch (e: Exception) {
                     errors.incrementAndGet()
                     println("Writer error at $i: ${e.message}")
@@ -186,7 +183,7 @@ class JvmKSafeTest : KSafeTest() {
                 while (running.get()) {
                     try {
                         repeat(50) { i ->
-                            ksafe.getDirect("shared_key_$i", "default", encrypted = false)
+                            ksafe.getDirect("shared_key_$i", "default")
                         }
                     } catch (e: Exception) {
                         errors.incrementAndGet()
@@ -219,7 +216,7 @@ class JvmKSafeTest : KSafeTest() {
                 repeat(iterations) { i ->
                     try {
                         // This adds to dirty keys, updates cache
-                        ksafe.putDirect("dirty_test_${writerId}_$i", "v$i", encrypted = false)
+                        ksafe.putDirect("dirty_test_${writerId}_$i", "v$i", KSafeProtection.NONE)
                     } catch (e: Exception) {
                         errors.incrementAndGet()
                         if (errors.get() <= 5) {
@@ -257,7 +254,7 @@ class JvmKSafeTest : KSafeTest() {
         val errors = AtomicInteger(0)
 
         // Trigger an initial cache load by reading a non-existent key
-        ksafe.getDirect("warmup", "default", encrypted = false)
+        ksafe.getDirect("warmup", "default")
         delay(100) // Let cache initialize
 
         val jobs = (0 until 10).map { writerId ->
@@ -268,9 +265,9 @@ class JvmKSafeTest : KSafeTest() {
                         val value = "written_${writerId}_$i"
                         val default = "DEFAULT"
 
-                        ksafe.putDirect(key, value, encrypted = true)
+                        ksafe.putDirect(key, value)
                         // Read back immediately — should get written value, not default
-                        val readBack = ksafe.getDirect(key, default, encrypted = true)
+                        val readBack = ksafe.getDirect(key, default)
                         if (readBack == default) {
                             defaultsReturned.incrementAndGet()
                         }
@@ -328,13 +325,13 @@ class JvmKSafeTest : KSafeTest() {
         delay(300) // Let background collector + cleanup complete (no orphans yet)
 
         // Write encrypted data with working engine
-        ksafe.put("orphan_test", "secret_value", encrypted = true)
-        ksafe.put("orphan_test2", "secret_value2", encrypted = true)
+        ksafe.put("orphan_test", "secret_value")
+        ksafe.put("orphan_test2", "secret_value2")
         delay(500) // Let write flush
 
         // Verify values are readable
-        assertEquals("secret_value", ksafe.get("orphan_test", "DEFAULT", encrypted = true))
-        assertEquals("secret_value2", ksafe.get("orphan_test2", "DEFAULT", encrypted = true))
+        assertEquals("secret_value", ksafe.get("orphan_test", "DEFAULT"))
+        assertEquals("secret_value2", ksafe.get("orphan_test2", "DEFAULT"))
 
         // Verify ciphertext exists in DataStore
         val prefs1 = ksafe.dataStore.data.first()
@@ -347,7 +344,7 @@ class JvmKSafeTest : KSafeTest() {
         engine.failOnDecrypt = true
 
         // Value should now return default via getDirect (key gone, falls through)
-        assertEquals("DEFAULT", ksafe.getDirect("orphan_test", "DEFAULT", encrypted = true),
+        assertEquals("DEFAULT", ksafe.getDirect("orphan_test", "DEFAULT"),
             "Should return default when decryption key is lost")
 
         // Orphaned ciphertext is still in DataStore (cleanup already ran at startup)
@@ -376,13 +373,13 @@ class JvmKSafeTest : KSafeTest() {
         val ksafe2setup = KSafe(fileName = fileName2, testEngine = engine2)
         delay(300)
 
-        ksafe2setup.put("cleanup_target", "will_be_orphaned", encrypted = true)
-        ksafe2setup.put("unenc_key", "plain_value", encrypted = false)
+        ksafe2setup.put("cleanup_target", "will_be_orphaned")
+        ksafe2setup.put("unenc_key", "plain_value", KSafeProtection.NONE)
         delay(500)
 
         // Verify both exist
-        assertEquals("will_be_orphaned", ksafe2setup.get("cleanup_target", "DEFAULT", encrypted = true))
-        assertEquals("plain_value", ksafe2setup.get("unenc_key", "DEFAULT", encrypted = false))
+        assertEquals("will_be_orphaned", ksafe2setup.get("cleanup_target", "DEFAULT"))
+        assertEquals("plain_value", ksafe2setup.get("unenc_key", "DEFAULT"))
 
         // Verify ciphertext is in DataStore
         val setupPrefs = ksafe2setup.dataStore.data.first()
@@ -395,10 +392,10 @@ class JvmKSafeTest : KSafeTest() {
         // The ciphertext is orphaned but still in DataStore (cleanup ran before we wrote data)
         // On a real device, next app launch would clean this up.
         // Verify that getDirect returns default for orphaned data
-        assertEquals("DEFAULT", ksafe2setup.getDirect("cleanup_target", "DEFAULT", encrypted = true))
+        assertEquals("DEFAULT", ksafe2setup.getDirect("cleanup_target", "DEFAULT"))
 
         // Unencrypted data should still be accessible
-        assertEquals("plain_value", ksafe2setup.getDirect("unenc_key", "DEFAULT", encrypted = false))
+        assertEquals("plain_value", ksafe2setup.getDirect("unenc_key", "DEFAULT"))
     }
 
     /**
@@ -411,11 +408,11 @@ class JvmKSafeTest : KSafeTest() {
         delay(200) // Let cache initialize
 
         // Write encrypted data
-        ksafe.put("valid_key", "valid_value", encrypted = true)
+        ksafe.put("valid_key", "valid_value")
         delay(500) // Let write flush
 
         // Verify it's readable after startup cleanup ran
-        val result = ksafe.get("valid_key", "DEFAULT", encrypted = true)
+        val result = ksafe.get("valid_key", "DEFAULT")
         assertEquals("valid_value", result, "Valid ciphertext should not be cleaned up")
     }
 
@@ -436,7 +433,7 @@ class JvmKSafeTest : KSafeTest() {
         // Initialize with known values
         val keyCount = 50
         repeat(keyCount) { i ->
-            ksafe.putDirect("enc_key_$i", "value_$i", encrypted = true)
+            ksafe.putDirect("enc_key_$i", "value_$i")
         }
 
         // Let writes persist
@@ -451,7 +448,7 @@ class JvmKSafeTest : KSafeTest() {
                 while (running.get()) {
                     repeat(keyCount) { i ->
                         try {
-                            val result = ksafe.getDirect("enc_key_$i", "DEFAULT", encrypted = true)
+                            val result = ksafe.getDirect("enc_key_$i", "DEFAULT")
                             if (result == "DEFAULT") {
                                 defaultsReturned.incrementAndGet()
                             }
@@ -468,7 +465,7 @@ class JvmKSafeTest : KSafeTest() {
             launch(Dispatchers.Default) {
                 repeat(100) { i ->
                     try {
-                        ksafe.putDirect("new_enc_${writerId}_$i", "new_$i", encrypted = true)
+                        ksafe.putDirect("new_enc_${writerId}_$i", "new_$i")
                     } catch (e: Exception) {
                         errors.incrementAndGet()
                     }
@@ -503,11 +500,11 @@ class JvmKSafeTest : KSafeTest() {
         delay(200)
 
         // Store a plain string without encryption
-        ksafe.put("str_key", "hello_world", encrypted = false)
+        ksafe.put("str_key", "hello_world", KSafeProtection.NONE)
         delay(200)
 
         // Retrieve with nullable String? and null default — should return stored value, not null
-        val result: String? = ksafe.get("str_key", defaultValue = null, encrypted = false)
+        val result: String? = ksafe.get("str_key", defaultValue = null)
         assertEquals("hello_world", result, "Nullable String? get should return stored value")
     }
 
@@ -516,9 +513,9 @@ class JvmKSafeTest : KSafeTest() {
         val ksafe = createKSafe()
         delay(200)
 
-        ksafe.putDirect("str_key2", "direct_hello", encrypted = false)
+        ksafe.putDirect("str_key2", "direct_hello", KSafeProtection.NONE)
 
-        val result: String? = ksafe.getDirect("str_key2", defaultValue = null, encrypted = false)
+        val result: String? = ksafe.getDirect("str_key2", defaultValue = null)
         assertEquals("direct_hello", result, "Nullable String? getDirect should return stored value")
     }
 
@@ -527,10 +524,10 @@ class JvmKSafeTest : KSafeTest() {
         val ksafe = createKSafe()
         delay(200)
 
-        ksafe.put("int_key", 42, encrypted = false)
+        ksafe.put("int_key", 42, KSafeProtection.NONE)
         delay(200)
 
-        val result: Int? = ksafe.get("int_key", defaultValue = null, encrypted = false)
+        val result: Int? = ksafe.get("int_key", defaultValue = null)
         assertEquals(42, result, "Nullable Int? get should return stored value")
     }
 
@@ -539,7 +536,7 @@ class JvmKSafeTest : KSafeTest() {
         val ksafe = createKSafe()
         delay(200)
 
-        val result: String? = ksafe.get("nonexistent", defaultValue = null, encrypted = false)
+        val result: String? = ksafe.get("nonexistent", defaultValue = null)
         assertNull(result, "Should return null for non-existent key with null default")
     }
 

@@ -82,9 +82,9 @@ class Jvm160FixesTest {
                 repeat(iterations) { i ->
                     try {
                         val value = "thread${t}_iter$i"
-                        ksafe.putDirect("race_key", value, encrypted = true)
+                        ksafe.putDirect("race_key", value)
                         // Immediately read back — must get *some* valid value, never default
-                        val read = ksafe.getDirect("race_key", "DEFAULT", encrypted = true)
+                        val read = ksafe.getDirect("race_key", "DEFAULT")
                         if (read == "DEFAULT") {
                             errors.incrementAndGet()
                         }
@@ -104,7 +104,7 @@ class Jvm160FixesTest {
         )
 
         // Final read must succeed
-        val finalValue = ksafe.getDirect("race_key", "DEFAULT", encrypted = true)
+        val finalValue = ksafe.getDirect("race_key", "DEFAULT")
         assertTrue(
             finalValue != "DEFAULT",
             "After all writes complete, key must be readable"
@@ -133,8 +133,8 @@ class Jvm160FixesTest {
                 try {
                     val key = "parallel_key_$k"
                     val value = "value_for_$k"
-                    ksafe.putDirect(key, value, encrypted = true)
-                    val read = ksafe.getDirect(key, "DEFAULT", encrypted = true)
+                    ksafe.putDirect(key, value)
+                    val read = ksafe.getDirect(key, "DEFAULT")
                     if (read != value) {
                         errors.incrementAndGet()
                     }
@@ -154,7 +154,7 @@ class Jvm160FixesTest {
 
         // Verify all keys are still readable after everything settles
         repeat(keyCount) { k ->
-            val read = ksafe.getDirect("parallel_key_$k", "DEFAULT", encrypted = true)
+            val read = ksafe.getDirect("parallel_key_$k", "DEFAULT")
             assertEquals(
                 "value_for_$k", read,
                 "Key parallel_key_$k should retain its value after concurrent writes"
@@ -183,8 +183,8 @@ class Jvm160FixesTest {
                     try {
                         val key = "stress_${i % 5}" // 5 shared keys
                         val value = "t${t}_i$i"
-                        ksafe.putDirect(key, value, encrypted = true)
-                        val read = ksafe.getDirect(key, "LOST", encrypted = true)
+                        ksafe.putDirect(key, value)
+                        val read = ksafe.getDirect(key, "LOST")
                         if (read == "LOST") {
                             dataLossCount.incrementAndGet()
                         }
@@ -231,11 +231,11 @@ class Jvm160FixesTest {
         delay(200)
 
         // Phase 1: Write initial encrypted value
-        ksafe.putDirect("delete_race_key", "initial_value", encrypted = true)
+        ksafe.putDirect("delete_race_key", "initial_value")
         delay(100)
         assertEquals(
             "initial_value",
-            ksafe.getDirect("delete_race_key", "DEFAULT", encrypted = true)
+            ksafe.getDirect("delete_race_key", "DEFAULT")
         )
 
         // Phase 2: Delete the key and immediately write a new value.
@@ -246,15 +246,15 @@ class Jvm160FixesTest {
         // After delete, reading should return default
         assertEquals(
             "DEFAULT",
-            ksafe.getDirect("delete_race_key", "DEFAULT", encrypted = true),
+            ksafe.getDirect("delete_race_key", "DEFAULT"),
             "After delete, key should return default"
         )
 
         // Phase 3: Write new value — must use a fresh encryption key
-        ksafe.putDirect("delete_race_key", "new_value", encrypted = true)
+        ksafe.putDirect("delete_race_key", "new_value")
         assertEquals(
             "new_value",
-            ksafe.getDirect("delete_race_key", "DEFAULT", encrypted = true),
+            ksafe.getDirect("delete_race_key", "DEFAULT"),
             "After delete + re-write, new value must be readable"
         )
     }
@@ -284,8 +284,8 @@ class Jvm160FixesTest {
                 while (running.get()) {
                     try {
                         val value = "worker${w}_seq${seq++}"
-                        ksafe.putDirect("contested_key", value, encrypted = true)
-                        val read = ksafe.getDirect("contested_key", "DEFAULT", encrypted = true)
+                        ksafe.putDirect("contested_key", value)
+                        val read = ksafe.getDirect("contested_key", "DEFAULT")
                         // After our write, read might get our value or a newer one
                         // from another thread, but should never get DEFAULT
                         // (unless a delete just happened, which is expected)
@@ -336,17 +336,17 @@ class Jvm160FixesTest {
             val key = "cycle_key"
             val value = "cycle_${cycle}_value"
 
-            ksafe.putDirect(key, value, encrypted = true)
+            ksafe.putDirect(key, value)
             assertEquals(
                 value,
-                ksafe.getDirect(key, "DEFAULT", encrypted = true),
+                ksafe.getDirect(key, "DEFAULT"),
                 "Cycle $cycle: written value must be readable"
             )
 
             ksafe.delete(key)
             assertEquals(
                 "DEFAULT",
-                ksafe.getDirect(key, "DEFAULT", encrypted = true),
+                ksafe.getDirect(key, "DEFAULT"),
                 "Cycle $cycle: deleted key must return default"
             )
         }
@@ -389,8 +389,8 @@ class Jvm160FixesTest {
                 try {
                     val key = "unique_alias_$i"
                     val value = "value_$i"
-                    ksafe.putDirect(key, value, encrypted = true)
-                    val read = ksafe.getDirect(key, "DEFAULT", encrypted = true)
+                    ksafe.putDirect(key, value)
+                    val read = ksafe.getDirect(key, "DEFAULT")
                     if (read != value) {
                         errors.incrementAndGet()
                     }
@@ -411,7 +411,7 @@ class Jvm160FixesTest {
         repeat(aliasCount) { i ->
             assertEquals(
                 "value_$i",
-                ksafe.getDirect("unique_alias_$i", "DEFAULT", encrypted = true),
+                ksafe.getDirect("unique_alias_$i", "DEFAULT"),
                 "Alias unique_alias_$i should retain its value"
             )
         }
@@ -442,9 +442,9 @@ class Jvm160FixesTest {
                     latch.await()
                     repeat(iterationsPerThread) { i ->
                         try {
-                            ksafe.putDirect(alias, "t${t}_i$i", encrypted = true)
+                            ksafe.putDirect(alias, "t${t}_i$i")
                             // Read must return a valid value, never DEFAULT
-                            val read = ksafe.getDirect(alias, "DEFAULT", encrypted = true)
+                            val read = ksafe.getDirect(alias, "DEFAULT")
                             if (read == "DEFAULT") {
                                 errors.incrementAndGet()
                             }
@@ -466,7 +466,7 @@ class Jvm160FixesTest {
 
         // Each alias should have a readable final value
         aliases.forEach { alias ->
-            val finalValue = ksafe.getDirect(alias, "DEFAULT", encrypted = true)
+            val finalValue = ksafe.getDirect(alias, "DEFAULT")
             assertTrue(
                 finalValue != "DEFAULT",
                 "Alias $alias must have a final readable value"
@@ -506,8 +506,8 @@ class Jvm160FixesTest {
                             append("_")
                             append("key")
                         }
-                        ksafe.putDirect(key, "t${t}_i$i", encrypted = true)
-                        val read = ksafe.getDirect(key, "DEFAULT", encrypted = true)
+                        ksafe.putDirect(key, "t${t}_i$i")
+                        val read = ksafe.getDirect(key, "DEFAULT")
                         if (read == "DEFAULT") {
                             errors.incrementAndGet()
                         }

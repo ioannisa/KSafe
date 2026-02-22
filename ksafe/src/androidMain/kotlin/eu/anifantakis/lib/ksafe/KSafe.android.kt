@@ -361,6 +361,7 @@ actual class KSafe(
                             @Suppress("UNCHECKED_CAST")
                             prefs[op.prefKey] = op.value
                         }
+                        prefs[protectionMetaKey(op.key)] = "NONE"
                     }
                     is WriteOperation.Encrypted -> {
                         val ciphertext = encryptedData[op.key]!!
@@ -622,7 +623,10 @@ actual class KSafe(
             // Extract protection metadata before skipping internal keys
             if (keyName.startsWith("__ksafe_prot_") && keyName.endsWith("__")) {
                 val originalKey = keyName.removePrefix("__ksafe_prot_").removeSuffix("__")
-                protectionMap[originalKey] = value as? String ?: "DEFAULT"
+                val encDataKey = "encrypted_$originalKey"
+                if (!currentDirty.contains(encDataKey) && !currentDirty.contains(originalKey)) {
+                    protectionMap[originalKey] = value as? String ?: "DEFAULT"
+                }
                 continue
             }
             // Skip internal KSafe metadata keys (e.g., migration markers)
@@ -857,26 +861,21 @@ actual class KSafe(
 
     // ----- Public API implementation -----
 
-    actual inline fun <reified T> getDirect(key: String, defaultValue: T, protection: KSafeProtection): T {
-        val resolved = resolveProtection(protection)
-        // 1. FAST PATH: Cache is ready (Background preload finished) -> Return instantly
-        if (cacheInitialized.get()) {
-            return resolveFromCache(memoryCache, key, defaultValue, resolved)
-        }
-
-        // 2. FALLBACK PATH: Cache not ready -> Block to fetch immediately (Cold Start)
-        // This only happens if accessed before the background loader finishes.
-        return runBlocking {
-            // Double-check optimization
-            if (cacheInitialized.get()) {
-                return@runBlocking resolveFromCache(memoryCache, key, defaultValue, resolved)
+    actual inline fun <reified T> getDirect(key: String, defaultValue: T): T {
+        // Ensure cache is ready
+        if (!cacheInitialized.get()) {
+            runBlocking {
+                if (!cacheInitialized.get()) {
+                    val prefs = dataStore.data.first()
+                    updateCache(prefs)
+                }
             }
-
-            val prefs = dataStore.data.first()
-            updateCache(prefs)
-            resolveFromCache(memoryCache, key, defaultValue, resolved)
         }
+        val detected = detectProtection(key)
+        val resolved = resolveProtection(detected)
+        return resolveFromCache(memoryCache, key, defaultValue, resolved)
     }
+
 
     actual inline fun <reified T> putDirect(key: String, value: T, protection: KSafeProtection) {
         val resolved = resolveProtection(protection)
@@ -917,8 +916,8 @@ actual class KSafe(
             }
             updateMemoryCache(rawKey, toCache)
 
-            // Remove protection metadata for unencrypted keys
-            protectionMap.remove(key)
+            // Store NONE metadata for unencrypted keys
+            protectionMap[key] = "NONE"
 
             // For unencrypted writes, determine the proper DataStore key type
             val storedValue: Any? = when (value) {
@@ -955,6 +954,19 @@ actual class KSafe(
     @PublishedApi
     internal fun protectionMetaKey(key: String) = stringPreferencesKey("__ksafe_prot_${key}__")
 
+    @PublishedApi
+    internal fun detectProtection(key: String): KSafeProtection {
+        val meta = protectionMap[key]
+        if (meta != null) return when (meta) {
+            "NONE" -> KSafeProtection.NONE
+            "HARDWARE_ISOLATED" -> KSafeProtection.HARDWARE_ISOLATED
+            else -> KSafeProtection.DEFAULT
+        }
+        // Fallback heuristic (legacy data without metadata)
+        return if (memoryCache.containsKey("encrypted_$key")) KSafeProtection.DEFAULT
+        else KSafeProtection.NONE
+    }
+
     suspend fun storeEncryptedData(key: String, data: ByteArray, hardwareIsolated: Boolean = false) {
         val encoded = encodeBase64(data)
         dataStore.edit { preferences ->
@@ -964,6 +976,8 @@ actual class KSafe(
     }
 
     suspend inline fun <reified T> putEncrypted(key: String, value: T, hardwareIsolated: Boolean = false) {
+        addDirtyKey("encrypted_$key")
+        protectionMap[key] = if (hardwareIsolated) "HARDWARE_ISOLATED" else "DEFAULT"
         // Handle null values with sentinel
         val jsonString = if (value == null) {
             NULL_SENTINEL
@@ -1012,14 +1026,20 @@ actual class KSafe(
         }
     }
 
-    actual suspend inline fun <reified T> get(key: String, defaultValue: T, protection: KSafeProtection): T {
-        val resolved = resolveProtection(protection)
+    actual suspend inline fun <reified T> get(key: String, defaultValue: T): T {
+        if (!cacheInitialized.get()) {
+            val prefs = dataStore.data.first()
+            updateCache(prefs)
+        }
+        val detected = detectProtection(key)
+        val resolved = resolveProtection(detected)
         return if (resolved != KSafeProtection.NONE) {
             getEncrypted(key, defaultValue)
         } else {
             getUnencrypted(key, defaultValue)
         }
     }
+
 
     @Suppress("UNCHECKED_CAST")
     @PublishedApi
@@ -1038,11 +1058,14 @@ actual class KSafe(
     @Suppress("UNCHECKED_CAST")
     @PublishedApi
     internal suspend inline fun <reified T> putUnencrypted(key: String, value: T) {
+        addDirtyKey(key)
+        protectionMap[key] = "NONE"
         // Handle null values
         if (value == null) {
             val preferencesKey = stringPreferencesKey(key)
             dataStore.edit { preferences ->
                 preferences[preferencesKey] = NULL_SENTINEL
+                preferences[protectionMetaKey(key)] = "NONE"
             }
             updateMemoryCache(key, NULL_SENTINEL)
             return
@@ -1057,6 +1080,7 @@ actual class KSafe(
 
         dataStore.edit { preferences ->
             preferences[preferencesKey] = storedValue
+            preferences[protectionMetaKey(key)] = "NONE"
         }
 
         // Update cache
@@ -1124,18 +1148,74 @@ actual class KSafe(
             .distinctUntilChanged()
     }
 
-    actual inline fun <reified T> getFlow(
-        key: String,
-        defaultValue: T,
-        protection: KSafeProtection
-    ): Flow<T> {
-        val resolved = resolveProtection(protection)
-        return if (resolved != KSafeProtection.NONE) {
-            getEncryptedFlow(key, defaultValue)
-        } else {
-            getUnencryptedFlow(key, defaultValue)
-        }
+    actual inline fun <reified T> getFlow(key: String, defaultValue: T): Flow<T> {
+        return dataStore.data.map { preferences ->
+            val meta = preferences[protectionMetaKey(key)]?.toString()
+            val protection = when {
+                meta == "NONE" -> KSafeProtection.NONE
+                meta == "HARDWARE_ISOLATED" -> KSafeProtection.HARDWARE_ISOLATED
+                meta != null -> KSafeProtection.DEFAULT
+                preferences[encryptedPrefKey(key)] != null -> KSafeProtection.DEFAULT
+                else -> KSafeProtection.NONE
+            }
+            when (protection) {
+                KSafeProtection.NONE -> {
+                    val prefKey = getUnencryptedKey(key, defaultValue)
+                    val plain = preferences[prefKey]
+                    if (plain != null) convertStoredValue(plain, defaultValue)
+                    else {
+                        val enc = preferences[encryptedPrefKey(key)]
+                        if (enc != null) {
+                            try {
+                                val ciphertext = decodeBase64(enc)
+                                val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, key).joinToString(".")
+                                val decryptedBytes = engine.decrypt(keyAlias, ciphertext)
+                                val jsonString = decryptedBytes.decodeToString()
+                                if (jsonString == NULL_SENTINEL) {
+                                    @Suppress("UNCHECKED_CAST")
+                                    null as T
+                                } else {
+                                    json.decodeFromString(serializer<T>(), jsonString)
+                                }
+                            } catch (e: IllegalStateException) {
+                                if (e.message?.contains("device is locked") == true ||
+                                    e.message?.contains("Keystore") == true) throw e
+                                defaultValue
+                            } catch (_: Exception) { defaultValue }
+                        }
+                        else defaultValue
+                    }
+                }
+                else -> {
+                    val enc = preferences[encryptedPrefKey(key)]
+                    if (enc != null) {
+                        try {
+                            val ciphertext = decodeBase64(enc)
+                            val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, key).joinToString(".")
+                            val decryptedBytes = engine.decrypt(keyAlias, ciphertext)
+                            val jsonString = decryptedBytes.decodeToString()
+                            if (jsonString == NULL_SENTINEL) {
+                                @Suppress("UNCHECKED_CAST")
+                                null as T
+                            } else {
+                                json.decodeFromString(serializer<T>(), jsonString)
+                            }
+                        } catch (e: IllegalStateException) {
+                            if (e.message?.contains("device is locked") == true ||
+                                e.message?.contains("Keystore") == true) throw e
+                            defaultValue
+                        } catch (_: Exception) { defaultValue }
+                    } else {
+                        val prefKey = getUnencryptedKey(key, defaultValue)
+                        val plain = preferences[prefKey]
+                        if (plain != null) convertStoredValue(plain, defaultValue)
+                        else defaultValue
+                    }
+                }
+            }
+        }.distinctUntilChanged()
     }
+
 
     actual suspend inline fun <reified T> put(key: String, value: T, protection: KSafeProtection) {
         val resolved = resolveProtection(protection)
@@ -1256,40 +1336,30 @@ actual class KSafe(
 
     // --- DEPRECATED OVERLOADS (encrypted: Boolean) ---
 
-    @Deprecated(
-        "Use protection parameter instead.",
-        ReplaceWith("getDirect(key, defaultValue, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)")
-    )
+    @Suppress("DEPRECATION_ERROR")
+    @Deprecated("Protection is now auto-detected on reads.", level = DeprecationLevel.ERROR)
     actual inline fun <reified T> getDirect(key: String, defaultValue: T, encrypted: Boolean): T =
-        getDirect(key, defaultValue, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)
+        getDirect(key, defaultValue)
 
-    @Deprecated(
-        "Use protection parameter instead.",
-        ReplaceWith("putDirect(key, value, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)")
-    )
+    @Suppress("DEPRECATION_ERROR")
+    @Deprecated("Use protection parameter instead.", level = DeprecationLevel.ERROR)
     actual inline fun <reified T> putDirect(key: String, value: T, encrypted: Boolean): Unit =
         putDirect(key, value, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)
 
-    @Deprecated(
-        "Use protection parameter instead.",
-        ReplaceWith("get(key, defaultValue, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)")
-    )
+    @Suppress("DEPRECATION_ERROR")
+    @Deprecated("Protection is now auto-detected on reads.", level = DeprecationLevel.ERROR)
     actual suspend inline fun <reified T> get(key: String, defaultValue: T, encrypted: Boolean): T =
-        get(key, defaultValue, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)
+        get(key, defaultValue)
 
-    @Deprecated(
-        "Use protection parameter instead.",
-        ReplaceWith("put(key, value, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)")
-    )
+    @Suppress("DEPRECATION_ERROR")
+    @Deprecated("Use protection parameter instead.", level = DeprecationLevel.ERROR)
     actual suspend inline fun <reified T> put(key: String, value: T, encrypted: Boolean): Unit =
         put(key, value, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)
 
-    @Deprecated(
-        "Use protection parameter instead.",
-        ReplaceWith("getFlow(key, defaultValue, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)")
-    )
+    @Suppress("DEPRECATION_ERROR")
+    @Deprecated("Protection is now auto-detected on reads.", level = DeprecationLevel.ERROR)
     actual inline fun <reified T> getFlow(key: String, defaultValue: T, encrypted: Boolean): Flow<T> =
-        getFlow(key, defaultValue, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)
+        getFlow(key, defaultValue)
 
     // --- BIOMETRIC API ---
 

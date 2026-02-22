@@ -1136,7 +1136,7 @@ Hardware isolation provides the highest security level — keys live on a dedica
 
 **Migrating existing keys to hardware isolation:** Using `HARDWARE_ISOLATED` only affects *new* key generation. Existing keys continue working from wherever they were originally generated. To migrate existing data to hardware-isolated keys, delete the KSafe data (or the specific keys) and reinitialize.
 
-**Per-key protection metadata:** Each encrypted key's protection level (`DEFAULT` or `HARDWARE_ISOLATED`) is recorded in DataStore alongside the ciphertext. This metadata is used during `requireUnlockedDevice` migration on Android to re-encrypt each key with the correct hardware backing, and is available for future migration scenarios on all platforms. Metadata entries use the `__ksafe_` prefix and are automatically excluded from cache iteration, cleanup, and migration loops.
+**Per-key protection metadata:** Each key's protection level (`DEFAULT`, `HARDWARE_ISOLATED`, or `NONE`) is recorded in DataStore (or localStorage on WASM) alongside the data. This metadata enables auto-detection on reads (so read APIs don't need a `protection` parameter) and is used during `requireUnlockedDevice` migration on Android to re-encrypt each key with the correct hardware backing. Metadata entries use the `__ksafe_` prefix and are automatically excluded from cache iteration, cleanup, and migration loops.
 
 ### Querying Device Security Capabilities
 
@@ -1329,7 +1329,7 @@ val ksafe = KSafe(
 
 Changing this value in either direction triggers an automatic one-time migration on the next KSafe initialization. Android re-encrypts existing values with a new Keystore key (both `false`&rarr;`true` and `true`&rarr;`false`); iOS updates Keychain accessibility in-place via `SecItemUpdate`. The migration marker is only written on success, so a crash or locked-device failure safely retries on the next launch.
 
-**Per-key protection metadata:** KSafe records the protection level used for each key (`__ksafe_prot_{key}__`) in DataStore. During Android migration, this metadata ensures each key is re-encrypted with the correct hardware isolation level — keys originally written with `HARDWARE_ISOLATED` are re-encrypted to StrongBox, while `DEFAULT` keys stay in the TEE. Pre-1.7.0 keys without metadata fall back to the global constructor flag for backward compatibility.
+**Per-key protection metadata:** KSafe records the protection level used for each key (`__ksafe_prot_{key}__`) in DataStore/localStorage on all platforms. This metadata enables auto-detection on reads and ensures correct re-encryption during Android migration — keys originally written with `HARDWARE_ISOLATED` are re-encrypted to StrongBox, while `DEFAULT` keys stay in the TEE. Pre-1.7.0 keys without metadata use a heuristic fallback (checks if `encrypted_{key}` exists in cache).
 
 **Error behavior when locked:** When `requireUnlockedDevice = true` and the device is locked, encrypted **reads** (`getDirect`, `get`, `getFlow`) throw `IllegalStateException`. The suspend `put()` also throws for encrypted data. However, `putDirect` does **not** throw to the caller — it queues the write to a background consumer that logs the error and drops the batch (the consumer stays alive for future writes after the device is unlocked). Your app can catch read-side exceptions to show a "device is locked" message instead of silently receiving default values.
 
@@ -1583,27 +1583,40 @@ The iOS test app demonstrates:
 
 ### From v1.6.x to v1.7.0
 
-#### `encrypted: Boolean` → `KSafeProtection`
+#### `encrypted: Boolean` → `KSafeProtection` (ERROR)
 
-All API methods (`get`, `put`, `getDirect`, `putDirect`, `getFlow`, `getStateFlow`) now use `protection: KSafeProtection` instead of `encrypted: Boolean`. The old API is deprecated but still works:
+The `encrypted: Boolean` parameter on all API methods is deprecated at `DeprecationLevel.ERROR` — code using it **will not compile**. You must migrate to `KSafeProtection`:
 
 ```kotlin
-// Old (deprecated, still compiles)
+// Old (ERROR — won't compile)
 ksafe.put("key", value, encrypted = true)
-ksafe.put("key", value, encrypted = false)
-var token by ksafe("", encrypted = true)
+ksafe.get("key", "", encrypted = false)
 
-// New
-ksafe.put("key", value)  // KSafeProtection.DEFAULT (encrypted)
-ksafe.put("key", value, protection = KSafeProtection.NONE)
-var token by ksafe("")  // KSafeProtection.DEFAULT
+// New — writes specify protection, reads auto-detect
+ksafe.put("key", value)                                      // DEFAULT (encrypted)
+ksafe.put("key", value, protection = KSafeProtection.NONE)   // unencrypted
+val v = ksafe.get("key", "")                                 // auto-detects
 ```
 
 The mapping is: `encrypted = true` → `KSafeProtection.DEFAULT`, `encrypted = false` → `KSafeProtection.NONE`.
 
-#### Binary Compatibility
+#### Read APIs Auto-Detect Protection
 
-All existing code using `encrypted = true/false` continues to compile with deprecation warnings. No runtime behavior changes — the deprecated overloads delegate to the new API.
+Read methods (`get`, `getDirect`, `getFlow`, `getStateFlow`) no longer accept a `protection` parameter. They automatically detect whether stored data is encrypted from persisted metadata. You only specify protection on **writes**:
+
+```kotlin
+// Writes — specify protection level
+ksafe.put("secret", token)                                              // encrypted (default)
+ksafe.putDirect("theme", "dark", protection = KSafeProtection.NONE)     // unencrypted
+var pin by ksafe("", protection = KSafeProtection.HARDWARE_ISOLATED)    // StrongBox / SE
+
+// Reads — auto-detect, no protection needed
+val secret = ksafe.get("secret", "")
+val theme = ksafe.getDirect("theme", "light")
+val flow = ksafe.getFlow("secret", "")
+```
+
+This eliminates the common mistake of mismatching protection levels between put and get calls.
 
 ### From v1.1.x to v1.2.0+
 

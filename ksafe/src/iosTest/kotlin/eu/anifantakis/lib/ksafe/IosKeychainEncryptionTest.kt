@@ -232,10 +232,10 @@ class IosKeychainEncryptionTest {
      *
      * Manual test on physical device:
      * 1. Create KSafe with useSecureEnclave=true
-     * 2. Store a value with put("key", "value", encrypted=true)
-     * 3. Read it back with get("key", "", encrypted=true) → should return "value"
+     * 2. Store a value with put("key", "value") (DEFAULT protection is encrypted)
+     * 3. Read it back with get("key", "") → should return "value"
      * 4. Create KSafe with useSecureEnclave=false
-     * 5. Store a different value with put("key2", "value2", encrypted=true)
+     * 5. Store a different value with put("key2", "value2") (DEFAULT protection is encrypted)
      * 6. Switch back to useSecureEnclave=true
      * 7. Read key2 → should return "value2" (legacy key is still readable)
      */

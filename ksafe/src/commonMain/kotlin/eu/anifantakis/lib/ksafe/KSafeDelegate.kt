@@ -50,7 +50,7 @@ inline operator fun <reified T> KSafe.invoke(
         override fun getValue(thisRef: Any?, property: KProperty<*>): T {
             // Because this object expression is inside an inline function with reified T,
             // T is reified here. We explicitly pass it to getDirect.
-            return ksafeInstance.getDirect<T>(key = key ?: property.name, defaultValue, protection)
+            return ksafeInstance.getDirect<T>(key = key ?: property.name, defaultValue)
         }
 
         override fun setValue(thisRef: Any?, property: KProperty<*>, value: T) {
