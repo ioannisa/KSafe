@@ -1140,7 +1140,7 @@ Hardware isolation provides the highest security level — keys live on a dedica
 
 ### Querying Device Security Capabilities
 
-KSafe exposes properties and methods to query what security hardware is available on the device and where individual keys are actually stored:
+KSafe exposes properties and methods to query what security hardware is available on the device, and to inspect both the **protection tier** (what the caller requested) and **storage location** (where the key material actually lives) of individual keys:
 
 ```kotlin
 val ksafe = KSafe(context)
@@ -1149,8 +1149,19 @@ val ksafe = KSafe(context)
 ksafe.deviceKeyStorages  // e.g. {HARDWARE_BACKED, HARDWARE_ISOLATED}
 ksafe.deviceKeyStorages.max()  // HARDWARE_ISOLATED (highest available)
 
-// Per-key: where is a specific key actually stored?
-ksafe.getKeyStorage("auth_token")  // e.g. HARDWARE_BACKED, or null if key doesn't exist
+// Per-key: what protection was used and where is the key stored?
+val info = ksafe.getKeyInfo("auth_token")
+// info?.protection  → KSafeProtection.DEFAULT        (what the caller requested)
+// info?.storage     → KSafeKeyStorage.HARDWARE_BACKED (where the key lives)
+```
+
+`getKeyInfo` returns a `KSafeKeyInfo` data class:
+
+```kotlin
+data class KSafeKeyInfo(
+    val protection: KSafeProtection,   // NONE, DEFAULT, or HARDWARE_ISOLATED
+    val storage: KSafeKeyStorage       // SOFTWARE, HARDWARE_BACKED, or HARDWARE_ISOLATED
+)
 ```
 
 The `KSafeKeyStorage` enum has three levels with natural ordinal ordering:
@@ -1172,24 +1183,24 @@ Query what hardware security levels the device supports:
 | **JVM** | `{SOFTWARE}` |
 | **WASM** | `{SOFTWARE}` |
 
-#### `getKeyStorage(key)` — Per-Key Storage Location
+#### `getKeyInfo(key)` — Per-Key Protection and Storage
 
-Query where a specific key's encryption material is actually stored:
+Query the protection tier and storage location of a specific key:
 
 ```kotlin
-ksafe.getKeyStorage("auth_token")    // HARDWARE_BACKED (encrypted, Android/iOS)
-ksafe.getKeyStorage("theme")         // SOFTWARE (unencrypted, any platform)
-ksafe.getKeyStorage("nonexistent")   // null (key doesn't exist)
+ksafe.getKeyInfo("auth_token")    // KSafeKeyInfo(DEFAULT, HARDWARE_BACKED) on Android/iOS
+ksafe.getKeyInfo("theme")         // KSafeKeyInfo(NONE, SOFTWARE) if unencrypted
+ksafe.getKeyInfo("nonexistent")   // null (key doesn't exist)
 ```
 
 | Scenario | Return value |
 |----------|-------------|
 | Key not found | `null` |
-| Unencrypted key (`KSafeProtection.NONE`) | `SOFTWARE` |
-| Encrypted key (Android/iOS) | `HARDWARE_BACKED` |
-| Encrypted key (JVM/WASM) | `SOFTWARE` |
-| `HARDWARE_ISOLATED` key (device supports it) | `HARDWARE_ISOLATED` |
-| `HARDWARE_ISOLATED` key (device lacks it, fell back) | `HARDWARE_BACKED` |
+| Unencrypted key (`KSafeProtection.NONE`) | `KSafeKeyInfo(NONE, SOFTWARE)` |
+| Encrypted key (Android/iOS) | `KSafeKeyInfo(DEFAULT, HARDWARE_BACKED)` |
+| Encrypted key (JVM/WASM) | `KSafeKeyInfo(DEFAULT, SOFTWARE)` |
+| `HARDWARE_ISOLATED` key (device supports it) | `KSafeKeyInfo(HARDWARE_ISOLATED, HARDWARE_ISOLATED)` |
+| `HARDWARE_ISOLATED` key (device lacks it, fell back) | `KSafeKeyInfo(HARDWARE_ISOLATED, HARDWARE_BACKED)` |
 
 **Use cases:**
 - Display a security badge in your UI based on device capabilities
@@ -1208,9 +1219,31 @@ var secret by ksafe("", protection = protection)
 
 // Verify a key's actual storage level after writing
 ksafe.putDirect("secret", "value", protection = KSafeProtection.HARDWARE_ISOLATED)
-val storage = ksafe.getKeyStorage("secret")
-// storage == HARDWARE_ISOLATED on devices with StrongBox/SE, HARDWARE_BACKED otherwise
+val info = ksafe.getKeyInfo("secret")
+// info?.protection == HARDWARE_ISOLATED (always matches what was requested)
+// info?.storage == HARDWARE_ISOLATED on devices with StrongBox/SE, HARDWARE_BACKED otherwise
 ```
+
+### Automatic Protection Tier Migration
+
+If you change a key's `KSafeProtection` level between app versions (e.g., upgrading a preference from `NONE` to `DEFAULT`, or promoting a secret from `DEFAULT` to `HARDWARE_ISOLATED`), KSafe transparently migrates the data — no manual migration step required.
+
+```kotlin
+// v1.0 of your app
+var token by ksafe("")  // DEFAULT encryption
+
+// v2.0 — upgrade to hardware isolation (just change the protection)
+var token by ksafe("", protection = KSafeProtection.HARDWARE_ISOLATED)
+// On first read, KSafe detects the old DEFAULT data, migrates it to HARDWARE_ISOLATED,
+// and cleans up the old encryption key — all inline, no user code needed.
+```
+
+**How it works:**
+- **On read (`getDirect` / `get`):** If the key is not found at the expected location, KSafe checks the alternate location (encrypted ↔ plaintext), reads the value, writes it at the new protection level, and removes the old data.
+- **On write (`putDirect` / `put`):** Before writing, any stale data at the alternate location is cleaned up.
+- **`DEFAULT` ↔ `HARDWARE_ISOLATED`:** Both use the same encrypted storage key (`encrypted_{key}`), so migration deletes the old encryption key and re-encrypts with a new one at the correct hardware tier.
+
+This applies to all protection level transitions: `NONE` → `DEFAULT`, `DEFAULT` → `HARDWARE_ISOLATED`, `HARDWARE_ISOLATED` → `NONE`, etc.
 
 ***
 
@@ -1585,10 +1618,10 @@ The iOS test app demonstrates:
 
 #### `encrypted: Boolean` → `KSafeProtection` (ERROR)
 
-The `encrypted: Boolean` parameter on all API methods is deprecated at `DeprecationLevel.ERROR` — code using it **will not compile**. You must migrate to `KSafeProtection`:
+The `encrypted: Boolean` parameter on all API methods is deprecated at `DeprecationLevel.WARNING` — code using it still compiles but shows strikethrough warnings in the IDE with one-click `ReplaceWith` auto-fix. Migrate to `KSafeProtection`:
 
 ```kotlin
-// Old (ERROR — won't compile)
+// Old (WARNING — still compiles but deprecated)
 ksafe.put("key", value, encrypted = true)
 ksafe.get("key", "", encrypted = false)
 
@@ -1652,6 +1685,7 @@ import eu.anifantakis.lib.ksafe.compose.mutableStateOf
 | **Auth Caching** | ✅ Scoped sessions | ❌ No | ❌ No | ❌ No | ❌ No |
 
 **When to choose KSafe:**
+- You want one single dependency that handles both blazing-fast plain-text preferences AND hardware-isolated secrets
 - You need encrypted persistence across Android, iOS, Desktop, and Web
 - You want property delegation (`by ksafe(x)`) for minimal boilerplate
 - You need integrated biometric authentication with smart caching

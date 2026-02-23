@@ -78,10 +78,10 @@ This eliminates the risk of mismatched put/get protection levels and simplifies 
 
 #### `encrypted: Boolean` parameter (ERROR level)
 
-The `encrypted: Boolean` parameter on all public API methods is deprecated at `DeprecationLevel.ERROR` (won't compile). This applies to `getDirect`, `putDirect`, `get`, `put`, `getFlow`, `getStateFlow`, property delegation (`invoke`), and Compose `mutableStateOf`.
+The `encrypted: Boolean` parameter on all public API methods is deprecated at `DeprecationLevel.WARNING`. Code using it still compiles but shows strikethrough warnings in the IDE with one-click `ReplaceWith` auto-fix. This applies to `getDirect`, `putDirect`, `get`, `put`, `getFlow`, `getStateFlow`, property delegation (`invoke`), and Compose `mutableStateOf`.
 
 ```kotlin
-// Old (ERROR — won't compile)
+// Old (WARNING — still compiles but deprecated)
 ksafe.put("key", value, encrypted = true)
 ksafe.get("key", "", encrypted = true)
 
@@ -112,6 +112,16 @@ Every write (both `putDirect` via `processBatch` and suspend `put`) now persists
 - Metadata keys use the `__ksafe_` prefix and are automatically skipped by `updateCache()`, `cleanupOrphanedCiphertext()`, and migration iteration.
 - Metadata is removed atomically alongside data on `delete()` and `deleteDirect()`.
 
+#### Automatic Protection Tier Migration
+
+When the `KSafeProtection` level for a key changes between app versions (e.g., upgrading from `DEFAULT` to `HARDWARE_ISOLATED`, or from `NONE` to `DEFAULT`), KSafe transparently migrates the data:
+
+- **`getDirect` / `get`**: If the key is not found at the expected storage location, `migrateProtectionInline` checks the alternate location (encrypted ↔ plaintext), reads the value, writes it to the new location at the new protection level, and cleans up the old data — all inline during the read.
+- **`putDirect` / `put`**: Before writing, the alternate storage location is cleaned up (old data, old encryption keys) so stale entries don't accumulate.
+- **`DEFAULT` ↔ `HARDWARE_ISOLATED`**: Both use the same `encrypted_{key}` storage key, so migration deletes the old encryption key and re-encrypts with a new one at the correct hardware tier.
+
+This means changing a property's protection level in code "just works" — no manual migration step required.
+
 #### Dirty-key guard for protectionMap on all platforms
 
 `updateCache()` (DataStore platforms: Android, JVM, iOS) now skips overwriting `protectionMap` entries for keys with pending writes (dirty keys). On WASM, `loadCacheFromStorage()` skips `protectionMap` entries that were already set by optimistic `putDirect` writes. This prevents stale emissions from clobbering metadata set during the optimistic write window.
@@ -124,7 +134,7 @@ Every write (both `putDirect` via `processBatch` and suspend `put`) now persists
 
 #### Device Key Storage Query API
 
-New read-only properties and methods on `KSafe` that let app code query the hardware security capabilities of the device and the storage location of individual keys:
+New read-only properties and methods on `KSafe` that let app code query the hardware security capabilities of the device and inspect both the protection tier and storage location of individual keys:
 
 ```kotlin
 val ksafe = KSafe(context)
@@ -133,12 +143,15 @@ val ksafe = KSafe(context)
 ksafe.deviceKeyStorages  // e.g. {HARDWARE_BACKED, HARDWARE_ISOLATED}
 ksafe.deviceKeyStorages.max()  // HARDWARE_ISOLATED (highest available)
 
-// Per-key: where is a specific key actually stored?
-ksafe.getKeyStorage("auth_token")  // e.g. HARDWARE_BACKED, or null if key doesn't exist
+// Per-key: what protection was requested and where is the key actually stored?
+val info = ksafe.getKeyInfo("auth_token")
+// info?.protection  → KSafeProtection.DEFAULT (what the caller requested)
+// info?.storage     → KSafeKeyStorage.HARDWARE_BACKED (where the key lives)
 ```
 
+- **`KSafeKeyInfo`** — new data class combining `protection: KSafeProtection` (the tier used when the key was stored) and `storage: KSafeKeyStorage` (where the encryption key material actually resides on this device).
 - **`deviceKeyStorages: Set<KSafeKeyStorage>`** — the set of key storage levels the current device supports. Always contains at least one element. Use `deviceKeyStorages.max()` to get the highest available level.
-- **`getKeyStorage(key: String): KSafeKeyStorage?`** — returns the actual storage location of a specific key's encryption material, or `null` if the key doesn't exist. On Android/iOS, encrypted keys return `HARDWARE_BACKED` (or `HARDWARE_ISOLATED` if written with `KSafeProtection.HARDWARE_ISOLATED` and the device supports it). On JVM/WASM, always returns `SOFTWARE`. Unencrypted keys always return `SOFTWARE`.
+- **`getKeyInfo(key: String): KSafeKeyInfo?`** — returns the protection tier and actual storage location of a specific key, or `null` if the key doesn't exist. On Android/iOS, encrypted keys return `HARDWARE_BACKED` (or `HARDWARE_ISOLATED` if written with `KSafeProtection.HARDWARE_ISOLATED` and the device supports it). On JVM/WASM, storage is always `SOFTWARE`. Unencrypted keys return `KSafeKeyInfo(NONE, SOFTWARE)`.
 
 New `KSafeKeyStorage` enum with natural ordinal ordering (`SOFTWARE < HARDWARE_BACKED < HARDWARE_ISOLATED`):
 
@@ -180,7 +193,6 @@ If the Secure Enclave is unavailable (simulator, older device without SE), KSafe
 
 ### Removed
 
-- **`activeKeyStorage`** — Property that reported the storage level of the KSafe instance itself. Removed because storage is now per-property (via `KSafeProtection`), not per-instance. Use `deviceKeyStorages` to query device capabilities and `getKeyStorage(key)` to query individual keys. Never included in a published release.
 - **`iosTestApp/`** — iOS test app that imported `ksafe` but never instantiated `KSafe`. Used a plain Swift `Dictionary` instead. Added by an external contributor; superseded by the Kotlin test suite in `ksafe/src/iosTest/` and the [KSafeDemo](https://github.com/ioannisa/KSafeDemo) app
 - **`KoinInit.kt`** — Placeholder function (`initKoin()` with a `println`) in `iosMain` that shipped with the iOS framework to all consumers. No functionality
 - **`ExampleInstrumentedTest.kt`** — Default Android Studio template test in `ksafe-compose` that only asserted the package name. No KSafe coverage
@@ -188,7 +200,7 @@ If the Secure Enclave is unavailable (simulator, older device without SE), KSafe
 
 ### Added (Testing)
 
-- `KSafeKeyStorageTest` — 5 JVM tests for the Key Storage Query API: `deviceKeyStorages_returnsOnlySoftware`, `enumOrdinalOrdering`, `getKeyStorage_returnsNullForNonExistentKey`, `getKeyStorage_returnsSoftwareForUnencryptedKey`, `getKeyStorage_returnsSoftwareForEncryptedKey`
+- `KSafeKeyStorageTest` — 5 JVM tests for the Key Storage Query API: `deviceKeyStorages_returnsOnlySoftware`, `enumOrdinalOrdering`, `getKeyInfo_returnsNullForNonExistentKey`, `getKeyInfo_returnsNoneProtectionAndSoftwareForUnencryptedKey`, `getKeyInfo_returnsDefaultProtectionAndSoftwareForEncryptedKey`, `getKeyInfo_protectionMatchesStoredMetadata`
 - Secure Enclave tests in `IosKeychainEncryptionTest`:
   - `testSecureEnclaveThrowsInTestEnvironment` — verifies SE encrypt falls back and throws in entitlement-less test runner
   - `testSecureEnclaveDeleteDoesNotThrow` — verifies SE delete is permissive

@@ -288,12 +288,16 @@ actual class KSafe(
                             safeLocalStorageSet(storageKey, op.value.toString())
                         }
                         safeLocalStorageSet("${storagePrefix}__ksafe_prot_${op.key}__", "NONE")
+                        // Clean up stale encrypted entry for this key (tier changed to NONE)
+                        localStorageRemove("${storagePrefix}encrypted_${op.key}")
                     }
                     is WriteOperation.Encrypted -> {
                         val ciphertext = doEncrypt(op.alias, op.jsonString.encodeToByteArray())
                         val storageKey = "${storagePrefix}encrypted_${op.key}"
                         safeLocalStorageSet(storageKey, encodeBase64Wasm(ciphertext))
                         safeLocalStorageSet("${storagePrefix}__ksafe_prot_${op.key}__", "DEFAULT")
+                        // Clean up stale plaintext entry for this key (tier changed to DEFAULT)
+                        localStorageRemove("$storagePrefix${op.key}")
                     }
                     is WriteOperation.Delete -> {
                         localStorageRemove("$storagePrefix${op.key}")
@@ -655,6 +659,8 @@ actual class KSafe(
         val storageKey = "${storagePrefix}encrypted_$key"
         safeLocalStorageSet(storageKey, encryptedString)
         safeLocalStorageSet("${storagePrefix}__ksafe_prot_${key}__", "DEFAULT")
+        // Clean up stale plaintext entry for this key
+        localStorageRemove("$storagePrefix$key")
 
         // Update memory cache with plaintext (WASM always PLAIN_TEXT internally)
         updateMemoryCache("encrypted_$key", rawString)
@@ -729,6 +735,8 @@ actual class KSafe(
     @PublishedApi internal suspend inline fun <reified T> putUnencrypted(key: String, value: T) {
         protectionMap[key] = "NONE"
         safeLocalStorageSet("${storagePrefix}__ksafe_prot_${key}__", "NONE")
+        // Clean up stale encrypted entry for this key
+        localStorageRemove("${storagePrefix}encrypted_$key")
         if (value == null) {
             safeLocalStorageSet("$storagePrefix$key", NULL_SENTINEL)
             updateMemoryCache(key, NULL_SENTINEL)
@@ -873,35 +881,43 @@ actual class KSafe(
 
     // --- PER-KEY STORAGE QUERY ---
 
-    actual fun getKeyStorage(key: String): KSafeKeyStorage? {
+    actual fun getKeyInfo(key: String): KSafeKeyInfo? {
         if (!memoryCache.containsKey("encrypted_$key") && !memoryCache.containsKey(key)) return null
-        return KSafeKeyStorage.SOFTWARE
+
+        val meta = protectionMap[key]
+        val protection = when (meta) {
+            "NONE" -> KSafeProtection.NONE
+            "HARDWARE_ISOLATED" -> KSafeProtection.HARDWARE_ISOLATED
+            else -> if (memoryCache.containsKey("encrypted_$key")) KSafeProtection.DEFAULT else KSafeProtection.NONE
+        }
+        return KSafeKeyInfo(protection, KSafeKeyStorage.SOFTWARE)
     }
+
 
     // --- DEPRECATED OVERLOADS (encrypted: Boolean) ---
 
-    @Suppress("DEPRECATION_ERROR")
-    @Deprecated("Protection is now auto-detected on reads.", level = DeprecationLevel.ERROR)
+    @Suppress("DEPRECATION")
+    @Deprecated("Remove \"encrypted\" parameter. Protection is now auto-detected during reads.  Your \"encrypted\" param is ignored.", level = DeprecationLevel.WARNING)
     actual inline fun <reified T> getDirect(key: String, defaultValue: T, encrypted: Boolean): T =
         getDirect(key, defaultValue)
 
-    @Suppress("DEPRECATION_ERROR")
-    @Deprecated("Use protection parameter instead.", level = DeprecationLevel.ERROR)
+    @Suppress("DEPRECATION")
+    @Deprecated("Replace \"encrypted\" parameter with \"protection\" parameter. \n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeProtection.DEFAULT\nencrypted=false -> KSafeProtection.NONE\n\nNote: You don't need to include a protection reference if you aim for \"DEFAULT\" protection (it is assumed and you can omit it).", level = DeprecationLevel.WARNING)
     actual inline fun <reified T> putDirect(key: String, value: T, encrypted: Boolean): Unit =
         putDirect(key, value, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)
 
-    @Suppress("DEPRECATION_ERROR")
-    @Deprecated("Protection is now auto-detected on reads.", level = DeprecationLevel.ERROR)
+    @Suppress("DEPRECATION")
+    @Deprecated("Remove \"encrypted\" parameter. Protection is now auto-detected during reads.  Your \"encrypted\" param is ignored.", level = DeprecationLevel.WARNING)
     actual suspend inline fun <reified T> get(key: String, defaultValue: T, encrypted: Boolean): T =
         get(key, defaultValue)
 
-    @Suppress("DEPRECATION_ERROR")
-    @Deprecated("Use protection parameter instead.", level = DeprecationLevel.ERROR)
+    @Suppress("DEPRECATION")
+    @Deprecated("Replace \"encrypted\" parameter with \"protection\" parameter. \n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeProtection.DEFAULT\nencrypted=false -> KSafeProtection.NONE\n\nNote: You don't need to include a protection reference if you aim for \"DEFAULT\" protection (it is assumed and you can omit it).", level = DeprecationLevel.WARNING)
     actual suspend inline fun <reified T> put(key: String, value: T, encrypted: Boolean): Unit =
         put(key, value, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)
 
-    @Suppress("DEPRECATION_ERROR")
-    @Deprecated("Protection is now auto-detected on reads.", level = DeprecationLevel.ERROR)
+    @Suppress("DEPRECATION")
+    @Deprecated("Remove \"encrypted\" parameter. Protection is now auto-detected during reads.  Your \"encrypted\" param is ignored.", level = DeprecationLevel.WARNING)
     actual inline fun <reified T> getFlow(key: String, defaultValue: T, encrypted: Boolean): Flow<T> =
         getFlow(key, defaultValue)
 

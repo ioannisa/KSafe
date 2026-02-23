@@ -63,7 +63,7 @@ inline operator fun <reified T> KSafe.invoke(
 
 /** @deprecated Use [invoke] with [KSafeProtection] parameter instead. */
 @Deprecated(
-    "Use protection parameter instead.",
+    "Replace \"encrypted\" parameter with \"protection\" parameter. \n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeProtection.DEFAULT\nencrypted=false -> KSafeProtection.NONE\n\nNote: You don't need to include a protection reference if you aim for \"DEFAULT\" protection (it is assumed and you can omit it).",
     ReplaceWith("invoke(defaultValue, key, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)")
 )
 inline operator fun <reified T> KSafe.invoke(

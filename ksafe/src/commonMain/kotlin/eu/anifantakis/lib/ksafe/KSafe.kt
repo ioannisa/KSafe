@@ -55,21 +55,24 @@ expect class KSafe {
     val deviceKeyStorages: Set<KSafeKeyStorage>
 
     /**
-     * Returns the actual storage location of a specific key's encryption material.
+     * Returns the protection tier and actual storage location of a specific key.
      *
      * | Scenario | Return value |
      * |----------|-------------|
      * | Key not found | `null` |
-     * | Unencrypted key (NONE) | [KSafeKeyStorage.SOFTWARE] |
-     * | Encrypted (Android/iOS) | [KSafeKeyStorage.HARDWARE_BACKED] or [KSafeKeyStorage.HARDWARE_ISOLATED] |
-     * | Encrypted (JVM/WASM) | [KSafeKeyStorage.SOFTWARE] |
+     * | Unencrypted key (NONE) | `KSafeKeyInfo(NONE, SOFTWARE)` |
+     * | Encrypted DEFAULT (Android/iOS) | `KSafeKeyInfo(DEFAULT, HARDWARE_BACKED)` |
+     * | Encrypted HARDWARE_ISOLATED (w/ hardware) | `KSafeKeyInfo(HARDWARE_ISOLATED, HARDWARE_ISOLATED)` |
+     * | Encrypted HARDWARE_ISOLATED (no hardware) | `KSafeKeyInfo(HARDWARE_ISOLATED, HARDWARE_BACKED)` |
+     * | Encrypted (JVM/WASM) | `KSafeKeyInfo(detected_protection, SOFTWARE)` |
      *
      * Same cold-start behavior as [getDirect] — blocks once if cache hasn't initialized.
      *
      * @param key The key name to look up.
-     * @return The [KSafeKeyStorage] level, or `null` if the key doesn't exist.
+     * @return The [KSafeKeyInfo] details, or `null` if the key doesn't exist.
      */
-    fun getKeyStorage(key: String): KSafeKeyStorage?
+    fun getKeyInfo(key: String): KSafeKeyInfo?
+
 
     // --- NON-BLOCKING API (UI Safe) ---
 
@@ -201,15 +204,15 @@ expect class KSafe {
     @Deprecated(
         "Use getDirect(key, defaultValue) instead. Protection is auto-detected on reads.",
         ReplaceWith("getDirect(key, defaultValue)"),
-        level = DeprecationLevel.ERROR
+        level = DeprecationLevel.WARNING
     )
     inline fun <reified T> getDirect(key: String, defaultValue: T, encrypted: Boolean): T
 
     /** @deprecated Use [putDirect] with [KSafeProtection] parameter instead. */
     @Deprecated(
-        "Use protection parameter instead.",
+        "Replace \"encrypted\" parameter with \"protection\" parameter. \n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeProtection.DEFAULT\nencrypted=false -> KSafeProtection.NONE\n\nNote: You don't need to include a protection reference if you aim for \"DEFAULT\" protection (it is assumed and you can omit it).",
         ReplaceWith("putDirect(key, value, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)"),
-        level = DeprecationLevel.ERROR
+        level = DeprecationLevel.WARNING
     )
     inline fun <reified T> putDirect(key: String, value: T, encrypted: Boolean)
 
@@ -217,15 +220,15 @@ expect class KSafe {
     @Deprecated(
         "Use get(key, defaultValue) instead. Protection is auto-detected on reads.",
         ReplaceWith("get(key, defaultValue)"),
-        level = DeprecationLevel.ERROR
+        level = DeprecationLevel.WARNING
     )
     suspend inline fun <reified T> get(key: String, defaultValue: T, encrypted: Boolean): T
 
     /** @deprecated Use [put] with [KSafeProtection] parameter instead. */
     @Deprecated(
-        "Use protection parameter instead.",
+        "Replace \"encrypted\" parameter with \"protection\" parameter. \n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeProtection.DEFAULT\nencrypted=false -> KSafeProtection.NONE\n\nNote: You don't need to include a protection reference if you aim for \"DEFAULT\" protection (it is assumed and you can omit it).",
         ReplaceWith("put(key, value, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)"),
-        level = DeprecationLevel.ERROR
+        level = DeprecationLevel.WARNING
     )
     suspend inline fun <reified T> put(key: String, value: T, encrypted: Boolean)
 
@@ -233,7 +236,7 @@ expect class KSafe {
     @Deprecated(
         "Use getFlow(key, defaultValue) instead. Protection is auto-detected on reads.",
         ReplaceWith("getFlow(key, defaultValue)"),
-        level = DeprecationLevel.ERROR
+        level = DeprecationLevel.WARNING
     )
     inline fun <reified T> getFlow(key: String, defaultValue: T, encrypted: Boolean): Flow<T>
 
@@ -431,11 +434,11 @@ inline fun <reified T> KSafe.getStateFlow(
 ): StateFlow<T> = getFlow(key, defaultValue)
     .stateIn(scope, SharingStarted.Eagerly, defaultValue)
 
-/** @deprecated Protection is now auto-detected on reads. */
+/** @deprecated Remove \"encrypted\" parameter. Protection is now auto-detected during reads.  Your \"encrypted\" param is ignored. */
 @Deprecated(
-    "Protection is now auto-detected on reads. Use getStateFlow(key, defaultValue, scope) instead.",
+    "Remove \"encrypted\" parameter. Protection is now auto-detected during reads.  Your \"encrypted\" param is ignored. Use getStateFlow(key, defaultValue, scope) instead.",
     ReplaceWith("getStateFlow(key, defaultValue, scope)"),
-    level = DeprecationLevel.ERROR
+    level = DeprecationLevel.WARNING
 )
 inline fun <reified T> KSafe.getStateFlow(
     key: String,
@@ -449,7 +452,7 @@ inline fun <reified T> KSafe.getStateFlow(
 @Deprecated(
     "Use getStateFlow(key, defaultValue, scope) instead. Protection is auto-detected on reads.",
     ReplaceWith("getStateFlow(key, defaultValue, scope)"),
-    level = DeprecationLevel.ERROR
+    level = DeprecationLevel.WARNING
 )
 inline fun <reified T> KSafe.getStateFlow(
     key: String,
