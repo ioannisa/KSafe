@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -356,26 +357,26 @@ actual class KSafe(
                 when (op) {
                     is WriteOperation.Unencrypted -> {
                         if (op.value == null) {
-                            prefs[stringPreferencesKey(op.key)] = NULL_SENTINEL
+                            prefs[stringPreferencesKey(valueRawKey(op.key))] = NULL_SENTINEL
                         } else {
                             @Suppress("UNCHECKED_CAST")
                             prefs[op.prefKey] = op.value
                         }
-                        prefs[protectionMetaKey(op.key)] = "NONE"
-                        // Clean up stale encrypted entry for this key (tier changed to NONE)
-                        prefs.remove(encryptedPrefKey(op.key))
+                        prefs[metaPrefKey(op.key)] = protectionToMetaJson(KSafeProtection.NONE)
+                        prefs.removeAllLegacyKeys(op.key)
                     }
                     is WriteOperation.Encrypted -> {
                         val ciphertext = encryptedData[op.key]!!
-                        prefs[encryptedPrefKey(op.key)] = encodeBase64(ciphertext)
-                        prefs[protectionMetaKey(op.key)] = if (op.hardwareIsolated) "HARDWARE_ISOLATED" else "DEFAULT"
-                        // Clean up stale plaintext entry for this key (tier changed to DEFAULT/HARDWARE_ISOLATED)
-                        prefs.remove(stringPreferencesKey(op.key))
+                        prefs[valuePrefKey(op.key)] = encodeBase64(ciphertext)
+                        prefs[metaPrefKey(op.key)] = protectionToMetaJson(
+                            if (op.hardwareIsolated) KSafeProtection.HARDWARE_ISOLATED else KSafeProtection.DEFAULT
+                        )
+                        prefs.removeAllLegacyKeys(op.key)
                     }
                     is WriteOperation.Delete -> {
-                        prefs.remove(stringPreferencesKey(op.key))
-                        prefs.remove(encryptedPrefKey(op.key))
-                        prefs.remove(protectionMetaKey(op.key))
+                        prefs.removeByKeyName(valueRawKey(op.key))
+                        prefs.remove(metaPrefKey(op.key))
+                        prefs.removeAllLegacyKeys(op.key)
                         keysToDeleteFromKeystore.add(op.key)
                     }
                 }
@@ -450,16 +451,46 @@ actual class KSafe(
      */
     private suspend fun cleanupOrphanedCiphertext() {
         val prefs = dataStore.data.first()
-        val encryptedPrefix = "encrypted_"
         val orphanedKeys = mutableListOf<String>()
+        val protectionByKey = mutableMapOf<String, KSafeProtection>()
 
-        for ((key, value) in prefs.asMap()) {
-            val keyName = key.name
-            if (!keyName.startsWith(encryptedPrefix)) continue
-            if (keyName.startsWith("__ksafe_")) continue
+        for ((prefKey, prefValue) in prefs.asMap()) {
+            val keyName = prefKey.name
+            when {
+                keyName.startsWith(KeySafeMetadataManager.META_PREFIX) && keyName.endsWith(KeySafeMetadataManager.META_SUFFIX) -> {
+                    val userKey = keyName
+                        .removePrefix(KeySafeMetadataManager.META_PREFIX)
+                        .removeSuffix(KeySafeMetadataManager.META_SUFFIX)
+                    KeySafeMetadataManager.parseProtection(prefValue as? String)?.let { protectionByKey[userKey] = it }
+                }
+                KeySafeMetadataManager.tryExtractLegacyProtectionKey(keyName) != null -> {
+                    val userKey = KeySafeMetadataManager.tryExtractLegacyProtectionKey(keyName) ?: continue
+                    if (!protectionByKey.containsKey(userKey)) {
+                        KeySafeMetadataManager.parseProtection(prefValue as? String)?.let { protectionByKey[userKey] = it }
+                    }
+                }
+            }
+        }
 
-            val originalKey = keyName.removePrefix(encryptedPrefix)
-            val encryptedString = value as? String ?: continue
+        fun isMissingKeyError(message: String): Boolean {
+            return message.contains("No encryption key found", ignoreCase = true) ||
+                message.contains("key not found", ignoreCase = true)
+        }
+
+        for ((prefKey, prefValue) in prefs.asMap()) {
+            val keyName = prefKey.name
+
+            // Legacy encrypted entries are preserved to avoid destructive cleanup on upgrades.
+            if (keyName.startsWith(KeySafeMetadataManager.LEGACY_ENCRYPTED_PREFIX)) continue
+
+            if (!keyName.startsWith(KeySafeMetadataManager.VALUE_PREFIX)) continue
+            val originalKey = keyName.removePrefix(KeySafeMetadataManager.VALUE_PREFIX)
+
+            val protection = protectionByKey[originalKey]
+            // Missing/unknown metadata: do not delete blindly.
+            if (protection == null || protection == KSafeProtection.NONE) continue
+
+            val encryptedString = prefValue as? String ?: continue
             val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, originalKey).joinToString(".")
 
             try {
@@ -467,23 +498,30 @@ actual class KSafe(
                 engine.decrypt(keyAlias, ciphertext)
             } catch (e: Exception) {
                 val msg = e.message ?: ""
-                if (msg.contains("device is locked", ignoreCase = true)) {
-                    continue
+                if (msg.contains("device is locked", ignoreCase = true) ||
+                    msg.contains("Keystore", ignoreCase = true)) continue
+
+                // Only delete when the key is definitely gone.
+                if (isMissingKeyError(msg)) {
+                    orphanedKeys.add(keyName)
                 }
-                orphanedKeys.add(keyName)
             }
         }
 
         if (orphanedKeys.isNotEmpty()) {
             dataStore.edit { mutablePrefs ->
                 for (keyName in orphanedKeys) {
-                    mutablePrefs.remove(stringPreferencesKey(keyName))
-                    val originalKey = keyName.removePrefix("encrypted_")
-                    mutablePrefs.remove(protectionMetaKey(originalKey))
+                    mutablePrefs.removeByKeyName(keyName)
+                    val originalKey = keyName
+                        .removePrefix(KeySafeMetadataManager.VALUE_PREFIX)
+                    mutablePrefs.remove(metaPrefKey(originalKey))
+                    mutablePrefs.remove(legacyProtectionMetaKey(originalKey))
                 }
             }
             for (keyName in orphanedKeys) {
-                memoryCache.remove(keyName)
+                val originalKey = keyName.removePrefix(KeySafeMetadataManager.VALUE_PREFIX)
+                memoryCache.remove(originalKey)
+                memoryCache.remove(legacyEncryptedRawKey(originalKey))
             }
         }
     }
@@ -528,17 +566,41 @@ actual class KSafe(
         //   Phase 2: Delete old keys + re-encrypt. If any fails → stop immediately.
         // This ensures we never delete a key unless we've already proven we can decrypt its data.
         val prefs = dataStore.data.first()
-        val encryptedPrefix = "encrypted_"
+        val protectionByKey = mutableMapOf<String, KSafeProtection>()
+
+        for ((prefKey, prefValue) in prefs.asMap()) {
+            val keyName = prefKey.name
+            when {
+                keyName.startsWith(KeySafeMetadataManager.META_PREFIX) && keyName.endsWith(KeySafeMetadataManager.META_SUFFIX) -> {
+                    val userKey = keyName
+                        .removePrefix(KeySafeMetadataManager.META_PREFIX)
+                        .removeSuffix(KeySafeMetadataManager.META_SUFFIX)
+                    KeySafeMetadataManager.parseProtection(prefValue as? String)?.let { protectionByKey[userKey] = it }
+                }
+                KeySafeMetadataManager.tryExtractLegacyProtectionKey(keyName) != null -> {
+                    val userKey = KeySafeMetadataManager.tryExtractLegacyProtectionKey(keyName) ?: continue
+                    if (!protectionByKey.containsKey(userKey)) {
+                        KeySafeMetadataManager.parseProtection(prefValue as? String)?.let { protectionByKey[userKey] = it }
+                    }
+                }
+            }
+        }
 
         // Phase 1: Decrypt all values first — no Keystore mutations
         val decryptedData = mutableMapOf<String, Pair<String, ByteArray>>() // keyName → (keyAlias, plaintext)
-        for ((key, value) in prefs.asMap()) {
-            val keyName = key.name
-            if (!keyName.startsWith(encryptedPrefix)) continue
-            if (keyName.startsWith("__ksafe_")) continue
+        for ((prefKey, prefValue) in prefs.asMap()) {
+            val keyName = prefKey.name
+            val originalKey = when {
+                keyName.startsWith(KeySafeMetadataManager.LEGACY_ENCRYPTED_PREFIX) ->
+                    keyName.removePrefix(KeySafeMetadataManager.LEGACY_ENCRYPTED_PREFIX)
+                keyName.startsWith(KeySafeMetadataManager.VALUE_PREFIX) -> {
+                    val userKey = keyName.removePrefix(KeySafeMetadataManager.VALUE_PREFIX)
+                    if (protectionByKey[userKey] != KSafeProtection.NONE) userKey else continue
+                }
+                else -> continue
+            }
 
-            val originalKey = keyName.removePrefix(encryptedPrefix)
-            val encryptedString = value as? String ?: continue
+            val encryptedString = prefValue as? String ?: continue
             val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, originalKey).joinToString(".")
 
             try {
@@ -562,12 +624,18 @@ actual class KSafe(
         val resolvedMeta = mutableMapOf<String, Boolean>() // originalKey -> hardwareIsolated
         for ((keyName, pair) in decryptedData) {
             val (keyAlias, plaintext) = pair
-            val originalKey = keyName.removePrefix("encrypted_")
-            val protMeta = prefs[protectionMetaKey(originalKey)]
-            val keyHardwareIsolated = when (protMeta) {
-                "HARDWARE_ISOLATED" -> true
-                "DEFAULT" -> false
-                else -> globalHardwareIsolated  // pre-1.7.0 keys: no metadata
+            val originalKey = when {
+                keyName.startsWith(KeySafeMetadataManager.LEGACY_ENCRYPTED_PREFIX) ->
+                    keyName.removePrefix(KeySafeMetadataManager.LEGACY_ENCRYPTED_PREFIX)
+                keyName.startsWith(KeySafeMetadataManager.VALUE_PREFIX) ->
+                    keyName.removePrefix(KeySafeMetadataManager.VALUE_PREFIX)
+                else -> continue
+            }
+            val protection = protectionByKey[originalKey]
+            val keyHardwareIsolated = when (protection) {
+                KSafeProtection.HARDWARE_ISOLATED -> true
+                KSafeProtection.DEFAULT -> false
+                else -> globalHardwareIsolated
             }
             try {
                 engine.deleteKey(keyAlias)
@@ -590,10 +658,50 @@ actual class KSafe(
             }
             // Persist per-key metadata so future migrations don't rely on global fallback
             for ((originalKey, hardwareIsolated) in resolvedMeta) {
-                mutablePrefs[protectionMetaKey(originalKey)] = if (hardwareIsolated) "HARDWARE_ISOLATED" else "DEFAULT"
+                mutablePrefs[metaPrefKey(originalKey)] = protectionToMetaJson(
+                    if (hardwareIsolated) KSafeProtection.HARDWARE_ISOLATED else KSafeProtection.DEFAULT
+                )
+                mutablePrefs.remove(legacyProtectionMetaKey(originalKey))
             }
             mutablePrefs[markerKey] = targetPolicy
         }
+    }
+
+    @PublishedApi
+    internal fun valueRawKey(key: String): String = KeySafeMetadataManager.valueRawKey(key)
+
+    @PublishedApi
+    internal fun valuePrefKey(key: String) = stringPreferencesKey(valueRawKey(key))
+
+    @PublishedApi
+    internal fun metaPrefKey(key: String) = stringPreferencesKey(KeySafeMetadataManager.metadataRawKey(key))
+
+    @PublishedApi
+    internal fun legacyEncryptedPrefKey(key: String) = stringPreferencesKey(KeySafeMetadataManager.legacyEncryptedRawKey(key))
+
+    @PublishedApi
+    internal fun legacyProtectionMetaKey(key: String) = stringPreferencesKey(KeySafeMetadataManager.legacyProtectionRawKey(key))
+
+    @PublishedApi
+    internal fun legacyEncryptedRawKey(key: String): String = KeySafeMetadataManager.legacyEncryptedRawKey(key)
+
+    @PublishedApi
+    internal fun protectionToMetaJson(protection: KSafeProtection): String {
+        val accessPolicy = if (config.requireUnlockedDevice) ACCESS_POLICY_UNLOCKED else ACCESS_POLICY_DEFAULT
+        return KeySafeMetadataManager.buildMetadataJson(protection, accessPolicy)
+    }
+
+    @PublishedApi
+    @Suppress("UNCHECKED_CAST")
+    internal fun MutablePreferences.removeByKeyName(name: String) {
+        asMap().keys.firstOrNull { it.name == name }?.let { remove(it as Preferences.Key<Any?>) }
+    }
+
+    @PublishedApi
+    internal fun MutablePreferences.removeAllLegacyKeys(key: String) {
+        removeByKeyName(key)
+        remove(legacyEncryptedPrefKey(key))
+        remove(legacyProtectionMetaKey(key))
     }
 
     /**
@@ -607,86 +715,85 @@ actual class KSafe(
     @PublishedApi
     internal fun updateCache(prefs: Preferences) {
         val prefsMap = prefs.asMap()
-        val encryptedPrefix = "encrypted_"
-        // Snapshot of dirty keys - use try-catch to handle concurrent modification
-        // ConcurrentHashMap iterators can throw NoSuchElementException in rare cases
-        val currentDirty: Set<String> = try {
-            HashSet(dirtyKeys)
-        } catch (e: NoSuchElementException) {
-            // Concurrent modification during copy - very rare edge case
-            // Return empty set; dirty keys will be checked on next update cycle
-            emptySet()
+        val currentDirty: Set<String> = try { HashSet(dirtyKeys) } catch (_: Exception) { emptySet() }
+        val existingMetadata = HashMap(protectionMap)
+        val validCacheKeys = mutableSetOf<String>()
+
+        fun isDirtyForUserKey(userKey: String): Boolean {
+            val legacyEncrypted = legacyEncryptedRawKey(userKey)
+            return currentDirty.contains(userKey)
+                || currentDirty.contains(legacyEncrypted)
+                || currentDirty.contains(valueRawKey(userKey))
         }
 
-        // Build set of keys that should exist based on DataStore
-        val validKeys = mutableSetOf<String>()
+        val metadataEntries = prefsMap.map { (prefKey, prefValue) -> prefKey.name to (prefValue as? String) }
+        val protectionByKey = KeySafeMetadataManager.collectMetadata(
+            entries = metadataEntries,
+            accept = { userKey -> !isDirtyForUserKey(userKey) }
+        ).toMutableMap()
 
-        for ((key, value) in prefsMap) {
-            val keyName = key.name
+        // Pass 2: load values (canonical + legacy fallback)
+        for ((prefKey, prefValue) in prefsMap) {
+            val keyName = prefKey.name
+            val classified = KeySafeMetadataManager.classifyStorageEntry(
+                rawKey = keyName,
+                legacyEncryptedPrefix = KeySafeMetadataManager.LEGACY_ENCRYPTED_PREFIX,
+                encryptedCacheKeyForUser = { userKey -> legacyEncryptedRawKey(userKey) },
+                stagedMetadata = protectionByKey,
+                existingMetadata = existingMetadata
+            ) ?: continue
 
-            // Extract protection metadata before skipping internal keys
-            if (keyName.startsWith("__ksafe_prot_") && keyName.endsWith("__")) {
-                val originalKey = keyName.removePrefix("__ksafe_prot_").removeSuffix("__")
-                val encDataKey = "encrypted_$originalKey"
-                if (!currentDirty.contains(encDataKey) && !currentDirty.contains(originalKey)) {
-                    protectionMap[originalKey] = value as? String ?: "DEFAULT"
-                }
-                continue
-            }
-            // Skip internal KSafe metadata keys (e.g., migration markers)
-            if (keyName.startsWith("__ksafe_")) continue
+            val userKey = classified.userKey
+            val cacheKey = classified.cacheKey
+            val explicitEncrypted = classified.encrypted
 
-            // Dirty Check: If a local write was pending at snapshot time,
-            // skip updating from disk (preserve optimistic value).
-            // Use the SNAPSHOT for this check to avoid race conditions.
-            // NOTE: We do NOT clear dirty flags here because the DataStore snapshot
-            // might contain OLD data, not the data from our pending write.
-            // NOTE: Dirty flags are intentionally kept permanently — see processBatch for rationale.
-            if (currentDirty.contains(keyName)) {
-                validKeys.add(keyName)
-                continue
+            if (!protectionByKey.containsKey(userKey) && !isDirtyForUserKey(userKey)) {
+                protectionByKey[userKey] = if (explicitEncrypted) "DEFAULT" else "NONE"
             }
 
-            // Handle Encrypted Entries
-            if (keyName.startsWith(encryptedPrefix)) {
-                validKeys.add(keyName)
+            if (isDirtyForUserKey(userKey) || currentDirty.contains(cacheKey)) {
+                validCacheKeys.add(cacheKey)
+                continue
+            }
+
+            validCacheKeys.add(cacheKey)
+
+            if (explicitEncrypted == true) {
+                val encryptedString = prefValue as? String ?: continue
                 if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED || memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
-                    // SECURITY MODE: Store the raw ciphertext string in RAM.
-                    memoryCache[keyName] = value
+                    memoryCache[cacheKey] = encryptedString
                 } else {
-                    // PERFORMANCE MODE: Decrypt now, store plaintext in RAM.
-                    val originalKey = keyName.removePrefix(encryptedPrefix)
-                    val encryptedString = value as? String
-                    if (encryptedString != null) {
-                        try {
-                            val ciphertext = decodeBase64(encryptedString)
-                            val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, originalKey).joinToString(".")
-                            val decryptedBytes = engine.decrypt(keyAlias, ciphertext)
-                            memoryCache[keyName] = decryptedBytes.decodeToString()
-                        } catch (_: Exception) { }
-                    }
+                    try {
+                        val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, userKey).joinToString(".")
+                        val encryptedBytes = decodeBase64(encryptedString)
+                        val decryptedBytes = engine.decrypt(keyAlias, encryptedBytes)
+                        memoryCache[cacheKey] = decryptedBytes.decodeToString()
+                    } catch (_: Exception) { }
                 }
-            }
-            // Handle Unencrypted Entries
-            else if (!keyName.startsWith("ksafe_")) {
-                validKeys.add(keyName)
-                memoryCache[keyName] = value
+            } else {
+                memoryCache[cacheKey] = prefValue
             }
         }
 
-        // Also preserve all dirty keys as valid (they're being written)
-        validKeys.addAll(currentDirty)
+        validCacheKeys.addAll(currentDirty)
 
-        // Remove keys that no longer exist in DataStore (except dirty ones)
-        // Use try-catch to handle concurrent modification during iteration
         try {
-            val keysToRemove = memoryCache.keys.filter { it !in validKeys && !dirtyKeys.contains(it) }
+            val keysToRemove = memoryCache.keys.filter { it !in validCacheKeys && !dirtyKeys.contains(it) }
             keysToRemove.forEach { memoryCache.remove(it) }
-        } catch (e: NoSuchElementException) {
-            // Concurrent modification - skip cleanup this cycle
+        } catch (_: Exception) { }
+
+        val existingMetaKeys = protectionMap.keys.toList()
+        for ((userKey, rawMeta) in protectionByKey) {
+            if (!isDirtyForUserKey(userKey)) {
+                protectionMap[userKey] = rawMeta
+            }
+        }
+        for (userKey in existingMetaKeys) {
+            if (!protectionByKey.containsKey(userKey) && !isDirtyForUserKey(userKey)) {
+                protectionMap.remove(userKey)
+            }
         }
 
-        // Mark cache as initialized
         cacheInitialized.set(true)
     }
 
@@ -716,7 +823,7 @@ actual class KSafe(
     @PublishedApi
     internal inline fun <reified T> resolveFromCache(cache: Map<String, Any>, key: String, defaultValue: T, protection: KSafeProtection): T {
         // Determine internal key format used in cache (isomorphic to disk keys)
-        val cacheKey = if (protection != KSafeProtection.NONE) "encrypted_$key" else key
+        val cacheKey = if (protection != KSafeProtection.NONE) legacyEncryptedRawKey(key) else key
         val cachedValue = cache[cacheKey] ?: return defaultValue
 
         return if (protection != KSafeProtection.NONE) {
@@ -899,7 +1006,9 @@ actual class KSafe(
             updateMemoryCache(rawKey, jsonString)
 
             // Update protection metadata
-            protectionMap[key] = if (resolved == KSafeProtection.HARDWARE_ISOLATED) "HARDWARE_ISOLATED" else "DEFAULT"
+            protectionMap[key] = protectionToMetaJson(
+                if (resolved == KSafeProtection.HARDWARE_ISOLATED) KSafeProtection.HARDWARE_ISOLATED else KSafeProtection.DEFAULT
+            )
 
             // For TIMED_CACHE, also populate the plaintext cache
             if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
@@ -921,7 +1030,7 @@ actual class KSafe(
             updateMemoryCache(rawKey, toCache)
 
             // Store NONE metadata for unencrypted keys
-            protectionMap[key] = "NONE"
+            protectionMap[key] = protectionToMetaJson(KSafeProtection.NONE)
 
             // For unencrypted writes, determine the proper DataStore key type
             val storedValue: Any? = when (value) {
@@ -932,13 +1041,13 @@ actual class KSafe(
 
             @Suppress("UNCHECKED_CAST")
             val prefKey = when (value) {
-                is Boolean -> booleanPreferencesKey(key)
-                is Int -> intPreferencesKey(key)
-                is Long -> longPreferencesKey(key)
-                is Float -> floatPreferencesKey(key)
-                is Double -> doublePreferencesKey(key)
-                is String -> stringPreferencesKey(key)
-                else -> stringPreferencesKey(key)
+                is Boolean -> booleanPreferencesKey(valueRawKey(key))
+                is Int -> intPreferencesKey(valueRawKey(key))
+                is Long -> longPreferencesKey(valueRawKey(key))
+                is Float -> floatPreferencesKey(valueRawKey(key))
+                is Double -> doublePreferencesKey(valueRawKey(key))
+                is String -> stringPreferencesKey(valueRawKey(key))
+                else -> stringPreferencesKey(valueRawKey(key))
             } as Preferences.Key<Any>
 
             // Queue the unencrypted write
@@ -948,7 +1057,8 @@ actual class KSafe(
 
     // ----- Encryption Helpers -----
     @PublishedApi
-    internal fun encryptedPrefKey(key: String) = stringPreferencesKey("encrypted_$key")
+    internal fun encryptedPrefKey(key: String) =
+        legacyEncryptedPrefKey(key)
 
     /**
      * DataStore key for per-key protection metadata.
@@ -956,34 +1066,34 @@ actual class KSafe(
      * enabling correct re-encryption during `requireUnlockedDevice` migration.
      */
     @PublishedApi
-    internal fun protectionMetaKey(key: String) = stringPreferencesKey("__ksafe_prot_${key}__")
+    internal fun protectionMetaKey(key: String) =
+        legacyProtectionMetaKey(key)
 
     @PublishedApi
     internal fun detectProtection(key: String): KSafeProtection {
         val meta = protectionMap[key]
-        if (meta != null) return when (meta) {
-            "NONE" -> KSafeProtection.NONE
-            "HARDWARE_ISOLATED" -> KSafeProtection.HARDWARE_ISOLATED
-            else -> KSafeProtection.DEFAULT
-        }
+        KeySafeMetadataManager.parseProtection(meta)?.let { return it }
         // Fallback heuristic (legacy data without metadata)
-        return if (memoryCache.containsKey("encrypted_$key")) KSafeProtection.DEFAULT
+        return if (memoryCache.containsKey(legacyEncryptedRawKey(key))) KSafeProtection.DEFAULT
         else KSafeProtection.NONE
     }
 
     suspend fun storeEncryptedData(key: String, data: ByteArray, hardwareIsolated: Boolean = false) {
         val encoded = encodeBase64(data)
         dataStore.edit { preferences ->
-            preferences[encryptedPrefKey(key)] = encoded
-            preferences[protectionMetaKey(key)] = if (hardwareIsolated) "HARDWARE_ISOLATED" else "DEFAULT"
-            // Clean up stale plaintext entry for this key
-            preferences.remove(stringPreferencesKey(key))
+            preferences[valuePrefKey(key)] = encoded
+            preferences[metaPrefKey(key)] = protectionToMetaJson(
+                if (hardwareIsolated) KSafeProtection.HARDWARE_ISOLATED else KSafeProtection.DEFAULT
+            )
+            preferences.removeAllLegacyKeys(key)
         }
     }
 
     suspend inline fun <reified T> putEncrypted(key: String, value: T, hardwareIsolated: Boolean = false) {
-        addDirtyKey("encrypted_$key")
-        protectionMap[key] = if (hardwareIsolated) "HARDWARE_ISOLATED" else "DEFAULT"
+        addDirtyKey(legacyEncryptedRawKey(key))
+        protectionMap[key] = protectionToMetaJson(
+            if (hardwareIsolated) KSafeProtection.HARDWARE_ISOLATED else KSafeProtection.DEFAULT
+        )
         // Handle null values with sentinel
         val jsonString = if (value == null) {
             NULL_SENTINEL
@@ -1008,11 +1118,11 @@ actual class KSafe(
         } else {
             jsonString
         }
-        updateMemoryCache("encrypted_$key", cacheValue)
+        updateMemoryCache(legacyEncryptedRawKey(key), cacheValue)
 
         // For TIMED_CACHE, also populate the plaintext cache (we already have the plaintext)
         if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
-            plaintextCache["encrypted_$key"] = CachedPlaintext(jsonString, TimeSource.Monotonic.markNow() + plaintextCacheTtl)
+            plaintextCache[legacyEncryptedRawKey(key)] = CachedPlaintext(jsonString, TimeSource.Monotonic.markNow() + plaintextCacheTtl)
         }
     }
 
@@ -1065,15 +1175,14 @@ actual class KSafe(
     @PublishedApi
     internal suspend inline fun <reified T> putUnencrypted(key: String, value: T) {
         addDirtyKey(key)
-        protectionMap[key] = "NONE"
+        protectionMap[key] = protectionToMetaJson(KSafeProtection.NONE)
         // Handle null values
         if (value == null) {
-            val preferencesKey = stringPreferencesKey(key)
+            val preferencesKey = stringPreferencesKey(valueRawKey(key))
             dataStore.edit { preferences ->
                 preferences[preferencesKey] = NULL_SENTINEL
-                preferences[protectionMetaKey(key)] = "NONE"
-                // Clean up stale encrypted entry for this key
-                preferences.remove(encryptedPrefKey(key))
+                preferences[metaPrefKey(key)] = protectionToMetaJson(KSafeProtection.NONE)
+                preferences.removeAllLegacyKeys(key)
             }
             updateMemoryCache(key, NULL_SENTINEL)
             return
@@ -1088,9 +1197,8 @@ actual class KSafe(
 
         dataStore.edit { preferences ->
             preferences[preferencesKey] = storedValue
-            preferences[protectionMetaKey(key)] = "NONE"
-            // Clean up stale encrypted entry for this key
-            preferences.remove(encryptedPrefKey(key))
+            preferences[metaPrefKey(key)] = protectionToMetaJson(KSafeProtection.NONE)
+            preferences.removeAllLegacyKeys(key)
         }
 
         // Update cache
@@ -1099,6 +1207,20 @@ actual class KSafe(
 
     @Suppress("UNCHECKED_CAST")
     @PublishedApi internal fun <T> getUnencryptedKey(key: String, defaultValue: T): Preferences.Key<Any> {
+        return when (defaultValue) {
+            is Boolean -> booleanPreferencesKey(valueRawKey(key))
+            is Int -> intPreferencesKey(valueRawKey(key))
+            is Long -> longPreferencesKey(valueRawKey(key))
+            is Float -> floatPreferencesKey(valueRawKey(key))
+            is String -> stringPreferencesKey(valueRawKey(key))
+            is Double -> doublePreferencesKey(valueRawKey(key))
+            else -> stringPreferencesKey(valueRawKey(key))
+        } as Preferences.Key<Any>
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    @PublishedApi
+    internal fun <T> getLegacyUnencryptedKey(key: String, defaultValue: T): Preferences.Key<Any> {
         return when (defaultValue) {
             is Boolean -> booleanPreferencesKey(key)
             is Int -> intPreferencesKey(key)
@@ -1114,19 +1236,21 @@ actual class KSafe(
     @PublishedApi
     internal inline fun <reified T> getUnencryptedFlow(key: String, defaultValue: T): Flow<T> {
         val preferencesKey = getUnencryptedKey(key, defaultValue)
+        val legacyPreferencesKey = getLegacyUnencryptedKey(key, defaultValue)
         return dataStore.data.map { preferences ->
-            val storedValue = preferences[preferencesKey]
+            val storedValue = preferences[preferencesKey] ?: preferences[legacyPreferencesKey]
             convertStoredValue(storedValue, defaultValue)
         }.distinctUntilChanged()
     }
 
     @PublishedApi
     internal inline fun <reified T> getEncryptedFlow(key: String, defaultValue: T): Flow<T> {
-        val encryptedPrefKey = encryptedPrefKey(key)
+        val canonicalPrefKey = valuePrefKey(key)
+        val legacyPrefKey = encryptedPrefKey(key)
 
         return dataStore.data
             .map { preferences ->
-                val encryptedValue = preferences[encryptedPrefKey]
+                val encryptedValue = preferences[canonicalPrefKey] ?: preferences[legacyPrefKey]
                 if (encryptedValue == null) {
                     defaultValue
                 } else {
@@ -1160,44 +1284,18 @@ actual class KSafe(
 
     actual inline fun <reified T> getFlow(key: String, defaultValue: T): Flow<T> {
         return dataStore.data.map { preferences ->
-            val meta = preferences[protectionMetaKey(key)]?.toString()
-            val protection = when {
-                meta == "NONE" -> KSafeProtection.NONE
-                meta == "HARDWARE_ISOLATED" -> KSafeProtection.HARDWARE_ISOLATED
-                meta != null -> KSafeProtection.DEFAULT
-                preferences[encryptedPrefKey(key)] != null -> KSafeProtection.DEFAULT
-                else -> KSafeProtection.NONE
-            }
+            val metaRaw = preferences[metaPrefKey(key)] ?: preferences[legacyProtectionMetaKey(key)]
+            val protection = KeySafeMetadataManager.parseProtection(metaRaw)
+                ?: if (preferences[encryptedPrefKey(key)] != null) KSafeProtection.DEFAULT else KSafeProtection.NONE
             when (protection) {
                 KSafeProtection.NONE -> {
                     val prefKey = getUnencryptedKey(key, defaultValue)
-                    val plain = preferences[prefKey]
-                    if (plain != null) convertStoredValue(plain, defaultValue)
-                    else {
-                        val enc = preferences[encryptedPrefKey(key)]
-                        if (enc != null) {
-                            try {
-                                val ciphertext = decodeBase64(enc)
-                                val keyAlias = listOfNotNull(KEY_ALIAS_PREFIX, fileName, key).joinToString(".")
-                                val decryptedBytes = engine.decrypt(keyAlias, ciphertext)
-                                val jsonString = decryptedBytes.decodeToString()
-                                if (jsonString == NULL_SENTINEL) {
-                                    @Suppress("UNCHECKED_CAST")
-                                    null as T
-                                } else {
-                                    json.decodeFromString(serializer<T>(), jsonString)
-                                }
-                            } catch (e: IllegalStateException) {
-                                if (e.message?.contains("device is locked") == true ||
-                                    e.message?.contains("Keystore") == true) throw e
-                                defaultValue
-                            } catch (_: Exception) { defaultValue }
-                        }
-                        else defaultValue
-                    }
+                    val legacyPrefKey = getLegacyUnencryptedKey(key, defaultValue)
+                    val plain = preferences[prefKey] ?: preferences[legacyPrefKey]
+                    if (plain != null) convertStoredValue(plain, defaultValue) else defaultValue
                 }
                 else -> {
-                    val enc = preferences[encryptedPrefKey(key)]
+                    val enc = preferences[valuePrefKey(key)] ?: preferences[encryptedPrefKey(key)]
                     if (enc != null) {
                         try {
                             val ciphertext = decodeBase64(enc)
@@ -1215,12 +1313,7 @@ actual class KSafe(
                                 e.message?.contains("Keystore") == true) throw e
                             defaultValue
                         } catch (_: Exception) { defaultValue }
-                    } else {
-                        val prefKey = getUnencryptedKey(key, defaultValue)
-                        val plain = preferences[prefKey]
-                        if (plain != null) convertStoredValue(plain, defaultValue)
-                        else defaultValue
-                    }
+                    } else defaultValue
                 }
             }
         }.distinctUntilChanged()
@@ -1242,13 +1335,10 @@ actual class KSafe(
      * @param key The key of the value to delete.
      */
     actual suspend fun delete(key: String) {
-        val dataKey = stringPreferencesKey(key)
-        val encryptedKey = encryptedPrefKey(key)
-
         dataStore.edit { preferences ->
-            preferences.remove(dataKey)
-            preferences.remove(encryptedKey)
-            preferences.remove(protectionMetaKey(key))
+            preferences.removeByKeyName(valueRawKey(key))
+            preferences.remove(metaPrefKey(key))
+            preferences.removeAllLegacyKeys(key)
         }
 
         // Delete the corresponding encryption key using the engine
@@ -1257,9 +1347,9 @@ actual class KSafe(
 
         // Update cache
         updateMemoryCache(key, null)
-        updateMemoryCache("encrypted_$key", null)
+        updateMemoryCache(legacyEncryptedRawKey(key), null)
         plaintextCache.remove(key)
-        plaintextCache.remove("encrypted_$key")
+        plaintextCache.remove(legacyEncryptedRawKey(key))
         protectionMap.remove(key)
     }
 
@@ -1272,13 +1362,13 @@ actual class KSafe(
     actual fun deleteDirect(key: String) {
         // Mark both possible keys as dirty
         addDirtyKey(key)
-        addDirtyKey("encrypted_$key")
+        addDirtyKey(legacyEncryptedRawKey(key))
 
         // Optimistic update
         updateMemoryCache(key, null)
-        updateMemoryCache("encrypted_$key", null)
+        updateMemoryCache(legacyEncryptedRawKey(key), null)
         plaintextCache.remove(key)
-        plaintextCache.remove("encrypted_$key")
+        plaintextCache.remove(legacyEncryptedRawKey(key))
         protectionMap.remove(key)
 
         // Queue delete operation
@@ -1295,10 +1385,38 @@ actual class KSafe(
         val encryptedKeys = mutableSetOf<String>()
         val preferences = dataStore.data.first()
 
+        val protectionByKey = mutableMapOf<String, KSafeProtection>()
+        for ((prefKey, prefValue) in preferences.asMap()) {
+            val keyName = prefKey.name
+            when {
+                keyName.startsWith(KeySafeMetadataManager.META_PREFIX) && keyName.endsWith(KeySafeMetadataManager.META_SUFFIX) -> {
+                    val userKey = keyName
+                        .removePrefix(KeySafeMetadataManager.META_PREFIX)
+                        .removeSuffix(KeySafeMetadataManager.META_SUFFIX)
+                    val parsed = KeySafeMetadataManager.parseProtection(prefValue as? String)
+                    if (parsed != null) protectionByKey[userKey] = parsed
+                }
+                KeySafeMetadataManager.tryExtractLegacyProtectionKey(keyName) != null -> {
+                    val userKey = KeySafeMetadataManager.tryExtractLegacyProtectionKey(keyName) ?: continue
+                    if (!protectionByKey.containsKey(userKey)) {
+                        val parsed = KeySafeMetadataManager.parseProtection(prefValue as? String)
+                        if (parsed != null) protectionByKey[userKey] = parsed
+                    }
+                }
+            }
+        }
+
         preferences.asMap().forEach { (key, _) ->
-            if (key.name.startsWith("encrypted_")) {
-                val keyId = key.name.removePrefix("encrypted_")
-                encryptedKeys.add(keyId)
+            val keyName = key.name
+            when {
+                keyName.startsWith(KeySafeMetadataManager.LEGACY_ENCRYPTED_PREFIX) ->
+                    encryptedKeys.add(keyName.removePrefix(KeySafeMetadataManager.LEGACY_ENCRYPTED_PREFIX))
+                keyName.startsWith(KeySafeMetadataManager.VALUE_PREFIX) -> {
+                    val userKey = keyName.removePrefix(KeySafeMetadataManager.VALUE_PREFIX)
+                    if (protectionByKey[userKey] != KSafeProtection.NONE) {
+                        encryptedKeys.add(userKey)
+                    }
+                }
             }
         }
 
@@ -1329,19 +1447,14 @@ actual class KSafe(
             }
         }
 
-        val hasEncrypted = memoryCache.containsKey("encrypted_$key")
+        val hasEncrypted = memoryCache.containsKey(legacyEncryptedRawKey(key))
         val hasPlain = memoryCache.containsKey(key)
         if (!hasEncrypted && !hasPlain) return null
         if (!hasEncrypted) return KSafeKeyInfo(KSafeProtection.NONE, KSafeKeyStorage.SOFTWARE)
 
-        val meta = protectionMap[key]
-        val protection = when (meta) {
-            "HARDWARE_ISOLATED" -> KSafeProtection.HARDWARE_ISOLATED
-            "NONE" -> KSafeProtection.NONE
-            else -> KSafeProtection.DEFAULT
-        }
-        val storage = when (meta) {
-            "HARDWARE_ISOLATED" -> {
+        val protection = KeySafeMetadataManager.parseProtection(protectionMap[key]) ?: KSafeProtection.DEFAULT
+        val storage = when (protection) {
+            KSafeProtection.HARDWARE_ISOLATED -> {
                 if (KSafeKeyStorage.HARDWARE_ISOLATED in deviceKeyStorages) KSafeKeyStorage.HARDWARE_ISOLATED
                 else KSafeKeyStorage.HARDWARE_BACKED
             }

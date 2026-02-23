@@ -1,6 +1,8 @@
 package eu.anifantakis.lib.ksafe
 
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.edit
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
@@ -10,6 +12,7 @@ import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertNotNull
 
 /**
  * JVM-specific test implementation.
@@ -335,8 +338,8 @@ class JvmKSafeTest : KSafeTest() {
 
         // Verify ciphertext exists in DataStore
         val prefs1 = ksafe.dataStore.data.first()
-        val encKey1 = stringPreferencesKey("encrypted_orphan_test")
-        val encKey2 = stringPreferencesKey("encrypted_orphan_test2")
+        val encKey1 = stringPreferencesKey("__ksafe_value_orphan_test")
+        val encKey2 = stringPreferencesKey("__ksafe_value_orphan_test2")
         assertTrue(prefs1[encKey1] != null, "Ciphertext 1 should exist in DataStore")
         assertTrue(prefs1[encKey2] != null, "Ciphertext 2 should exist in DataStore")
 
@@ -383,7 +386,7 @@ class JvmKSafeTest : KSafeTest() {
 
         // Verify ciphertext is in DataStore
         val setupPrefs = ksafe2setup.dataStore.data.first()
-        val targetKey = stringPreferencesKey("encrypted_cleanup_target")
+        val targetKey = stringPreferencesKey("__ksafe_value_cleanup_target")
         assertTrue(setupPrefs[targetKey] != null, "Target ciphertext should exist before cleanup")
 
         // Now toggle to fail mode — simulates key loss
@@ -538,6 +541,61 @@ class JvmKSafeTest : KSafeTest() {
 
         val result: String? = ksafe.get("nonexistent", defaultValue = null)
         assertNull(result, "Should return null for non-existent key with null default")
+    }
+
+    @Test
+    fun testLegacyPlainIntMigratesToCanonicalOnWrite() = runTest {
+        val ksafe = createKSafe()
+        val key = "legacy_plain_int"
+        delay(200)
+
+        // Simulate pre-1.8.0 storage shape.
+        ksafe.dataStore.edit { prefs ->
+            prefs[intPreferencesKey(key)] = 41
+            prefs[stringPreferencesKey("__ksafe_prot_${key}__")] = "NONE"
+        }
+        ksafe.updateCache(ksafe.dataStore.data.first())
+
+        assertEquals(41, ksafe.getDirect(key, 0), "Legacy plaintext value should be readable before migration")
+
+        // Next write should migrate the key shape.
+        ksafe.put(key, 42, KSafeProtection.NONE)
+
+        val prefs = ksafe.dataStore.data.first()
+        assertEquals(42, prefs[intPreferencesKey("__ksafe_value_${key}")])
+        assertNull(prefs[intPreferencesKey(key)], "Legacy plaintext key should be removed after migration")
+        assertNull(prefs[stringPreferencesKey("encrypted_${key}")], "Legacy encrypted key should be absent")
+        assertNull(prefs[stringPreferencesKey("__ksafe_prot_${key}__")], "Legacy metadata key should be removed")
+        assertNotNull(prefs[stringPreferencesKey("__ksafe_meta_${key}__")], "Canonical metadata should exist")
+    }
+
+    @Test
+    fun testLegacyEncryptedMigratesToCanonicalOnWrite() = runTest {
+        val ksafe = createKSafe()
+        val key = "legacy_encrypted_string"
+        delay(200)
+
+        // Simulate pre-1.8.0 encrypted storage shape.
+        val alias = ksafe.fileName?.let { "$it:$key" } ?: key
+        val oldJson = "\"legacy_v1\""
+        val oldCiphertext = encodeBase64(ksafe.engine.encrypt(alias, oldJson.encodeToByteArray()))
+        ksafe.dataStore.edit { prefs ->
+            prefs[stringPreferencesKey("encrypted_${key}")] = oldCiphertext
+            prefs[stringPreferencesKey("__ksafe_prot_${key}__")] = "DEFAULT"
+        }
+        ksafe.updateCache(ksafe.dataStore.data.first())
+
+        assertEquals("legacy_v1", ksafe.getDirect(key, "DEFAULT"), "Legacy encrypted value should be readable")
+
+        // Next encrypted write should migrate key names and metadata.
+        ksafe.put(key, "legacy_v2", KSafeProtection.DEFAULT)
+
+        val prefs = ksafe.dataStore.data.first()
+        assertNotNull(prefs[stringPreferencesKey("__ksafe_value_${key}")], "Canonical value key should exist")
+        assertNull(prefs[stringPreferencesKey("encrypted_${key}")], "Legacy encrypted key should be removed")
+        assertNull(prefs[stringPreferencesKey("__ksafe_prot_${key}__")], "Legacy metadata key should be removed")
+        assertNotNull(prefs[stringPreferencesKey("__ksafe_meta_${key}__")], "Canonical metadata should exist")
+        assertEquals("legacy_v2", ksafe.getDirect(key, "DEFAULT"), "Updated value should be readable after migration")
     }
 
 }
