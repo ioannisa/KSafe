@@ -73,8 +73,8 @@ class JvmFileNameTest {
         val s1 = newStore()
         val s2 = newStore()
         val key = "shared"
-        s1.put(key, "v1", KSafeProtection.NONE)
-        s2.put(key, "v2", KSafeProtection.NONE)
+        s1.put(key, "v1", KSafeWriteMode.Plain)
+        s2.put(key, "v2", KSafeWriteMode.Plain)
         assertEquals("v1", s1.get(key, "x"))
         assertEquals("v2", s2.get(key, "x"))
     }
@@ -95,7 +95,7 @@ class JvmFileNameTest {
     fun unencrypted_roundTrip() = runTest {
         val s = newStore()
         val k = "plain"
-        s.put(k, "p", KSafeProtection.NONE)
+        s.put(k, "p", KSafeWriteMode.Plain)
         assertEquals("p", s.get(k, "x"))
     }
 
@@ -108,9 +108,9 @@ class JvmFileNameTest {
         val k = "f_plain"
         s.getFlow(k, "d").test {
             assertEquals("d", awaitItem())
-            s.put(k, "a", KSafeProtection.NONE)
+            s.put(k, "a", KSafeWriteMode.Plain)
             assertEquals("a", awaitItem())
-            s.put(k, "b", KSafeProtection.NONE)
+            s.put(k, "b", KSafeWriteMode.Plain)
             assertEquals("b", awaitItem())
             cancelAndIgnoreRemainingEvents()
         }
@@ -148,7 +148,7 @@ class JvmFileNameTest {
     @Test
     fun delegate_explicitKey_unencrypted() = runTest {
     val s = newStore()
-        var count: Int by s(defaultValue = 0, key = "count", protection = KSafeProtection.NONE)
+        var count: Int by s(defaultValue = 0, key = "count", mode = KSafeWriteMode.Plain)
         assertEquals(0, count)
         count = 3
         assertEquals(3, count)
@@ -161,12 +161,12 @@ class JvmFileNameTest {
     @Test
     fun primitives_unencrypted_roundTrip() = runTest {
         val s = newStore()
-        s.put("i", 1, KSafeProtection.NONE); assertEquals(1, s.get("i", 0))
-        s.put("l", 2L, KSafeProtection.NONE); assertEquals(2L, s.get("l", 0L))
-        s.put("f", 1.5f, KSafeProtection.NONE); assertEquals(1.5f, s.get("f", 0f))
-        s.put("d", 2.5, KSafeProtection.NONE); assertEquals(2.5, s.get("d", 0.0))
-        s.put("b", true, KSafeProtection.NONE); assertEquals(true, s.get("b", false))
-        s.put("s", "hi", KSafeProtection.NONE); assertEquals("hi", s.get("s", "x"))
+        s.put("i", 1, KSafeWriteMode.Plain); assertEquals(1, s.get("i", 0))
+        s.put("l", 2L, KSafeWriteMode.Plain); assertEquals(2L, s.get("l", 0L))
+        s.put("f", 1.5f, KSafeWriteMode.Plain); assertEquals(1.5f, s.get("f", 0f))
+        s.put("d", 2.5, KSafeWriteMode.Plain); assertEquals(2.5, s.get("d", 0.0))
+        s.put("b", true, KSafeWriteMode.Plain); assertEquals(true, s.get("b", false))
+        s.put("s", "hi", KSafeWriteMode.Plain); assertEquals("hi", s.get("s", "x"))
     }
 
     @Serializable
@@ -189,7 +189,7 @@ class JvmFileNameTest {
     fun delete_plain_and_encrypted() = runTest {
         val s = newStore()
         val kp = "plainDel"; val ke = "encDel"
-        s.put(kp, "p", KSafeProtection.NONE); s.put(ke, "e")
+        s.put(kp, "p", KSafeWriteMode.Plain); s.put(ke, "e")
         s.delete(kp); s.delete(ke)
         assertEquals("x", s.get(kp, "x"))
         assertEquals("x", s.get(ke, "x"))
@@ -198,9 +198,9 @@ class JvmFileNameTest {
     // ---------- Composition ----------
 
     class Prefs(private val s: KSafe) {
-        var theme: String by s(defaultValue = "light", key = "theme", protection = KSafeProtection.NONE)
+        var theme: String by s(defaultValue = "light", key = "theme", mode = KSafeWriteMode.Plain)
         var auth: String by s(defaultValue = "", key = "auth") // encrypted
-        var level: Int by s(defaultValue = 0, key = "level", protection = KSafeProtection.NONE)
+        var level: Int by s(defaultValue = 0, key = "level", mode = KSafeWriteMode.Plain)
     }
 
     /** Verifies multiple KSafe instances with different files are isolated */

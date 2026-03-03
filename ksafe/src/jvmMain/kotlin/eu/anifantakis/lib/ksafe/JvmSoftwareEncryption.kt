@@ -50,7 +50,12 @@ internal class JvmSoftwareEncryption(
     private val locks = ConcurrentHashMap<String, Any>()
     private fun lockFor(alias: String): Any = locks.computeIfAbsent(alias) { Any() }
 
-    override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean): ByteArray {
+    override fun encrypt(
+        identifier: String,
+        data: ByteArray,
+        hardwareIsolated: Boolean,
+        requireUnlockedDevice: Boolean?
+    ): ByteArray {
         val secretKey = runBlocking { getOrCreateSecretKey(identifier) }
 
         // Generate random IV

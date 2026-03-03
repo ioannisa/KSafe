@@ -26,7 +26,7 @@ class NullFilenameTest {
         val value = "test_value"
 
         Log.d("NullFilenameTest", "Putting value with null filename")
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
 
         val retrieved = ksafe.get(key, "default")
         Log.d("NullFilenameTest", "Retrieved: $retrieved")
@@ -39,7 +39,7 @@ class NullFilenameTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val ksafe = KSafe(context, null)  // Explicitly passing null
 
-        var myProperty: String by ksafe(defaultValue = "default", protection = KSafeProtection.NONE)
+        var myProperty: String by ksafe(defaultValue = "default", mode = KSafeWriteMode.Plain)
 
         Log.d("NullFilenameTest", "Initial delegate value: $myProperty")
         assertEquals("default", myProperty)

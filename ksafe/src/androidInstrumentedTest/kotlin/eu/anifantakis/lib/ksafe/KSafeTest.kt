@@ -23,7 +23,7 @@ abstract class KSafeTest {
         val value = "Hello, World!"
         val defaultValue = "default"
 
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
     }
@@ -47,7 +47,7 @@ abstract class KSafeTest {
         val value = 42
         val defaultValue = 0
 
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
     }
@@ -71,7 +71,7 @@ abstract class KSafeTest {
         val value = true
         val defaultValue = false
 
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
     }
@@ -95,7 +95,7 @@ abstract class KSafeTest {
         val value = 9876543210L
         val defaultValue = 0L
 
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
     }
@@ -119,7 +119,7 @@ abstract class KSafeTest {
         val value = 3.14159f
         val defaultValue = 0.0f
 
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
     }
@@ -143,7 +143,7 @@ abstract class KSafeTest {
         val value = 3.141592653589793
         val defaultValue = 0.0
 
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
     }
@@ -187,7 +187,7 @@ abstract class KSafeTest {
         val value = "to_be_deleted"
         val defaultValue = "default"
 
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         assertEquals(value, ksafe.get(key, defaultValue))
 
         ksafe.delete(key)
@@ -216,10 +216,10 @@ abstract class KSafeTest {
         val value2 = "second_value"
         val defaultValue = "default"
 
-        ksafe.put(key, value1, KSafeProtection.NONE)
+        ksafe.put(key, value1, KSafeWriteMode.Plain)
         assertEquals(value1, ksafe.get(key, defaultValue))
 
-        ksafe.put(key, value2, KSafeProtection.NONE)
+        ksafe.put(key, value2, KSafeWriteMode.Plain)
         assertEquals(value2, ksafe.get(key, defaultValue))
     }
 
@@ -253,11 +253,11 @@ abstract class KSafeTest {
             assertEquals(defaultValue, awaitItem())
 
             // Update value
-            ksafe.put(key, value1, KSafeProtection.NONE)
+            ksafe.put(key, value1, KSafeWriteMode.Plain)
             assertEquals(value1, awaitItem())
 
             // Update again
-            ksafe.put(key, value2, KSafeProtection.NONE)
+            ksafe.put(key, value2, KSafeWriteMode.Plain)
             assertEquals(value2, awaitItem())
 
             cancelAndIgnoreRemainingEvents()
@@ -304,11 +304,11 @@ abstract class KSafeTest {
             assertEquals(defaultValue, awaitItem())
 
             // Update value
-            ksafe.put(key, value, KSafeProtection.NONE)
+            ksafe.put(key, value, KSafeWriteMode.Plain)
             assertEquals(value, awaitItem())
 
             // Update with same value - should not emit
-            ksafe.put(key, value, KSafeProtection.NONE)
+            ksafe.put(key, value, KSafeWriteMode.Plain)
             expectNoEvents()
 
             cancelAndIgnoreRemainingEvents()
@@ -324,8 +324,8 @@ abstract class KSafeTest {
         val value2 = "value2"
         val defaultValue = "default"
 
-        ksafe.put(key1, value1, KSafeProtection.NONE)
-        ksafe.put(key2, value2, KSafeProtection.NONE)
+        ksafe.put(key1, value1, KSafeWriteMode.Plain)
+        ksafe.put(key2, value2, KSafeWriteMode.Plain)
 
         assertEquals(value1, ksafe.get(key1, defaultValue))
         assertEquals(value2, ksafe.get(key2, defaultValue))
@@ -371,7 +371,7 @@ abstract class KSafeTest {
         )
 
         // Test unencrypted
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
 
@@ -392,7 +392,7 @@ abstract class KSafeTest {
         val defaultValue: String? = "default"
 
         // Store null value
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved: String? = ksafe.get(key, defaultValue)
         assertNull(retrieved, "Retrieved value should be null")
     }
@@ -417,7 +417,7 @@ abstract class KSafeTest {
         val value: Int? = null
         val defaultValue: Int? = 42
 
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved: Int? = ksafe.get(key, defaultValue)
         assertNull(retrieved, "Retrieved Int? should be null")
     }
@@ -443,11 +443,11 @@ abstract class KSafeTest {
         val defaultValue: String? = "default"
 
         // Store null first
-        ksafe.put(key, nullValue, KSafeProtection.NONE)
+        ksafe.put(key, nullValue, KSafeWriteMode.Plain)
         assertNull(ksafe.get(key, defaultValue))
 
         // Overwrite with non-null
-        ksafe.put(key, nonNullValue, KSafeProtection.NONE)
+        ksafe.put(key, nonNullValue, KSafeWriteMode.Plain)
         assertEquals(nonNullValue, ksafe.get(key, defaultValue))
     }
 
@@ -460,11 +460,11 @@ abstract class KSafeTest {
         val defaultValue: String? = "default"
 
         // Store non-null first
-        ksafe.put(key, nonNullValue, KSafeProtection.NONE)
+        ksafe.put(key, nonNullValue, KSafeWriteMode.Plain)
         assertEquals(nonNullValue, ksafe.get(key, defaultValue))
 
         // Overwrite with null
-        ksafe.put(key, nullValue, KSafeProtection.NONE)
+        ksafe.put(key, nullValue, KSafeWriteMode.Plain)
         assertNull(ksafe.get(key, defaultValue))
     }
 
@@ -487,7 +487,7 @@ abstract class KSafeTest {
         val defaultValue = NullableFieldData(0, "default", "default")
 
         // Test unencrypted
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
         assertNull(retrieved.name)
@@ -508,7 +508,7 @@ abstract class KSafeTest {
         val defaultValue: String? = "default"
 
         // Use putDirect
-        ksafe.putDirect(key, value, KSafeProtection.NONE)
+        ksafe.putDirect(key, value, KSafeWriteMode.Plain)
 
         // Use getDirect
         val retrieved: String? = ksafe.getDirect(key, defaultValue)
@@ -539,7 +539,7 @@ abstract class KSafeTest {
         val value = ""
         val defaultValue = "default"
 
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
     }
@@ -552,7 +552,7 @@ abstract class KSafeTest {
         val defaultValue = "default"
 
         // Test unencrypted
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         assertEquals(value, ksafe.get(key, defaultValue))
 
         // Test encrypted
@@ -569,7 +569,7 @@ abstract class KSafeTest {
         val defaultValue = "default"
 
         // Test unencrypted
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         assertEquals(value, ksafe.get(key, defaultValue))
 
         // Test encrypted
@@ -586,7 +586,7 @@ abstract class KSafeTest {
         val defaultValue = ""
 
         // Test unencrypted
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         assertEquals(value, ksafe.get(key, defaultValue))
 
         // Test encrypted
@@ -606,7 +606,7 @@ abstract class KSafeTest {
             val value = "value_$index"
             val defaultValue = "default"
 
-            ksafe.put(key, value, KSafeProtection.NONE)
+            ksafe.put(key, value, KSafeWriteMode.Plain)
             val retrieved = ksafe.get(key, defaultValue)
             results.add(retrieved == value)
         }
@@ -623,8 +623,8 @@ abstract class KSafeTest {
         val value2 = "value_for_file2"
         val defaultValue = "default"
 
-        ksafe1.put(key, value1, KSafeProtection.NONE)
-        ksafe2.put(key, value2, KSafeProtection.NONE)
+        ksafe1.put(key, value1, KSafeWriteMode.Plain)
+        ksafe2.put(key, value2, KSafeWriteMode.Plain)
 
         assertEquals(value1, ksafe1.get(key, defaultValue))
         assertEquals(value2, ksafe2.get(key, defaultValue))
@@ -637,25 +637,25 @@ abstract class KSafeTest {
         // Test negative int
         val intKey = "negative_int"
         val intValue = -42
-        ksafe.put(intKey, intValue, KSafeProtection.NONE)
+        ksafe.put(intKey, intValue, KSafeWriteMode.Plain)
         assertEquals(intValue, ksafe.get(intKey, 0))
 
         // Test negative long
         val longKey = "negative_long"
         val longValue = -9876543210L
-        ksafe.put(longKey, longValue, KSafeProtection.NONE)
+        ksafe.put(longKey, longValue, KSafeWriteMode.Plain)
         assertEquals(longValue, ksafe.get(longKey, 0L))
 
         // Test negative float
         val floatKey = "negative_float"
         val floatValue = -3.14f
-        ksafe.put(floatKey, floatValue, KSafeProtection.NONE)
+        ksafe.put(floatKey, floatValue, KSafeWriteMode.Plain)
         assertEquals(floatValue, ksafe.get(floatKey, 0.0f))
 
         // Test negative double
         val doubleKey = "negative_double"
         val doubleValue = -2.71828
-        ksafe.put(doubleKey, doubleValue, KSafeProtection.NONE)
+        ksafe.put(doubleKey, doubleValue, KSafeWriteMode.Plain)
         assertEquals(doubleValue, ksafe.get(doubleKey, 0.0))
     }
 
@@ -665,20 +665,20 @@ abstract class KSafeTest {
 
         // Test Int boundaries
         val maxIntKey = "max_int"
-        ksafe.put(maxIntKey, Int.MAX_VALUE, KSafeProtection.NONE)
+        ksafe.put(maxIntKey, Int.MAX_VALUE, KSafeWriteMode.Plain)
         assertEquals(Int.MAX_VALUE, ksafe.get(maxIntKey, 0))
 
         val minIntKey = "min_int"
-        ksafe.put(minIntKey, Int.MIN_VALUE, KSafeProtection.NONE)
+        ksafe.put(minIntKey, Int.MIN_VALUE, KSafeWriteMode.Plain)
         assertEquals(Int.MIN_VALUE, ksafe.get(minIntKey, 0))
 
         // Test Long boundaries
         val maxLongKey = "max_long"
-        ksafe.put(maxLongKey, Long.MAX_VALUE, KSafeProtection.NONE)
+        ksafe.put(maxLongKey, Long.MAX_VALUE, KSafeWriteMode.Plain)
         assertEquals(Long.MAX_VALUE, ksafe.get(maxLongKey, 0L))
 
         val minLongKey = "min_long"
-        ksafe.put(minLongKey, Long.MIN_VALUE, KSafeProtection.NONE)
+        ksafe.put(minLongKey, Long.MIN_VALUE, KSafeWriteMode.Plain)
         assertEquals(Long.MIN_VALUE, ksafe.get(minLongKey, 0L))
     }
 
@@ -752,7 +752,7 @@ abstract class KSafeTest {
     @Test
     fun delegate_explicitKey_unencrypted() = runTest {
         val ksafe = createKSafe()
-        var count: Int by ksafe(defaultValue = 0, key = "count", protection = KSafeProtection.NONE)
+        var count: Int by ksafe(defaultValue = 0, key = "count", mode = KSafeWriteMode.Plain)
         assertEquals(0, count)
         count = 3
         assertEquals(3, count)

@@ -50,7 +50,8 @@ package eu.anifantakis.lib.ksafe
  *           **Note:** 128-bit keys may offer marginally faster encryption on very old devices,
  *           but 256-bit is strongly recommended for all modern devices (negligible performance difference).
  * @property androidAuthValiditySeconds Reserved for future use. Default is 30 seconds.
- * @property requireUnlockedDevice Whether encrypted data should only be accessible when the device is unlocked.
+ * @property requireUnlockedDevice Default unlock policy for encrypted writes when using
+ *           no-mode APIs (`put/putDirect` without explicit [KSafeWriteMode]).
  *
  *   | Platform    | `false` (default)                                  | `true`                                           |
  *   |-------------|----------------------------------------------------|-------------------------------------------------|
@@ -58,8 +59,8 @@ package eu.anifantakis.lib.ksafe
  *   | **iOS**     | `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` | `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`   |
  *   | **JVM**     | No effect (software-backed keys)                   | No effect (software-backed keys)                 |
  *
- *   Changing this value triggers an automatic one-time migration on the next KSafe initialization.
- *   Existing encryption keys are re-created (Android) or updated in-place (iOS) to match the new policy.
+ *   For per-entry control, prefer [KSafeWriteMode.Encrypted] and set
+ *   `requireUnlockedDevice` explicitly on each write.
  */
 data class KSafeConfig(
     val keySize: Int = 256,

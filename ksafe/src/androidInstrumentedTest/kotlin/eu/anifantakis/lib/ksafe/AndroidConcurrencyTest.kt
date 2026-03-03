@@ -186,7 +186,7 @@ class AndroidConcurrencyTest {
                         val plainValue = "plain${writerId}x$i"
 
                         ksafe.putDirect(key, encValue)
-                        ksafe.putDirect("plain$key", plainValue, KSafeProtection.NONE)
+                        ksafe.putDirect("plain$key", plainValue, KSafeWriteMode.Plain)
 
                         // Read back both
                         val encRead = ksafe.getDirect(key, "ENCDEFAULT")

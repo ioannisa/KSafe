@@ -36,7 +36,7 @@ With simple property delegation, values feel like normal variables — you just 
 
 Think KSafe is overkill for a simple "Dark Mode" toggle? Think again.
 
-By setting `protection = KSafeProtection.NONE`, KSafe completely bypasses the cryptographic engine. What remains is a lightning-fast, zero-boilerplate wrapper around AndroidX DataStore with a concurrent hot-cache.
+By setting `mode = KSafeWriteMode.Plain`, KSafe completely bypasses the cryptographic engine. What remains is a lightning-fast, zero-boilerplate wrapper around AndroidX DataStore with a concurrent hot-cache.
 
 Setting up raw KMP DataStore requires writing `expect/actual` file paths across 4 platforms, managing `CoroutineScopes`, and dealing with async-only Flow reads. KSafe abstracts 100% of that. You get synchronous, O(1) reads backed by asynchronous disk writes—all in one line of code. **Unencrypted KSafe writes are actually benchmarked to be faster than native Android SharedPreferences.**
 
@@ -149,7 +149,7 @@ plugins {
 Koin is the defacto DI solution for Kotlin Multiplatform, and is the ideal tool to provide KSafe as a singleton.
 
 > **Performance guidance — "prefs" vs "vault":**
-> Encryption adds overhead to every write (AES-GCM + Keystore/Keychain round-trip). For data that doesn't need confidentiality — theme preferences, last-visited screen, UI flags — use `protection = KSafeProtection.NONE` to get SharedPreferences-level speed. Reserve encryption for secrets like tokens, passwords, and PII. The easiest way to enforce this is to create **two named singletons**:
+> Encryption adds overhead to every write (AES-GCM + Keystore/Keychain round-trip). For data that doesn't need confidentiality — theme preferences, last-visited screen, UI flags — use `mode = KSafeWriteMode.Plain` to get SharedPreferences-level speed. Reserve encryption for secrets like tokens, passwords, and PII. The easiest way to enforce this is to create **two named singletons**:
 
 ```Kotlin
 // ──────────────────────────────────────────────
@@ -238,14 +238,17 @@ class MyViewModel(
 ) : ViewModel() {
 
     // UI preferences — no encryption overhead
-    var theme      by prefs("dark", protection = KSafeProtection.NONE)
-    var lastScreen by prefs("home", protection = KSafeProtection.NONE)
-    var onboarded  by prefs(false, protection = KSafeProtection.NONE)
+    var theme      by prefs("dark", mode = KSafeWriteMode.Plain)
+    var lastScreen by prefs("home", mode = KSafeWriteMode.Plain)
+    var onboarded  by prefs(false, mode = KSafeWriteMode.Plain)
 
     // Secrets — AES-256-GCM encrypted, hardware-backed keys
     var authToken    by vault("")
     var refreshToken by vault("")
-    var userPin      by vault("", protection = KSafeProtection.HARDWARE_ISOLATED)  // StrongBox / SE
+    var userPin      by vault(
+        "",
+        mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED)
+    )  // StrongBox / SE
 }
 ```
 
@@ -331,7 +334,7 @@ var counter by ksafe(0)
 Parameters:
 * `defaultValue` - must be declared (type is inferred from it)
 * `key` - if not set, the variable name is used as a key
-* `protection` - `KSafeProtection.DEFAULT` (encrypted, default), `.NONE` (no encryption), or `.HARDWARE_ISOLATED` (StrongBox / Secure Enclave)
+* `mode` (overload) - `KSafeWriteMode.Plain` or `KSafeWriteMode.Encrypted(...)` for per-entry control
 
 ```Kotlin
 class MyViewModel(ksafe: KSafe): ViewModel() {
@@ -365,6 +368,28 @@ class MyViewModel(ksafe: KSafe): ViewModel() {
 }
 ```
 
+When you need custom Compose equality semantics, use the advanced overload with `policy`:
+
+```kotlin
+import androidx.compose.runtime.neverEqualPolicy
+import androidx.compose.runtime.referentialEqualityPolicy
+
+// Default (recommended): structural equality
+var profile by ksafe.mutableStateOf(Profile())
+
+// Persist/recompose only when reference changes
+var uiModel by ksafe.mutableStateOf(
+    defaultValue = UiModel(),
+    policy = referentialEqualityPolicy()
+)
+
+// Always treat assignment as a change (always persists)
+var ticks by ksafe.mutableStateOf(
+    defaultValue = 0,
+    policy = neverEqualPolicy()
+)
+```
+
 ### Suspend API (non-blocking)
 
 ```Kotlin
@@ -386,6 +411,37 @@ val n = ksafe.getDirect("counter", 0)
 |-----|------|-------|----------|
 | `getDirect`/`putDirect` | 0.0016 ms | 0.012 ms | UI, bulk ops, high throughput |
 | `get`/`put` (suspend) | 0.0014 ms | 8.8 ms | When you must guarantee persistence |
+
+### Write Mode API (Per-Entry Unlock Policy)
+
+Use `KSafeWriteMode` when you need encrypted-only options like `requireUnlockedDevice`:
+
+```kotlin
+// Direct API
+ksafe.putDirect(
+    "token",
+    token,
+    mode = KSafeWriteMode.Encrypted(
+        protection = KSafeEncryptedProtection.DEFAULT,
+        requireUnlockedDevice = true
+    )
+)
+
+// Suspend API
+ksafe.put(
+    "pin",
+    pin,
+    mode = KSafeWriteMode.Encrypted(
+        protection = KSafeEncryptedProtection.HARDWARE_ISOLATED,
+        requireUnlockedDevice = true
+    )
+)
+
+// Explicit plaintext write
+ksafe.putDirect("theme", "dark", mode = KSafeWriteMode.Plain)
+```
+
+No-mode writes (`put`/`putDirect` without `mode`) use encrypted defaults and pick up `KSafeConfig.requireUnlockedDevice` as the default unlock policy.
 
 ### Storing Complex Objects
 
@@ -463,7 +519,7 @@ class CounterViewModel(ksafe: KSafe) : ViewModel() {
 
 ## Why use KSafe?
 
-* **Hardware-backed security** - AES-256-GCM with keys stored in Android Keystore, iOS Keychain, software-backed on JVM, or WebCrypto on WASM. Per-property protection levels via `KSafeProtection` — mix `NONE`, `DEFAULT`, and `HARDWARE_ISOLATED` in a single instance
+* **Hardware-backed security** - AES-256-GCM with keys stored in Android Keystore, iOS Keychain, software-backed on JVM, or WebCrypto on WASM. Per-property write control via `KSafeWriteMode` and encrypted tiers via `KSafeEncryptedProtection`
 * **Biometric authentication** - Built-in Face ID, Touch ID, and Fingerprint support with smart auth caching
 * **Root & Jailbreak detection** - Detect compromised devices with configurable WARN/BLOCK actions
 * **Clean reinstalls** - Automatic cleanup ensures fresh starts after app reinstallation
@@ -1090,8 +1146,11 @@ KSafe provides enterprise-grade encrypted persistence using DataStore Preference
 1. **Serialize value → plaintext bytes** using kotlinx.serialization
 2. **Load (or generate) a random 256-bit AES key** from Keystore/Keychain (unique per preference key)
 3. **Encrypt with AES-GCM** (nonce + auth-tag included)
-4. **Persist Base64(ciphertext)** in DataStore under `encrypted_<key>`
-5. **Keys managed by platform** - never stored in DataStore
+4. **Persist value** in DataStore/localStorage under `__ksafe_value_<key>`  
+   (encrypted writes store Base64 ciphertext, plaintext writes keep native type where supported)
+5. **Persist metadata** under `__ksafe_meta_<key>__` as compact JSON  
+   (for example: `{"v":1,"p":"DEFAULT"}` or `{"v":1,"p":"DEFAULT","u":"unlocked"}`)
+6. **Keys managed by platform** - never stored in DataStore
 
 **What is GCM?** GCM (Galois/Counter Mode) is an authenticated encryption mode that provides both confidentiality and integrity. The authentication tag detects any tampering—if someone modifies even a single bit of the ciphertext, decryption will fail.
 
@@ -1121,22 +1180,30 @@ KSafe provides enterprise-grade encrypted persistence using DataStore Preference
 - Never store master secrets client-side; prefer server-derived tokens
 - Consider certificate pinning for API communications
 
-**A note on hardware security models:** By default, Android stores AES keys in the TEE (Trusted Execution Environment) — a hardware-isolated zone on the main processor where encryption happens entirely on-chip and the key never enters app memory. With `protection = KSafeProtection.HARDWARE_ISOLATED`, KSafe targets a physically separate security chip (StrongBox on Android, Secure Enclave on iOS) with automatic fallback to default hardware. On iOS, `HARDWARE_ISOLATED` uses **envelope encryption**: an EC P-256 key pair in the Secure Enclave wraps/unwraps the AES symmetric key via ECIES, so the AES key material is hardware-protected even though AES-GCM itself runs in CryptoKit. Without hardware isolation, AES keys are stored as Keychain items — still encrypted by the OS and protected by the device passcode.
+**A note on hardware security models:** By default, Android stores AES keys in the TEE (Trusted Execution Environment) — a hardware-isolated zone on the main processor where encryption happens entirely on-chip and the key never enters app memory. With `mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED)`, KSafe targets a physically separate security chip (StrongBox on Android, Secure Enclave on iOS) with automatic fallback to default hardware. On iOS, `HARDWARE_ISOLATED` uses **envelope encryption**: an EC P-256 key pair in the Secure Enclave wraps/unwraps the AES symmetric key via ECIES, so the AES key material is hardware-protected even though AES-GCM itself runs in CryptoKit. Without hardware isolation, AES keys are stored as Keychain items — still encrypted by the OS and protected by the device passcode.
 
 **Hardware isolation (per-property):**
 ```kotlin
 // StrongBox on Android, Secure Enclave on iOS
-var secret by ksafe("", protection = KSafeProtection.HARDWARE_ISOLATED)
+var secret by ksafe(
+    "",
+    mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED)
+)
 
 // Or with suspend/direct API
-ksafe.put("secret", value, protection = KSafeProtection.HARDWARE_ISOLATED)
-ksafe.putDirect("secret", value, protection = KSafeProtection.HARDWARE_ISOLATED)
+ksafe.put("secret", value, mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED))
+ksafe.putDirect("secret", value, mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED))
 ```
 Hardware isolation provides the highest security level — keys live on a dedicated chip that is physically separate from the main processor. If the device lacks the hardware, KSafe automatically falls back to the platform default with no code changes required. Note that hardware-isolated key generation is slower and per-operation latency is higher, so only enable it for high-security use cases. KSafe's memory policies mitigate read-side latency since most reads come from the hot cache.
 
 **Migrating existing keys to hardware isolation:** Using `HARDWARE_ISOLATED` only affects *new* key generation. Existing keys continue working from wherever they were originally generated. To migrate existing data to hardware-isolated keys, delete the KSafe data (or the specific keys) and reinitialize.
 
-**Per-key protection metadata:** Each key's protection level (`DEFAULT`, `HARDWARE_ISOLATED`, or `NONE`) is recorded in DataStore (or localStorage on WASM) alongside the data. This metadata enables auto-detection on reads (so read APIs don't need a `protection` parameter) and is used during `requireUnlockedDevice` migration on Android to re-encrypt each key with the correct hardware backing. Metadata entries use the `__ksafe_` prefix and are automatically excluded from cache iteration, cleanup, and migration loops.
+**Per-key metadata (single entry):** Each key stores one metadata entry (`__ksafe_meta_{key}__`) that includes:
+- `p` → protection tier (`NONE`, `DEFAULT`, `HARDWARE_ISOLATED`)
+- optional `u` → unlock policy (`"unlocked"` when `requireUnlockedDevice=true`)
+
+This metadata is used for read auto-detection and `getKeyInfo()`.  
+Legacy metadata (`__ksafe_prot_{key}__`) is still read for backward compatibility and cleaned on next write/delete.
 
 ### Querying Device Security Capabilities
 
@@ -1151,7 +1218,7 @@ ksafe.deviceKeyStorages.max()  // HARDWARE_ISOLATED (highest available)
 
 // Per-key: what protection was used and where is the key stored?
 val info = ksafe.getKeyInfo("auth_token")
-// info?.protection  → KSafeProtection.DEFAULT        (what the caller requested)
+// info?.protection  → KSafeProtection.DEFAULT        (encrypted tier, null if plaintext)
 // info?.storage     → KSafeKeyStorage.HARDWARE_BACKED (where the key lives)
 ```
 
@@ -1159,7 +1226,7 @@ val info = ksafe.getKeyInfo("auth_token")
 
 ```kotlin
 data class KSafeKeyInfo(
-    val protection: KSafeProtection,   // NONE, DEFAULT, or HARDWARE_ISOLATED
+    val protection: KSafeProtection?,  // null, DEFAULT, or HARDWARE_ISOLATED
     val storage: KSafeKeyStorage       // SOFTWARE, HARDWARE_BACKED, or HARDWARE_ISOLATED
 )
 ```
@@ -1189,14 +1256,14 @@ Query the protection tier and storage location of a specific key:
 
 ```kotlin
 ksafe.getKeyInfo("auth_token")    // KSafeKeyInfo(DEFAULT, HARDWARE_BACKED) on Android/iOS
-ksafe.getKeyInfo("theme")         // KSafeKeyInfo(NONE, SOFTWARE) if unencrypted
+ksafe.getKeyInfo("theme")         // KSafeKeyInfo(null, SOFTWARE) if unencrypted
 ksafe.getKeyInfo("nonexistent")   // null (key doesn't exist)
 ```
 
 | Scenario | Return value |
 |----------|-------------|
 | Key not found | `null` |
-| Unencrypted key (`KSafeProtection.NONE`) | `KSafeKeyInfo(NONE, SOFTWARE)` |
+| Unencrypted key | `KSafeKeyInfo(null, SOFTWARE)` |
 | Encrypted key (Android/iOS) | `KSafeKeyInfo(DEFAULT, HARDWARE_BACKED)` |
 | Encrypted key (JVM/WASM) | `KSafeKeyInfo(DEFAULT, SOFTWARE)` |
 | `HARDWARE_ISOLATED` key (device supports it) | `KSafeKeyInfo(HARDWARE_ISOLATED, HARDWARE_ISOLATED)` |
@@ -1205,45 +1272,40 @@ ksafe.getKeyInfo("nonexistent")   // null (key doesn't exist)
 **Use cases:**
 - Display a security badge in your UI based on device capabilities
 - Verify that a specific key is stored at the expected hardware level
-- Choose the appropriate `KSafeProtection` level based on what the device supports
+- Choose the appropriate `KSafeEncryptedProtection` level based on what the device supports
 - Log/report the security posture of the device for compliance
 
 ```kotlin
 // Adaptive protection based on device capabilities
 val protection = if (KSafeKeyStorage.HARDWARE_ISOLATED in ksafe.deviceKeyStorages)
-    KSafeProtection.HARDWARE_ISOLATED
+    KSafeEncryptedProtection.HARDWARE_ISOLATED
 else
-    KSafeProtection.DEFAULT
+    KSafeEncryptedProtection.DEFAULT
 
-var secret by ksafe("", protection = protection)
+var secret by ksafe("", mode = KSafeWriteMode.Encrypted(protection))
 
 // Verify a key's actual storage level after writing
-ksafe.putDirect("secret", "value", protection = KSafeProtection.HARDWARE_ISOLATED)
+ksafe.putDirect("secret", "value", mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED))
 val info = ksafe.getKeyInfo("secret")
 // info?.protection == HARDWARE_ISOLATED (always matches what was requested)
 // info?.storage == HARDWARE_ISOLATED on devices with StrongBox/SE, HARDWARE_BACKED otherwise
 ```
 
-### Automatic Protection Tier Migration
+### Legacy Key Migration (v1.6.x → v1.7.0 canonical keys)
 
-If you change a key's `KSafeProtection` level between app versions (e.g., upgrading a preference from `NONE` to `DEFAULT`, or promoting a secret from `DEFAULT` to `HARDWARE_ISOLATED`), KSafe transparently migrates the data — no manual migration step required.
+KSafe now uses canonical, namespaced storage keys:
+- value: `__ksafe_value_{key}`
+- metadata: `__ksafe_meta_{key}__`
 
-```kotlin
-// v1.0 of your app
-var token by ksafe("")  // DEFAULT encryption
+Legacy keys are still supported on reads:
+- `encrypted_{key}`
+- bare `{key}`
+- `__ksafe_prot_{key}__`
 
-// v2.0 — upgrade to hardware isolation (just change the protection)
-var token by ksafe("", protection = KSafeProtection.HARDWARE_ISOLATED)
-// On first read, KSafe detects the old DEFAULT data, migrates it to HARDWARE_ISOLATED,
-// and cleans up the old encryption key — all inline, no user code needed.
-```
-
-**How it works:**
-- **On read (`getDirect` / `get`):** If the key is not found at the expected location, KSafe checks the alternate location (encrypted ↔ plaintext), reads the value, writes it at the new protection level, and removes the old data.
-- **On write (`putDirect` / `put`):** Before writing, any stale data at the alternate location is cleaned up.
-- **`DEFAULT` ↔ `HARDWARE_ISOLATED`:** Both use the same encrypted storage key (`encrypted_{key}`), so migration deletes the old encryption key and re-encrypts with a new one at the correct hardware tier.
-
-This applies to all protection level transitions: `NONE` → `DEFAULT`, `DEFAULT` → `HARDWARE_ISOLATED`, `HARDWARE_ISOLATED` → `NONE`, etc.
+Migration is lazy and safe:
+- Reads can consume both canonical and legacy key shapes.
+- Writes (`put`/`putDirect`) always persist canonical keys and remove legacy entries for that key.
+- Delete paths remove canonical and legacy entries.
 
 ***
 
@@ -1333,7 +1395,7 @@ val ksafe = KSafe(
     context = context,
     config = KSafeConfig(
         keySize = 256,                  // AES key size: 128 or 256 bits
-        requireUnlockedDevice = false   // Require device unlock for key access
+        requireUnlockedDevice = false   // Default for protection-based encrypted writes
     )
 )
 ```
@@ -1342,33 +1404,48 @@ val ksafe = KSafe(
 
 ### Device Lock-State Policy
 
-Control whether encrypted data is only accessible when the device is unlocked:
+Control whether encrypted data is only accessible when the device is unlocked.
+
+You now have two options:
+1. **Per-entry (recommended):** Use `KSafeWriteMode.Encrypted(requireUnlockedDevice = ...)`
+2. **Default fallback:** Use `KSafeConfig(requireUnlockedDevice = ...)` for no-mode encrypted writes (`put`/`putDirect` without `mode`)
 
 ```kotlin
+// Per-entry policy (recommended)
+ksafe.put(
+    "auth_token",
+    token,
+    mode = KSafeWriteMode.Encrypted(
+        protection = KSafeEncryptedProtection.DEFAULT,
+        requireUnlockedDevice = true
+    )
+)
+
+// Fallback default for no-mode encrypted writes
 val ksafe = KSafe(
     context = context,
     config = KSafeConfig(requireUnlockedDevice = true)
 )
+
 ```
 
 | Platform | `false` (default) | `true` |
 |----------|-------------------|--------|
 | **Android** | Keys accessible at any time | `setUnlockedDeviceRequired(true)` (API 28+) |
 | **iOS** | `AfterFirstUnlockThisDeviceOnly` | `WhenUnlockedThisDeviceOnly` |
-| **JVM** | No effect (marker-only) | No effect (marker-only) |
+| **JVM** | No effect (software keys) | No effect (software keys) |
 | **WASM** | No effect (browser has no lock concept) | No effect |
 
-**JVM note:** Desktop/server environments have no OS-level device lock concept. The `requireUnlockedDevice` setting is accepted but has no runtime effect — encrypted data is always accessible. A migration marker is written for consistency with Android/iOS, so switching between platforms doesn't trigger repeated migrations.
+**Important:** `requireUnlockedDevice` applies only to encrypted writes.  
+`KSafeWriteMode.Plain` intentionally does not use unlock policy.
 
-Changing this value in either direction triggers an automatic one-time migration on the next KSafe initialization. Android re-encrypts existing values with a new Keystore key (both `false`&rarr;`true` and `true`&rarr;`false`); iOS updates Keychain accessibility in-place via `SecItemUpdate`. The migration marker is only written on success, so a crash or locked-device failure safely retries on the next launch.
-
-**Per-key protection metadata:** KSafe records the protection level used for each key (`__ksafe_prot_{key}__`) in DataStore/localStorage on all platforms. This metadata enables auto-detection on reads and ensures correct re-encryption during Android migration — keys originally written with `HARDWARE_ISOLATED` are re-encrypted to StrongBox, while `DEFAULT` keys stay in the TEE. Pre-1.7.0 keys without metadata use a heuristic fallback (checks if `encrypted_{key}` exists in cache).
+**Metadata shape:** unlock policy is recorded per key in `__ksafe_meta_{key}__` JSON (`"u":"unlocked"` only when enabled). There is no global per-instance access-policy marker.
 
 **Error behavior when locked:** When `requireUnlockedDevice = true` and the device is locked, encrypted **reads** (`getDirect`, `get`, `getFlow`) throw `IllegalStateException`. The suspend `put()` also throws for encrypted data. However, `putDirect` does **not** throw to the caller — it queues the write to a background consumer that logs the error and drops the batch (the consumer stays alive for future writes after the device is unlocked). Your app can catch read-side exceptions to show a "device is locked" message instead of silently receiving default values.
 
 #### Multiple Safes with Different Lock Policies
 
-Because KSafe supports [multiple instances](#using-multiple-ksafe-instances), you can assign different lock policies to different data categories — keeping sensitive data locked while allowing less-sensitive data to remain accessible in the background:
+You can still use multiple instances for hard separation (for example, `secure` and `prefs`), but it is no longer required for lock-policy control because policy can be set per write entry.
 
 ```kotlin
 // Android example with Koin
@@ -1459,14 +1536,14 @@ KSafe 1.2.0 introduced a completely rewritten core architecture focusing on zero
 
 #### Android
 * Keys stored in Android Keystore (TEE by default)
-* Optional StrongBox support via `KSafeProtection.HARDWARE_ISOLATED` — uses a physically separate security chip with automatic TEE fallback on devices without StrongBox
+* Optional StrongBox support via `KSafeEncryptedProtection.HARDWARE_ISOLATED` (through `KSafeWriteMode.Encrypted`) — uses a physically separate security chip with automatic TEE fallback on devices without StrongBox
 * Hardware-backed encryption when available
 * Keys bound to your application
 * Automatic cleanup on app uninstall
 
 #### iOS
 * Keys stored in iOS Keychain Services
-* Optional Secure Enclave support via `KSafeProtection.HARDWARE_ISOLATED` — uses envelope encryption (SE-backed EC P-256 wraps/unwraps the AES key) with automatic Keychain fallback on devices without SE
+* Optional Secure Enclave support via `KSafeEncryptedProtection.HARDWARE_ISOLATED` (through `KSafeWriteMode.Encrypted`) — uses envelope encryption (SE-backed EC P-256 wraps/unwraps the AES key) with automatic Keychain fallback on devices without SE
 * Protected by device authentication
 * Not included in iCloud/iTunes backups
 * Automatic cleanup of orphaned keys on first app use after reinstall
@@ -1616,32 +1693,43 @@ The iOS test app demonstrates:
 
 ### From v1.6.x to v1.7.0
 
-#### `encrypted: Boolean` → `KSafeProtection` (ERROR)
+#### `encrypted: Boolean` → `KSafeWriteMode` (WARNING)
 
-The `encrypted: Boolean` parameter on all API methods is deprecated at `DeprecationLevel.WARNING` — code using it still compiles but shows strikethrough warnings in the IDE with one-click `ReplaceWith` auto-fix. Migrate to `KSafeProtection`:
+The `encrypted: Boolean` parameter on all API methods is deprecated at `DeprecationLevel.WARNING` — code using it still compiles but shows strikethrough warnings in the IDE with one-click `ReplaceWith` auto-fix. Migrate to `KSafeWriteMode`:
 
 ```kotlin
 // Old (WARNING — still compiles but deprecated)
 ksafe.put("key", value, encrypted = true)
 ksafe.get("key", "", encrypted = false)
 
-// New — writes specify protection, reads auto-detect
-ksafe.put("key", value)                                      // DEFAULT (encrypted)
-ksafe.put("key", value, protection = KSafeProtection.NONE)   // unencrypted
+// New — writes specify mode, reads auto-detect
+ksafe.put("key", value)                                  // encrypted default
+ksafe.put("key", value, mode = KSafeWriteMode.Plain)     // unencrypted
 val v = ksafe.get("key", "")                                 // auto-detects
 ```
 
-The mapping is: `encrypted = true` → `KSafeProtection.DEFAULT`, `encrypted = false` → `KSafeProtection.NONE`.
+The mapping is: `encrypted = true` → `KSafeWriteMode.Encrypted()`, `encrypted = false` → `KSafeWriteMode.Plain`.
+
+#### Canonical storage keys and metadata
+
+KSafe now writes:
+- values under `__ksafe_value_{key}`
+- metadata under `__ksafe_meta_{key}__`
+
+Legacy keys (`encrypted_{key}`, bare `{key}`, `__ksafe_prot_{key}__`) are still readable and are cleaned when that key is next written/deleted.
 
 #### Read APIs Auto-Detect Protection
 
-Read methods (`get`, `getDirect`, `getFlow`, `getStateFlow`) no longer accept a `protection` parameter. They automatically detect whether stored data is encrypted from persisted metadata. You only specify protection on **writes**:
+Read methods (`get`, `getDirect`, `getFlow`, `getStateFlow`) no longer accept a `protection` parameter. They automatically detect whether stored data is encrypted from persisted metadata. You specify write behavior via **mode**:
 
 ```kotlin
-// Writes — specify protection level
+// Writes — specify mode
 ksafe.put("secret", token)                                              // encrypted (default)
-ksafe.putDirect("theme", "dark", protection = KSafeProtection.NONE)     // unencrypted
-var pin by ksafe("", protection = KSafeProtection.HARDWARE_ISOLATED)    // StrongBox / SE
+ksafe.putDirect("theme", "dark", mode = KSafeWriteMode.Plain)          // unencrypted
+var pin by ksafe(
+    "",
+    mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED)
+)    // StrongBox / SE
 
 // Reads — auto-detect, no protection needed
 val secret = ksafe.get("secret", "")

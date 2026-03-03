@@ -27,6 +27,8 @@ internal object KeySafeMetadataManager {
     internal const val META_PREFIX = "__ksafe_meta_"
     @PublishedApi
     internal const val META_SUFFIX = "__"
+    @PublishedApi
+    internal const val ACCESS_POLICY_UNLOCKED = "unlocked"
 
     @PublishedApi
     internal fun legacyEncryptedRawKey(key: String): String = "$LEGACY_ENCRYPTED_PREFIX$key"
@@ -139,7 +141,7 @@ internal object KeySafeMetadataManager {
         val canonicalUserKey = tryExtractCanonicalValueKey(rawKey)
         if (canonicalUserKey != null) {
             val rawMeta = stagedMetadata[canonicalUserKey] ?: existingMetadata[canonicalUserKey]
-            val isEncrypted = parseProtection(rawMeta) != KSafeProtection.NONE
+            val isEncrypted = parseProtection(rawMeta) != null
             val cacheKey = if (isEncrypted) encryptedCacheKeyForUser(canonicalUserKey) else canonicalUserKey
             return ClassifiedStorageEntry(canonicalUserKey, cacheKey, isEncrypted)
         }
@@ -166,14 +168,14 @@ internal object KeySafeMetadataManager {
         if (raw == null) return null
 
         when (raw) {
-            "NONE" -> return KSafeProtection.NONE
+            "NONE" -> return null
             "DEFAULT" -> return KSafeProtection.DEFAULT
             "HARDWARE_ISOLATED" -> return KSafeProtection.HARDWARE_ISOLATED
         }
 
         return try {
             when (KSafeJson.codec.parseToJsonElement(raw).jsonObject["p"]?.jsonPrimitive?.content) {
-                "NONE" -> KSafeProtection.NONE
+                "NONE" -> null
                 "DEFAULT" -> KSafeProtection.DEFAULT
                 "HARDWARE_ISOLATED" -> KSafeProtection.HARDWARE_ISOLATED
                 else -> null
@@ -184,11 +186,26 @@ internal object KeySafeMetadataManager {
     }
 
     /**
+     * Parses per-key access policy from metadata JSON field `u`.
+     *
+     * Legacy metadata (`__ksafe_prot_*__`) has no `u` and returns null.
+     */
+    @PublishedApi
+    internal fun parseAccessPolicy(raw: String?): String? {
+        if (raw == null) return null
+        return try {
+            KSafeJson.codec.parseToJsonElement(raw).jsonObject["u"]?.jsonPrimitive?.content
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
      * Builds compact metadata JSON payload.
      */
     @PublishedApi
     internal fun buildMetadataJson(
-        protection: KSafeProtection,
+        protection: KSafeProtection?,
         accessPolicy: String?
     ): String {
         val payload = buildJsonObject {
@@ -196,7 +213,7 @@ internal object KeySafeMetadataManager {
             put(
                 "p",
                 when (protection) {
-                    KSafeProtection.NONE -> "NONE"
+                    null -> "NONE"
                     KSafeProtection.DEFAULT -> "DEFAULT"
                     KSafeProtection.HARDWARE_ISOLATED -> "HARDWARE_ISOLATED"
                 }
@@ -204,6 +221,11 @@ internal object KeySafeMetadataManager {
             if (!accessPolicy.isNullOrEmpty()) put("u", accessPolicy)
         }
         return payload.toString()
+    }
+
+    @PublishedApi
+    internal fun accessPolicyFor(requireUnlockedDevice: Boolean): String? {
+        return if (requireUnlockedDevice) ACCESS_POLICY_UNLOCKED else null
     }
 }
 

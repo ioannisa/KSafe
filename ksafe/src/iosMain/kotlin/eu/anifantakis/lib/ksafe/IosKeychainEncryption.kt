@@ -123,8 +123,16 @@ internal class IosKeychainEncryption(
     // Key size in bytes (256 bits = 32 bytes, 128 bits = 16 bytes)
     private val keySizeBytes: Int = config.keySize / 8
 
-    override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean): ByteArray {
-        val keyBytes = getOrCreateKeychainKey(identifier, hardwareIsolated)
+    private fun resolvedRequireUnlockedDevice(override: Boolean?): Boolean =
+        override ?: config.requireUnlockedDevice
+
+    override fun encrypt(
+        identifier: String,
+        data: ByteArray,
+        hardwareIsolated: Boolean,
+        requireUnlockedDevice: Boolean?
+    ): ByteArray {
+        val keyBytes = getOrCreateKeychainKey(identifier, hardwareIsolated, requireUnlockedDevice)
 
         // Use runBlocking because the cryptography library uses suspend functions
         return runBlocking {
@@ -175,7 +183,7 @@ internal class IosKeychainEncryption(
      * @throws IllegalStateException if SE key creation fails
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
-    private fun createSecureEnclaveKey(tag: String): SecKeyRef {
+    private fun createSecureEnclaveKey(tag: String, requireUnlockedDevice: Boolean?): SecKeyRef {
         // Delete any existing SE key with this tag first to prevent duplicates.
         // SecKeyCreateRandomKey always creates a new key (even if the tag exists),
         // and duplicate keys cause SecItemCopyMatching to return the wrong one.
@@ -185,7 +193,7 @@ internal class IosKeychainEncryption(
             val tagData = (tag as NSString).dataUsingEncoding(NSUTF8StringEncoding)
                 ?: throw IllegalStateException("KSafe: Failed to encode SE tag")
 
-            val accessibility = if (config.requireUnlockedDevice)
+            val accessibility = if (resolvedRequireUnlockedDevice(requireUnlockedDevice))
                 kSecAttrAccessibleWhenUnlockedThisDeviceOnly
             else
                 kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
@@ -515,10 +523,14 @@ internal class IosKeychainEncryption(
      * @return The encryption key bytes
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
-    internal fun getOrCreateKeychainKey(keyId: String, hardwareIsolated: Boolean = false): ByteArray {
+    internal fun getOrCreateKeychainKey(
+        keyId: String,
+        hardwareIsolated: Boolean = false,
+        requireUnlockedDevice: Boolean? = null
+    ): ByteArray {
         if (hardwareIsolated) {
             return try {
-                getOrCreateKeychainKeyWithSE(keyId)
+                getOrCreateKeychainKeyWithSE(keyId, requireUnlockedDevice)
             } catch (e: IllegalStateException) {
                 val msg = e.message ?: ""
                 // Re-throw transient / access errors — these are NOT "SE unavailable"
@@ -529,10 +541,10 @@ internal class IosKeychainEncryption(
                     throw e
                 }
                 // SE genuinely unavailable (simulator, old device, no entitlements) — fall back to plain
-                getOrCreateKeychainKeyPlain(keyId)
+                getOrCreateKeychainKeyPlain(keyId, requireUnlockedDevice)
             }
         }
-        return getOrCreateKeychainKeyPlain(keyId)
+        return getOrCreateKeychainKeyPlain(keyId, requireUnlockedDevice)
     }
 
     /**
@@ -544,7 +556,7 @@ internal class IosKeychainEncryption(
      * 3. Neither → create new SE-wrapped key
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
-    private fun getOrCreateKeychainKeyWithSE(keyId: String): ByteArray {
+    private fun getOrCreateKeychainKeyWithSE(keyId: String, requireUnlockedDevice: Boolean?): ByteArray {
         // 1. Check for existing SE-wrapped key
         val wrappedBytes = getExistingKeychainKeyRaw(seWrappedAccount(keyId))
         if (wrappedBytes != null) {
@@ -583,13 +595,13 @@ internal class IosKeychainEncryption(
         Random.nextBytes(newAesKey)
 
         // Create SE EC key pair (deletes any existing key with same tag first)
-        val sePrivateKey = createSecureEnclaveKey(seTag(keyId))
+        val sePrivateKey = createSecureEnclaveKey(seTag(keyId), requireUnlockedDevice)
         try {
             val sePublicKey = SecKeyCopyPublicKey(sePrivateKey)
                 ?: throw IllegalStateException("KSafe: Failed to get SE public key")
             try {
                 val wrapped = wrapAesKey(sePublicKey, newAesKey)
-                storeInKeychain(seWrappedAccount(keyId), wrapped)
+                storeInKeychain(seWrappedAccount(keyId), wrapped, requireUnlockedDevice)
                 return newAesKey
             } finally {
                 CFRelease(sePublicKey)
@@ -603,7 +615,7 @@ internal class IosKeychainEncryption(
      * Original getOrCreateKeychainKey logic — plain (unwrapped) AES key storage.
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
-    private fun getOrCreateKeychainKeyPlain(keyId: String): ByteArray {
+    private fun getOrCreateKeychainKeyPlain(keyId: String, requireUnlockedDevice: Boolean?): ByteArray {
         // Try to retrieve existing key from Keychain
         memScoped {
             val query = CFDictionaryCreateMutable(
@@ -646,13 +658,13 @@ internal class IosKeychainEncryption(
         Random.nextBytes(newKey)
 
         // Store in keychain
-        storeInKeychain(keyId, newKey)
+        storeInKeychain(keyId, newKey, requireUnlockedDevice)
 
         return newKey
     }
 
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
-    private fun storeInKeychain(keyId: String, keyData: ByteArray) {
+    private fun storeInKeychain(keyId: String, keyData: ByteArray, requireUnlockedDevice: Boolean?) {
         memScoped {
             val nsData = NSData.create(
                 bytes = keyData.refTo(0).getPointer(this),
@@ -669,7 +681,7 @@ internal class IosKeychainEncryption(
                 CFDictionarySetValue(this, kSecAttrService, CFBridgingRetain(serviceName))
                 CFDictionarySetValue(this, kSecAttrAccount, CFBridgingRetain(keyId))
                 CFDictionarySetValue(this, kSecValueData, CFBridgingRetain(nsData))
-                val accessibility = if (config.requireUnlockedDevice)
+                val accessibility = if (resolvedRequireUnlockedDevice(requireUnlockedDevice))
                     kSecAttrAccessibleWhenUnlockedThisDeviceOnly
                 else
                     kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly

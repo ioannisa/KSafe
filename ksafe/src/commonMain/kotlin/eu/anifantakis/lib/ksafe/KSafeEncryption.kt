@@ -45,10 +45,17 @@ internal interface KSafeEncryption {
      * @param hardwareIsolated When true, attempt to use hardware-isolated key storage
      *   (StrongBox on Android, Secure Enclave on iOS). Falls back to default storage
      *   if hardware isolation is unavailable. Ignored on JVM/WASM.
+     * @param requireUnlockedDevice Optional per-call override for key accessibility policy.
+     *   `null` means use engine default/configuration.
      * @return The encrypted bytes (typically IV || ciphertext).
      * @throws Exception if encryption fails (key generation error, hardware unavailable, etc.)
      */
-    fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean = false): ByteArray
+    fun encrypt(
+        identifier: String,
+        data: ByteArray,
+        hardwareIsolated: Boolean = false,
+        requireUnlockedDevice: Boolean? = null
+    ): ByteArray
 
     /**
      * Decrypts ciphertext data.

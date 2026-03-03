@@ -43,7 +43,12 @@ internal class WasmSoftwareEncryption(
      * Not supported on WASM — WebCrypto is async-only.
      * All encryption is routed through [encryptSuspend].
      */
-    override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean): ByteArray {
+    override fun encrypt(
+        identifier: String,
+        data: ByteArray,
+        hardwareIsolated: Boolean,
+        requireUnlockedDevice: Boolean?
+    ): ByteArray {
         throw UnsupportedOperationException("WASM encryption is async-only. Use encryptSuspend().")
     }
 

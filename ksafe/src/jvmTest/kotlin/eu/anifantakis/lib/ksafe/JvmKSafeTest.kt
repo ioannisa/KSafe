@@ -94,7 +94,7 @@ class JvmKSafeTest : KSafeTest() {
             launch(Dispatchers.Default) {
                 repeat(iterations) { i ->
                     try {
-                        ksafe.putDirect("writer${writerId}_key$i", "value_$i", KSafeProtection.NONE)
+                        ksafe.putDirect("writer${writerId}_key$i", "value_$i", KSafeWriteMode.Plain)
                         successfulWrites.incrementAndGet()
                     } catch (e: Exception) {
                         errors.incrementAndGet()
@@ -164,14 +164,14 @@ class JvmKSafeTest : KSafeTest() {
 
         // Pre-populate some data
         repeat(50) { i ->
-            ksafe.putDirect("shared_key_$i", "initial_$i", KSafeProtection.NONE)
+            ksafe.putDirect("shared_key_$i", "initial_$i", KSafeWriteMode.Plain)
         }
 
         // Writer coroutine
         val writer = launch(Dispatchers.Default) {
             repeat(iterations) { i ->
                 try {
-                    ksafe.putDirect("shared_key_${i % 50}", "updated_$i", KSafeProtection.NONE)
+                    ksafe.putDirect("shared_key_${i % 50}", "updated_$i", KSafeWriteMode.Plain)
                 } catch (e: Exception) {
                     errors.incrementAndGet()
                     println("Writer error at $i: ${e.message}")
@@ -219,7 +219,7 @@ class JvmKSafeTest : KSafeTest() {
                 repeat(iterations) { i ->
                     try {
                         // This adds to dirty keys, updates cache
-                        ksafe.putDirect("dirty_test_${writerId}_$i", "v$i", KSafeProtection.NONE)
+                        ksafe.putDirect("dirty_test_${writerId}_$i", "v$i", KSafeWriteMode.Plain)
                     } catch (e: Exception) {
                         errors.incrementAndGet()
                         if (errors.get() <= 5) {
@@ -310,8 +310,12 @@ class JvmKSafeTest : KSafeTest() {
             private val delegate = FakeEncryption()
             @Volatile var failOnDecrypt = false
 
-            override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean): ByteArray =
-                delegate.encrypt(identifier, data, hardwareIsolated)
+            override fun encrypt(
+                identifier: String,
+                data: ByteArray,
+                hardwareIsolated: Boolean,
+                requireUnlockedDevice: Boolean?
+            ): ByteArray = delegate.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
 
             override fun decrypt(identifier: String, data: ByteArray): ByteArray {
                 if (failOnDecrypt) throw IllegalStateException("No encryption key found")
@@ -361,8 +365,12 @@ class JvmKSafeTest : KSafeTest() {
             private val delegate = FakeEncryption()
             @Volatile var failOnDecrypt = false
 
-            override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean): ByteArray =
-                delegate.encrypt(identifier, data, hardwareIsolated)
+            override fun encrypt(
+                identifier: String,
+                data: ByteArray,
+                hardwareIsolated: Boolean,
+                requireUnlockedDevice: Boolean?
+            ): ByteArray = delegate.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
 
             override fun decrypt(identifier: String, data: ByteArray): ByteArray {
                 if (failOnDecrypt) throw IllegalStateException("No encryption key found")
@@ -377,7 +385,7 @@ class JvmKSafeTest : KSafeTest() {
         delay(300)
 
         ksafe2setup.put("cleanup_target", "will_be_orphaned")
-        ksafe2setup.put("unenc_key", "plain_value", KSafeProtection.NONE)
+        ksafe2setup.put("unenc_key", "plain_value", KSafeWriteMode.Plain)
         delay(500)
 
         // Verify both exist
@@ -503,7 +511,7 @@ class JvmKSafeTest : KSafeTest() {
         delay(200)
 
         // Store a plain string without encryption
-        ksafe.put("str_key", "hello_world", KSafeProtection.NONE)
+        ksafe.put("str_key", "hello_world", KSafeWriteMode.Plain)
         delay(200)
 
         // Retrieve with nullable String? and null default — should return stored value, not null
@@ -516,7 +524,7 @@ class JvmKSafeTest : KSafeTest() {
         val ksafe = createKSafe()
         delay(200)
 
-        ksafe.putDirect("str_key2", "direct_hello", KSafeProtection.NONE)
+        ksafe.putDirect("str_key2", "direct_hello", KSafeWriteMode.Plain)
 
         val result: String? = ksafe.getDirect("str_key2", defaultValue = null)
         assertEquals("direct_hello", result, "Nullable String? getDirect should return stored value")
@@ -527,7 +535,7 @@ class JvmKSafeTest : KSafeTest() {
         val ksafe = createKSafe()
         delay(200)
 
-        ksafe.put("int_key", 42, KSafeProtection.NONE)
+        ksafe.put("int_key", 42, KSafeWriteMode.Plain)
         delay(200)
 
         val result: Int? = ksafe.get("int_key", defaultValue = null)
@@ -559,7 +567,7 @@ class JvmKSafeTest : KSafeTest() {
         assertEquals(41, ksafe.getDirect(key, 0), "Legacy plaintext value should be readable before migration")
 
         // Next write should migrate the key shape.
-        ksafe.put(key, 42, KSafeProtection.NONE)
+        ksafe.put(key, 42, KSafeWriteMode.Plain)
 
         val prefs = ksafe.dataStore.data.first()
         assertEquals(42, prefs[intPreferencesKey("__ksafe_value_${key}")])
@@ -588,7 +596,7 @@ class JvmKSafeTest : KSafeTest() {
         assertEquals("legacy_v1", ksafe.getDirect(key, "DEFAULT"), "Legacy encrypted value should be readable")
 
         // Next encrypted write should migrate key names and metadata.
-        ksafe.put(key, "legacy_v2", KSafeProtection.DEFAULT)
+        ksafe.put(key, "legacy_v2", KSafeWriteMode.Encrypted())
 
         val prefs = ksafe.dataStore.data.first()
         assertNotNull(prefs[stringPreferencesKey("__ksafe_value_${key}")], "Canonical value key should exist")

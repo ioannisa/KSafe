@@ -1,25 +1,13 @@
 package eu.anifantakis.lib.ksafe
 
 /**
- * Defines the encryption and key-storage protection level for a KSafe property.
+ * Internal/read-time protection tier used by KSafe metadata and key info APIs.
  *
- * Use this enum with the `protection` parameter on KSafe API methods to control
- * per-property encryption behavior:
- *
- * ```kotlin
- * var counter by ksafe(0)                                                // DEFAULT
- * var secret by ksafe(0, protection = KSafeProtection.HARDWARE_ISOLATED) // SE/StrongBox
- * var setting by ksafe("default", protection = KSafeProtection.NONE)     // no encryption
- * ```
+ * For write calls, use [KSafeWriteMode]:
+ * - [KSafeWriteMode.Plain]
+ * - [KSafeWriteMode.Encrypted]
  */
 enum class KSafeProtection {
-    /**
-     * No encryption — value is stored as plaintext.
-     *
-     * Equivalent to the old `encrypted = false`.
-     */
-    NONE,
-
     /**
      * Platform-default encryption.
      *

@@ -74,7 +74,7 @@ class JvmNullFilenameTest {
     @Test
     fun delete_removes_plain_and_returnsDefault() = runTest {
         val key = uniqueKey("plain_delete")
-        ksafe.put(key, "v", KSafeProtection.NONE)
+        ksafe.put(key, "v", KSafeWriteMode.Plain)
         assertEquals("v", ksafe.get(key, "d"))
         ksafe.delete(key)
         assertEquals("d", ksafe.get(key, "d"))
@@ -96,7 +96,7 @@ class JvmNullFilenameTest {
     @Test
     fun direct_plain_roundTrip() {
         val key = uniqueKey("direct_plain")
-        ksafe.putDirect(key, "plain_direct", KSafeProtection.NONE)
+        ksafe.putDirect(key, "plain_direct", KSafeWriteMode.Plain)
         assertEquals("plain_direct", ksafe.getDirect(key, "d"))
     }
 
@@ -130,7 +130,7 @@ class JvmNullFilenameTest {
     @Test
     fun delegate_explicitKey_unencrypted_roundTrip() = runTest {
         val dKey = uniqueKey("delegate_plain")
-        var counter: Int by ksafe(defaultValue = 0, key = dKey, protection = KSafeProtection.NONE)
+        var counter: Int by ksafe(defaultValue = 0, key = dKey, mode = KSafeWriteMode.Plain)
         assertEquals(0, counter)
         counter = 9
         assertEquals(9, counter)
@@ -147,11 +147,11 @@ class JvmNullFilenameTest {
         val flow = ksafe.getFlow(key, "d")
         flow.test {
             assertEquals("d", awaitItem())
-            ksafe.put(key, "a", KSafeProtection.NONE)
+            ksafe.put(key, "a", KSafeWriteMode.Plain)
             assertEquals("a", awaitItem())
-            ksafe.put(key, "a", KSafeProtection.NONE) // no change
+            ksafe.put(key, "a", KSafeWriteMode.Plain) // no change
             expectNoEvents()
-            ksafe.put(key, "b", KSafeProtection.NONE)
+            ksafe.put(key, "b", KSafeWriteMode.Plain)
             assertEquals("b", awaitItem())
             cancelAndIgnoreRemainingEvents()
         }
@@ -185,7 +185,7 @@ class JvmNullFilenameTest {
         val stateFlow = ksafe.getStateFlow(key, "def", scope = sharingScope)
         assertEquals("def", stateFlow.value)
 
-        ksafe.put(key, "updated", KSafeProtection.NONE)
+        ksafe.put(key, "updated", KSafeWriteMode.Plain)
         stateFlow.test {
             assertEquals("updated", awaitItem())
             cancelAndIgnoreRemainingEvents()
@@ -221,10 +221,10 @@ class JvmNullFilenameTest {
         stateFlow.test {
             assertEquals("def", awaitItem())
 
-            ksafe.put(key, "a", KSafeProtection.NONE)
+            ksafe.put(key, "a", KSafeWriteMode.Plain)
             assertEquals("a", awaitItem())
 
-            ksafe.put(key, "b", KSafeProtection.NONE)
+            ksafe.put(key, "b", KSafeWriteMode.Plain)
             assertEquals("b", awaitItem())
 
             cancelAndIgnoreRemainingEvents()
@@ -243,10 +243,10 @@ class JvmNullFilenameTest {
         stateFlow.test {
             assertEquals("def", awaitItem())
 
-            ksafe.put(key, "a", KSafeProtection.NONE)
+            ksafe.put(key, "a", KSafeWriteMode.Plain)
             assertEquals("a", awaitItem())
 
-            ksafe.put(key, "a", KSafeProtection.NONE) // no change
+            ksafe.put(key, "a", KSafeWriteMode.Plain) // no change
             expectNoEvents()
 
             cancelAndIgnoreRemainingEvents()
@@ -268,11 +268,11 @@ class JvmNullFilenameTest {
     /** Verifies all primitive types roundtrip without encryption */
     @Test
     fun types_int_long_float_double_string_roundTrip_unencrypted() = runTest {
-        val iK = uniqueKey("int");    ksafe.put(iK, 123, KSafeProtection.NONE);    assertEquals(123, ksafe.get(iK, 0))
-        val lK = uniqueKey("long");   ksafe.put(lK, 9999999999L, KSafeProtection.NONE);  assertEquals(9999999999L, ksafe.get(lK, 0L))
-        val fK = uniqueKey("float");  ksafe.put(fK, 1.5f, KSafeProtection.NONE);         assertEquals(1.5f, ksafe.get(fK, 0f))
-        val dK = uniqueKey("double"); ksafe.put(dK, 2.5, KSafeProtection.NONE);          assertEquals(2.5, ksafe.get(dK, 0.0))
-        val sK = uniqueKey("string"); ksafe.put(sK, "hi", KSafeProtection.NONE);         assertEquals("hi", ksafe.get(sK, "x"))
+        val iK = uniqueKey("int");    ksafe.put(iK, 123, KSafeWriteMode.Plain);    assertEquals(123, ksafe.get(iK, 0))
+        val lK = uniqueKey("long");   ksafe.put(lK, 9999999999L, KSafeWriteMode.Plain);  assertEquals(9999999999L, ksafe.get(lK, 0L))
+        val fK = uniqueKey("float");  ksafe.put(fK, 1.5f, KSafeWriteMode.Plain);         assertEquals(1.5f, ksafe.get(fK, 0f))
+        val dK = uniqueKey("double"); ksafe.put(dK, 2.5, KSafeWriteMode.Plain);          assertEquals(2.5, ksafe.get(dK, 0.0))
+        val sK = uniqueKey("string"); ksafe.put(sK, "hi", KSafeWriteMode.Plain);         assertEquals("hi", ksafe.get(sK, "x"))
     }
 
     @Serializable
@@ -292,9 +292,9 @@ class JvmNullFilenameTest {
     // ---------- Composition with a settings class ----------
 
     class Settings(private val store: KSafe) {
-        var theme: String by store(defaultValue = "light", key = "theme", protection = KSafeProtection.NONE)
+        var theme: String by store(defaultValue = "light", key = "theme", mode = KSafeWriteMode.Plain)
         var token: String by store(defaultValue = "", key = "token") // encrypted
-        var launchCount: Int by store(defaultValue = 0, key = "launchCount", protection = KSafeProtection.NONE)
+        var launchCount: Int by store(defaultValue = 0, key = "launchCount", mode = KSafeWriteMode.Plain)
     }
 
     /** Verifies multiple delegated properties work independently */
@@ -342,7 +342,7 @@ class JvmNullFilenameTest {
         val value = "Hello, World!"
         val defaultValue = "default"
 
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
     }
@@ -368,7 +368,7 @@ class JvmNullFilenameTest {
         val value = 42
         val defaultValue = 0
 
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
     }
@@ -394,7 +394,7 @@ class JvmNullFilenameTest {
         val value = true
         val defaultValue = false
 
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
     }
@@ -420,7 +420,7 @@ class JvmNullFilenameTest {
         val value = 9876543210L
         val defaultValue = 0L
 
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
     }
@@ -446,7 +446,7 @@ class JvmNullFilenameTest {
         val value = 3.14159f
         val defaultValue = 0.0f
 
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
     }
@@ -472,7 +472,7 @@ class JvmNullFilenameTest {
         val value = 3.141592653589793
         val defaultValue = 0.0
 
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
     }
@@ -520,7 +520,7 @@ class JvmNullFilenameTest {
         val value = "to_be_deleted"
         val defaultValue = "default"
 
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         assertEquals(value, ksafe.get(key, defaultValue))
 
         ksafe.delete(key)
@@ -551,10 +551,10 @@ class JvmNullFilenameTest {
         val value2 = "second_value"
         val defaultValue = "default"
 
-        ksafe.put(key, value1, KSafeProtection.NONE)
+        ksafe.put(key, value1, KSafeWriteMode.Plain)
         assertEquals(value1, ksafe.get(key, defaultValue))
 
-        ksafe.put(key, value2, KSafeProtection.NONE)
+        ksafe.put(key, value2, KSafeWriteMode.Plain)
         assertEquals(value2, ksafe.get(key, defaultValue))
     }
 
@@ -590,11 +590,11 @@ class JvmNullFilenameTest {
             assertEquals(defaultValue, awaitItem())
 
             // Update value
-            ksafe.put(key, value1, KSafeProtection.NONE)
+            ksafe.put(key, value1, KSafeWriteMode.Plain)
             assertEquals(value1, awaitItem())
 
             // Update again
-            ksafe.put(key, value2, KSafeProtection.NONE)
+            ksafe.put(key, value2, KSafeWriteMode.Plain)
             assertEquals(value2, awaitItem())
 
             cancelAndIgnoreRemainingEvents()
@@ -643,11 +643,11 @@ class JvmNullFilenameTest {
             assertEquals(defaultValue, awaitItem())
 
             // Update value
-            ksafe.put(key, value, KSafeProtection.NONE)
+            ksafe.put(key, value, KSafeWriteMode.Plain)
             assertEquals(value, awaitItem())
 
             // Update with same value - should not emit
-            ksafe.put(key, value, KSafeProtection.NONE)
+            ksafe.put(key, value, KSafeWriteMode.Plain)
             expectNoEvents()
 
             cancelAndIgnoreRemainingEvents()
@@ -664,8 +664,8 @@ class JvmNullFilenameTest {
         val value2 = "value2"
         val defaultValue = "default"
 
-        ksafe.put(key1, value1, KSafeProtection.NONE)
-        ksafe.put(key2, value2, KSafeProtection.NONE)
+        ksafe.put(key1, value1, KSafeWriteMode.Plain)
+        ksafe.put(key2, value2, KSafeWriteMode.Plain)
 
         assertEquals(value1, ksafe.get(key1, defaultValue))
         assertEquals(value2, ksafe.get(key2, defaultValue))
@@ -716,7 +716,7 @@ class JvmNullFilenameTest {
         )
 
         // Test unencrypted
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
 
@@ -736,7 +736,7 @@ class JvmNullFilenameTest {
         val defaultValue: String? = "default"
 
         // Store null value
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
     }
@@ -749,7 +749,7 @@ class JvmNullFilenameTest {
         val value = ""
         val defaultValue = "default"
 
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
     }
@@ -763,7 +763,7 @@ class JvmNullFilenameTest {
         val defaultValue = "default"
 
         // Test unencrypted
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         assertEquals(value, ksafe.get(key, defaultValue))
 
         // Test encrypted
@@ -781,7 +781,7 @@ class JvmNullFilenameTest {
         val defaultValue = "default"
 
         // Test unencrypted
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         assertEquals(value, ksafe.get(key, defaultValue))
 
         // Test encrypted
@@ -799,7 +799,7 @@ class JvmNullFilenameTest {
         val defaultValue = ""
 
         // Test unencrypted
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
         assertEquals(value, ksafe.get(key, defaultValue))
 
         // Test encrypted
@@ -820,7 +820,7 @@ class JvmNullFilenameTest {
             val value = "value_$index"
             val defaultValue = "default"
 
-            ksafe.put(key, value, KSafeProtection.NONE)
+            ksafe.put(key, value, KSafeWriteMode.Plain)
             val retrieved = ksafe.get(key, defaultValue)
             results.add(retrieved == value)
         }
@@ -838,8 +838,8 @@ class JvmNullFilenameTest {
         val value2 = "value_for_file2"
         val defaultValue = "default"
 
-        ksafe1.put(key, value1, KSafeProtection.NONE)
-        ksafe2.put(key, value2, KSafeProtection.NONE)
+        ksafe1.put(key, value1, KSafeWriteMode.Plain)
+        ksafe2.put(key, value2, KSafeWriteMode.Plain)
 
         assertEquals(value1, ksafe1.get(key, defaultValue))
         assertEquals(value2, ksafe2.get(key, defaultValue))
@@ -853,25 +853,25 @@ class JvmNullFilenameTest {
         // Test negative int
         val intKey = "negative_int"
         val intValue = -42
-        ksafe.put(intKey, intValue, KSafeProtection.NONE)
+        ksafe.put(intKey, intValue, KSafeWriteMode.Plain)
         assertEquals(intValue, ksafe.get(intKey, 0))
 
         // Test negative long
         val longKey = "negative_long"
         val longValue = -9876543210L
-        ksafe.put(longKey, longValue, KSafeProtection.NONE)
+        ksafe.put(longKey, longValue, KSafeWriteMode.Plain)
         assertEquals(longValue, ksafe.get(longKey, 0L))
 
         // Test negative float
         val floatKey = "negative_float"
         val floatValue = -3.14f
-        ksafe.put(floatKey, floatValue, KSafeProtection.NONE)
+        ksafe.put(floatKey, floatValue, KSafeWriteMode.Plain)
         assertEquals(floatValue, ksafe.get(floatKey, 0.0f))
 
         // Test negative double
         val doubleKey = "negative_double"
         val doubleValue = -2.71828
-        ksafe.put(doubleKey, doubleValue, KSafeProtection.NONE)
+        ksafe.put(doubleKey, doubleValue, KSafeWriteMode.Plain)
         assertEquals(doubleValue, ksafe.get(doubleKey, 0.0))
     }
 
@@ -882,20 +882,20 @@ class JvmNullFilenameTest {
 
         // Test Int boundaries
         val maxIntKey = "max_int"
-        ksafe.put(maxIntKey, Int.MAX_VALUE, KSafeProtection.NONE)
+        ksafe.put(maxIntKey, Int.MAX_VALUE, KSafeWriteMode.Plain)
         assertEquals(Int.MAX_VALUE, ksafe.get(maxIntKey, 0))
 
         val minIntKey = "min_int"
-        ksafe.put(minIntKey, Int.MIN_VALUE, KSafeProtection.NONE)
+        ksafe.put(minIntKey, Int.MIN_VALUE, KSafeWriteMode.Plain)
         assertEquals(Int.MIN_VALUE, ksafe.get(minIntKey, 0))
 
         // Test Long boundaries
         val maxLongKey = "max_long"
-        ksafe.put(maxLongKey, Long.MAX_VALUE, KSafeProtection.NONE)
+        ksafe.put(maxLongKey, Long.MAX_VALUE, KSafeWriteMode.Plain)
         assertEquals(Long.MAX_VALUE, ksafe.get(maxLongKey, 0L))
 
         val minLongKey = "min_long"
-        ksafe.put(minLongKey, Long.MIN_VALUE, KSafeProtection.NONE)
+        ksafe.put(minLongKey, Long.MIN_VALUE, KSafeWriteMode.Plain)
         assertEquals(Long.MIN_VALUE, ksafe.get(minLongKey, 0L))
     }
 

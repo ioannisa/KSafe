@@ -18,7 +18,7 @@ class IosNullFilenameTest {
         val key = "test_key"
         val value = "test_value"
         
-        ksafe.put(key, value, KSafeProtection.NONE)
+        ksafe.put(key, value, KSafeWriteMode.Plain)
 
         val retrieved = ksafe.get(key, "default")
         assertEquals(value, retrieved)

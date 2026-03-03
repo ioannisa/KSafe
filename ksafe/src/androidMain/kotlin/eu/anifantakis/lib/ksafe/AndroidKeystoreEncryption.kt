@@ -41,19 +41,29 @@ internal class AndroidKeystoreEncryption(
     private val locks = java.util.concurrent.ConcurrentHashMap<String, Any>()
     private fun lockFor(alias: String): Any = locks.computeIfAbsent(alias) { Any() }
 
-    override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean): ByteArray {
+    override fun encrypt(
+        identifier: String,
+        data: ByteArray,
+        hardwareIsolated: Boolean,
+        requireUnlockedDevice: Boolean?
+    ): ByteArray {
         return try {
-            encryptWithKey(identifier, data, hardwareIsolated)
+            encryptWithKey(identifier, data, hardwareIsolated, requireUnlockedDevice)
         } catch (e: KeyPermanentlyInvalidatedException) {
             // Key was invalidated (e.g., device security settings changed)
             // Delete the old key and create a new one
             deleteKeyInternal(identifier)
-            encryptWithKey(identifier, data, hardwareIsolated)
+            encryptWithKey(identifier, data, hardwareIsolated, requireUnlockedDevice)
         }
     }
 
-    private fun encryptWithKey(identifier: String, data: ByteArray, hardwareIsolated: Boolean): ByteArray {
-        val secretKey = getOrCreateSecretKey(identifier, hardwareIsolated)
+    private fun encryptWithKey(
+        identifier: String,
+        data: ByteArray,
+        hardwareIsolated: Boolean,
+        requireUnlockedDevice: Boolean?
+    ): ByteArray {
+        val secretKey = getOrCreateSecretKey(identifier, hardwareIsolated, requireUnlockedDevice)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
 
         try {
@@ -158,7 +168,11 @@ internal class AndroidKeystoreEncryption(
      * @param identifier The key alias in the Keystore
      * @param hardwareIsolated Whether to attempt StrongBox key generation
      */
-    private fun generateNewKey(identifier: String, hardwareIsolated: Boolean): SecretKey {
+    private fun generateNewKey(
+        identifier: String,
+        hardwareIsolated: Boolean,
+        requireUnlockedDevice: Boolean?
+    ): SecretKey {
         val keyGenerator = KeyGenerator.getInstance(
             KeyProperties.KEY_ALGORITHM_AES,
             ANDROID_KEYSTORE
@@ -172,7 +186,8 @@ internal class AndroidKeystoreEncryption(
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setKeySize(config.keySize)
 
-        if (config.requireUnlockedDevice && android.os.Build.VERSION.SDK_INT >= 28) {
+        val resolvedRequireUnlockedDevice = requireUnlockedDevice ?: config.requireUnlockedDevice
+        if (resolvedRequireUnlockedDevice && android.os.Build.VERSION.SDK_INT >= 28) {
             builder.setUnlockedDeviceRequired(true)
         }
 
@@ -208,7 +223,11 @@ internal class AndroidKeystoreEncryption(
      * @param identifier The key identifier/alias
      * @param hardwareIsolated Whether to attempt StrongBox key generation for new keys
      */
-    private fun getOrCreateSecretKey(identifier: String, hardwareIsolated: Boolean = false): SecretKey {
+    private fun getOrCreateSecretKey(
+        identifier: String,
+        hardwareIsolated: Boolean = false,
+        requireUnlockedDevice: Boolean? = null
+    ): SecretKey {
         // Fast path: return cached key
         keyCache[identifier]?.let { return it }
 
@@ -222,7 +241,7 @@ internal class AndroidKeystoreEncryption(
             val key = if (keyStore.containsAlias(identifier)) {
                 keyStore.getKey(identifier, null) as SecretKey
             } else {
-                generateNewKey(identifier, hardwareIsolated)
+                generateNewKey(identifier, hardwareIsolated, requireUnlockedDevice)
             }
 
             // Cache the key for future use

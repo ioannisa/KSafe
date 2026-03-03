@@ -102,9 +102,6 @@ actual class KSafe(
         @PublishedApi
         internal const val NULL_SENTINEL = "__KSAFE_NULL_VALUE__"
 
-        private const val ACCESS_POLICY_KEY = "__ksafe_access_policy__"
-        private const val ACCESS_POLICY_UNLOCKED = "unlocked"
-        private const val ACCESS_POLICY_DEFAULT = "default"
     }
 
     actual val deviceKeyStorages: Set<KSafeKeyStorage> = setOf(KSafeKeyStorage.SOFTWARE)
@@ -192,7 +189,8 @@ actual class KSafe(
             override val rawKey: String,
             val key: String,
             val jsonString: String,
-            val alias: String
+            val alias: String,
+            val requireUnlockedDevice: Boolean = false
         ) : WriteOperation()
 
         data class Delete(
@@ -276,7 +274,11 @@ actual class KSafe(
         val encryptedData = mutableMapOf<String, ByteArray>()
         for (op in batch) {
             if (op is WriteOperation.Encrypted) {
-                val ciphertext = engine.encrypt(op.alias, op.jsonString.toByteArray(Charsets.UTF_8))
+                val ciphertext = engine.encrypt(
+                    identifier = op.alias,
+                    data = op.jsonString.toByteArray(Charsets.UTF_8),
+                    requireUnlockedDevice = op.requireUnlockedDevice
+                )
                 encryptedData[op.key] = ciphertext
             }
         }
@@ -291,7 +293,7 @@ actual class KSafe(
                             @Suppress("UNCHECKED_CAST")
                             prefs[op.prefKey] = op.value
                         }
-                        prefs[metaPrefKey(op.key)] = protectionToMetaJson(KSafeProtection.NONE)
+                        prefs[metaPrefKey(op.key)] = protectionToMetaJson(null)
                         // Clean up legacy keys (v1.6/1.7 format)
                         prefs.removeByKeyName(op.key)
                         prefs.remove(legacyEncryptedPrefKey(op.key))
@@ -300,7 +302,10 @@ actual class KSafe(
                     is WriteOperation.Encrypted -> {
                         val ciphertext = encryptedData[op.key]!!
                         prefs[valuePrefKey(op.key)] = encodeBase64(ciphertext)
-                        prefs[metaPrefKey(op.key)] = protectionToMetaJson(KSafeProtection.DEFAULT)
+                        prefs[metaPrefKey(op.key)] = protectionToMetaJson(
+                            protection = KSafeProtection.DEFAULT,
+                            requireUnlockedDevice = op.requireUnlockedDevice
+                        )
                         // Clean up legacy keys (v1.6/1.7 format)
                         prefs.removeByKeyName(op.key)
                         prefs.remove(legacyEncryptedPrefKey(op.key))
@@ -427,7 +432,7 @@ actual class KSafe(
 
             val originalKey = keyName.removePrefix(KeySafeMetadataManager.VALUE_PREFIX)
             val protection = protectionByKey[originalKey]
-            if (protection == null || protection == KSafeProtection.NONE) continue
+            if (protection == null) continue
 
             val encryptedString = value as? String ?: continue
             val alias = fileName?.let { "$it:$originalKey" } ?: originalKey
@@ -460,31 +465,8 @@ actual class KSafe(
         }
     }
 
-    /**
-     * Marker-only migration for JVM. JVM has no lock concept, so no actual
-     * key migration is needed — just writes the marker for consistency with
-     * Android/iOS so the config state is tracked.
-     */
-    private suspend fun migrateAccessPolicyIfNeeded() {
-        val targetPolicy = if (config.requireUnlockedDevice) ACCESS_POLICY_UNLOCKED else ACCESS_POLICY_DEFAULT
-        val markerKey = stringPreferencesKey(ACCESS_POLICY_KEY)
-
-        // Treat null (pre-1.5.0, no marker) the same as ACCESS_POLICY_DEFAULT
-        // to avoid unnecessary migration on upgrade when requireUnlockedDevice=false.
-        val currentPolicy = dataStore.data.first()[markerKey]
-        val effectiveCurrent = currentPolicy ?: ACCESS_POLICY_DEFAULT
-        if (effectiveCurrent == targetPolicy) {
-            // Still write the marker if it was null (first launch after upgrade)
-            if (currentPolicy == null) {
-                dataStore.edit { it[markerKey] = targetPolicy }
-            }
-            return
-        }
-
-        dataStore.edit { mutablePrefs ->
-            mutablePrefs[markerKey] = targetPolicy
-        }
-    }
+    /** JVM has no lock-based key accessibility concept. */
+    private suspend fun migrateAccessPolicyIfNeeded() = Unit
 
     /**
      * Thread-safe helper to update specific keys in the memory cache.
@@ -501,6 +483,10 @@ actual class KSafe(
 
     @PublishedApi
     internal fun valueRawKey(key: String): String = KeySafeMetadataManager.valueRawKey(key)
+
+    @PublishedApi
+    internal fun defaultEncryptedMode(): KSafeWriteMode =
+        KSafeWriteMode.Encrypted(requireUnlockedDevice = config.requireUnlockedDevice)
 
     @PublishedApi
     internal fun valuePrefKey(key: String) = stringPreferencesKey(valueRawKey(key))
@@ -521,8 +507,12 @@ actual class KSafe(
         KeySafeMetadataManager.legacyEncryptedRawKey(key)
 
     @PublishedApi
-    internal fun protectionToMetaJson(protection: KSafeProtection): String {
-        val accessPolicy = if (config.requireUnlockedDevice) ACCESS_POLICY_UNLOCKED else ACCESS_POLICY_DEFAULT
+    internal fun protectionToMetaJson(
+        protection: KSafeProtection?,
+        requireUnlockedDevice: Boolean? = null
+    ): String {
+        val accessPolicy = if (protection == null) null
+        else KeySafeMetadataManager.accessPolicyFor(requireUnlockedDevice == true)
         return KeySafeMetadataManager.buildMetadataJson(protection, accessPolicy)
     }
 
@@ -644,11 +634,11 @@ actual class KSafe(
         cacheInitialized.set(true)
     }
 
-    @PublishedApi internal inline fun <reified T> resolveFromCache(cache: Map<String, Any>, key: String, defaultValue: T, protection: KSafeProtection): T {
-        val cacheKey = if (protection != KSafeProtection.NONE) legacyEncryptedRawKey(key) else key
+    @PublishedApi internal inline fun <reified T> resolveFromCache(cache: Map<String, Any>, key: String, defaultValue: T, protection: KSafeProtection?): T {
+        val cacheKey = if (protection != null) legacyEncryptedRawKey(key) else key
         val cachedValue = cache[cacheKey] ?: return defaultValue
 
-        return if (protection != KSafeProtection.NONE) {
+        return if (protection != null) {
             var jsonString: String? = null
             var deserializedValue: T? = null
             var success = false
@@ -801,12 +791,22 @@ actual class KSafe(
     }
 
 
-    actual inline fun <reified T> putDirect(key: String, value: T, protection: KSafeProtection) {
-        val rawKey = if (protection != KSafeProtection.NONE) "encrypted_$key" else key
+    actual inline fun <reified T> putDirect(key: String, value: T) {
+        putDirect(
+            key = key,
+            value = value,
+            mode = defaultEncryptedMode()
+        )
+    }
+
+    actual inline fun <reified T> putDirect(key: String, value: T, mode: KSafeWriteMode) {
+        val protection = mode.toProtection()
+        val requireUnlockedDevice = mode is KSafeWriteMode.Encrypted && mode.requireUnlockedDevice
+        val rawKey = if (protection != null) "encrypted_$key" else key
         dirtyKeys.add(rawKey)
 
         // Optimistic update + queue write operation
-        if (protection != KSafeProtection.NONE) {
+        if (protection != null) {
             // Single serialization for encrypted writes
             val jsonString = if (value == null) NULL_SENTINEL else json.encodeToString(serializer<T>(), value)
             val alias = fileName?.let { "$it:$key" } ?: key
@@ -814,7 +814,10 @@ actual class KSafe(
             // Cache stores plaintext JSON for instant read-back
             // (resolveFromCache handles both plaintext JSON and encrypted Base64)
             updateMemoryCache(rawKey, jsonString)
-            protectionMap[key] = protectionToMetaJson(KSafeProtection.DEFAULT)
+            protectionMap[key] = protectionToMetaJson(
+                protection = KSafeProtection.DEFAULT,
+                requireUnlockedDevice = requireUnlockedDevice
+            )
 
             // For TIMED_CACHE, also populate the plaintext cache
             if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
@@ -822,7 +825,15 @@ actual class KSafe(
             }
 
             // Queue the encrypted write (encryption deferred to background)
-            writeChannel.trySend(WriteOperation.Encrypted(rawKey, key, jsonString, alias))
+            writeChannel.trySend(
+                WriteOperation.Encrypted(
+                    rawKey = rawKey,
+                    key = key,
+                    jsonString = jsonString,
+                    alias = alias,
+                    requireUnlockedDevice = requireUnlockedDevice
+                )
+            )
         } else {
             // Optimistic update for unencrypted writes
             val toCache: Any = if (value == null) {
@@ -834,7 +845,7 @@ actual class KSafe(
                 }
             }
             updateMemoryCache(rawKey, toCache)
-            protectionMap[key] = protectionToMetaJson(KSafeProtection.NONE)
+            protectionMap[key] = protectionToMetaJson(null)
 
             // For unencrypted writes, determine the proper DataStore key type
             val storedValue: Any? = when (value) {
@@ -866,17 +877,24 @@ actual class KSafe(
     internal fun protectionMetaKey(key: String) = legacyProtectionMetaKey(key)
 
     @PublishedApi
-    internal fun detectProtection(key: String): KSafeProtection {
+    internal fun detectProtection(key: String): KSafeProtection? {
         val meta = protectionMap[key]
         KeySafeMetadataManager.parseProtection(meta)?.let { return it }
         // Fallback heuristic (legacy data without metadata)
         return if (memoryCache.containsKey(KeySafeMetadataManager.legacyEncryptedRawKey(key))) KSafeProtection.DEFAULT
-        else KSafeProtection.NONE
+        else null
     }
 
-    suspend inline fun <reified T> putEncrypted(key: String, value: T) {
+    suspend inline fun <reified T> putEncrypted(
+        key: String,
+        value: T,
+        requireUnlockedDevice: Boolean = false
+    ) {
         dirtyKeys.add(legacyEncryptedRawKey(key))
-        protectionMap[key] = protectionToMetaJson(KSafeProtection.DEFAULT)
+        protectionMap[key] = protectionToMetaJson(
+            protection = KSafeProtection.DEFAULT,
+            requireUnlockedDevice = requireUnlockedDevice
+        )
         val alias = fileName?.let { "$it:$key" } ?: key
 
         // Handle null values with sentinel
@@ -888,13 +906,20 @@ actual class KSafe(
 
         val plainBytes = rawString.toByteArray(Charsets.UTF_8)
         val encryptedBytes = withContext(Dispatchers.Default) {
-            engine.encrypt(alias, plainBytes)
+            engine.encrypt(
+                identifier = alias,
+                data = plainBytes,
+                requireUnlockedDevice = requireUnlockedDevice
+            )
         }
         val encryptedString = encodeBase64(encryptedBytes)
 
         dataStore.edit { prefs ->
             prefs[valuePrefKey(key)] = encryptedString
-            prefs[metaPrefKey(key)] = protectionToMetaJson(KSafeProtection.DEFAULT)
+            prefs[metaPrefKey(key)] = protectionToMetaJson(
+                protection = KSafeProtection.DEFAULT,
+                requireUnlockedDevice = requireUnlockedDevice
+            )
             prefs.removeAllLegacyKeys(key)
         }
 
@@ -931,30 +956,30 @@ actual class KSafe(
             updateCache(prefs)
         }
         val detected = detectProtection(key)
-        return if (detected != KSafeProtection.NONE) getEncrypted(key, defaultValue) else getUnencrypted(key, defaultValue)
+        return if (detected != null) getEncrypted(key, defaultValue) else getUnencrypted(key, defaultValue)
     }
 
 
     @Suppress("UNCHECKED_CAST")
     @PublishedApi internal suspend inline fun <reified T> getUnencrypted(key: String, defaultValue: T): T {
         if (cacheInitialized.get()) {
-            return resolveFromCache(memoryCache, key, defaultValue, protection = KSafeProtection.NONE)
+            return resolveFromCache(memoryCache, key, defaultValue, protection = null)
         }
         val prefs = dataStore.data.first()
         updateCache(prefs)
-        return resolveFromCache(memoryCache, key, defaultValue, protection = KSafeProtection.NONE)
+        return resolveFromCache(memoryCache, key, defaultValue, protection = null)
     }
 
     @Suppress("UNCHECKED_CAST")
     @PublishedApi internal suspend inline fun <reified T> putUnencrypted(key: String, value: T) {
         dirtyKeys.add(key)
-        protectionMap[key] = protectionToMetaJson(KSafeProtection.NONE)
+        protectionMap[key] = protectionToMetaJson(null)
         // Handle null values
         if (value == null) {
             val preferencesKey = stringPreferencesKey(valueRawKey(key))
             dataStore.edit { prefs ->
                 prefs[preferencesKey] = NULL_SENTINEL
-                prefs[metaPrefKey(key)] = protectionToMetaJson(KSafeProtection.NONE)
+                prefs[metaPrefKey(key)] = protectionToMetaJson(null)
                 prefs.removeAllLegacyKeys(key)
             }
             updateMemoryCache(key, NULL_SENTINEL)
@@ -968,7 +993,7 @@ actual class KSafe(
         }
         dataStore.edit { prefs ->
             prefs[preferencesKey] = storedValue
-            prefs[metaPrefKey(key)] = protectionToMetaJson(KSafeProtection.NONE)
+            prefs[metaPrefKey(key)] = protectionToMetaJson(null)
             prefs.removeAllLegacyKeys(key)
         }
         updateMemoryCache(key, storedValue)
@@ -1005,9 +1030,9 @@ actual class KSafe(
         return dataStore.data.map { preferences ->
             val metaRaw = preferences[metaPrefKey(key)] ?: preferences[legacyProtectionMetaKey(key)]
             val protection = KeySafeMetadataManager.parseProtection(metaRaw)
-                ?: if (preferences[encryptedPrefKey(key)] != null) KSafeProtection.DEFAULT else KSafeProtection.NONE
+                ?: if (preferences[encryptedPrefKey(key)] != null) KSafeProtection.DEFAULT else null
             when (protection) {
-                KSafeProtection.NONE -> {
+                null -> {
                     val prefKey = getUnencryptedKey(key, defaultValue)
                     val legacyPrefKey = getLegacyUnencryptedKey(key, defaultValue)
                     val plain = preferences[prefKey] ?: preferences[legacyPrefKey]
@@ -1069,9 +1094,17 @@ actual class KSafe(
         }.distinctUntilChanged()
     }
 
-    actual suspend inline fun <reified T> put(key: String, value: T, protection: KSafeProtection) {
-        if (protection != KSafeProtection.NONE) {
-            putEncrypted(key, value)
+    actual suspend inline fun <reified T> put(key: String, value: T) {
+        put(
+            key = key,
+            value = value,
+            mode = defaultEncryptedMode()
+        )
+    }
+
+    actual suspend inline fun <reified T> put(key: String, value: T, mode: KSafeWriteMode) {
+        if (mode is KSafeWriteMode.Encrypted) {
+            putEncrypted(key, value, mode.requireUnlockedDevice)
         } else {
             putUnencrypted(key, value)
         }
@@ -1145,7 +1178,7 @@ actual class KSafe(
         if (!hasEncrypted && !hasPlain) return null
 
         val protection = KeySafeMetadataManager.parseProtection(protectionMap[key])
-            ?: if (hasEncrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE
+            ?: if (hasEncrypted) KSafeProtection.DEFAULT else null
         return KSafeKeyInfo(protection, KSafeKeyStorage.SOFTWARE)
     }
 
@@ -1158,9 +1191,17 @@ actual class KSafe(
         getDirect(key, defaultValue)
 
     @Suppress("DEPRECATION")
-    @Deprecated("Replace \"encrypted\" parameter with \"protection\" parameter. \n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeProtection.DEFAULT\nencrypted=false -> KSafeProtection.NONE\n\nNote: You don't need to include a protection reference if you aim for \"DEFAULT\" protection (it is assumed and you can omit it).", level = DeprecationLevel.WARNING)
+    @Deprecated("Replace \"encrypted\" parameter with \"mode\" parameter.\n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeWriteMode.Encrypted()\nencrypted=false -> KSafeWriteMode.Plain", level = DeprecationLevel.WARNING)
     actual inline fun <reified T> putDirect(key: String, value: T, encrypted: Boolean): Unit =
-        putDirect(key, value, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)
+        putDirect(
+            key,
+            value,
+            if (encrypted) {
+                defaultEncryptedMode()
+            } else {
+                KSafeWriteMode.Plain
+            }
+        )
 
     @Suppress("DEPRECATION")
     @Deprecated("Remove \"encrypted\" parameter. Protection is now auto-detected during reads.  Your \"encrypted\" param is ignored.", level = DeprecationLevel.WARNING)
@@ -1168,9 +1209,17 @@ actual class KSafe(
         get(key, defaultValue)
 
     @Suppress("DEPRECATION")
-    @Deprecated("Replace \"encrypted\" parameter with \"protection\" parameter. \n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeProtection.DEFAULT\nencrypted=false -> KSafeProtection.NONE\n\nNote: You don't need to include a protection reference if you aim for \"DEFAULT\" protection (it is assumed and you can omit it).", level = DeprecationLevel.WARNING)
+    @Deprecated("Replace \"encrypted\" parameter with \"mode\" parameter.\n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeWriteMode.Encrypted()\nencrypted=false -> KSafeWriteMode.Plain", level = DeprecationLevel.WARNING)
     actual suspend inline fun <reified T> put(key: String, value: T, encrypted: Boolean): Unit =
-        put(key, value, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)
+        put(
+            key,
+            value,
+            if (encrypted) {
+                defaultEncryptedMode()
+            } else {
+                KSafeWriteMode.Plain
+            }
+        )
 
     @Suppress("DEPRECATION")
     @Deprecated("Remove \"encrypted\" parameter. Protection is now auto-detected during reads.  Your \"encrypted\" param is ignored.", level = DeprecationLevel.WARNING)

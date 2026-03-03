@@ -29,9 +29,9 @@ class KSafeKeyStorageTest {
     @Test
     fun getKeyInfo_returnsNoneProtectionAndSoftwareForUnencryptedKey() {
         val ksafe = KSafe(fileName = "keyinfounenctest")
-        ksafe.putDirect("plain_key", "hello", protection = KSafeProtection.NONE)
+        ksafe.putDirect("plain_key", "hello", mode = KSafeWriteMode.Plain)
         val result = ksafe.getKeyInfo("plain_key")
-        assertEquals(KSafeKeyInfo(KSafeProtection.NONE, KSafeKeyStorage.SOFTWARE), result)
+        assertEquals(KSafeKeyInfo(null, KSafeKeyStorage.SOFTWARE), result)
     }
 
     @Test
@@ -46,11 +46,11 @@ class KSafeKeyStorageTest {
     fun getKeyInfo_protectionMatchesStoredMetadata() {
         val ksafe = KSafe(fileName = "keyinfometatest")
 
-        ksafe.putDirect("none_key", "value", protection = KSafeProtection.NONE)
-        ksafe.putDirect("default_key", "value", protection = KSafeProtection.DEFAULT)
+        ksafe.putDirect("none_key", "value", mode = KSafeWriteMode.Plain)
+        ksafe.putDirect("default_key", "value", mode = KSafeWriteMode.Encrypted())
 
         val noneInfo = ksafe.getKeyInfo("none_key")
-        assertEquals(KSafeProtection.NONE, noneInfo?.protection)
+        assertEquals(null, noneInfo?.protection)
         assertEquals(KSafeKeyStorage.SOFTWARE, noneInfo?.storage)
 
         val defaultInfo = ksafe.getKeyInfo("default_key")

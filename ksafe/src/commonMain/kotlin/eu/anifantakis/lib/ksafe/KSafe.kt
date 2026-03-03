@@ -23,12 +23,15 @@ import kotlinx.coroutines.flow.stateIn
  *
  * **The default behavior is to encrypt all data.**
  *
- * **Per-Property Protection:**
- * Use [KSafeProtection] to control encryption per-property:
+ * **Per-Property Write Mode:**
+ * Use [KSafeWriteMode] to control plain/encrypted behavior per property:
  * ```kotlin
- * var counter by ksafe(0)                                                // DEFAULT encryption
- * var secret by ksafe(0, protection = KSafeProtection.HARDWARE_ISOLATED) // StrongBox / Secure Enclave
- * var setting by ksafe("default", protection = KSafeProtection.NONE)     // no encryption
+ * var counter by ksafe(0) // encrypted (default)
+ * var secret by ksafe(
+ *     0,
+ *     mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED)
+ * ) // StrongBox / Secure Enclave
+ * var setting by ksafe("default", mode = KSafeWriteMode.Plain) // no encryption
  * ```
  *
  * **Biometric Authentication:**
@@ -60,7 +63,7 @@ expect class KSafe {
      * | Scenario | Return value |
      * |----------|-------------|
      * | Key not found | `null` |
-     * | Unencrypted key (NONE) | `KSafeKeyInfo(NONE, SOFTWARE)` |
+     * | Unencrypted key | `KSafeKeyInfo(null, SOFTWARE)` |
      * | Encrypted DEFAULT (Android/iOS) | `KSafeKeyInfo(DEFAULT, HARDWARE_BACKED)` |
      * | Encrypted HARDWARE_ISOLATED (w/ hardware) | `KSafeKeyInfo(HARDWARE_ISOLATED, HARDWARE_ISOLATED)` |
      * | Encrypted HARDWARE_ISOLATED (no hardware) | `KSafeKeyInfo(HARDWARE_ISOLATED, HARDWARE_BACKED)` |
@@ -106,26 +109,20 @@ expect class KSafe {
 
 
     /**
-     * Updates a value asynchronously with optimistic caching.
+     * Updates a value asynchronously with optimistic caching using default encrypted mode.
      *
-     * This method updates the in-memory cache **immediately** (Optimistic Update) and
-     * schedules the disk persistence on a background thread.
-     *
-     * Because the cache update is instant, subsequent calls to [getDirect] will return the new value
-     * immediately, even before the disk write completes. This prevents race conditions and UI flicker.
-     *
-     * ## Example
-     * ```kotlin
-     * ksafe.putDirect("api_token", token)
-     * ksafe.putDirect("setting", value, protection = KSafeProtection.NONE)
-     * ```
-     *
-     * @param T The type of value to store.
-     * @param key The unique key for the value.
-     * @param value The value to store.
-     * @param protection The encryption/storage protection level. Defaults to [KSafeProtection.DEFAULT].
+     * Default encrypted writes use `KSafeConfig.requireUnlockedDevice` as unlock-policy default.
+     * Use the overload with explicit [KSafeWriteMode] for plaintext writes or per-entry options.
      */
-    inline fun <reified T> putDirect(key: String, value: T, protection: KSafeProtection = KSafeProtection.DEFAULT)
+    inline fun <reified T> putDirect(key: String, value: T)
+
+    /**
+     * Updates a value asynchronously with optimistic caching using explicit [KSafeWriteMode].
+     *
+     * Use this overload for plaintext writes ([KSafeWriteMode.Plain]) or encrypted options
+     * such as `requireUnlockedDevice`.
+     */
+    inline fun <reified T> putDirect(key: String, value: T, mode: KSafeWriteMode)
 
     /**
      * Deletes a value and its associated encryption key asynchronously.
@@ -169,17 +166,20 @@ expect class KSafe {
 
 
     /**
-     * Persists a value to disk suspending-ly.
+     * Persists a value to disk suspending-ly using default encrypted mode.
      *
-     * This method suspends until the data has been successfully written to disk.
-     * It also updates the memory cache immediately.
-     *
-     * @param T The type of value.
-     * @param key The unique key.
-     * @param value The value to store.
-     * @param protection The encryption/storage protection level. Defaults to [KSafeProtection.DEFAULT].
+     * Default encrypted writes use `KSafeConfig.requireUnlockedDevice` as unlock-policy default.
+     * Use the overload with explicit [KSafeWriteMode] for plaintext writes or per-entry options.
      */
-    suspend inline fun <reified T> put(key: String, value: T, protection: KSafeProtection = KSafeProtection.DEFAULT)
+    suspend inline fun <reified T> put(key: String, value: T)
+
+    /**
+     * Persists a value to disk suspending-ly using explicit [KSafeWriteMode].
+     *
+     * Use this overload for plaintext writes ([KSafeWriteMode.Plain]) or encrypted options
+     * such as `requireUnlockedDevice`.
+     */
+    suspend inline fun <reified T> put(key: String, value: T, mode: KSafeWriteMode)
 
     /**
      * Deletes a value and its associated encryption key (if any) from storage.
@@ -208,10 +208,10 @@ expect class KSafe {
     )
     inline fun <reified T> getDirect(key: String, defaultValue: T, encrypted: Boolean): T
 
-    /** @deprecated Use [putDirect] with [KSafeProtection] parameter instead. */
+    /** @deprecated Use [putDirect] with [KSafeWriteMode] parameter instead. */
     @Deprecated(
-        "Replace \"encrypted\" parameter with \"protection\" parameter. \n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeProtection.DEFAULT\nencrypted=false -> KSafeProtection.NONE\n\nNote: You don't need to include a protection reference if you aim for \"DEFAULT\" protection (it is assumed and you can omit it).",
-        ReplaceWith("putDirect(key, value, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)"),
+        "Replace \"encrypted\" parameter with \"mode\" parameter.\n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeWriteMode.Encrypted()\nencrypted=false -> KSafeWriteMode.Plain",
+        ReplaceWith("putDirect(key, value, if (encrypted) KSafeWriteMode.Encrypted() else KSafeWriteMode.Plain)"),
         level = DeprecationLevel.WARNING
     )
     inline fun <reified T> putDirect(key: String, value: T, encrypted: Boolean)
@@ -224,10 +224,10 @@ expect class KSafe {
     )
     suspend inline fun <reified T> get(key: String, defaultValue: T, encrypted: Boolean): T
 
-    /** @deprecated Use [put] with [KSafeProtection] parameter instead. */
+    /** @deprecated Use [put] with [KSafeWriteMode] parameter instead. */
     @Deprecated(
-        "Replace \"encrypted\" parameter with \"protection\" parameter. \n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeProtection.DEFAULT\nencrypted=false -> KSafeProtection.NONE\n\nNote: You don't need to include a protection reference if you aim for \"DEFAULT\" protection (it is assumed and you can omit it).",
-        ReplaceWith("put(key, value, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE)"),
+        "Replace \"encrypted\" parameter with \"mode\" parameter.\n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeWriteMode.Encrypted()\nencrypted=false -> KSafeWriteMode.Plain",
+        ReplaceWith("put(key, value, if (encrypted) KSafeWriteMode.Encrypted() else KSafeWriteMode.Plain)"),
         level = DeprecationLevel.WARNING
     )
     suspend inline fun <reified T> put(key: String, value: T, encrypted: Boolean)
@@ -410,8 +410,10 @@ enum class KSafeMemoryPolicy {
  *
  * This is a convenience wrapper around [KSafe.getFlow] that converts the cold [Flow] into
  * a hot [StateFlow] using [stateIn] with [SharingStarted.Eagerly]. The [defaultValue] is
- * used both as the fallback for missing keys and as the initial value of the [StateFlow],
- * preventing mismatched-initial-value bugs. Protection is auto-detected from stored metadata.
+ * used as the fallback for missing keys. The initial [StateFlow] value is resolved
+ * synchronously via [KSafe.getDirect], so if a value already exists it is emitted
+ * immediately — preventing a brief incorrect emission of the default value.
+ * Protection is auto-detected from stored metadata.
  *
  * ## Example
  * ```kotlin
@@ -424,7 +426,7 @@ enum class KSafeMemoryPolicy {
  *
  * @param T The type of value.
  * @param key The unique key.
- * @param defaultValue The fallback value and initial [StateFlow] value.
+ * @param defaultValue The fallback value when no stored value exists.
  * @param scope The [CoroutineScope] used to share the flow (e.g., `viewModelScope`).
  */
 inline fun <reified T> KSafe.getStateFlow(
@@ -432,7 +434,7 @@ inline fun <reified T> KSafe.getStateFlow(
     defaultValue: T,
     scope: CoroutineScope,
 ): StateFlow<T> = getFlow(key, defaultValue)
-    .stateIn(scope, SharingStarted.Eagerly, defaultValue)
+    .stateIn(scope, SharingStarted.Eagerly, getDirect(key, defaultValue))
 
 /** @deprecated Remove \"encrypted\" parameter. Protection is now auto-detected during reads.  Your \"encrypted\" param is ignored. */
 @Deprecated(
@@ -446,7 +448,7 @@ inline fun <reified T> KSafe.getStateFlow(
     scope: CoroutineScope,
     protection: KSafeProtection = KSafeProtection.DEFAULT
 ): StateFlow<T> = getFlow(key, defaultValue)
-    .stateIn(scope, SharingStarted.Eagerly, defaultValue)
+    .stateIn(scope, SharingStarted.Eagerly, getDirect(key, defaultValue))
 
 /** @deprecated Use [getStateFlow] without encrypted parameter. */
 @Deprecated(
@@ -460,4 +462,4 @@ inline fun <reified T> KSafe.getStateFlow(
     scope: CoroutineScope,
     encrypted: Boolean
 ): StateFlow<T> = getFlow(key, defaultValue)
-    .stateIn(scope, SharingStarted.Eagerly, defaultValue)
+    .stateIn(scope, SharingStarted.Eagerly, getDirect(key, defaultValue))

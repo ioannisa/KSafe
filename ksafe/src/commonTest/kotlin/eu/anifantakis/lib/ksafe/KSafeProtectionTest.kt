@@ -9,22 +9,18 @@ class KSafeProtectionTest {
     @Test
     fun enumValuesExist() {
         val values = KSafeProtection.entries
-        assertEquals(3, values.size)
-        assertEquals(KSafeProtection.NONE, values[0])
-        assertEquals(KSafeProtection.DEFAULT, values[1])
-        assertEquals(KSafeProtection.HARDWARE_ISOLATED, values[2])
+        assertEquals(2, values.size)
+        assertEquals(KSafeProtection.DEFAULT, values[0])
+        assertEquals(KSafeProtection.HARDWARE_ISOLATED, values[1])
     }
 
     @Test
     fun ordinalOrdering() {
-        assertTrue(KSafeProtection.NONE.ordinal < KSafeProtection.DEFAULT.ordinal)
         assertTrue(KSafeProtection.DEFAULT.ordinal < KSafeProtection.HARDWARE_ISOLATED.ordinal)
     }
 
     @Test
-    fun noneIsNotEncrypted() {
-        assertEquals(false, KSafeProtection.NONE != KSafeProtection.NONE)
-        assertEquals(true, KSafeProtection.DEFAULT != KSafeProtection.NONE)
-        assertEquals(true, KSafeProtection.HARDWARE_ISOLATED != KSafeProtection.NONE)
+    fun defaultAndHardwareAreDistinct() {
+        assertTrue(KSafeProtection.DEFAULT != KSafeProtection.HARDWARE_ISOLATED)
     }
 }

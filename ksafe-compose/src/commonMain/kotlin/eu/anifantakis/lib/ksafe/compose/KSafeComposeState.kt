@@ -1,7 +1,7 @@
 package eu.anifantakis.lib.ksafe.compose
 
 import eu.anifantakis.lib.ksafe.KSafe
-import eu.anifantakis.lib.ksafe.KSafeProtection
+import eu.anifantakis.lib.ksafe.KSafeWriteMode
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.SnapshotMutationPolicy
 import androidx.compose.runtime.mutableStateOf
@@ -19,7 +19,9 @@ import kotlin.reflect.KProperty
  * @param T The type of the state value.
  * @param initialValue The value pre-loaded from KSafe by the delegate provider.
  * @param valueSaver A lambda function that takes the new value of type T and persists it.
- * @param policy The [SnapshotMutationPolicy] to use for the [MutableState].
+ * @param policy The [SnapshotMutationPolicy] used by Compose to decide whether two values are equivalent.
+ * KSafe uses the same policy gate before persisting:
+ * persistence happens only when `!policy.equivalent(oldValue, newValue)`.
  */
 class KSafeComposeState<T>(
     initialValue: T, // Value is pre-loaded by the composeStateOf provider
@@ -58,6 +60,29 @@ class KSafeComposeState<T>(
 
 
 /**
+ * Creates a Jetpack Compose [MutableState] persisted by KSafe using default Compose equality.
+ *
+ * This is the simple overload. It uses [structuralEqualityPolicy], which is correct for most use
+ * cases, and keeps call sites uncluttered.
+ *
+ * @param T The type of the state value.
+ * @param defaultValue The default value if no value is found in KSafe.
+ * @param key Optional explicit key for storing the value. If null, the property name is used.
+ * @param mode Write mode. Defaults to encrypted/default.
+ */
+inline fun <reified T> KSafe.mutableStateOf(
+    defaultValue: T,
+    key: String? = null,
+    mode: KSafeWriteMode = KSafeWriteMode.Encrypted()
+): PropertyDelegateProvider<Any?, ReadWriteProperty<Any?, T>> =
+    mutableStateOf(
+        defaultValue = defaultValue,
+        key = key,
+        mode = mode,
+        policy = structuralEqualityPolicy()
+    )
+
+/**
  * Creates a Jetpack Compose [MutableState] that is persisted using KSafe.
  *
  * The state is initialized from KSafe when the delegate is created. Changes are
@@ -69,8 +94,11 @@ class KSafeComposeState<T>(
  * // In a Composable or ViewModel
  * var username by ksafe.mutableStateOf("Guest")
  * var counter by ksafe.mutableStateOf(0, key = "my_counter")
- * var settings by ksafe.mutableStateOf(Settings(), protection = KSafeProtection.NONE)
- * var secret by ksafe.mutableStateOf("", protection = KSafeProtection.HARDWARE_ISOLATED)
+ * var settings by ksafe.mutableStateOf(Settings(), mode = KSafeWriteMode.Plain)
+ * var secret by ksafe.mutableStateOf(
+ *     "",
+ *     mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED)
+ * )
  * ```
  *
  * **For biometric protection**, use [KSafe.verifyBiometric] or [KSafe.verifyBiometricDirect]
@@ -86,15 +114,23 @@ class KSafeComposeState<T>(
  * @param T The type of the state value.
  * @param defaultValue The default value if no value is found in KSafe.
  * @param key Optional explicit key for storing the value. If null, the property name is used.
- * @param protection The encryption/storage protection level. Defaults to [KSafeProtection.DEFAULT].
- * @param policy The [SnapshotMutationPolicy] for the [MutableState] (defaults to [structuralEqualityPolicy]).
+ * @param mode Write mode. Defaults to encrypted/default.
+ * @param policy The [SnapshotMutationPolicy] for Compose state equality.
+ * It affects both recomposition and persistence behavior.
+ *
+ * Common choices:
+ * - [structuralEqualityPolicy] (default): treats values as unchanged when `old == new`.
+ * - `referentialEqualityPolicy()`: treats values as unchanged only when `old === new`.
+ * - `neverEqualPolicy()`: always treats assignment as a change.
+ *
+ * KSafe persists only when the policy says the value changed.
  * @return A [PropertyDelegateProvider] ensuring this is used with `by` delegation.
  */
 inline fun <reified T> KSafe.mutableStateOf(
     defaultValue: T,
     key: String? = null,
-    protection: KSafeProtection = KSafeProtection.DEFAULT,
-    policy: SnapshotMutationPolicy<T> = structuralEqualityPolicy()
+    mode: KSafeWriteMode = KSafeWriteMode.Encrypted(),
+    policy: SnapshotMutationPolicy<T>
 ): PropertyDelegateProvider<Any?, ReadWriteProperty<Any?, T>> {
     // 'this' is the KSafe instance
     val ksafe = this
@@ -107,7 +143,7 @@ inline fun <reified T> KSafe.mutableStateOf(
 
         val saver: (newValue: T) -> Unit = { newValueToSave ->
             try {
-                ksafe.putDirect<T>(actualKey, newValueToSave, protection)
+                ksafe.putDirect<T>(actualKey, newValueToSave, mode)
             } catch (e: Exception) {
                 println("KSafe: Failed to save value for key '$actualKey': ${e.message}")
             }
@@ -122,16 +158,30 @@ inline fun <reified T> KSafe.mutableStateOf(
 }
 
 /**
- * @deprecated Use [mutableStateOf] with [KSafeProtection] parameter instead.
+ * @deprecated Use [mutableStateOf] with [KSafeWriteMode] parameter instead.
  */
 @Deprecated(
-    "Replace \"encrypted\" parameter with \"protection\" parameter. \n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeProtection.DEFAULT\nencrypted=false -> KSafeProtection.NONE\n\nNote: You don't need to include a protection reference if you aim for \"DEFAULT\" protection (it is assumed and you can omit it).",
-    ReplaceWith("mutableStateOf(defaultValue, key, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE, policy)")
+    "Replace \"encrypted\" parameter with \"mode\" parameter.\n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeWriteMode.Encrypted()\nencrypted=false -> KSafeWriteMode.Plain",
+    ReplaceWith("mutableStateOf(defaultValue, key, if (encrypted) KSafeWriteMode.Encrypted() else KSafeWriteMode.Plain)")
+)
+inline fun <reified T> KSafe.mutableStateOf(
+    defaultValue: T,
+    key: String? = null,
+    encrypted: Boolean
+): PropertyDelegateProvider<Any?, ReadWriteProperty<Any?, T>> =
+    mutableStateOf(defaultValue, key, if (encrypted) KSafeWriteMode.Encrypted() else KSafeWriteMode.Plain)
+
+/**
+ * @deprecated Use [mutableStateOf] with [KSafeWriteMode] parameter instead.
+ */
+@Deprecated(
+    "Replace \"encrypted\" parameter with \"mode\" parameter.\n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeWriteMode.Encrypted()\nencrypted=false -> KSafeWriteMode.Plain",
+    ReplaceWith("mutableStateOf(defaultValue, key, if (encrypted) KSafeWriteMode.Encrypted() else KSafeWriteMode.Plain, policy)")
 )
 inline fun <reified T> KSafe.mutableStateOf(
     defaultValue: T,
     key: String? = null,
     encrypted: Boolean,
-    policy: SnapshotMutationPolicy<T> = structuralEqualityPolicy()
+    policy: SnapshotMutationPolicy<T>
 ): PropertyDelegateProvider<Any?, ReadWriteProperty<Any?, T>> =
-    mutableStateOf(defaultValue, key, if (encrypted) KSafeProtection.DEFAULT else KSafeProtection.NONE, policy)
+    mutableStateOf(defaultValue, key, if (encrypted) KSafeWriteMode.Encrypted() else KSafeWriteMode.Plain, policy)
