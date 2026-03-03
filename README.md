@@ -58,7 +58,7 @@ var tokens by ksafe(AuthTokens())
 install(Auth) {
   bearer {
     loadTokens {
-      // Reads atomic object from hot cache (~0.002ms). No disk. No suspend.
+      // Reads atomic object from hot cache (~0.007ms). No disk. No suspend.
       BearerTokens(tokens.accessToken, tokens.refreshToken)
     }
     refreshTokens {
@@ -405,12 +405,12 @@ ksafe.putDirect("counter", 42)
 val n = ksafe.getDirect("counter", 0)
 ```
 
-> **Performance Note:** For bulk or concurrent operations, **always use the Direct API**. The Coroutine API waits for DataStore persistence on each call (~8.8 ms), while the Direct API returns immediately from the hot cache (~0.012 ms) — that's **~767x faster**.
+> **Performance Note:** For bulk or concurrent operations, **always use the Direct API**. The Coroutine API waits for DataStore persistence on each call (~22 ms), while the Direct API returns immediately from the hot cache (~0.022 ms) — that's **~1000x faster**.
 
 | API | Read | Write | Best For |
 |-----|------|-------|----------|
-| `getDirect`/`putDirect` | 0.0016 ms | 0.012 ms | UI, bulk ops, high throughput |
-| `get`/`put` (suspend) | 0.0014 ms | 8.8 ms | When you must guarantee persistence |
+| `getDirect`/`putDirect` | 0.007 ms | 0.022 ms | UI, bulk ops, high throughput |
+| `get`/`put` (suspend) | 0.010 ms | 22 ms | When you must guarantee persistence |
 
 ### Write Mode API (Per-Entry Unlock Policy)
 
@@ -552,11 +552,11 @@ class CounterViewModel(ksafe: KSafe) : ViewModel() {
 
 ## Performance Benchmarks
 
-KSafe 1.4.1 introduces significant performance optimizations. Here are the benchmark results comparing KSafe against popular Android persistence libraries:
+Here are benchmark results comparing KSafe against popular Android persistence libraries.
 
 ### Benchmark Environment
 - **Device:** Physical Android device
-- **Test:** 1000 sequential read/write operations, averaged
+- **Test:** 500 sequential read/write operations per library, averaged
 - **Libraries tested:** KSafe, SharedPreferences, EncryptedSharedPreferences, MMKV, DataStore, Multiplatform Settings, KVault
 
 ### Results Summary
@@ -565,73 +565,73 @@ KSafe 1.4.1 introduces significant performance optimizations. Here are the bench
 
 | Library | Read | Write |
 |---------|------|-------|
-| SharedPreferences | 0.0006 ms | 0.0152 ms |
-| MMKV | 0.0007 ms | 0.0577 ms |
-| Multiplatform Settings | 0.0009 ms | 0.0192 ms |
-| **KSafe** | **0.0016 ms** | **0.0115 ms** |
-| DataStore | 1.10 ms | 3.76 ms |
+| SharedPreferences | 0.0017 ms | 0.0224 ms |
+| MMKV | 0.0024 ms | 0.0232 ms |
+| Multiplatform Settings | 0.0054 ms | 0.0228 ms |
+| **KSafe (Delegated)** | **0.0073 ms** | **0.0218 ms** |
+| DataStore | 0.5549 ms | 5.17 ms |
 
-> **Note:** KSafe unencrypted writes are now **faster than SharedPreferences** (0.0115 ms vs 0.0152 ms)!
+> **Note:** KSafe unencrypted writes are **on par with SharedPreferences** (0.0218 ms vs 0.0224 ms) while providing KMP support, type-safe serialization, and optional encryption.
 
 #### Encrypted Read Operations
 
 | Library | Time | vs KSafe |
 |---------|------|----------|
-| **KSafe (PLAIN_TEXT memory)** | **0.0058 ms** | — |
-| KSafe (ENCRYPTED memory) | 0.0276 ms | *(decrypts on-demand)* |
-| KVault | 0.6003 ms | KSafe is **103x faster** |
-| EncryptedSharedPreferences | 0.6817 ms | KSafe is **117x faster** |
+| **KSafe (PLAIN_TEXT memory)** | **0.0174 ms** | — |
+| KVault | 0.2418 ms | KSafe is **14x faster** |
+| EncryptedSharedPreferences | 0.2603 ms | KSafe is **15x faster** |
+| KSafe (ENCRYPTED memory) | 4.93 ms | *(real AES-GCM decryption via Keystore on every read)* |
+
+> **Note on ENCRYPTED memory policy:** The ENCRYPTED memory policy keeps ciphertext in RAM and performs real AES-GCM decryption through the Android Keystore on every read (~5 ms). This is the cost of hardware-backed cryptography. For most use cases, use `PLAIN_TEXT` (decrypts once at init) or `ENCRYPTED_WITH_TIMED_CACHE` (decrypts once per TTL window).
 
 #### Encrypted Write Operations
 
 | Library | Time | vs KSafe |
 |---------|------|----------|
-| **KSafe (PLAIN_TEXT memory)** | **0.0123 ms** | — |
-| KSafe (ENCRYPTED memory) | 0.0531 ms | — |
-| EncryptedSharedPreferences | 0.2064 ms | KSafe is **17x faster** |
-| KVault | 1.05 ms | KSafe is **85x faster** |
+| **KSafe (PLAIN_TEXT memory)** | **0.0254 ms** | — |
+| KSafe (ENCRYPTED memory) | 0.0347 ms | — |
+| EncryptedSharedPreferences | 0.2234 ms | KSafe is **9x faster** |
+| KVault | 0.8516 ms | KSafe is **34x faster** |
 
 ### Key Performance Highlights
 
 **vs DataStore (KSafe's backend):**
-- :zap: **327x faster writes** (3.76 ms → 0.0115 ms)
-- :zap: **687x faster reads** (1.10 ms → 0.0016 ms)
+- :zap: **237x faster writes** (5.17 ms → 0.0218 ms)
+- :zap: **76x faster reads** (0.55 ms → 0.0073 ms)
 
 **vs KVault (encrypted KMP storage):**
-- :zap: **103x faster encrypted reads** (0.60 ms → 0.0058 ms with PLAIN_TEXT memory)
-- :zap: **85x faster encrypted writes** (1.05 ms → 0.0123 ms)
+- :zap: **14x faster encrypted reads** (0.24 ms → 0.0174 ms with PLAIN_TEXT memory)
+- :zap: **34x faster encrypted writes** (0.85 ms → 0.0254 ms)
 
 **vs EncryptedSharedPreferences:**
-- :zap: **117x faster encrypted reads** (0.68 ms → 0.0058 ms with PLAIN_TEXT memory)
-- :zap: **17x faster encrypted writes** (0.21 ms → 0.0123 ms)
+- :zap: **15x faster encrypted reads** (0.26 ms → 0.0174 ms with PLAIN_TEXT memory)
+- :zap: **9x faster encrypted writes** (0.22 ms → 0.0254 ms)
 
 **vs SharedPreferences (unencrypted baseline):**
-- :zap: KSafe unencrypted writes are **faster** (0.0115 ms vs 0.0152 ms)
-- Similar read performance (0.0016 ms vs 0.0006 ms)
+- :zap: KSafe unencrypted writes match SharedPreferences (0.0218 ms vs 0.0224 ms)
+- Reads are ~4x slower (0.0073 ms vs 0.0017 ms) — the cost of type-safe generics and cross-platform API
 
 **vs multiplatform-settings (Russell Wolf):**
-- :zap: **1.7x faster writes** (0.0192 ms → 0.0115 ms)
-- Similar read performance (0.0016 ms vs 0.0009 ms)
+- Similar write performance (0.0218 ms vs 0.0228 ms)
+- Similar read performance (0.0073 ms vs 0.0054 ms)
 - KSafe adds: encryption, biometrics, type-safe serialization
 
-### Cold Start / Reinitialization Performance
+### Cold Start Performance
 
 How fast can each library load existing data on app startup?
 
 | Library | Keys | Time |
 |---------|------|------|
-| SharedPreferences | 201 | 0.0315 ms |
-| Multiplatform Settings | 201 | 0.0400 ms |
-| MMKV | 201 | 0.0402 ms |
-| DataStore | 201 | 0.4901 ms |
-| **KSafe (ENCRYPTED)** | 603 | **1.26 ms** :zap: |
-| KVault | 320 | 4.77 ms |
-| EncryptedSharedPrefs | 201 | 6.41 ms |
-| KSafe (PLAIN_TEXT) | 1206 | 6.49 ms |
+| SharedPreferences | 501 | 0.032 ms |
+| Multiplatform Settings | 501 | 0.109 ms |
+| MMKV | 501 | 0.119 ms |
+| DataStore | 501 | 0.559 ms |
+| **KSafe (ENCRYPTED)** | 1503 | **18.2 ms** |
+| KSafe (PLAIN_TEXT) | 3006 | 45.7 ms |
+| EncryptedSharedPrefs | 501 | 56.2 ms |
+| KVault | 650 | 58.3 ms |
 
-> **Note:** KSafe ENCRYPTED mode is **5x faster** to cold-start than PLAIN_TEXT mode. This is because ENCRYPTED defers decryption until values are accessed, while PLAIN_TEXT decrypts all values upfront during initialization.
-
-KSafe's hot cache architecture means near-instant cold starts—the background DataStore collector preloads data, so `getDirect()` returns from warm cache.
+> **Note:** KSafe ENCRYPTED mode is **2.5x faster** to cold-start than PLAIN_TEXT mode. This is because ENCRYPTED defers decryption until values are accessed, while PLAIN_TEXT decrypts all values upfront during initialization. Both KSafe modes cold-start faster than EncryptedSharedPreferences and KVault.
 
 ### How KSafe Achieves This Performance
 
@@ -639,16 +639,16 @@ KSafe uses a **hot cache architecture** similar to SharedPreferences, but built 
 
 ```
 Vanilla DataStore:
-  Read:  suspend → Flow.first() → disk I/O → ~1.1 ms
-  Write: suspend → edit{} → serialize → disk I/O → ~3.8 ms
+  Read:  suspend → Flow.first() → disk I/O → ~0.55 ms
+  Write: suspend → edit{} → serialize → disk I/O → ~5.2 ms
 
 KSafe with Hot Cache:
-  Read:  getDirect() → ConcurrentHashMap lookup → ~0.0016 ms (no disk!)
-  Write: putDirect() → update HashMap + queue → ~0.012 ms (returns immediately)
+  Read:  getDirect() → ConcurrentHashMap lookup → ~0.007 ms (no disk!)
+  Write: putDirect() → update HashMap + queue → ~0.022 ms (returns immediately)
          Background: batched DataStore.edit() (user doesn't wait)
 ```
 
-**Optimizations in 1.4.1:**
+**Key optimizations:**
 1. **ConcurrentHashMap cache** - O(1) per-key reads and writes
 2. **Write coalescing** - Batches writes within 16ms window into single DataStore edit
 3. **Deferred encryption** - Encryption moved to background thread, UI thread returns instantly
@@ -1778,7 +1778,7 @@ import eu.anifantakis.lib.ksafe.compose.mutableStateOf
 - You want property delegation (`by ksafe(x)`) for minimal boilerplate
 - You need integrated biometric authentication with smart caching
 - You're using Jetpack Compose and want reactive encrypted state
-- Performance is critical — KSafe is **103x faster** than KVault for encrypted reads, **85x faster** for writes
+- Performance is critical — KSafe is **14x faster** than KVault for encrypted reads, **34x faster** for writes
 
 **When to consider alternatives:**
 - You need complex queries → Consider SQLCipher or Room with encryption

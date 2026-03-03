@@ -661,7 +661,7 @@ actual class KSafe(
         val existingMetaKeys = protectionMap.keys.toList()
         for ((userKey, rawMeta) in protectionByKey) {
             if (!isDirtyForUserKey(userKey)) {
-                protectionMap[userKey] = rawMeta
+                protectionMap[userKey] = KeySafeMetadataManager.extractProtectionLiteral(rawMeta)
             }
         }
         for (userKey in existingMetaKeys) {
@@ -890,10 +890,9 @@ actual class KSafe(
             // (resolveFromCache handles both plaintext JSON and encrypted Base64)
             updateMemoryCache(rawKey, jsonString)
 
-            // Update protection metadata
-            protectionMap[key] = protectionToMetaJson(
-                protection = if (resolved == KSafeProtection.HARDWARE_ISOLATED) KSafeProtection.HARDWARE_ISOLATED else KSafeProtection.DEFAULT,
-                requireUnlockedDevice = requireUnlockedDevice
+            // Update protection metadata (store literal for fast-path reads)
+            protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(
+                if (resolved == KSafeProtection.HARDWARE_ISOLATED) KSafeProtection.HARDWARE_ISOLATED else KSafeProtection.DEFAULT
             )
 
             // For TIMED_CACHE, also populate the plaintext cache
@@ -924,8 +923,8 @@ actual class KSafe(
             }
             updateMemoryCache(rawKey, toCache)
 
-            // Store NONE metadata for unencrypted keys
-            protectionMap[key] = protectionToMetaJson(null)
+            // Store NONE metadata for unencrypted keys (literal for fast-path reads)
+            protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(null)
 
             // For unencrypted writes, determine the proper DataStore key type
             val storedValue: Any? = when (value) {
@@ -997,9 +996,8 @@ actual class KSafe(
         requireUnlockedDevice: Boolean = false
     ) {
         addDirtyKey(legacyEncryptedRawKey(key))
-        protectionMap[key] = protectionToMetaJson(
-            protection = if (hardwareIsolated) KSafeProtection.HARDWARE_ISOLATED else KSafeProtection.DEFAULT,
-            requireUnlockedDevice = requireUnlockedDevice
+        protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(
+            if (hardwareIsolated) KSafeProtection.HARDWARE_ISOLATED else KSafeProtection.DEFAULT
         )
         // Handle null values with sentinel
         val jsonString = if (value == null) {
@@ -1087,7 +1085,7 @@ actual class KSafe(
     @PublishedApi
     internal suspend inline fun <reified T> putUnencrypted(key: String, value: T) {
         addDirtyKey(key)
-        protectionMap[key] = protectionToMetaJson(null)
+        protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(null)
         // Handle null values
         if (value == null) {
             val preferencesKey = stringPreferencesKey(valueRawKey(key))

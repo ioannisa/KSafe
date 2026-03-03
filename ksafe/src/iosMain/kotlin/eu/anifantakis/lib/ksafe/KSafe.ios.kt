@@ -985,7 +985,7 @@ actual class KSafe(
             val currentMeta = protectionMap.value
             val mergedMeta = currentMeta.toMutableMap()
             for ((k, v) in protectionByKey) {
-                if (!isDirtyForUserKey(k)) mergedMeta[k] = v
+                if (!isDirtyForUserKey(k)) mergedMeta[k] = KeySafeMetadataManager.extractProtectionLiteral(v)
             }
             for (k in currentMeta.keys) {
                 if (!protectionByKey.containsKey(k) && !isDirtyForUserKey(k)) {
@@ -1193,7 +1193,7 @@ actual class KSafe(
         addDirtyKey(key)
         while (true) {
             val current = protectionMap.value
-            val updated = current + (key to protectionToMetaJson(null))
+            val updated = current + (key to KeySafeMetadataManager.protectionToLiteral(null))
             if (protectionMap.compareAndSet(current, updated)) break
         }
 
@@ -1340,9 +1340,8 @@ actual class KSafe(
         while (true) {
             val current = protectionMap.value
             val updated = current + (
-                key to protectionToMetaJson(
-                    protection = if (hardwareIsolated) KSafeProtection.HARDWARE_ISOLATED else KSafeProtection.DEFAULT,
-                    requireUnlockedDevice = requireUnlockedDevice
+                key to KeySafeMetadataManager.protectionToLiteral(
+                    if (hardwareIsolated) KSafeProtection.HARDWARE_ISOLATED else KSafeProtection.DEFAULT
                 )
             )
             if (protectionMap.compareAndSet(current, updated)) break
@@ -1584,15 +1583,14 @@ actual class KSafe(
             // (resolveFromCache handles both plaintext JSON and encrypted Base64)
             updateMemoryCache(rawKey, jsonString)
 
-            // Update protection metadata
+            // Update protection metadata (store literal for fast-path reads)
             while (true) {
                 val current = protectionMap.value
-                val protValue = protectionToMetaJson(
-                    protection = if (resolved == KSafeProtection.HARDWARE_ISOLATED) KSafeProtection.HARDWARE_ISOLATED
-                    else KSafeProtection.DEFAULT,
-                    requireUnlockedDevice = requireUnlockedDevice
+                val protLiteral = KeySafeMetadataManager.protectionToLiteral(
+                    if (resolved == KSafeProtection.HARDWARE_ISOLATED) KSafeProtection.HARDWARE_ISOLATED
+                    else KSafeProtection.DEFAULT
                 )
-                val updated = current + (key to protValue)
+                val updated = current + (key to protLiteral)
                 if (protectionMap.compareAndSet(current, updated)) break
             }
 
@@ -1626,10 +1624,10 @@ actual class KSafe(
             }
             updateMemoryCache(rawKey, toCache)
 
-            // Store NONE protection metadata for unencrypted keys
+            // Store NONE protection metadata for unencrypted keys (literal for fast-path reads)
             while (true) {
                 val current = protectionMap.value
-                val updated = current + (key to protectionToMetaJson(null))
+                val updated = current + (key to KeySafeMetadataManager.protectionToLiteral(null))
                 if (protectionMap.compareAndSet(current, updated)) break
             }
 

@@ -53,6 +53,11 @@ New runtime introspection APIs:
 - **Legacy compatibility:** reads remain backward-compatible with `encrypted_{key}`, bare `{key}`, and legacy metadata keys; touched keys are migrated/cleaned on write/delete.
 - **Per-entry unlock policy:** `requireUnlockedDevice` is now per encrypted write mode (`KSafeWriteMode.Encrypted(...)`), while `KSafeConfig.requireUnlockedDevice` is the default for no-mode encrypted writes.
 - **Global access-policy migration removed:** per-instance access-policy marker flow is no longer used.
+- **`protectionMap` stores literal strings instead of raw JSON:** `detectProtection()` is called on every `getDirect`/`get` read to determine if a key is encrypted or plaintext. Previously, `protectionMap` stored raw JSON metadata strings, causing `parseProtection()` to parse JSON on every read. Now stores literal strings (`"DEFAULT"`, `"NONE"`, `"HARDWARE_ISOLATED"`) via `protectionToLiteral()` at write time and `extractProtectionLiteral()` at cache load time. Reads always hit `parseProtection()`'s fast-path `when` check — no JSON parsing on the hot path. Applied on all four platforms (Android, JVM, iOS, WASM). Resulted in ~40% improvement in unencrypted read performance.
+
+### Documentation
+
+- Updated README performance benchmarks with v1.7.0 numbers measured on realistic cold-start conditions (disk I/O, not DataStore singleton cache). Updated all performance claims to reflect accurate ratios.
 
 ### Deprecated
 

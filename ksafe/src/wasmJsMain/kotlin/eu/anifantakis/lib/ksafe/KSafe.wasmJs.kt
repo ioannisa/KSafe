@@ -448,7 +448,9 @@ actual class KSafe(
         }
 
         protectionMap.clear()
-        protectionMap.putAll(protectionByKey)
+        for ((k, v) in protectionByKey) {
+            protectionMap[k] = KeySafeMetadataManager.extractProtectionLiteral(v)
+        }
 
         cacheInitialized = true
         emitStateFlow()
@@ -692,10 +694,7 @@ actual class KSafe(
 
             // Cache stores plaintext JSON for instant read-back (WASM always PLAIN_TEXT internally)
             updateMemoryCache(rawKey, jsonString)
-            protectionMap[key] = protectionToMetaJson(
-                protection = KSafeProtection.DEFAULT,
-                requireUnlockedDevice = requireUnlockedDevice
-            )
+            protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(KSafeProtection.DEFAULT)
 
             writeChannel.trySend(
                 WriteOperation.Encrypted(
@@ -716,7 +715,7 @@ actual class KSafe(
                 }
             }
             updateMemoryCache(rawKey, toCache)
-            protectionMap[key] = protectionToMetaJson(null)
+            protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(null)
 
             val storedValue: Any? = when (value) {
                 null -> null
@@ -752,10 +751,7 @@ actual class KSafe(
         } else {
             json.encodeToString(serializer<T>(), value)
         }
-        protectionMap[key] = protectionToMetaJson(
-            protection = KSafeProtection.DEFAULT,
-            requireUnlockedDevice = requireUnlockedDevice
-        )
+        protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(KSafeProtection.DEFAULT)
 
         val plainBytes = rawString.encodeToByteArray()
         val encryptedBytes = doEncrypt(alias, plainBytes, requireUnlockedDevice)
@@ -846,7 +842,7 @@ actual class KSafe(
     }
 
     @PublishedApi internal suspend inline fun <reified T> putUnencrypted(key: String, value: T) {
-        protectionMap[key] = protectionToMetaJson(null)
+        protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(null)
         safeLocalStorageSet(metaStorageKey(key), protectionToMetaJson(null))
         removeAllLegacyStorageKeys(key)
         if (value == null) {

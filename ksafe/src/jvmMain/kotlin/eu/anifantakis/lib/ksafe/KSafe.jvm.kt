@@ -33,7 +33,6 @@ import java.nio.file.Paths
 import java.nio.file.attribute.PosixFilePermission
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.ComparableTimeMark
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -622,7 +621,7 @@ actual class KSafe(
         val existingKeys = protectionMap.keys.toList()
         for ((userKey, rawMeta) in protectionByKey) {
             if (!isDirtyForUserKey(userKey)) {
-                protectionMap[userKey] = rawMeta
+                protectionMap[userKey] = KeySafeMetadataManager.extractProtectionLiteral(rawMeta)
             }
         }
         for (userKey in existingKeys) {
@@ -814,10 +813,7 @@ actual class KSafe(
             // Cache stores plaintext JSON for instant read-back
             // (resolveFromCache handles both plaintext JSON and encrypted Base64)
             updateMemoryCache(rawKey, jsonString)
-            protectionMap[key] = protectionToMetaJson(
-                protection = KSafeProtection.DEFAULT,
-                requireUnlockedDevice = requireUnlockedDevice
-            )
+            protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(KSafeProtection.DEFAULT)
 
             // For TIMED_CACHE, also populate the plaintext cache
             if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
@@ -845,7 +841,7 @@ actual class KSafe(
                 }
             }
             updateMemoryCache(rawKey, toCache)
-            protectionMap[key] = protectionToMetaJson(null)
+            protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(null)
 
             // For unencrypted writes, determine the proper DataStore key type
             val storedValue: Any? = when (value) {
@@ -891,10 +887,7 @@ actual class KSafe(
         requireUnlockedDevice: Boolean = false
     ) {
         dirtyKeys.add(legacyEncryptedRawKey(key))
-        protectionMap[key] = protectionToMetaJson(
-            protection = KSafeProtection.DEFAULT,
-            requireUnlockedDevice = requireUnlockedDevice
-        )
+        protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(KSafeProtection.DEFAULT)
         val alias = fileName?.let { "$it:$key" } ?: key
 
         // Handle null values with sentinel
@@ -973,7 +966,7 @@ actual class KSafe(
     @Suppress("UNCHECKED_CAST")
     @PublishedApi internal suspend inline fun <reified T> putUnencrypted(key: String, value: T) {
         dirtyKeys.add(key)
-        protectionMap[key] = protectionToMetaJson(null)
+        protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(null)
         // Handle null values
         if (value == null) {
             val preferencesKey = stringPreferencesKey(valueRawKey(key))

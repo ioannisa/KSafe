@@ -159,6 +159,32 @@ internal object KeySafeMetadataManager {
     }
 
     /**
+     * Converts a [KSafeProtection] to its literal string representation.
+     * Use this when writing to `protectionMap` to avoid JSON parsing on reads.
+     */
+    @PublishedApi
+    internal fun protectionToLiteral(protection: KSafeProtection?): String = when (protection) {
+        null -> "NONE"
+        KSafeProtection.DEFAULT -> "DEFAULT"
+        KSafeProtection.HARDWARE_ISOLATED -> "HARDWARE_ISOLATED"
+    }
+
+    /**
+     * Extracts the protection literal from raw metadata (JSON or legacy literal).
+     * Parses JSON once so the result can be stored in `protectionMap` as a literal.
+     */
+    @PublishedApi
+    internal fun extractProtectionLiteral(rawMetadata: String): String {
+        when (rawMetadata) {
+            "NONE", "DEFAULT", "HARDWARE_ISOLATED" -> return rawMetadata
+        }
+        return try {
+            KSafeJson.codec.parseToJsonElement(rawMetadata)
+                .jsonObject["p"]?.jsonPrimitive?.content ?: "NONE"
+        } catch (_: Exception) { "NONE" }
+    }
+
+    /**
      * Parses protection from either:
      * 1) legacy literal values ("NONE", "DEFAULT", "HARDWARE_ISOLATED"), or
      * 2) metadata JSON payload containing field `p`.
