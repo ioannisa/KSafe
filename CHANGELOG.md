@@ -2,7 +2,7 @@
 
 All notable changes to KSafe will be documented in this file.
 
-## [1.7.0] - 2025-02-24
+## [1.7.0] - 2025-03-03
 
 ### Added
 
@@ -79,6 +79,8 @@ ksafe.put("key", value, mode = KSafeWriteMode.Plain)
 - **Typed key cleanup correctness:** DataStore cleanup now uses type-agnostic key-name removal (`removeByKeyName`) to reliably remove stale typed legacy entries.
 - **iOS Secure Enclave error propagation:** improved CFError forwarding avoids accidental fallback on lock-state related failures.
 - **Race-safety and migration robustness:** batch/metadata migration behavior has been hardened for concurrent and legacy upgrade scenarios.
+- **Biometric prompt never showing when KSafe is lazily initialized** (e.g. via Koin `single`, Hilt `@Singleton`). `BiometricHelper` relied solely on `ActivityLifecycleCallbacks` to track the current `FragmentActivity`, but when KSafe was created after the Activity had already reached RESUMED state, the callbacks never fired and `waitForFragmentActivity()` timed out after 5 seconds returning `false`. Added `findCurrentActivity()` reflection fallback that discovers the current resumed `FragmentActivity` via `ActivityThread`. The reflection is wrapped in a try-catch and degrades gracefully on non-standard Android builds.
+- **`verifyBiometricDirect` dispatcher changed from `Dispatchers.Main` to `Dispatchers.Default`** to avoid calling `BiometricHelper.authenticate()` from the main thread, which its documentation explicitly prohibits.
 
 ---
 

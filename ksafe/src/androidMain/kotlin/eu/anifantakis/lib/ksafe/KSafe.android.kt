@@ -1501,7 +1501,7 @@ actual class KSafe(
         authorizationDuration: BiometricAuthorizationDuration?,
         onResult: (Boolean) -> Unit
     ) {
-        CoroutineScope(Dispatchers.Main + SupervisorJob()).launch {
+        CoroutineScope(Dispatchers.Default + SupervisorJob()).launch {
             val result = verifyBiometric(reason, authorizationDuration)
             onResult(result)
         }

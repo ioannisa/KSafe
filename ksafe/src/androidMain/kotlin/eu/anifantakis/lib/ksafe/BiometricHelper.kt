@@ -9,10 +9,9 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import kotlinx.coroutines.Dispatchers
+import eu.anifantakis.lib.ksafe.BiometricHelper.activityWaitTimeoutMs
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import java.lang.ref.WeakReference
@@ -136,6 +135,10 @@ object BiometricHelper {
         // First check if we already have a STARTED FragmentActivity
         currentFragmentActivity?.get()?.let { return it }
 
+        // Fallback: if lifecycle callbacks missed the current activity (e.g. KSafe was
+        // initialized after the Activity already reached RESUMED), find it via ActivityThread.
+        findCurrentActivity()?.let { return it }
+
         // Check if we have a CREATED activity that will reach STARTED soon
         val createdActivity = createdFragmentActivity?.get()
         if (createdActivity != null) {
@@ -160,6 +163,44 @@ object BiometricHelper {
         }
 
         return currentFragmentActivity?.get()
+    }
+
+    /**
+     * Finds the current resumed FragmentActivity via ActivityThread reflection.
+     * This handles the case where BiometricHelper.init() was called after the Activity
+     * already reached RESUMED state (common with lazy DI like Koin singletons),
+     * so lifecycle callbacks never fired for the current Activity.
+     */
+    private fun findCurrentActivity(): FragmentActivity? {
+        try {
+            val activityThread = Class.forName("android.app.ActivityThread")
+                .getMethod("currentActivityThread").invoke(null) ?: return null
+            val field = activityThread.javaClass.getDeclaredField("mActivities")
+            field.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            val activities = field.get(activityThread) as? Map<Any, Any> ?: return null
+            for (record in activities.values) {
+                val recordClass = record.javaClass
+                val pausedField = recordClass.getDeclaredField("paused")
+                pausedField.isAccessible = true
+                if (!pausedField.getBoolean(record)) {
+                    val activityField = recordClass.getDeclaredField("activity")
+                    activityField.isAccessible = true
+                    val activity = activityField.get(record) as? Activity ?: continue
+                    if (activity is FragmentActivity && !activity.isDestroyed && !activity.isFinishing) {
+                        // Cache so lifecycle callbacks track it going forward
+                        currentFragmentActivity = WeakReference(activity)
+                        createdFragmentActivity = WeakReference(activity)
+                        currentAnyActivity = WeakReference(activity)
+                        return activity
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // Reflection may fail on some OEM/Android versions — that's OK,
+            // the polling mechanism remains as fallback.
+        }
+        return null
     }
 
     /**
