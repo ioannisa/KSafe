@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 import kotlin.io.encoding.Base64
@@ -91,7 +92,8 @@ actual class KSafe(
     internal var _testEngine: KSafeEncryption? = null
 
     companion object {
-        private val fileNameRegex = Regex("[a-z]+")
+        // Must start with a lowercase letter; may also contain digits and underscores.
+        private val fileNameRegex = Regex("[a-z][a-z0-9_]*")
 
         @PublishedApi
         internal const val NULL_SENTINEL = "__KSAFE_NULL_VALUE__"
@@ -101,7 +103,7 @@ actual class KSafe(
     actual val deviceKeyStorages: Set<KSafeKeyStorage> = setOf(KSafeKeyStorage.SOFTWARE)
     init {
         if (fileName != null && !fileName.matches(fileNameRegex)) {
-            throw IllegalArgumentException("File name must contain only lowercase letters")
+            throw IllegalArgumentException("File name must start with a lowercase letter and contain only lowercase letters, digits, or underscores")
         }
         validateSecurityPolicy(securityPolicy)
     }
@@ -161,7 +163,7 @@ actual class KSafe(
     /** Completes when `loadCacheFromStorage()` has finished decrypting all values. */
     private val cacheReadyDeferred = CompletableDeferred<Unit>()
 
-    @PublishedApi internal val json = Json { ignoreUnknownKeys = true }
+    @PublishedApi internal val json: Json = config.json
 
     /**
      * Flow-based state for observing changes.
@@ -441,7 +443,9 @@ actual class KSafe(
                     val encryptedBytes = decodeBase64Wasm(value)
                     val plainBytes = doDecrypt(alias, encryptedBytes)
                     memoryCache[cacheKey] = plainBytes.decodeToString()
-                } catch (_: Exception) { }
+                } catch (e: Exception) {
+                    // Decryption failed — skip this entry (will use default on read)
+                }
             } else {
                 memoryCache[cacheKey] = value
             }
@@ -542,91 +546,55 @@ actual class KSafe(
     }
 
     @PublishedApi internal inline fun <reified T> resolveFromCache(cache: Map<String, Any>, key: String, defaultValue: T, protection: KSafeProtection?): T {
+        @Suppress("UNCHECKED_CAST")
+        return resolveFromCacheRaw(cache, key, defaultValue, protection, serializer<T>()) as T
+    }
+
+    /**
+     * Non-inline version of [resolveFromCache]. Returns raw [Any?].
+     * On WASM, cache always contains plaintext (PLAIN_TEXT mode internally).
+     */
+    @PublishedApi
+    internal fun resolveFromCacheRaw(cache: Map<String, Any>, key: String, defaultValue: Any?, protection: KSafeProtection?, serializer: KSerializer<*>): Any? {
         val cacheKey = if (protection != null) "encrypted_$key" else key
         val cachedValue = cache[cacheKey] ?: return defaultValue
 
         return if (protection != null) {
-            // On WASM, cache always contains plaintext (PLAIN_TEXT mode internally)
             val jsonString = cachedValue as? String ?: return defaultValue
-
-            if (jsonString == NULL_SENTINEL) {
-                @Suppress("UNCHECKED_CAST")
-                return null as T
-            }
-
-            try { json.decodeFromString(serializer<T>(), jsonString) } catch (_: Exception) { defaultValue }
+            if (jsonString == NULL_SENTINEL) return null
+            try { jsonDecode(json, serializer, jsonString) } catch (_: Exception) { defaultValue }
         } else {
-            if (isNullSentinel(cachedValue)) {
-                @Suppress("UNCHECKED_CAST")
-                return null as T
-            }
-            convertStoredValue(cachedValue, defaultValue)
+            if (isNullSentinel(cachedValue)) return null
+            convertStoredValueRaw(cachedValue, defaultValue, serializer)
         }
     }
 
     @PublishedApi internal inline fun <reified T> convertStoredValue(storedValue: Any?, defaultValue: T): T {
+        @Suppress("UNCHECKED_CAST")
+        return convertStoredValueRaw(storedValue, defaultValue, serializer<T>()) as T
+    }
+
+    /**
+     * Non-inline version of [convertStoredValue]. On WASM all localStorage values are Strings.
+     */
+    @PublishedApi
+    internal fun convertStoredValueRaw(storedValue: Any?, defaultValue: Any?, serializer: KSerializer<*>): Any? {
         if (storedValue == null) return defaultValue
+        if (isNullSentinel(storedValue)) return null
 
-        if (isNullSentinel(storedValue)) {
-            @Suppress("UNCHECKED_CAST")
-            return null as T
-        }
-
-        // On WASM, all localStorage values come as Strings.
         val stringValue = storedValue as? String ?: return defaultValue
 
         return when (defaultValue) {
-            is Boolean -> {
-                stringValue.toBooleanStrictOrNull()?.let {
-                    @Suppress("UNCHECKED_CAST")
-                    it as T
-                } ?: defaultValue
-            }
-            is Int -> {
-                stringValue.toIntOrNull()?.let {
-                    @Suppress("UNCHECKED_CAST")
-                    it as T
-                } ?: defaultValue
-            }
-            is Long -> {
-                stringValue.toLongOrNull()?.let {
-                    @Suppress("UNCHECKED_CAST")
-                    it as T
-                } ?: defaultValue
-            }
-            is Float -> {
-                stringValue.toFloatOrNull()?.let {
-                    @Suppress("UNCHECKED_CAST")
-                    it as T
-                } ?: defaultValue
-            }
-            is Double -> {
-                stringValue.toDoubleOrNull()?.let {
-                    @Suppress("UNCHECKED_CAST")
-                    it as T
-                } ?: defaultValue
-            }
-            is String -> {
-                @Suppress("UNCHECKED_CAST")
-                stringValue as T
-            }
+            is Boolean -> stringValue.toBooleanStrictOrNull() ?: defaultValue
+            is Int -> stringValue.toIntOrNull() ?: defaultValue
+            is Long -> stringValue.toLongOrNull() ?: defaultValue
+            is Float -> stringValue.toFloatOrNull() ?: defaultValue
+            is Double -> stringValue.toDoubleOrNull() ?: defaultValue
+            is String -> stringValue
             else -> {
-                // For nullable types where defaultValue is null, try direct cast first
-                try {
-                    @Suppress("UNCHECKED_CAST")
-                    val direct = stringValue as T
-                    if (direct != null) return direct
-                } catch (_: ClassCastException) { /* fall through to JSON */ }
-
-                if (stringValue == NULL_SENTINEL) {
-                    @Suppress("UNCHECKED_CAST")
-                    return null as T
-                }
-                try {
-                    json.decodeFromString(serializer<T>(), stringValue)
-                } catch (_: Exception) {
-                    defaultValue
-                }
+                if (stringValue == NULL_SENTINEL) return null
+                if (isStringSerializer(serializer)) return stringValue
+                try { jsonDecode(json, serializer, stringValue) } catch (_: Exception) { defaultValue }
             }
         }
     }
@@ -649,50 +617,53 @@ actual class KSafe(
     }
 
     actual inline fun <reified T> getDirect(key: String, defaultValue: T): T {
-        // Check memoryCache first for optimistic writes
+        @Suppress("UNCHECKED_CAST")
+        return getDirectRaw(key, defaultValue, serializer<T>()) as T
+    }
+
+    @PublishedApi
+    internal actual fun getDirectRaw(key: String, defaultValue: Any?, serializer: KSerializer<*>): Any? {
         val detected = detectProtection(key)
         val cacheKey = if (detected != null) KeySafeMetadataManager.legacyEncryptedRawKey(key) else key
         val cachedValue = memoryCache[cacheKey]
         if (cachedValue != null) {
-            return resolveFromCache(memoryCache, key, defaultValue, detected)
+            return resolveFromCacheRaw(memoryCache, key, defaultValue, detected, serializer)
         }
         if (cacheInitialized) return defaultValue
-        // Cold path for unencrypted values
         if (detected == null) {
             val storageKey = valueStorageKey(key)
             val value = localStorageGet(storageKey)
-                if (value != null) {
-                    memoryCache[key] = value
-                    return convertStoredValue(value, defaultValue)
-                }
+            if (value != null) {
+                memoryCache[key] = value
+                return convertStoredValueRaw(value, defaultValue, serializer)
+            }
             val legacy = localStorageGet(legacyPlainStorageKey(key))
             if (legacy != null) {
                 memoryCache[key] = legacy
-                return convertStoredValue(legacy, defaultValue)
+                return convertStoredValueRaw(legacy, defaultValue, serializer)
             }
         }
         return defaultValue
     }
 
-
     actual inline fun <reified T> putDirect(key: String, value: T) {
-        putDirect(
-            key = key,
-            value = value,
-            mode = defaultEncryptedMode()
-        )
+        putDirectRaw(key, value, defaultEncryptedMode(), serializer<T>())
     }
 
     actual inline fun <reified T> putDirect(key: String, value: T, mode: KSafeWriteMode) {
+        putDirectRaw(key, value, mode, serializer<T>())
+    }
+
+    @PublishedApi
+    internal actual fun putDirectRaw(key: String, value: Any?, mode: KSafeWriteMode, serializer: KSerializer<*>) {
         val protection = mode.toProtection()
         val requireUnlockedDevice = mode is KSafeWriteMode.Encrypted && mode.requireUnlockedDevice
         val rawKey = if (protection != null) KeySafeMetadataManager.legacyEncryptedRawKey(key) else key
 
         if (protection != null) {
-            val jsonString = if (value == null) NULL_SENTINEL else json.encodeToString(serializer<T>(), value)
+            val jsonString = if (value == null) NULL_SENTINEL else jsonEncode(json, serializer, value)
             val alias = fileName?.let { "$it:$key" } ?: key
 
-            // Cache stores plaintext JSON for instant read-back (WASM always PLAIN_TEXT internally)
             updateMemoryCache(rawKey, jsonString)
             protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(KSafeProtection.DEFAULT)
 
@@ -711,7 +682,7 @@ actual class KSafe(
             } else {
                 when (value) {
                     is Boolean, is Int, is Long, is Float, is Double, is String -> value.toString()
-                    else -> json.encodeToString(serializer<T>(), value)
+                    else -> jsonEncode(json, serializer, value)
                 }
             }
             updateMemoryCache(rawKey, toCache)
@@ -720,7 +691,7 @@ actual class KSafe(
             val storedValue: Any? = when (value) {
                 null -> null
                 is Boolean, is Int, is Long, is Float, is Double, is String -> value
-                else -> json.encodeToString(serializer<T>(), value)
+                else -> jsonEncode(json, serializer, value)
             }
 
             writeChannel.trySend(WriteOperation.Unencrypted(rawKey, key, storedValue))
@@ -739,25 +710,21 @@ actual class KSafe(
         else null
     }
 
-    suspend inline fun <reified T> putEncrypted(
+    @PublishedApi
+    internal suspend fun putEncryptedRaw(
         key: String,
-        value: T,
-        requireUnlockedDevice: Boolean = false
+        value: Any?,
+        requireUnlockedDevice: Boolean,
+        serializer: KSerializer<*>
     ) {
         val alias = fileName?.let { "$it:$key" } ?: key
-
-        val rawString = if (value == null) {
-            NULL_SENTINEL
-        } else {
-            json.encodeToString(serializer<T>(), value)
-        }
+        val rawString = if (value == null) NULL_SENTINEL else jsonEncode(json, serializer, value)
         protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(KSafeProtection.DEFAULT)
 
         val plainBytes = rawString.encodeToByteArray()
         val encryptedBytes = doEncrypt(alias, plainBytes, requireUnlockedDevice)
         val encryptedString = encodeBase64Wasm(encryptedBytes)
 
-        // Persist to localStorage
         val storageKey = valueStorageKey(key)
         safeLocalStorageSet(storageKey, encryptedString)
         safeLocalStorageSet(
@@ -769,27 +736,29 @@ actual class KSafe(
         )
         removeAllLegacyStorageKeys(key)
 
-        // Update memory cache with plaintext (WASM always PLAIN_TEXT internally)
         updateMemoryCache(KeySafeMetadataManager.legacyEncryptedRawKey(key), rawString)
-
-        // Yield to allow stateIn collectors to process the emission
         yield()
     }
 
-    suspend inline fun <reified T> getEncrypted(key: String, defaultValue: T): T {
+    suspend inline fun <reified T> putEncrypted(
+        key: String,
+        value: T,
+        requireUnlockedDevice: Boolean = false
+    ) {
+        putEncryptedRaw(key, value, requireUnlockedDevice, serializer<T>())
+    }
+
+    @PublishedApi
+    internal suspend fun getEncryptedRaw(key: String, defaultValue: Any?, serializer: KSerializer<*>): Any? {
         ensureCollectorStarted()
 
-        // Check memoryCache first (handles optimistic writes and fully-loaded cache)
         val cachedValue = memoryCache[KeySafeMetadataManager.legacyEncryptedRawKey(key)]
         if (cachedValue != null) {
-            return resolveFromCache(memoryCache, key, defaultValue, protection = KSafeProtection.DEFAULT)
+            return resolveFromCacheRaw(memoryCache, key, defaultValue, protection = KSafeProtection.DEFAULT, serializer)
         }
 
-        if (cacheInitialized) {
-            return defaultValue
-        }
+        if (cacheInitialized) return defaultValue
 
-        // Load from localStorage and decrypt
         val encryptedValue = localStorageGet(valueStorageKey(key))
             ?: localStorageGet(legacyEncryptedStorageKey(key))
             ?: return defaultValue
@@ -800,48 +769,57 @@ actual class KSafe(
             val plainBytes = doDecrypt(alias, encryptedBytes)
             val rawString = plainBytes.decodeToString()
 
-            // Cache it
             updateMemoryCache(KeySafeMetadataManager.legacyEncryptedRawKey(key), rawString)
 
-            if (rawString == NULL_SENTINEL) {
-                @Suppress("UNCHECKED_CAST")
-                return null as T
-            }
-            return json.decodeFromString(serializer<T>(), rawString)
+            if (rawString == NULL_SENTINEL) return null
+            return jsonDecode(json, serializer, rawString)
         } catch (_: Exception) {
             return defaultValue
         }
     }
 
-    actual suspend inline fun <reified T> get(key: String, defaultValue: T): T {
-        ensureCollectorStarted()
-        val detected = detectProtection(key)
-        return if (detected != null) getEncrypted(key, defaultValue) else getUnencrypted(key, defaultValue)
+    suspend inline fun <reified T> getEncrypted(key: String, defaultValue: T): T {
+        @Suppress("UNCHECKED_CAST")
+        return getEncryptedRaw(key, defaultValue, serializer<T>()) as T
     }
 
+    actual suspend inline fun <reified T> get(key: String, defaultValue: T): T {
+        @Suppress("UNCHECKED_CAST")
+        return getRaw(key, defaultValue, serializer<T>()) as T
+    }
 
-    @PublishedApi internal suspend inline fun <reified T> getUnencrypted(key: String, defaultValue: T): T {
+    @PublishedApi
+    internal actual suspend fun getRaw(key: String, defaultValue: Any?, serializer: KSerializer<*>): Any? {
+        ensureCollectorStarted()
+        val detected = detectProtection(key)
+        return if (detected != null) getEncryptedRaw(key, defaultValue, serializer) else getUnencryptedRaw(key, defaultValue, serializer)
+    }
+
+    @PublishedApi
+    internal suspend fun getUnencryptedRaw(key: String, defaultValue: Any?, serializer: KSerializer<*>): Any? {
         ensureCollectorStarted()
 
-        // Check memoryCache first — handles optimistic writes from putDirect
         val cachedValue = memoryCache[key]
         if (cachedValue != null) {
-            return resolveFromCache(memoryCache, key, defaultValue, protection = null)
+            return resolveFromCacheRaw(memoryCache, key, defaultValue, protection = null, serializer)
         }
 
-        if (cacheInitialized) {
-            return defaultValue
-        }
+        if (cacheInitialized) return defaultValue
 
-        // Read directly from localStorage
         val value = localStorageGet(valueStorageKey(key))
             ?: localStorageGet(legacyPlainStorageKey(key))
             ?: return defaultValue
         memoryCache[key] = value
-        return convertStoredValue(value, defaultValue)
+        return convertStoredValueRaw(value, defaultValue, serializer)
     }
 
-    @PublishedApi internal suspend inline fun <reified T> putUnencrypted(key: String, value: T) {
+    @PublishedApi internal suspend inline fun <reified T> getUnencrypted(key: String, defaultValue: T): T {
+        @Suppress("UNCHECKED_CAST")
+        return getUnencryptedRaw(key, defaultValue, serializer<T>()) as T
+    }
+
+    @PublishedApi
+    internal suspend fun putUnencryptedRaw(key: String, value: Any?, serializer: KSerializer<*>) {
         protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(null)
         safeLocalStorageSet(metaStorageKey(key), protectionToMetaJson(null))
         removeAllLegacyStorageKeys(key)
@@ -854,16 +832,24 @@ actual class KSafe(
 
         val storedValue = when (value) {
             is Boolean, is Int, is Long, is Float, is Double, is String -> value.toString()
-            else -> json.encodeToString(serializer<T>(), value)
+            else -> jsonEncode(json, serializer, value)
         }
         safeLocalStorageSet(valueStorageKey(key), storedValue)
         updateMemoryCache(key, storedValue)
-
-        // Yield to allow stateIn collectors to process the emission
         yield()
     }
 
+    @PublishedApi internal suspend inline fun <reified T> putUnencrypted(key: String, value: T) {
+        putUnencryptedRaw(key, value, serializer<T>())
+    }
+
     actual inline fun <reified T> getFlow(key: String, defaultValue: T): Flow<T> {
+        @Suppress("UNCHECKED_CAST")
+        return getFlowRaw(key, defaultValue, serializer<T>()) as Flow<T>
+    }
+
+    @PublishedApi
+    internal actual fun getFlowRaw(key: String, defaultValue: Any?, serializer: KSerializer<*>): Flow<Any?> {
         return stateFlow.map { snapshot ->
             val protection = KeySafeMetadataManager.parseProtection(protectionMap[key])
                 ?: if (snapshot.containsKey(KeySafeMetadataManager.legacyEncryptedRawKey(key))) KSafeProtection.DEFAULT
@@ -871,17 +857,15 @@ actual class KSafe(
             when (protection) {
                 null -> {
                     val value = snapshot[key]
-                    if (value != null) convertStoredValue(value, defaultValue) else defaultValue
+                    if (value != null) convertStoredValueRaw(value, defaultValue, serializer) else defaultValue
                 }
                 else -> {
                     val encValue = snapshot[KeySafeMetadataManager.legacyEncryptedRawKey(key)]
                     if (encValue != null) {
                         val jsonString = encValue as? String ?: return@map defaultValue
-                        if (jsonString == NULL_SENTINEL) {
-                            @Suppress("UNCHECKED_CAST")
-                            null as T
-                        } else {
-                            try { json.decodeFromString(serializer<T>(), jsonString) } catch (_: Exception) { defaultValue }
+                        if (jsonString == NULL_SENTINEL) null
+                        else {
+                            try { jsonDecode(json, serializer, jsonString) } catch (_: Exception) { defaultValue }
                         }
                     } else defaultValue
                 }
@@ -889,49 +873,30 @@ actual class KSafe(
         }.distinctUntilChanged()
     }
 
-
     @PublishedApi internal inline fun <reified T> getUnencryptedFlow(key: String, defaultValue: T): Flow<T> {
-        return stateFlow.map { snapshot ->
-            val value = snapshot[key]
-            if (value == null) defaultValue
-            else convertStoredValue(value, defaultValue)
-        }.distinctUntilChanged()
+        @Suppress("UNCHECKED_CAST")
+        return getFlowRaw(key, defaultValue, serializer<T>()) as Flow<T>
     }
 
     @PublishedApi internal inline fun <reified T> getEncryptedFlow(key: String, defaultValue: T): Flow<T> {
-        // On WASM, stateFlow mirrors memoryCache which contains plaintext for encrypted values.
-        // So we just deserialize from JSON, no decryption needed.
-        val encKey = KeySafeMetadataManager.legacyEncryptedRawKey(key)
-        return stateFlow.map { snapshot ->
-            val value = snapshot[encKey]
-            if (value == null) defaultValue
-            else {
-                val jsonString = value as? String ?: return@map defaultValue
-                if (jsonString == NULL_SENTINEL) {
-                    @Suppress("UNCHECKED_CAST")
-                    null as T
-                } else {
-                    try {
-                        json.decodeFromString(serializer<T>(), jsonString)
-                    } catch (_: Exception) { defaultValue }
-                }
-            }
-        }.distinctUntilChanged()
+        @Suppress("UNCHECKED_CAST")
+        return getFlowRaw(key, defaultValue, serializer<T>()) as Flow<T>
     }
 
     actual suspend inline fun <reified T> put(key: String, value: T) {
-        put(
-            key = key,
-            value = value,
-            mode = defaultEncryptedMode()
-        )
+        putRaw(key, value, defaultEncryptedMode(), serializer<T>())
     }
 
     actual suspend inline fun <reified T> put(key: String, value: T, mode: KSafeWriteMode) {
+        putRaw(key, value, mode, serializer<T>())
+    }
+
+    @PublishedApi
+    internal actual suspend fun putRaw(key: String, value: Any?, mode: KSafeWriteMode, serializer: KSerializer<*>) {
         if (mode is KSafeWriteMode.Encrypted) {
-            putEncrypted(key, value, mode.requireUnlockedDevice)
+            putEncryptedRaw(key, value, mode.requireUnlockedDevice, serializer)
         } else {
-            putUnencrypted(key, value)
+            putUnencryptedRaw(key, value, serializer)
         }
     }
 

@@ -11,7 +11,7 @@ plugins {
 }
 
 group = "eu.anifantakis"
-version = "1.7.0"
+version = "1.7.1"
 
 kotlin {
     androidTarget {
@@ -54,7 +54,9 @@ kotlin {
         @Suppress("unused")
         val commonMain by getting {
             dependencies {
-                implementation(libs.kotlinx.serialization.json)
+                // api (not implementation) — Json is part of KSafe's public API (KSafeConfig.json),
+                // so consumers get kotlinx-serialization-json transitively without declaring it themselves.
+                api(libs.kotlinx.serialization.json)
                 implementation(libs.kotlinx.coroutines.core)
 
                 implementation(libs.cryptography.core)
@@ -70,8 +72,6 @@ kotlin {
         val jvmMain by getting {
             dependencies {
                 implementation(libs.androidx.datastore.preferences)
-                implementation(libs.kotlinx.serialization.json)
-                implementation(libs.kotlinx.coroutines.core)
             }
         }
 

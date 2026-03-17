@@ -6,6 +6,12 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.SnapshotMutationPolicy
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.structuralEqualityPolicy
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.properties.PropertyDelegateProvider
 import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
@@ -30,6 +36,7 @@ class KSafeComposeState<T>(
 ) : MutableState<T>, ReadWriteProperty<Any?, T> {
 
     private var _internalState: MutableState<T> = mutableStateOf(initialValue, policy)
+    private var userHasWritten = false
 
     override var value: T
         get() {
@@ -42,9 +49,22 @@ class KSafeComposeState<T>(
 
             // Persist only if the value has changed according to the policy
             if (!policy.equivalent(oldValueToCompare, newValue)) {
+                userHasWritten = true
                 valueSaver(newValue) // Call the provided saver lambda
             }
         }
+
+    /**
+     * Updates the state from storage without triggering persistence.
+     * Used for async cache self-healing (e.g., WASM WebCrypto decryption completes
+     * after initial synchronous read returned the default).
+     * Skipped if the user has already written a value to avoid overwriting their change.
+     */
+    @PublishedApi internal fun updateFromStorage(newValue: T) {
+        if (!userHasWritten) {
+            _internalState.value = newValue
+        }
+    }
 
     override fun getValue(thisRef: Any?, property: KProperty<*>): T {
         return value
@@ -149,11 +169,26 @@ inline fun <reified T> KSafe.mutableStateOf(
             }
         }
 
-        KSafeComposeState(
+        val composeState = KSafeComposeState(
             initialValue = initialValue,
             valueSaver = saver,
             policy = policy
         )
+
+        // Self-heal: on platforms with async cache loading (WASM WebCrypto),
+        // getDirect may return the default before decryption completes.
+        // Observe getFlow for the first post-init emission and update reactively.
+        if (initialValue == defaultValue) {
+            CoroutineScope(Dispatchers.Default).launch {
+                withTimeoutOrNull(5_000L) {
+                    ksafe.getFlow<T>(actualKey, defaultValue)
+                        .drop(1)    // skip current snapshot (same as getDirect result)
+                        .first()    // wait for next emission (cache load)
+                }?.let { composeState.updateFromStorage(it) }
+            }
+        }
+
+        composeState
     }
 }
 

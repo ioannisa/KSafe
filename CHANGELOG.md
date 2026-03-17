@@ -2,6 +2,55 @@
 
 All notable changes to KSafe will be documented in this file.
 
+## [1.7.1] - 2025-03-17
+
+### Added
+
+#### Custom JSON Serialization ([#19](https://github.com/ioannisa/KSafe/issues/19))
+
+`KSafeConfig` now accepts a `json` parameter — a fully configured `Json` instance used for all user-payload serialization. This enables support for `@Contextual` types (e.g., `UUID`, `Instant`, `BigDecimal`) and custom `SerializersModule` registration.
+
+```kotlin
+val customJson = Json {
+    ignoreUnknownKeys = true
+    serializersModule = SerializersModule {
+        contextual(UUIDSerializer)
+        contextual(InstantSerializer)
+    }
+}
+
+val ksafe = KSafe(
+    config = KSafeConfig(json = customJson)
+)
+```
+
+- Serializers are registered once at the instance level and apply to all operations (`putDirect`, `getDirect`, `put`, `get`, `getFlow`, delegates)
+- Internal metadata serialization is unaffected — it uses its own private codec
+- Default remains `Json { ignoreUnknownKeys = true }` via `KSafeDefaults.json` — no changes needed for existing code
+- `kotlinx-serialization-json` is declared in the library as a **transitive dependency** (`api` scope) — no need to add it manually in your project
+- **Note:** Changing the `Json` configuration for an existing `fileName` namespace may make previously stored non-primitive values unreadable
+
+### Fixed
+
+#### WASM: Encrypted `mutableStateOf` Delegates Return Defaults on Page Reload
+
+Fixed a race condition on WASM where `mutableStateOf` Compose delegates could return the default value instead of the persisted encrypted value after a browser refresh. This occurred because WASM's WebCrypto decryption is async-only — if a KSafe instance was created and immediately read from in the same synchronous frame (e.g., via Koin lazy singleton injection into a ViewModel), the cache hadn't loaded yet.
+
+The fix adds reactive self-healing to `KSafeComposeState`: when `getDirect` returns the default, a lightweight coroutine observes `getFlow` and updates the Compose state when the real decrypted value arrives. A `userHasWritten` guard ensures user writes are never overwritten by late-arriving cache data.
+
+This bug was latent since WASM support was added but only surfaced when using multiple KSafe instances (e.g., a second instance with custom JSON serialization), where the second instance had no head start for its async cache loading.
+
+#### Inline Bytecode Bloat ([#16](https://github.com/ioannisa/KSafe/issues/16))
+
+Reduced bytecode generated at each KSafe call site by extracting non-reified logic from `inline` functions into `@PublishedApi internal` helpers. Previously, every `getDirect`/`putDirect` delegate expansion could produce thousands of bytecode instructions because the entire function body was inlined. Now only the `serializer<T>()` call is inlined; the rest is a regular function call to the `*Raw` variant.
+
+#### Relaxed `fileName` Validation
+
+The `fileName` parameter now accepts lowercase letters, digits, and underscores (must start with a letter). Previously only `[a-z]+` was allowed, which was unnecessarily restrictive. The regex is now `[a-z][a-z0-9_]*` across all platforms. Dots, slashes, and uppercase remain forbidden to prevent path traversal and case-sensitivity issues.
+
+
+---
+
 ## [1.7.0] - 2025-03-03
 
 ### Added

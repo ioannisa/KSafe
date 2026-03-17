@@ -56,13 +56,25 @@ class JvmFileNameTest {
 
     // ---------- Filename validation ----------
 
-    /** Verifies filename validation rejects non-letter characters */
+    /** Verifies filename validation accepts lowercase letters, digits, and underscores */
     @Test
-    fun filename_rejects_nonLetters() {
-        assertFailsWith<IllegalArgumentException> { KSafe("abc123") }
-        assertFailsWith<IllegalArgumentException> { KSafe("with_underscore") }
+    fun filename_accepts_valid_names() {
+        // These should not throw
+        KSafe("abc123")
+        KSafe("with_underscore")
+        KSafe("data_v2")
+    }
+
+    /** Verifies filename validation rejects invalid characters */
+    @Test
+    fun filename_rejects_invalid() {
         assertFailsWith<IllegalArgumentException> { KSafe("UPPER") }
         assertFailsWith<IllegalArgumentException> { KSafe("") }
+        assertFailsWith<IllegalArgumentException> { KSafe("123abc") } // must start with letter
+        assertFailsWith<IllegalArgumentException> { KSafe("_leading") } // must start with letter
+        assertFailsWith<IllegalArgumentException> { KSafe("has.dot") }
+        assertFailsWith<IllegalArgumentException> { KSafe("has/slash") }
+        assertFailsWith<IllegalArgumentException> { KSafe("has space") }
     }
 
     // ---------- Isolation between file names ----------

@@ -1,5 +1,7 @@
 package eu.anifantakis.lib.ksafe
 
+import kotlinx.serialization.json.Json
+
 /**
  * Configuration for KSafe encryption parameters.
  *
@@ -61,11 +63,21 @@ package eu.anifantakis.lib.ksafe
  *
  *   For per-entry control, prefer [KSafeWriteMode.Encrypted] and set
  *   `requireUnlockedDevice` explicitly on each write.
+ * @property json The [Json] instance used for serializing and deserializing user payloads.
+ *           Override this to register a custom [kotlinx.serialization.modules.SerializersModule]
+ *           for `@Contextual` types (e.g., `UUID`, `Instant`) or to change JSON behaviour
+ *           (e.g., `encodeDefaults`, `coerceInputValues`).
+ *
+ *           **Important:** changing the format for an existing `fileName` namespace may make
+ *           previously stored non-primitive values unreadable.
+ *
+ *           Defaults to [KSafeDefaults.json] (`Json { ignoreUnknownKeys = true }`).
  */
 data class KSafeConfig(
     val keySize: Int = 256,
     val androidAuthValiditySeconds: Int = 30,
-    val requireUnlockedDevice: Boolean = false
+    val requireUnlockedDevice: Boolean = false,
+    val json: Json = KSafeDefaults.json
 ) {
     init {
         require(keySize == 128 || keySize == 256) {
@@ -75,4 +87,16 @@ data class KSafeConfig(
             "androidAuthValiditySeconds must be positive. Got: $androidAuthValiditySeconds"
         }
     }
+}
+
+/**
+ * Shared defaults for KSafe configuration.
+ */
+object KSafeDefaults {
+    /**
+     * The default [Json] instance used for user-payload serialization.
+     *
+     * Uses `ignoreUnknownKeys = true` for forward/backward compatibility.
+     */
+    val json: Json = Json { ignoreUnknownKeys = true }
 }

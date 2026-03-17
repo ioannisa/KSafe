@@ -23,6 +23,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 import kotlin.io.encoding.Base64
@@ -91,7 +92,8 @@ actual class KSafe(
     internal var _testEngine: KSafeEncryption? = null
 
     companion object {
-        private val fileNameRegex = Regex("[a-z]+")
+        // Must start with a lowercase letter; may also contain digits and underscores.
+        private val fileNameRegex = Regex("[a-z][a-z0-9_]*")
         private const val GCM_TAG_LENGTH = 128
 
         /**
@@ -106,7 +108,7 @@ actual class KSafe(
     actual val deviceKeyStorages: Set<KSafeKeyStorage> = setOf(KSafeKeyStorage.SOFTWARE)
     init {
         if (fileName != null && !fileName.matches(fileNameRegex)) {
-            throw IllegalArgumentException("File name must contain only lowercase letters")
+            throw IllegalArgumentException("File name must start with a lowercase letter and contain only lowercase letters, digits, or underscores")
         }
 
         // Validate security policy (may throw SecurityViolationException)
@@ -140,7 +142,7 @@ actual class KSafe(
     @PublishedApi internal val cacheInitialized = AtomicBoolean(false)
 
     @PublishedApi internal val dirtyKeys = ConcurrentHashMap.newKeySet<String>()
-    @PublishedApi internal val json = Json { ignoreUnknownKeys = true }
+    @PublishedApi internal val json: Json = config.json
 
     @PublishedApi internal val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
@@ -722,6 +724,61 @@ actual class KSafe(
         }
     }
 
+    /**
+     * Non-inline version of [resolveFromCache]. All cache lookup, decryption,
+     * Base64 decode and timed-cache logic lives here. Returns raw [Any?].
+     */
+    internal fun resolveFromCacheRaw(cache: Map<String, Any>, key: String, defaultValue: Any?, protection: KSafeProtection?, serializer: KSerializer<*>): Any? {
+        val cacheKey = if (protection != null) legacyEncryptedRawKey(key) else key
+        val cachedValue = cache[cacheKey] ?: return defaultValue
+
+        return if (protection != null) {
+            var jsonString: String? = null
+            var deserializedValue: Any? = null
+            var success = false
+
+            if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED || memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
+                if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
+                    val cached = plaintextCache[cacheKey]
+                    if (cached != null && TimeSource.Monotonic.markNow() < cached.expiresAt) {
+                        val cachedJson = cached.value
+                        if (cachedJson == NULL_SENTINEL) return null
+                        try { return jsonDecode(json, serializer, cachedJson) } catch (_: Exception) { /* fall through */ }
+                    }
+                }
+
+                try {
+                    val encryptedString = cachedValue as? String
+                    if (encryptedString != null) {
+                        val ciphertext = decodeBase64(encryptedString)
+                        val alias = fileName?.let { "$it:$key" } ?: key
+                        val plainBytes = engine.decrypt(alias, ciphertext)
+                        val candidateJson = plainBytes.toString(Charsets.UTF_8)
+
+                        deserializedValue = if (candidateJson == NULL_SENTINEL) null
+                            else jsonDecode(json, serializer, candidateJson)
+                        success = true
+
+                        if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
+                            plaintextCache[cacheKey] = CachedPlaintext(candidateJson, TimeSource.Monotonic.markNow() + plaintextCacheTtl)
+                        }
+                    }
+                } catch (_: Exception) { }
+            } else {
+                jsonString = cachedValue as? String
+            }
+
+            if (success) return deserializedValue
+            if (jsonString == null) jsonString = cachedValue as? String
+            if (jsonString == null) return defaultValue
+            if (jsonString == NULL_SENTINEL) return null
+            try { jsonDecode(json, serializer, jsonString) } catch (_: Exception) { defaultValue }
+        } else {
+            if (isNullSentinel(cachedValue)) return null
+            convertStoredValueRaw(cachedValue, defaultValue, serializer)
+        }
+    }
+
     @PublishedApi internal inline fun <reified T> convertStoredValue(storedValue: Any?, defaultValue: T): T {
         if (storedValue == null) return defaultValue
 
@@ -774,9 +831,51 @@ actual class KSafe(
         }
     }
 
+    /**
+     * Non-inline version of [convertStoredValue]. Handles primitive type branches
+     * without reified T; uses [serializer] for the JSON `else` branch.
+     */
+    @Suppress("UNCHECKED_CAST")
+    internal fun convertStoredValueRaw(storedValue: Any?, defaultValue: Any?, serializer: KSerializer<*>): Any? {
+        if (storedValue == null) return defaultValue
+        if (isNullSentinel(storedValue)) return null
+
+        return when (defaultValue) {
+            is Boolean -> (storedValue as? Boolean ?: defaultValue)
+            is Int -> when (storedValue) {
+                is Int -> storedValue
+                is Long -> if (storedValue in Int.MIN_VALUE..Int.MAX_VALUE) storedValue.toInt() else defaultValue
+                else -> defaultValue
+            }
+            is Long -> when (storedValue) {
+                is Long -> storedValue
+                is Int -> storedValue.toLong()
+                else -> defaultValue
+            }
+            is Float -> (storedValue as? Float ?: defaultValue)
+            is String -> (storedValue as? String ?: defaultValue)
+            is Double -> (storedValue as? Double ?: defaultValue)
+            else -> {
+                // Non-String stored values (e.g., Int from DataStore for Int? type)
+                if (storedValue !is String) return storedValue
+                if (storedValue == NULL_SENTINEL) return null
+                // For String/String? types, return raw value (stored unencoded)
+                if (isStringSerializer(serializer)) return storedValue
+                // For @Serializable types, JSON deserialize
+                try { jsonDecode(json, serializer, storedValue) } catch (_: Exception) { defaultValue }
+            }
+        }
+    }
+
     // --- PUBLIC API ---
 
     actual inline fun <reified T> getDirect(key: String, defaultValue: T): T {
+        @Suppress("UNCHECKED_CAST")
+        return getDirectRaw(key, defaultValue, serializer<T>()) as T
+    }
+
+    @PublishedApi
+    internal actual fun getDirectRaw(key: String, defaultValue: Any?, serializer: KSerializer<*>): Any? {
         if (!cacheInitialized.get()) {
             runBlocking {
                 if (!cacheInitialized.get()) {
@@ -786,41 +885,36 @@ actual class KSafe(
             }
         }
         val detected = detectProtection(key)
-        return resolveFromCache(memoryCache, key, defaultValue, detected)
+        return resolveFromCacheRaw(memoryCache, key, defaultValue, detected, serializer)
     }
 
 
     actual inline fun <reified T> putDirect(key: String, value: T) {
-        putDirect(
-            key = key,
-            value = value,
-            mode = defaultEncryptedMode()
-        )
+        putDirectRaw(key, value, defaultEncryptedMode(), serializer<T>())
     }
 
     actual inline fun <reified T> putDirect(key: String, value: T, mode: KSafeWriteMode) {
+        putDirectRaw(key, value, mode, serializer<T>())
+    }
+
+    @PublishedApi
+    internal actual fun putDirectRaw(key: String, value: Any?, mode: KSafeWriteMode, serializer: KSerializer<*>) {
         val protection = mode.toProtection()
         val requireUnlockedDevice = mode is KSafeWriteMode.Encrypted && mode.requireUnlockedDevice
         val rawKey = if (protection != null) "encrypted_$key" else key
         dirtyKeys.add(rawKey)
 
-        // Optimistic update + queue write operation
         if (protection != null) {
-            // Single serialization for encrypted writes
-            val jsonString = if (value == null) NULL_SENTINEL else json.encodeToString(serializer<T>(), value)
+            val jsonString = if (value == null) NULL_SENTINEL else jsonEncode(json, serializer, value)
             val alias = fileName?.let { "$it:$key" } ?: key
 
-            // Cache stores plaintext JSON for instant read-back
-            // (resolveFromCache handles both plaintext JSON and encrypted Base64)
             updateMemoryCache(rawKey, jsonString)
             protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(KSafeProtection.DEFAULT)
 
-            // For TIMED_CACHE, also populate the plaintext cache
             if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
                 plaintextCache[rawKey] = CachedPlaintext(jsonString, TimeSource.Monotonic.markNow() + plaintextCacheTtl)
             }
 
-            // Queue the encrypted write (encryption deferred to background)
             writeChannel.trySend(
                 WriteOperation.Encrypted(
                     rawKey = rawKey,
@@ -831,23 +925,21 @@ actual class KSafe(
                 )
             )
         } else {
-            // Optimistic update for unencrypted writes
             val toCache: Any = if (value == null) {
                 NULL_SENTINEL
             } else {
                 when (value) {
-                    is Boolean, is Int, is Long, is Float, is Double, is String -> value as Any
-                    else -> json.encodeToString(serializer<T>(), value)
+                    is Boolean, is Int, is Long, is Float, is Double, is String -> value
+                    else -> jsonEncode(json, serializer, value)
                 }
             }
             updateMemoryCache(rawKey, toCache)
             protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(null)
 
-            // For unencrypted writes, determine the proper DataStore key type
             val storedValue: Any? = when (value) {
                 null -> null
                 is Boolean, is Int, is Long, is Float, is Double, is String -> value
-                else -> json.encodeToString(serializer<T>(), value)
+                else -> jsonEncode(json, serializer, value)
             }
 
             @Suppress("UNCHECKED_CAST")
@@ -861,7 +953,6 @@ actual class KSafe(
                 else -> stringPreferencesKey(valueRawKey(key))
             } as Preferences.Key<Any>
 
-            // Queue the unencrypted write
             writeChannel.trySend(WriteOperation.Unencrypted(rawKey, key, storedValue, prefKey))
         }
     }
@@ -881,21 +972,20 @@ actual class KSafe(
         else null
     }
 
-    suspend inline fun <reified T> putEncrypted(
+    // --- Non-inline suspend helpers ---
+
+    @PublishedApi
+    internal suspend fun putEncryptedRaw(
         key: String,
-        value: T,
-        requireUnlockedDevice: Boolean = false
+        value: Any?,
+        requireUnlockedDevice: Boolean,
+        serializer: KSerializer<*>
     ) {
         dirtyKeys.add(legacyEncryptedRawKey(key))
         protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(KSafeProtection.DEFAULT)
         val alias = fileName?.let { "$it:$key" } ?: key
 
-        // Handle null values with sentinel
-        val rawString = if (value == null) {
-            NULL_SENTINEL
-        } else {
-            json.encodeToString(serializer<T>(), value)
-        }
+        val rawString = if (value == null) NULL_SENTINEL else jsonEncode(json, serializer, value)
 
         val plainBytes = rawString.toByteArray(Charsets.UTF_8)
         val encryptedBytes = withContext(Dispatchers.Default) {
@@ -916,7 +1006,6 @@ actual class KSafe(
             prefs.removeAllLegacyKeys(key)
         }
 
-        // Update memory cache: store ciphertext for ENCRYPTED/TIMED_CACHE, plaintext for PLAIN_TEXT
         val cacheValue = if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED || memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
             encryptedString
         } else {
@@ -924,50 +1013,73 @@ actual class KSafe(
         }
         updateMemoryCache(legacyEncryptedRawKey(key), cacheValue)
 
-        // For TIMED_CACHE, also populate the plaintext cache (we already have the plaintext)
         if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
             plaintextCache[legacyEncryptedRawKey(key)] = CachedPlaintext(rawString, TimeSource.Monotonic.markNow() + plaintextCacheTtl)
         }
     }
 
-    suspend inline fun <reified T> getEncrypted(key: String, defaultValue: T): T {
+    suspend inline fun <reified T> putEncrypted(
+        key: String,
+        value: T,
+        requireUnlockedDevice: Boolean = false
+    ) {
+        putEncryptedRaw(key, value, requireUnlockedDevice, serializer<T>())
+    }
+
+    @PublishedApi
+    internal suspend fun getEncryptedRaw(key: String, defaultValue: Any?, serializer: KSerializer<*>): Any? {
         if (cacheInitialized.get()) {
             return withContext(Dispatchers.Default) {
-                resolveFromCache(memoryCache, key, defaultValue, protection = KSafeProtection.DEFAULT)
+                resolveFromCacheRaw(memoryCache, key, defaultValue, protection = KSafeProtection.DEFAULT, serializer)
             }
         }
         val prefs = dataStore.data.first()
         updateCache(prefs)
         return withContext(Dispatchers.Default) {
-            resolveFromCache(memoryCache, key, defaultValue, protection = KSafeProtection.DEFAULT)
+            resolveFromCacheRaw(memoryCache, key, defaultValue, protection = KSafeProtection.DEFAULT, serializer)
         }
     }
 
+    suspend inline fun <reified T> getEncrypted(key: String, defaultValue: T): T {
+        @Suppress("UNCHECKED_CAST")
+        return getEncryptedRaw(key, defaultValue, serializer<T>()) as T
+    }
+
     actual suspend inline fun <reified T> get(key: String, defaultValue: T): T {
+        @Suppress("UNCHECKED_CAST")
+        return getRaw(key, defaultValue, serializer<T>()) as T
+    }
+
+    @PublishedApi
+    internal actual suspend fun getRaw(key: String, defaultValue: Any?, serializer: KSerializer<*>): Any? {
         if (!cacheInitialized.get()) {
             val prefs = dataStore.data.first()
             updateCache(prefs)
         }
         val detected = detectProtection(key)
-        return if (detected != null) getEncrypted(key, defaultValue) else getUnencrypted(key, defaultValue)
+        return if (detected != null) getEncryptedRaw(key, defaultValue, serializer) else getUnencryptedRaw(key, defaultValue, serializer)
     }
 
 
-    @Suppress("UNCHECKED_CAST")
-    @PublishedApi internal suspend inline fun <reified T> getUnencrypted(key: String, defaultValue: T): T {
+    @PublishedApi
+    internal suspend fun getUnencryptedRaw(key: String, defaultValue: Any?, serializer: KSerializer<*>): Any? {
         if (cacheInitialized.get()) {
-            return resolveFromCache(memoryCache, key, defaultValue, protection = null)
+            return resolveFromCacheRaw(memoryCache, key, defaultValue, protection = null, serializer)
         }
         val prefs = dataStore.data.first()
         updateCache(prefs)
-        return resolveFromCache(memoryCache, key, defaultValue, protection = null)
+        return resolveFromCacheRaw(memoryCache, key, defaultValue, protection = null, serializer)
     }
 
     @Suppress("UNCHECKED_CAST")
-    @PublishedApi internal suspend inline fun <reified T> putUnencrypted(key: String, value: T) {
+    @PublishedApi internal suspend inline fun <reified T> getUnencrypted(key: String, defaultValue: T): T {
+        return getUnencryptedRaw(key, defaultValue, serializer<T>()) as T
+    }
+
+    @PublishedApi
+    internal suspend fun putUnencryptedRaw(key: String, value: Any?, serializer: KSerializer<*>) {
         dirtyKeys.add(key)
         protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(null)
-        // Handle null values
         if (value == null) {
             val preferencesKey = stringPreferencesKey(valueRawKey(key))
             dataStore.edit { prefs ->
@@ -982,7 +1094,7 @@ actual class KSafe(
         val preferencesKey = getUnencryptedKey(key, defaultValue = value)
         val storedValue: Any = when (value) {
             is Boolean, is Int, is Long, is Float, is Double, is String -> value
-            else -> json.encodeToString(serializer<T>(), value)
+            else -> jsonEncode(json, serializer, value)
         }
         dataStore.edit { prefs ->
             prefs[preferencesKey] = storedValue
@@ -990,6 +1102,11 @@ actual class KSafe(
             prefs.removeAllLegacyKeys(key)
         }
         updateMemoryCache(key, storedValue)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    @PublishedApi internal suspend inline fun <reified T> putUnencrypted(key: String, value: T) {
+        putUnencryptedRaw(key, value, serializer<T>())
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -1020,6 +1137,12 @@ actual class KSafe(
     }
 
     actual inline fun <reified T> getFlow(key: String, defaultValue: T): Flow<T> {
+        @Suppress("UNCHECKED_CAST")
+        return getFlowRaw(key, defaultValue, serializer<T>()) as Flow<T>
+    }
+
+    @PublishedApi
+    internal actual fun getFlowRaw(key: String, defaultValue: Any?, serializer: KSerializer<*>): Flow<Any?> {
         return dataStore.data.map { preferences ->
             val metaRaw = preferences[metaPrefKey(key)] ?: preferences[legacyProtectionMetaKey(key)]
             val protection = KeySafeMetadataManager.parseProtection(metaRaw)
@@ -1029,7 +1152,7 @@ actual class KSafe(
                     val prefKey = getUnencryptedKey(key, defaultValue)
                     val legacyPrefKey = getLegacyUnencryptedKey(key, defaultValue)
                     val plain = preferences[prefKey] ?: preferences[legacyPrefKey]
-                    if (plain != null) convertStoredValue(plain, defaultValue)
+                    if (plain != null) convertStoredValueRaw(plain, defaultValue, serializer)
                     else defaultValue
                 }
                 else -> {
@@ -1040,12 +1163,8 @@ actual class KSafe(
                             val ciphertext = decodeBase64(enc)
                             val plainBytes = engine.decrypt(alias, ciphertext)
                             val rawString = plainBytes.toString(Charsets.UTF_8)
-                            if (rawString == NULL_SENTINEL) {
-                                @Suppress("UNCHECKED_CAST")
-                                null as T
-                            } else {
-                                json.decodeFromString(serializer<T>(), rawString)
-                            }
+                            if (rawString == NULL_SENTINEL) null
+                            else jsonDecode(json, serializer, rawString)
                         } catch (_: Exception) { defaultValue }
                     } else defaultValue
                 }
@@ -1055,51 +1174,29 @@ actual class KSafe(
 
 
     @PublishedApi internal inline fun <reified T> getUnencryptedFlow(key: String, defaultValue: T): Flow<T> {
-        val preferencesKey = getUnencryptedKey(key, defaultValue)
-        val legacyPreferencesKey = getLegacyUnencryptedKey(key, defaultValue)
-        return dataStore.data.map { prefs ->
-            convertStoredValue(prefs[preferencesKey] ?: prefs[legacyPreferencesKey], defaultValue)
-        }.distinctUntilChanged()
+        @Suppress("UNCHECKED_CAST")
+        return getFlowRaw(key, defaultValue, serializer<T>()) as Flow<T>
     }
 
     @PublishedApi internal inline fun <reified T> getEncryptedFlow(key: String, defaultValue: T): Flow<T> {
-        val canonicalPrefKey = valuePrefKey(key)
-        val legacyPrefKey = encryptedPrefKey(key)
-        return dataStore.data.map { prefs ->
-            val encryptedValue = prefs[canonicalPrefKey] ?: prefs[legacyPrefKey]
-            if (encryptedValue == null) defaultValue
-            else {
-                try {
-                    val alias = fileName?.let { "$it:$key" } ?: key
-                    val encryptedBytes = decodeBase64(encryptedValue)
-                    val plainBytes = engine.decrypt(alias, encryptedBytes)
-                    val rawString = plainBytes.toString(Charsets.UTF_8)
-
-                    // Check for null sentinel
-                    if (rawString == NULL_SENTINEL) {
-                        @Suppress("UNCHECKED_CAST")
-                        null as T
-                    } else {
-                        json.decodeFromString(serializer<T>(), rawString)
-                    }
-                } catch (_: Exception) { defaultValue }
-            }
-        }.distinctUntilChanged()
+        @Suppress("UNCHECKED_CAST")
+        return getFlowRaw(key, defaultValue, serializer<T>()) as Flow<T>
     }
 
     actual suspend inline fun <reified T> put(key: String, value: T) {
-        put(
-            key = key,
-            value = value,
-            mode = defaultEncryptedMode()
-        )
+        putRaw(key, value, defaultEncryptedMode(), serializer<T>())
     }
 
     actual suspend inline fun <reified T> put(key: String, value: T, mode: KSafeWriteMode) {
+        putRaw(key, value, mode, serializer<T>())
+    }
+
+    @PublishedApi
+    internal actual suspend fun putRaw(key: String, value: Any?, mode: KSafeWriteMode, serializer: KSerializer<*>) {
         if (mode is KSafeWriteMode.Encrypted) {
-            putEncrypted(key, value, mode.requireUnlockedDevice)
+            putEncryptedRaw(key, value, mode.requireUnlockedDevice, serializer)
         } else {
-            putUnencrypted(key, value)
+            putUnencryptedRaw(key, value, serializer)
         }
     }
 

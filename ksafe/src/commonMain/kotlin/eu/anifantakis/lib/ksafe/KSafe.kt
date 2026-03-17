@@ -5,6 +5,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.serializer
 
 /**
  * An API for secure key–value storage.
@@ -240,6 +242,34 @@ expect class KSafe {
     )
     inline fun <reified T> getFlow(key: String, defaultValue: T, encrypted: Boolean): Flow<T>
 
+    // --- INTERNAL RAW API (non-inline, used by thin inline wrappers to reduce bytecode) ---
+
+    /**
+     * Non-inline version of [getDirect] that takes an explicit [KSerializer].
+     * All heavy logic lives here; the public inline [getDirect] just calls this and casts.
+     */
+    @PublishedApi internal fun getDirectRaw(key: String, defaultValue: Any?, serializer: KSerializer<*>): Any?
+
+    /**
+     * Non-inline version of [putDirect] that takes an explicit [KSerializer].
+     */
+    @PublishedApi internal fun putDirectRaw(key: String, value: Any?, mode: KSafeWriteMode, serializer: KSerializer<*>)
+
+    /**
+     * Non-inline version of [get] (suspend) that takes an explicit [KSerializer].
+     */
+    @PublishedApi internal suspend fun getRaw(key: String, defaultValue: Any?, serializer: KSerializer<*>): Any?
+
+    /**
+     * Non-inline version of [put] (suspend) that takes an explicit [KSerializer].
+     */
+    @PublishedApi internal suspend fun putRaw(key: String, value: Any?, mode: KSafeWriteMode, serializer: KSerializer<*>)
+
+    /**
+     * Non-inline version of [getFlow] that takes an explicit [KSerializer].
+     */
+    @PublishedApi internal fun getFlowRaw(key: String, defaultValue: Any?, serializer: KSerializer<*>): Flow<Any?>
+
     // --- BIOMETRIC API ---
 
     /**
@@ -406,6 +436,23 @@ enum class KSafeMemoryPolicy {
 }
 
 /**
+ * Non-inline helper for [getStateFlow]. Avoids duplicating `serializer<T>()` calls.
+ */
+@PublishedApi
+internal fun <T> KSafe.getStateFlowRaw(
+    key: String,
+    defaultValue: Any?,
+    serializer: KSerializer<T>,
+    scope: CoroutineScope,
+): StateFlow<T> {
+    @Suppress("UNCHECKED_CAST")
+    val flow = getFlowRaw(key, defaultValue, serializer) as Flow<T>
+    @Suppress("UNCHECKED_CAST")
+    val initial = getDirectRaw(key, defaultValue, serializer) as T
+    return flow.stateIn(scope, SharingStarted.Eagerly, initial)
+}
+
+/**
  * Returns a [StateFlow] that holds the current value and emits updates whenever it changes.
  *
  * This is a convenience wrapper around [KSafe.getFlow] that converts the cold [Flow] into
@@ -433,8 +480,7 @@ inline fun <reified T> KSafe.getStateFlow(
     key: String,
     defaultValue: T,
     scope: CoroutineScope,
-): StateFlow<T> = getFlow(key, defaultValue)
-    .stateIn(scope, SharingStarted.Eagerly, getDirect(key, defaultValue))
+): StateFlow<T> = getStateFlowRaw(key, defaultValue, serializer<T>(), scope)
 
 /** @deprecated Remove \"encrypted\" parameter. Protection is now auto-detected during reads.  Your \"encrypted\" param is ignored. */
 @Deprecated(
@@ -447,8 +493,7 @@ inline fun <reified T> KSafe.getStateFlow(
     defaultValue: T,
     scope: CoroutineScope,
     protection: KSafeProtection = KSafeProtection.DEFAULT
-): StateFlow<T> = getFlow(key, defaultValue)
-    .stateIn(scope, SharingStarted.Eagerly, getDirect(key, defaultValue))
+): StateFlow<T> = getStateFlowRaw(key, defaultValue, serializer<T>(), scope)
 
 /** @deprecated Use [getStateFlow] without encrypted parameter. */
 @Deprecated(
@@ -461,5 +506,4 @@ inline fun <reified T> KSafe.getStateFlow(
     defaultValue: T,
     scope: CoroutineScope,
     encrypted: Boolean
-): StateFlow<T> = getFlow(key, defaultValue)
-    .stateIn(scope, SharingStarted.Eagerly, getDirect(key, defaultValue))
+): StateFlow<T> = getStateFlowRaw(key, defaultValue, serializer<T>(), scope)
