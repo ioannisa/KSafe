@@ -74,7 +74,6 @@ import platform.Security.kSecClassKey
 import platform.Security.kSecReturnAttributes
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
-import kotlin.random.Random
 import kotlin.concurrent.AtomicReference
 import kotlin.time.ComparableTimeMark
 import kotlin.time.Duration
@@ -695,8 +694,7 @@ actual class KSafe(
     }
 
     private fun generateInstallationId(): String {
-        val bytes = ByteArray(16)
-        Random.nextBytes(bytes)
+        val bytes = secureRandomBytes(16)
         return encodeBase64(bytes)
     }
 

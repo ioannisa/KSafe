@@ -2,6 +2,178 @@
 
 All notable changes to KSafe will be documented in this file.
 
+## [1.8.0] - 2026-03-20
+
+### Added
+
+#### Cryptographic Utilities: `secureRandomBytes` & `getOrCreateSecret`
+
+**`secureRandomBytes(size: Int): ByteArray`** — A cross-platform cryptographically secure random byte generator, delegating to each platform's strongest CSPRNG (`java.security.SecureRandom` on Android/JVM, `arc4random_buf` on iOS, `crypto.getRandomValues()` on WASM). This is now also used internally by KSafe's own encryption engines for IV and key generation.
+
+```kotlin
+val nonce = secureRandomBytes(16)
+val aesKey = secureRandomBytes(32)
+```
+
+**`KSafe.getOrCreateSecret(key, size, protection, requireUnlockedDevice): ByteArray`** — A suspend extension that generates a cryptographically secure random secret on first call and retrieves it on subsequent calls. Stored with hardware-backed encryption (`HARDWARE_ISOLATED` by default). Ideal for database encryption passphrases, API signing keys, HMAC keys, or any persistent secret.
+
+```kotlin
+// Database passphrase — one line, hardware-backed, generated once
+val passphrase = ksafe.getOrCreateSecret("main.db")
+
+// Custom size + protection
+val apiKey = ksafe.getOrCreateSecret("api_key", size = 64)
+```
+
+#### Flow & StateFlow Property Delegates ([#20](https://github.com/ioannisa/KSafe/issues/20))
+
+With this release, KSafe now covers every state management pattern in Kotlin — Compose `MutableState` **and** Kotlin `MutableStateFlow` — with encryption and persistence behind the scenes. Both survive process death seamlessly.
+
+Since v1.0.0, KSafe offered `var counter by ksafe(0)` (plain delegates) and `var counter by ksafe.mutableStateOf(0)` (Compose state). Version 1.8.0 adds **`MutableStateFlow` delegates** (`asMutableStateFlow`) as a drop-in replacement for the standard `_state`/`state` pattern, **read-only flow delegates** (`asStateFlow` / `asFlow`), and **cross-screen sync** via `mutableStateOf(scope=)`.
+
+**Two ways to use flows — pick the one that fits your style:**
+
+```kotlin
+// Explicit key strings (existing API — still fully supported)
+val username: StateFlow<String> = kSafe.getStateFlow("username", "Guest", viewModelScope)
+val darkMode: Flow<Boolean> = kSafe.getFlow("darkMode", false)
+
+// Flow delegates (new in 1.8.0 — key derived from property name, just like the existing invoke() delegate)
+val username: StateFlow<String> by kSafe.asStateFlow("Guest", viewModelScope)
+val darkMode: Flow<Boolean> by kSafe.asFlow(false)
+```
+
+#### Core Module: Flow Delegates
+
+**1. `asMutableStateFlow` (Read / Write)**
+
+A complete, drop-in replacement for the standard `MutableStateFlow` pattern. It implements the full interface, meaning all your standard atomic operations work out of the box, persisting to encrypted storage instantly.
+
+```kotlin
+// Standard Kotlin pattern
+private val _state = MutableStateFlow(MoviesListState())
+val state = _state.asStateFlow()
+
+// KSafe equivalent — same pattern, but persisted + reactive to external changes
+private val _state by kSafe.asMutableStateFlow(MoviesListState(), viewModelScope)
+val state = _state.asStateFlow()
+```
+
+```kotlin
+@Serializable
+data class MoviesListState(
+    val loading: Boolean = false,
+    val movies: List<Movie> = emptyList(),
+    val error: String? = null
+)
+
+class MoviesViewModel(private val kSafe: KSafe, private val api: MoviesApi) : ViewModel() {
+    // Acts exactly like a standard MutableStateFlow, but fully persisted
+    private val _state by kSafe.asMutableStateFlow(MoviesListState(), viewModelScope)
+    val state = _state.asStateFlow()
+
+    fun loadMovies() {
+        // .update {} persists securely (uses compareAndSet internally)
+        _state.update { it.copy(loading = true) }
+
+        viewModelScope.launch {
+            try {
+                val movies = api.getMovies()
+                // .value = ... also persists instantly
+                _state.value = _state.value.copy(loading = false, movies = movies)
+            } catch (e: Exception) {
+                _state.update { it.copy(loading = false, error = e.message) }
+            }
+        }
+    }
+}
+
+@Composable
+fun MoviesScreen(viewModel: MoviesViewModel) {
+    val state by viewModel.state.collectAsState()
+
+    when {
+        state.loading -> CircularProgressIndicator()
+        state.error != null -> Text("Error: ${state.error}")
+        else -> LazyColumn {
+            items(state.movies) { movie -> MovieItem(movie) }
+        }
+    }
+}
+```
+
+**2. `asStateFlow` & `asFlow` (Read-Only)**
+
+If you only need to read data (or update it manually via `kSafe.put()`), you can use read-only flow delegates.
+
+```kotlin
+class SettingsViewModel(private val kSafe: KSafe) : ViewModel() {
+    // Hot flow tied to viewModelScope
+    val username: StateFlow<String> by kSafe.asStateFlow("Guest", viewModelScope)
+
+    // Cold flow
+    val darkMode: Flow<Boolean> by kSafe.asFlow(defaultValue = false)
+
+    // Optional: explicitly override the storage key
+    val theme: Flow<String> by kSafe.asFlow(defaultValue = "light", key = "app_theme")
+
+    fun onNameChanged(name: String) {
+        viewModelScope.launch { kSafe.put("username", name) }
+    }
+}
+```
+
+#### Compose Module: Cross-Screen Reactivity ([#20](https://github.com/ioannisa/KSafe/issues/20))
+
+The existing `mutableStateOf` now accepts an optional `scope` parameter.
+
+**Without `scope`** (existing behavior) — the state reads from cache at init and persists on write, but it's isolated. If another ViewModel or a background `put()` writes to the same key, this state won't update until the ViewModel is recreated.
+
+**With `scope`** — the state continuously observes the underlying flow. Changes from any source (another screen, another ViewModel, a background coroutine) are reflected in real-time. No manual refreshes or event buses required.
+
+> If you only read/write from a single ViewModel, both behave identically. The `scope` parameter matters when **multiple writers** exist for the same key.
+
+```kotlin
+// Dashboard Screen — auto-reflects changes made from other screens
+class DashboardViewModel(private val kSafe: KSafe) : ViewModel() {
+    var username by kSafe.mutableStateOf("Guest", scope = viewModelScope)
+    var notificationsEnabled by kSafe.mutableStateOf(false, scope = viewModelScope)
+}
+
+// Settings Screen — writes to the same KSafe instance
+class SettingsViewModel(private val kSafe: KSafe) : ViewModel() {
+    var username by kSafe.mutableStateOf("Guest", scope = viewModelScope)
+    var notificationsEnabled by kSafe.mutableStateOf(false, scope = viewModelScope)
+}
+
+// When SettingsScreen writes, DashboardScreen auto-updates — no manual refresh
+@Composable
+fun DashboardScreen(viewModel: DashboardViewModel) {
+    Text("Welcome, ${viewModel.username}")
+    if (viewModel.notificationsEnabled) Text("Notifications ON")
+}
+
+@Composable
+fun SettingsScreen(viewModel: SettingsViewModel) {
+    TextField(value = viewModel.username, onValueChange = { viewModel.username = it })
+    Switch(
+        checked = viewModel.notificationsEnabled,
+        onCheckedChange = { viewModel.notificationsEnabled = it }
+    )
+}
+```
+
+#### API Summary
+
+All new delegates use the property name as the storage key by default (with an optional `key` override), staying consistent with KSafe's existing delegate patterns.
+
+| Module | Function | Type | Returns |
+|--------|----------|------|---------|
+| core | `asFlow(defaultValue, key?)` | Read-only | `Flow<T>` delegate |
+| core | `asStateFlow(defaultValue, scope, key?)` | Read-only | `StateFlow<T>` delegate |
+| core | `asMutableStateFlow(defaultValue, scope, key?, mode?)` | Read/write + Reactive | `MutableStateFlow<T>` delegate |
+| compose | `mutableStateOf(..., scope?)` | Read/write + Reactive | `MutableState<T>` w/ flow observation |
+
 ## [1.7.1] - 2025-03-17
 
 ### Added

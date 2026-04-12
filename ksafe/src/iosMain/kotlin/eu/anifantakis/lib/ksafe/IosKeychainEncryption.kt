@@ -66,7 +66,6 @@ import platform.Security.kSecReturnData
 import platform.Security.kSecReturnRef
 import platform.Security.kSecValueData
 import platform.posix.memcpy
-import kotlin.random.Random
 
 /**
  * iOS implementation of [KSafeEncryption] using iOS Keychain Services and CryptoKit.
@@ -591,8 +590,7 @@ internal class IosKeychainEncryption(
         }
 
         // 3. Create new SE-wrapped key
-        val newAesKey = ByteArray(keySizeBytes)
-        Random.nextBytes(newAesKey)
+        val newAesKey = secureRandomBytes(keySizeBytes)
 
         // Create SE EC key pair (deletes any existing key with same tag first)
         val sePrivateKey = createSecureEnclaveKey(seTag(keyId), requireUnlockedDevice)
@@ -654,8 +652,7 @@ internal class IosKeychainEncryption(
         }
 
         // Key doesn't exist, generate new one with configured size
-        val newKey = ByteArray(keySizeBytes)
-        Random.nextBytes(newKey)
+        val newKey = secureRandomBytes(keySizeBytes)
 
         // Store in keychain
         storeInKeychain(keyId, newKey, requireUnlockedDevice)
