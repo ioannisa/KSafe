@@ -6,7 +6,6 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
-import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -59,8 +58,7 @@ internal class JvmSoftwareEncryption(
         val secretKey = runBlocking { getOrCreateSecretKey(identifier) }
 
         // Generate random IV
-        val iv = ByteArray(GCM_IV_LENGTH)
-        SecureRandom().nextBytes(iv)
+        val iv = secureRandomBytes(GCM_IV_LENGTH)
 
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         val spec = GCMParameterSpec(GCM_TAG_LENGTH, iv)

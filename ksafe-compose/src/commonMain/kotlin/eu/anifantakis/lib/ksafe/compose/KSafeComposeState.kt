@@ -66,6 +66,16 @@ class KSafeComposeState<T>(
         }
     }
 
+    /**
+     * Updates the state from a flow emission without triggering persistence.
+     * Used for continuous flow observation when a [CoroutineScope] is provided.
+     * Always applies the update (even after user writes) because external changes
+     * should be reflected regardless.
+     */
+    @PublishedApi internal fun updateFromFlow(newValue: T) {
+        _internalState.value = newValue
+    }
+
     override fun getValue(thisRef: Any?, property: KProperty<*>): T {
         return value
     }
@@ -89,16 +99,21 @@ class KSafeComposeState<T>(
  * @param defaultValue The default value if no value is found in KSafe.
  * @param key Optional explicit key for storing the value. If null, the property name is used.
  * @param mode Write mode. Defaults to encrypted/default.
+ * @param scope Optional [CoroutineScope] for continuous flow observation. When provided,
+ * the state automatically updates when the stored value changes externally (e.g., from
+ * another screen or a background `put` call).
  */
 inline fun <reified T> KSafe.mutableStateOf(
     defaultValue: T,
     key: String? = null,
-    mode: KSafeWriteMode = KSafeWriteMode.Encrypted()
+    mode: KSafeWriteMode = KSafeWriteMode.Encrypted(),
+    scope: CoroutineScope? = null,
 ): PropertyDelegateProvider<Any?, ReadWriteProperty<Any?, T>> =
     mutableStateOf(
         defaultValue = defaultValue,
         key = key,
         mode = mode,
+        scope = scope,
         policy = structuralEqualityPolicy()
     )
 
@@ -135,6 +150,10 @@ inline fun <reified T> KSafe.mutableStateOf(
  * @param defaultValue The default value if no value is found in KSafe.
  * @param key Optional explicit key for storing the value. If null, the property name is used.
  * @param mode Write mode. Defaults to encrypted/default.
+ * @param scope Optional [CoroutineScope] for continuous flow observation. When provided,
+ * the state automatically updates when the stored value changes externally (e.g., from
+ * another screen or a background `put` call). When null, only the WASM self-healing
+ * one-shot observation is used.
  * @param policy The [SnapshotMutationPolicy] for Compose state equality.
  * It affects both recomposition and persistence behavior.
  *
@@ -150,6 +169,7 @@ inline fun <reified T> KSafe.mutableStateOf(
     defaultValue: T,
     key: String? = null,
     mode: KSafeWriteMode = KSafeWriteMode.Encrypted(),
+    scope: CoroutineScope? = null,
     policy: SnapshotMutationPolicy<T>
 ): PropertyDelegateProvider<Any?, ReadWriteProperty<Any?, T>> {
     // 'this' is the KSafe instance
@@ -175,10 +195,17 @@ inline fun <reified T> KSafe.mutableStateOf(
             policy = policy
         )
 
-        // Self-heal: on platforms with async cache loading (WASM WebCrypto),
-        // getDirect may return the default before decryption completes.
-        // Observe getFlow for the first post-init emission and update reactively.
-        if (initialValue == defaultValue) {
+        if (scope != null) {
+            // Continuous flow observation: the state automatically reflects
+            // external changes (e.g., from another screen or background writes).
+            scope.launch {
+                ksafe.getFlow<T>(actualKey, defaultValue)
+                    .collect { composeState.updateFromFlow(it) }
+            }
+        } else if (initialValue == defaultValue) {
+            // Self-heal: on platforms with async cache loading (WASM WebCrypto),
+            // getDirect may return the default before decryption completes.
+            // Observe getFlow for the first post-init emission and update reactively.
             CoroutineScope(Dispatchers.Default).launch {
                 withTimeoutOrNull(5_000L) {
                     ksafe.getFlow<T>(actualKey, defaultValue)
@@ -204,7 +231,7 @@ inline fun <reified T> KSafe.mutableStateOf(
     key: String? = null,
     encrypted: Boolean
 ): PropertyDelegateProvider<Any?, ReadWriteProperty<Any?, T>> =
-    mutableStateOf(defaultValue, key, if (encrypted) KSafeWriteMode.Encrypted() else KSafeWriteMode.Plain)
+    mutableStateOf(defaultValue, key, mode = if (encrypted) KSafeWriteMode.Encrypted() else KSafeWriteMode.Plain)
 
 /**
  * @deprecated Use [mutableStateOf] with [KSafeWriteMode] parameter instead.
@@ -219,4 +246,5 @@ inline fun <reified T> KSafe.mutableStateOf(
     encrypted: Boolean,
     policy: SnapshotMutationPolicy<T>
 ): PropertyDelegateProvider<Any?, ReadWriteProperty<Any?, T>> =
-    mutableStateOf(defaultValue, key, if (encrypted) KSafeWriteMode.Encrypted() else KSafeWriteMode.Plain, policy)
+    mutableStateOf(defaultValue, key, mode = if (encrypted) KSafeWriteMode.Encrypted() else KSafeWriteMode.Plain, policy = policy)
+
