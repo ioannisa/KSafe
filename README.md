@@ -558,6 +558,19 @@ data class UserProfile(
 > // ✅ Correct — typed variable drives inference
 > val token: String? = ksafe.get("auth_token", null)
 > ```
+>
+> The same rule applies to the property delegate (`ksafe(...)`), which also relies on reified generics:
+>
+> ```Kotlin
+> // ❌ Wrong — T collapses to Nothing?
+> var token by ksafe(null)
+>
+> // ✅ Correct — explicit type parameter
+> var token by ksafe<String?>(null)
+>
+> // ✅ Correct — typed property drives inference
+> var token: String? by ksafe(null)
+> ```
 
 ### Deleting Data
 
