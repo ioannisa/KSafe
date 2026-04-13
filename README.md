@@ -544,6 +544,21 @@ data class UserProfile(
 )
 ```
 
+> ⚠️ **Important:** Do **not** pass a bare `null` as the `defaultValue` argument (e.g. `ksafe.get("auth_token", null)`). KSafe relies on `reified` generics to infer the type `T`, and a bare `null` gives the compiler nothing to infer from — `T` collapses to `Nothing?` and the call always returns `null`, even if the key has a stored value.
+>
+> If you want a nullable type with a `null` default, make the type explicit so inference has something to work with:
+>
+> ```Kotlin
+> // ❌ Wrong — always returns null
+> val token = ksafe.get("auth_token", null)
+>
+> // ✅ Correct — explicit type parameter
+> val token = ksafe.get<String?>("auth_token", null)
+>
+> // ✅ Correct — typed variable drives inference
+> val token: String? = ksafe.get("auth_token", null)
+> ```
+
 ### Deleting Data
 
 ```Kotlin
