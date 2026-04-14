@@ -10,11 +10,10 @@ _**The Universal Persistence Layer: `MutableState`, `MutableStateFlow`, and plai
 ![image](https://github.com/user-attachments/assets/692d9066-e953-4f13-9642-87661c5bc248)
 
 ## Demo Application
-To see KSafe in action on several scenarios, I invite you to check out my demo application here:
-[Demo CMP App Using KSafe](https://github.com/ioannisa/KSafeDemo)
+KSafe in action across multiple scenarios: [Demo CMP App Using KSafe](https://github.com/ioannisa/KSafeDemo).
 
 ## YouTube Demos
-Check out my own video about how easy it is to adapt KSafe into your project and get seamless encrypted persistence, but also more videos from other content creators.
+From the author and the community:
 
 | Author's Video | Philipp Lackner's Video | Jimmy Plazas's Video |
 |:--------------:|:---------------:|:---------------:|
@@ -25,9 +24,21 @@ Check out my own video about how easy it is to adapt KSafe into your project and
 
 **Fast. Easy. Synchronous *or* asynchronous. Encrypted *or* unencrypted.**
 
-KSafe is the **easiest**, **most secure**, and **fastest** way to persist any value in Kotlin Multiplatform — and it is just as good a choice when you don't need encryption at all. One library, one API, every persistence pattern you'll ever use on **Android**, **iOS**, **JVM/Desktop**, and **WASM/JS (Browser)**.
+The **easiest**, **most secure**, and **fastest** way to persist any value in Kotlin Multiplatform — and just as good a choice when you don't need encryption at all. Runs on **Android**, **iOS**, **JVM/Desktop**, and **WASM/JS (Browser)** with one API and one code path.
 
-If you've been told KSafe is "just for encrypted key/value storage" — that's wrong. It is the de-facto library for **simple persistence**, with or without encryption, and it never forces you into coroutines just because DataStore lives underneath.
+* **Easy?** ✔ Yes — one-line setup, property-delegate API
+* **Encrypted?** ✔ Yes — hardware-backed AES-256-GCM by default
+* **Unencrypted?** ✔ Yes — opt out with a single parameter
+* **Synchronous?** ✔ Yes — non-blocking hot cache when you don't want coroutines
+* **Asynchronous?** ✔ Yes — full suspend API talking directly to DataStore when you do
+
+**Extras when you encrypt:**
+
+* **Biometrics?** ✔ Yes — Face ID / Touch ID / Fingerprint on Android + iOS, with auth caching
+* **Root/jailbreak detection?** ✔ Yes — configurable WARN/BLOCK actions + analytics callback
+* **Memory policy?** ✔ Yes — three RAM modes trading security vs performance
+* **Database passphrase in one line?** ✔ Yes — hardware-isolated 256-bit secret for SQLCipher / SQLDelight / Room
+
 
 ### One line. Encrypted by default.
 
@@ -36,20 +47,19 @@ var counter by ksafe(0)
 counter++   // auto-encrypted (AES-256-GCM), auto-persisted, survives process death
 ```
 
-Read and write it like any normal Kotlin variable. No `suspend`. No `runBlocking`. No DataStore boilerplate. No explicit `encrypt`/`decrypt`. Reads come from a hot in-memory cache (~0.007ms); writes are encrypted and flushed to disk in the background.
+Read and write it like any normal Kotlin variable — no `suspend`, no `runBlocking`, no DataStore boilerplate, no explicit `encrypt`/`decrypt`. Reads hit a hot in-memory cache (~0.007ms); writes encrypt and flush in the background.
 
 ### Don't need encryption? Same one-liner.
 
 ```kotlin
-// Same delegate, plain storage — still synchronous, still survives process death
 var counter by ksafe(0, mode = KSafeWriteMode.Plain)
 ```
 
-That's it. Switch a single argument and you've got the simplicity of `SharedPreferences` / `NSUserDefaults` — but multiplatform, type-safe, object-aware, and backed by atomic DataStore writes.
+One argument change and you have the simplicity of `SharedPreferences` / `NSUserDefaults` — multiplatform, type-safe, object-aware, backed by atomic DataStore writes.
 
 ### Compose `MutableState`? `MutableStateFlow`? Plain delegate? All persisted.
 
-KSafe gives you **every** persistence shape you reach for, all with the same encryption-and-persistence guarantees behind them:
+Every persistence shape you reach for, with the same guarantees behind each:
 
 ```kotlin
 // 1. Plain property delegate — no Compose, no Flow, no coroutines required
@@ -63,16 +73,26 @@ private val _state by ksafe.asMutableStateFlow(MoviesState(), viewModelScope)
 val state = _state.asStateFlow()
 ```
 
-All three survive process death. All three are AES-256-GCM encrypted by default. All three can be made plain with `mode = KSafeWriteMode.Plain`. **Zero boilerplate, on every target.**
+All three survive process death, are AES-256-GCM encrypted by default, and can be made plain with `mode = KSafeWriteMode.Plain`. **Zero boilerplate, on every target.**
 
-> Even though KSafe is built on top of DataStore, **it does not force you to use coroutines**. The property delegate, the Compose `mutableStateOf` variant, and `getDirect`/`putDirect` are all fully synchronous — **but never blocking**. Reads are served from a hot in-memory cache, and writes update that cache immediately and enqueue the encrypt-and-flush work onto a background thread. Your call site returns instantly. Use the `suspend` API (`get` / `put`) only when *you* want to.
+> **DataStore without the coroutines tax.** The property delegate, `mutableStateOf`, and `getDirect`/`putDirect` are fully synchronous — **but never blocking**. Reads come from a hot in-memory cache; writes update the cache immediately and enqueue the encrypt-and-flush onto a background thread. Call sites return instantly. Use the `suspend` API (`get` / `put`) only when *you* want to.
 
-### Need a passphrase to encrypt databases? Also now included in one line. (v1.8.0)
-
-KSafe isn't only for key/value pairs — it's the easiest way to bootstrap an encrypted SQLCipher / SQLDelight / Room database too:
+### Prefer coroutines? `put` and `get` too.
 
 ```kotlin
-// Generates a 256-bit secret on first call, returns the same one forever after.
+// inside any coroutine / suspend function
+ksafe.put("profile", user)                       // awaits the disk flush
+val profile: User = ksafe.get("profile", User())
+```
+
+Same encryption, same cache, same DataStore — just an API shape that awaits the write instead of enqueueing it. Reach for this when you want a guaranteed flush (payments, critical writes) or when the call site is already a coroutine.
+
+### Need a passphrase to encrypt databases? Also one line. (v1.8.0)
+
+KSafe isn't just for key/value pairs — it's the simplest way to bootstrap an encrypted SQLCipher / SQLDelight / Room database too:
+
+```kotlin
+// Generates a 256-bit secret on first call, returns the same one thereafter.
 // Stored hardware-isolated (StrongBox on Android, Secure Enclave on iOS).
 val passphrase = ksafe.getOrCreateSecret("main.db")
 
@@ -81,21 +101,17 @@ Room.databaseBuilder(context, AppDatabase::class.java, "main.db")
     .build()
 ```
 
-One line replaces all of: secure random generation, hardware-backed key storage, persistence, and retrieval.
+One line replaces: secure random generation, hardware-backed key storage, persistence, and retrieval.
 
 ### Complex Objects? Of course.
 
-Here's what that looks like in a real app — Ktor bearer authentication with **zero encryption boilerplate**:
+Ktor bearer authentication with **zero encryption boilerplate**:
 
 ```kotlin
-// just mark serializable your object to persist
 @Serializable
-data class AuthTokens(
-  val accessToken: String = "",
-  val refreshToken: String = ""
-)
+data class AuthTokens(val accessToken: String = "", val refreshToken: String = "")
 
-// One line to encrypt, persist, and serialize the whole object - THAT'S IT!
+// One line to encrypt, persist, and serialize the whole object — that's it.
 var tokens by ksafe(AuthTokens())
 
 install(Auth) {
@@ -108,10 +124,7 @@ install(Auth) {
       val newInfo = api.refreshAuth(tokens.refreshToken)
 
       // Atomic update: encrypts & persists as JSON in background (~13μs)
-      tokens = AuthTokens(
-        accessToken = newInfo.accessToken,
-        refreshToken = newInfo.refreshToken
-      )
+      tokens = AuthTokens(newInfo.accessToken, newInfo.refreshToken)
 
       BearerTokens(tokens.accessToken, tokens.refreshToken)
     }
@@ -119,11 +132,7 @@ install(Auth) {
 }
 ```
 
-No explicit encrypt/decrypt calls. No DataStore boilerplate. No `runBlocking`. Tokens are AES-256-GCM encrypted at rest, served from the hot cache at runtime, and survive process death — all through regular Kotlin property access.
-
-Under the hood, each platform uses its native crypto engine — Android Keystore, iOS Keychain + CryptoKit, JVM's javax.crypto, and browser WebCrypto — unified behind a single API. Values are AES-256-GCM encrypted and persisted to DataStore (or localStorage on WASM).
-
-KSafe covers every persistence pattern you need: Compose `MutableState` (`mutableStateOf`), Kotlin `MutableStateFlow` (`asMutableStateFlow`), read-only reactive flows (`asStateFlow` / `asFlow`), cross-screen sync (`mutableStateOf(scope=)`), and plain property delegates (`invoke`). Add built-in biometric authentication, configurable memory policies, and runtime security detection — all out of the box.
+Under the hood, each platform uses its native crypto engine — Android Keystore, iOS Keychain + CryptoKit, JVM's `javax.crypto`, browser WebCrypto — unified behind one API. Values are AES-256-GCM encrypted and persisted to DataStore (localStorage on WASM). Cross-screen sync (`scope =`), biometric auth, memory policies, and runtime security detection are all built in.
 
 ## Table of Contents
 
@@ -172,7 +181,7 @@ ksafe.verifyBiometricDirect("Confirm payment") { success ->
 }
 ```
 
-That's it. Your data is now AES-256-GCM encrypted with keys stored in Android Keystore, iOS Keychain, software-backed on JVM, or WebCrypto on WASM.
+Data is now AES-256-GCM encrypted — keys in Android Keystore, iOS Keychain, software-backed on JVM, WebCrypto on WASM.
 
 ***
 
@@ -188,15 +197,13 @@ implementation("eu.anifantakis:ksafe:1.8.0")
 implementation("eu.anifantakis:ksafe-compose:1.8.0") // ← Compose state (optional)
 ```
 
-> Skip `ksafe-compose` if your project doesn't use Jetpack Compose, or if you don't intend to use the library's `mutableStateOf` persistence option
+> Skip `ksafe-compose` if you don't use Jetpack Compose or `mutableStateOf` persistence.
 
-> **Note:** `kotlinx-serialization-json` is exposed as a **transitive dependency** — you do **not** need to add it manually to your project. KSafe already provides it.
+> **Note:** `kotlinx-serialization-json` comes in transitively — don't add it yourself.
 
 ### 2 - Apply the kotlinx-serialization plugin
 
-If you want to use the library with data classes, you need to enable Serialization at your project.
-
-Add Serialization definition to your `plugins` section of your `libs.versions.toml`
+Required only if you store `@Serializable` data classes. Add it to `libs.versions.toml`:
 ```toml
 [versions]
 kotlin = "2.2.21"
@@ -205,7 +212,7 @@ kotlin = "2.2.21"
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 ```
 
-and apply it at the same section of your `build.gradle.kts` file.
+then apply it in `build.gradle.kts`:
 ```Kotlin
 plugins {
   //...
@@ -237,12 +244,12 @@ actual val platformModule = module {
 }
 ```
 
-For multi-instance setups (prefs vs vault), WASM `awaitCacheReady()`, and full platform-specific Koin examples, see [docs/SETUP.md](docs/SETUP.md).
+Multi-instance setups, WASM `awaitCacheReady()`, and full per-platform Koin examples: [docs/SETUP.md](docs/SETUP.md).
 
 
 ## Basic Usage
 
-Five lines of code cover 95% of real-world use. For the full reference — flow delegates, Compose `policy`, cross-screen sync, write modes, nullable handling, deletion, and a full ViewModel example — see **[docs/USAGE.md](docs/USAGE.md)**.
+Five lines cover 95% of real-world use. Full reference (flow delegates, Compose `policy`, cross-screen sync, write modes, nullables, deletion, full ViewModel): **[docs/USAGE.md](docs/USAGE.md)**.
 
 ```kotlin
 // 1. Property delegate — synchronous, non-blocking, encrypted, persisted
@@ -267,7 +274,7 @@ ksafe.putDirect("counter", 42)
 val n = ksafe.getDirect("counter", 0)
 ```
 
-**Per-entry plain / encrypted toggle.** Any of the above can opt into explicit plaintext or stricter encryption via `KSafeWriteMode`:
+**Per-entry plain / encrypted toggle** via `KSafeWriteMode`:
 
 ```kotlin
 var theme by ksafe("light", mode = KSafeWriteMode.Plain)
@@ -281,7 +288,7 @@ ksafe.putDirect(
 )
 ```
 
-**Complex objects** work with zero extra code — mark them `@Serializable` and KSafe handles JSON + encryption automatically:
+**Complex objects** — just mark them `@Serializable`; JSON and encryption are automatic:
 
 ```kotlin
 @Serializable
@@ -291,44 +298,42 @@ var authInfo by ksafe(AuthInfo())
 authInfo = authInfo.copy(accessToken = "newToken")
 ```
 
-> **Note:** The property delegate can ONLY use the default KSafe instance. If you have multiple instances with different file names, use the suspend or direct APIs. See [docs/SETUP.md](docs/SETUP.md#multiple-instances).
+> **Note:** The property delegate works only with the default KSafe instance. For named instances, use the suspend or direct APIs — see [docs/SETUP.md](docs/SETUP.md#multiple-instances).
 
 
 ## Custom JSON Serialization
 
-Need to persist third-party types like `UUID`, `Instant`, or `BigDecimal` that you can't annotate with `@Serializable`? Register custom `KSerializer`s once via `KSafeConfig(json = customJson)` and use `@Contextual` fields at the call site — KSafe handles everything else.
-
-See **[docs/SERIALIZATION.md](docs/SERIALIZATION.md)** for the full step-by-step with UUID/Instant examples.
+For third-party types you can't annotate (`UUID`, `Instant`, `BigDecimal`…), register a `KSerializer` via `KSafeConfig(json = customJson)` and use `@Contextual` fields at the call site. Full walkthrough: **[docs/SERIALIZATION.md](docs/SERIALIZATION.md)**.
 
 ***
 
 ## Cryptographic Utilities
 
-KSafe also exposes two small, cross-platform crypto helpers:
+Two small cross-platform helpers:
 
 ```kotlin
-// Cryptographically secure random bytes (SecureRandom / arc4random_buf / WebCrypto)
+// Secure random bytes (SecureRandom / arc4random_buf / WebCrypto)
 val nonce = secureRandomBytes(16)
 
-// Generate-or-retrieve a hardware-isolated 256-bit secret (perfect for DB passphrases)
+// Generate-or-retrieve a hardware-isolated 256-bit secret (great for DB passphrases)
 val passphrase = ksafe.getOrCreateSecret("main.db")
 ```
 
-For sizes, protection tiers, and the full Room + SQLCipher / SQLDelight examples, see **[docs/SECURITY.md#cryptographic-utilities](docs/SECURITY.md#cryptographic-utilities)**.
+Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURITY.md#cryptographic-utilities](docs/SECURITY.md#cryptographic-utilities)**.
 
 ***
 
 ## Why use KSafe?
 
-* **Hardware-backed security** - AES-256-GCM with keys stored in Android Keystore, iOS Keychain, software-backed on JVM, or WebCrypto on WASM. Per-property write control via `KSafeWriteMode` and encrypted tiers via `KSafeEncryptedProtection`
-* **Biometric authentication** - Built-in Face ID, Touch ID, and Fingerprint support with smart auth caching
-* **Root & Jailbreak detection** - Detect compromised devices with configurable WARN/BLOCK actions
-* **Clean reinstalls** - Automatic cleanup ensures fresh starts after app reinstallation
-* **One code path** - No expect/actual juggling—your common code owns the vault
-* **Ease of use** - `var launchCount by ksafe(0)` —that is literally it
-* **Versatility** - Primitives, data classes, sealed hierarchies, lists, sets, and nullable types
-* **Performance** - Zero-latency UI reads with Hybrid Cache architecture
-* **Desktop & Web Support** - Full JVM/Desktop and WASM/Browser support alongside Android and iOS
+* **Hardware-backed security** — AES-256-GCM, keys in Android Keystore / iOS Keychain / JVM software / WebCrypto. Per-property control via `KSafeWriteMode` + `KSafeEncryptedProtection` tiers
+* **Biometric auth** — Face ID, Touch ID, Fingerprint, with auth caching
+* **Root & jailbreak detection** — configurable WARN/BLOCK actions
+* **Clean reinstalls** — automatic cleanup on fresh install
+* **One code path** — no expect/actual juggling; common code owns the vault
+* **Ease of use** — `var launchCount by ksafe(0)`, that is literally it
+* **Versatility** — primitives, data classes, sealed hierarchies, lists, sets, nullables
+* **Performance** — zero-latency UI reads via hybrid hot cache
+* **Desktop & Web** — full JVM/Desktop and WASM/Browser alongside Android and iOS
 
 ***
 
@@ -358,9 +363,9 @@ For sizes, protection tiers, and the full Room + SQLCipher / SQLDelight examples
 | `getDirect`/`putDirect` | 0.007 ms | 0.022 ms | UI, bulk ops, high throughput |
 | `get`/`put` (suspend) | 0.010 ms | 22 ms | When you must guarantee persistence |
 
-**vs competitors (encrypted):** 14x faster reads than KVault, 15x faster than EncryptedSharedPreferences. Unencrypted writes match SharedPreferences.
+**vs competitors (encrypted):** 14× faster reads than KVault, 15× faster than EncryptedSharedPreferences. Unencrypted writes match SharedPreferences.
 
-For full benchmark tables, cold start numbers, and architecture details, see [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+Full tables, cold start numbers, architecture: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 
 ## Compatibility
@@ -387,7 +392,7 @@ For full benchmark tables, cold start numbers, and architecture details, see [do
 
 ## Biometric Authentication
 
-KSafe provides a **standalone biometric authentication helper** that works on both Android and iOS. This is a general-purpose utility that can protect **any action** in your app—not just KSafe persistence operations.
+A standalone biometric helper (Android + iOS) that can gate **any action** in your app — not just KSafe ops.
 
 ```kotlin
 // Callback-based
@@ -401,13 +406,13 @@ if (ksafe.verifyBiometric("Authenticate to increment")) {
 }
 ```
 
-For authorization caching, scoped sessions, platform setup, and complete examples, see [docs/BIOMETRICS.md](docs/BIOMETRICS.md).
+Auth caching, scoped sessions, platform setup, complete examples: [docs/BIOMETRICS.md](docs/BIOMETRICS.md).
 
 ***
 
 ## Runtime Security Policy
 
-KSafe can detect and respond to runtime security threats (root/jailbreak, debugger, emulator, debug builds):
+Detect and respond to runtime threats — root/jailbreak, debugger, emulator, debug builds:
 
 ```kotlin
 val ksafe = KSafe(
@@ -424,13 +429,13 @@ val ksafe = KSafe(
 )
 ```
 
-For preset policies, BLOCK exception handling, Compose stability, root/jailbreak detection methods, and more, see [docs/SECURITY.md](docs/SECURITY.md).
+Preset policies, BLOCK exception handling, Compose stability, detection methods: [docs/SECURITY.md](docs/SECURITY.md).
 
 ***
 
 ## Memory Security Policy
 
-Control the trade-off between performance and security for data in RAM:
+Trade off performance vs. security for data in RAM:
 
 ```Kotlin
 val ksafe = KSafe(
@@ -445,13 +450,13 @@ val ksafe = KSafe(
 | `ENCRYPTED` (Default) | Tokens, passwords | Ciphertext only | AES-GCM decrypt every read | High — nothing plaintext in RAM |
 | `ENCRYPTED_WITH_TIMED_CACHE` | Compose/SwiftUI screens | Ciphertext + short-lived plaintext | First read decrypts, then O(1) for TTL | Medium — plaintext only for recently-accessed keys, only for seconds |
 
-For timed cache details, constructor parameters, encryption configuration, device lock-state policies, and multiple KSafe instances with different lock policies, see [docs/MEMORY.md](docs/MEMORY.md).
+Timed cache details, constructor params, lock-state policies, multi-instance lock policies: [docs/MEMORY.md](docs/MEMORY.md).
 
 ***
 
 ## Deep-Dive Documentation
 
-For detailed coverage of KSafe's internals, advanced features, and reference material:
+Internals, advanced features, reference material:
 
 | Topic | Description |
 |-------|-------------|
@@ -471,9 +476,4 @@ For detailed coverage of KSafe's internals, advanced features, and reference mat
 
 ## Licence
 
-Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License.
-
-You may obtain a copy of the License at
-http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
+Licensed under the Apache License 2.0 — see http://www.apache.org/licenses/LICENSE-2.0. Distributed "AS IS", without warranties of any kind.
