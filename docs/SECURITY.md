@@ -440,3 +440,72 @@ On startup, KSafe probes each encrypted DataStore entry by attempting decryption
 * **All Platforms:** Encrypted data is lost if encryption keys are deleted (by design for security)
 
 ***
+
+## Cryptographic Utilities
+
+### Secure Random Bytes
+
+KSafe exposes a cross-platform cryptographically secure random byte generator:
+
+```kotlin
+val nonce = secureRandomBytes(16)       // 128-bit nonce
+val aesKey = secureRandomBytes(32)      // 256-bit key
+val salt = secureRandomBytes(64)        // 512-bit salt
+```
+
+Each platform delegates to its strongest available CSPRNG:
+
+| Platform | Source |
+|----------|--------|
+| Android  | `java.security.SecureRandom` |
+| JVM      | `java.security.SecureRandom` |
+| iOS      | `arc4random_buf` (kernel CSPRNG) |
+| WASM     | `crypto.getRandomValues()` (WebCrypto API) |
+
+This is the same primitive KSafe uses internally for IV and encryption key generation.
+
+### Secret Generation
+
+`getOrCreateSecret` generates a cryptographically secure random secret on first call and retrieves it on subsequent calls. The secret is stored with KSafe's hardware-backed encryption.
+
+```kotlin
+// Database encryption passphrase — one line
+val passphrase = ksafe.getOrCreateSecret("main.db")
+
+// API signing key with custom size
+val signingKey = ksafe.getOrCreateSecret("api_signing_key", size = 64)
+
+// HMAC key
+val hmacKey = ksafe.getOrCreateSecret("hmac_auth")
+```
+
+By default, secrets are 32 bytes (256-bit) and stored with `HARDWARE_ISOLATED` protection (StrongBox on Android, Secure Enclave on iOS). You can customize this:
+
+```kotlin
+val secret = ksafe.getOrCreateSecret(
+    key = "my_secret",
+    size = 32,                                              // bytes (default)
+    protection = KSafeEncryptedProtection.HARDWARE_ISOLATED, // default
+    requireUnlockedDevice = false                            // default
+)
+```
+
+#### Example: Room + SQLCipher
+
+```kotlin
+val passphrase = ksafe.getOrCreateSecret("main.db")
+val factory = SupportFactory(passphrase)
+
+Room.databaseBuilder(context, AppDatabase::class.java, "main.db")
+    .openHelperFactory(factory)
+    .build()
+```
+
+#### Example: SQLDelight (cross-platform)
+
+```kotlin
+val passphrase = ksafe.getOrCreateSecret("app.db")
+// Pass to your platform-specific driver configuration
+```
+
+***

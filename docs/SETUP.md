@@ -176,3 +176,46 @@ actual val platformModule = module {
 Now you're ready to inject KSafe into your ViewModels!
 
 ***
+
+## Multiple Instances
+
+by [Mark Andrachek](https://github.com/mandrachek)
+
+You can create multiple KSafe instances with different file names to separate different types of data:
+
+```Kotlin
+class MyViewModel : ViewModel() {
+  private val userPrefs = KSafe(fileName = "userpreferences")
+  private val appSettings = KSafe(fileName = "appsettings")
+  private val cacheData = KSafe(fileName = "cache")
+
+  // For named instances, use suspend or direct APIs:
+  suspend fun saveUserToken(token: String) {
+    userPrefs.put("auth_token", token)
+  }
+}
+```
+
+**Important Instance Management Rules:**
+- **Each KSafe instance should be a singleton** - Create once and reuse throughout your app
+- **Never create multiple instances pointing to the same file** - This can cause data inconsistency
+
+```Kotlin
+// ✅ Good: Singleton instances via DI
+val appModule = module {
+  single { KSafe() }  // Default instance
+  single(named("user")) { KSafe(fileName = "userdata") }
+  single(named("cache")) { KSafe(fileName = "cache") }
+}
+
+// ❌ Bad: Creating multiple instances for the same file
+class ScreenA { val prefs = KSafe(fileName = "userdata") }
+class ScreenB { val prefs = KSafe(fileName = "userdata") }  // DON'T DO THIS!
+```
+
+**File Name Requirements:**
+- Must contain only lowercase letters (a-z)
+- No numbers, special characters, or uppercase letters allowed
+- Examples: `"userdata"`, `"settings"`, `"cache"`
+
+***
