@@ -24,7 +24,7 @@ From the author and the community:
 
 **Fast. Easy. Synchronous *or* asynchronous. Encrypted *or* unencrypted.**
 
-The **easiest**, **most secure**, and **fastest** way to persist any value in Kotlin Multiplatform — and just as good a choice when you don't need encryption at all. Runs on **Android**, **iOS**, **JVM/Desktop**, and **WASM/JS (Browser)** with one API and one code path.
+A complete persistence layer for Kotlin Multiplatform — encrypted or plain, synchronous or asynchronous, property delegates or coroutines, with a hot in-memory cache and atomic DataStore writes. Runs on **Android**, **iOS**, **JVM/Desktop**, and **WASM/JS (Browser)** with one API and one code path.
 
 * **Easy?** ✔ Yes — one-line setup, property-delegate API
 * **Encrypted?** ✔ Yes — hardware-backed AES-256-GCM by default
@@ -365,7 +365,7 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 
 **vs competitors (encrypted):** 14× faster reads than KVault, 15× faster than EncryptedSharedPreferences. Unencrypted writes match SharedPreferences.
 
-Full tables, cold start numbers, architecture: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+> Measured on representative Android hardware under a synthetic but realistic workload. Real-world numbers depend on device, workload, and data size — see [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the methodology, full tables, cold-start numbers, and architecture notes.
 
 
 ## Compatibility

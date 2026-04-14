@@ -3,9 +3,11 @@
 Here are benchmark results comparing KSafe against popular Android persistence libraries.
 
 ### Benchmark Environment
-- **Device:** Physical Android device
+- **Device:** Samsung Galaxy S24 Ultra (physical device, not emulator)
 - **Test:** 500 sequential read/write operations per library, averaged
 - **Libraries tested:** KSafe, SharedPreferences, EncryptedSharedPreferences, MMKV, DataStore, Multiplatform Settings, KVault
+
+> Numbers are specific to this device and workload. Results will vary on other hardware, OS versions, and real-world access patterns — treat them as relative comparisons rather than absolute guarantees.
 
 ### Results Summary
 
