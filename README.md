@@ -68,12 +68,15 @@ var token by ksafe("")
 // 2. Compose MutableState — reactive UI, persisted, encrypted
 var username by ksafe.mutableStateOf("Guest")
 
-// 3. Kotlin MutableStateFlow — the standard _state / state pattern, persisted
+// 3. Read-only StateFlow — observe from anywhere, writes go through ksafe.put()
+val user: StateFlow<User> by ksafe.asStateFlow(User(), viewModelScope)
+
+// 4. Read/write MutableStateFlow — the classic _state / state pattern, persisted
 private val _state by ksafe.asMutableStateFlow(MoviesState(), viewModelScope)
 val state = _state.asStateFlow()
 ```
 
-All three survive process death, are AES-256-GCM encrypted by default, and can be made plain with `mode = KSafeWriteMode.Plain`. **Zero boilerplate, on every target.**
+All four survive process death, are AES-256-GCM encrypted by default, and can be made plain with `mode = KSafeWriteMode.Plain`. **Zero boilerplate, on every target.**
 
 > **DataStore without the coroutines tax.** The property delegate, `mutableStateOf`, and `getDirect`/`putDirect` are fully synchronous — **but never blocking**. Reads come from a hot in-memory cache; writes update the cache immediately and enqueue the encrypt-and-flush onto a background thread. Call sites return instantly. Use the `suspend` API (`get` / `put`) only when *you* want to.
 
@@ -166,8 +169,10 @@ counter++  // Auto-encrypted, auto-persisted
 // 3. Compose state (read/write, reactive to external changes)
 var username by ksafe.mutableStateOf("Guest", scope = viewModelScope)
 
-// 4. Reactive flows (key from property name)
-val darkMode: MutableStateFlow<Boolean> by ksafe.asMutableStateFlow(false, viewModelScope)
+// 4. Reactive flows — read-only StateFlow or read/write MutableStateFlow
+val user: StateFlow<User> by ksafe.asStateFlow(User(), viewModelScope)
+private val _state by ksafe.asMutableStateFlow(UiState(), viewModelScope)
+val state = _state.asStateFlow()
 
 // 5. Or use suspend API
 viewModelScope.launch {
@@ -249,7 +254,7 @@ Multi-instance setups, WASM `awaitCacheReady()`, and full per-platform Koin exam
 
 ## Basic Usage
 
-Five lines cover 95% of real-world use. Full reference (flow delegates, Compose `policy`, cross-screen sync, write modes, nullables, deletion, full ViewModel): **[docs/USAGE.md](docs/USAGE.md)**.
+A handful of examples cover 95% of real-world use. Full reference (Compose `policy`, cross-screen sync, write modes, nullables, deletion, full ViewModel): **[docs/USAGE.md](docs/USAGE.md)**.
 
 ```kotlin
 // 1. Property delegate — synchronous, non-blocking, encrypted, persisted
@@ -259,8 +264,9 @@ counter++
 // 2. Compose state — reactive UI + persistence (requires ksafe-compose)
 var username by ksafe.mutableStateOf("Guest")
 
-// 3. MutableStateFlow — the standard _state / state pattern, now persisted
-private val _state by ksafe.asMutableStateFlow(MoviesState(), viewModelScope)
+// 3. Reactive flows — read-only StateFlow and read/write MutableStateFlow
+val user: StateFlow<User> by ksafe.asStateFlow(User(), viewModelScope)        // read-only
+private val _state by ksafe.asMutableStateFlow(MoviesState(), viewModelScope) // read/write
 val state = _state.asStateFlow()
 
 // 4. Suspend API — when you want to await the disk flush

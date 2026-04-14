@@ -27,27 +27,13 @@ val apiKey = ksafe.getOrCreateSecret("api_key", size = 64)
 
 #### Flow & StateFlow Property Delegates ([#20](https://github.com/ioannisa/KSafe/issues/20))
 
-With this release, KSafe now covers every state management pattern in Kotlin — Compose `MutableState` **and** Kotlin `MutableStateFlow` — with encryption and persistence behind the scenes. Both survive process death seamlessly.
+Since v1.0.0, KSafe offered `var counter by ksafe(0)` (plain delegates) and `var counter by ksafe.mutableStateOf(0)` (Compose state). Version 1.8.0 adds **`MutableStateFlow` delegates** (`asMutableStateFlow`) as a drop-in replacement for the standard `_state`/`state` pattern, **read-only flow delegates** (`asStateFlow` / `asFlow`), and **cross-screen sync** via `mutableStateOf(scope=)`. All new delegates derive their storage key from the property name (with an optional `key` override), staying consistent with the existing `invoke()` delegate — and the explicit-key `getStateFlow()` / `getFlow()` APIs remain fully supported.
 
-Since v1.0.0, KSafe offered `var counter by ksafe(0)` (plain delegates) and `var counter by ksafe.mutableStateOf(0)` (Compose state). Version 1.8.0 adds **`MutableStateFlow` delegates** (`asMutableStateFlow`) as a drop-in replacement for the standard `_state`/`state` pattern, **read-only flow delegates** (`asStateFlow` / `asFlow`), and **cross-screen sync** via `mutableStateOf(scope=)`.
-
-**Two ways to use flows — pick the one that fits your style:**
-
-```kotlin
-// Explicit key strings (existing API — still fully supported)
-val username: StateFlow<String> = kSafe.getStateFlow("username", "Guest", viewModelScope)
-val darkMode: Flow<Boolean> = kSafe.getFlow("darkMode", false)
-
-// Flow delegates (new in 1.8.0 — key derived from property name, just like the existing invoke() delegate)
-val username: StateFlow<String> by kSafe.asStateFlow("Guest", viewModelScope)
-val darkMode: Flow<Boolean> by kSafe.asFlow(false)
-```
-
-#### Core Module: Flow Delegates
+**Core Module — flow delegates**
 
 **1. `asMutableStateFlow` (Read / Write)**
 
-A complete, drop-in replacement for the standard `MutableStateFlow` pattern. It implements the full interface, meaning all your standard atomic operations work out of the box, persisting to encrypted storage instantly.
+Implements the full `MutableStateFlow` interface — all standard atomic operations work out of the box, persisting to encrypted storage instantly.
 
 ```kotlin
 // Standard Kotlin pattern
@@ -123,7 +109,7 @@ class SettingsViewModel(private val kSafe: KSafe) : ViewModel() {
 }
 ```
 
-#### Compose Module: Cross-Screen Reactivity ([#20](https://github.com/ioannisa/KSafe/issues/20))
+**Compose Module — cross-screen reactivity**
 
 The existing `mutableStateOf` now accepts an optional `scope` parameter.
 
@@ -163,9 +149,7 @@ fun SettingsScreen(viewModel: SettingsViewModel) {
 }
 ```
 
-#### API Summary
-
-All new delegates use the property name as the storage key by default (with an optional `key` override), staying consistent with KSafe's existing delegate patterns.
+**API summary**
 
 | Module | Function | Type | Returns |
 |--------|----------|------|---------|
@@ -1090,3 +1074,35 @@ Background: collect 16ms window → encrypt all → single DataStore.edit()
 - Compose state support (`by ksafe.mutableStateOf(defaultValue)`)
 - Android Keystore and iOS Keychain integration
 - Suspend and Direct APIs
+
+
+
+
+
+:tada: KSafe 1.8.0 is out — Kotlin Multiplatform key-value persistence for Android / iOS / JVM / WASM.
+
+If you haven't seen it: think DataStore, but with a hot in-memory cache in front. That gives you a fully synchronous API (getDirect / putDirect) when you don't want
+coroutines, plus suspend get / put when you do. AES-256-GCM with hardware-backed keys by default (Keystore / Keychain / StrongBox / Secure Enclave) — or opt out with a     
+single parameter and use KSafe as a fast general-purpose persistence library for plain data.
+
+var token   by ksafe("")                                                           // plain delegate                                                                        
+var counter by ksafe.mutableStateOf(0)                                             // Compose state                                                                         
+val user:  StateFlow<User>           by ksafe.asStateFlow(User(), scope)           // read-only flow                                                                        
+val state: MutableStateFlow<UiState> by ksafe.asMutableStateFlow(UiState(), scope) // read/write flow
+
+What's new in 1.8.0:
+
+• asMutableStateFlow — drop-in for the classic _state / state pattern, persisted + encrypted transparently:                                                                 
+private val _state by ksafe.asMutableStateFlow(UiState(), viewModelScope)
+val state = _state.asStateFlow()                                                                                                                                            
+.update { }, .value = …, compareAndSet all behave exactly as you'd expect — persistence is invisible, and it survives process death.
+
+• getOrCreateSecret("main.db") — one line to get a 256-bit passphrase for Room / SQLCipher / SQLDelight (or an API signing key). Generated once, stored hardware-isolated   
+(StrongBox on Android, Secure Enclave on iOS). No more "check if exists, else create and save" boilerplate.
+
+• secureRandomBytes(16) — cryptographically secure random bytes with one API across every target.
+
+• Cross-screen Compose sync via ksafe.mutableStateOf(scope = viewModelScope) — a write in one ViewModel auto-reflects in another.
+
+GitHub: https://github.com/ioannisa/KSafe                                                                                                                                   
+Changelog: https://github.com/ioannisa/KSafe/blob/main/CHANGELOG.md
