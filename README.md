@@ -6,8 +6,7 @@ _**The Universal Persistence Layer: `MutableState`, `MutableStateFlow`, and plai
 [![Maven Central](https://img.shields.io/maven-central/v/eu.anifantakis/ksafe.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/eu.anifantakis/ksafe)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-
-![image](https://github.com/user-attachments/assets/be32319f-f6fc-425d-a70f-a12e966a05d3)
+![image](https://github.com/user-attachments/assets/2515c362-1068-4b80-8ca1-d2a971e8dc67)
 
 ## Demo Application
 KSafe in action across multiple scenarios: [Demo CMP App Using KSafe](https://github.com/ioannisa/KSafeDemo).
