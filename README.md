@@ -23,36 +23,67 @@ Check out my own video about how easy it is to adapt KSafe into your project and
 
 ## What is KSafe
 
-#### KSafe is the
-1. **easiest to use**
-2. **most secure**
-3. **fastest**
+**Fast. Easy. Synchronous *or* asynchronous. Encrypted *or* unencrypted.**
 
-library to persist encrypted and unencrypted data in Kotlin Multiplatform.
+KSafe is the **easiest**, **most secure**, and **fastest** way to persist any value in Kotlin Multiplatform — and it is just as good a choice when you don't need encryption at all. One library, one API, every persistence pattern you'll ever use on **Android**, **iOS**, **JVM/Desktop**, and **WASM/JS (Browser)**.
 
-With simple property delegation, values feel like normal variables — you just read and write them, and KSafe handles the underlying cryptography, caching, and atomic DataStore persistence transparently across all four platforms: **Android**, **iOS**, **JVM/Desktop**, and **WASM/JS (Browser)**.
+If you've been told KSafe is "just for encrypted key/value storage" — that's wrong. It is the de-facto library for **simple persistence**, with or without encryption, and it never forces you into coroutines just because DataStore lives underneath.
 
-> Whether you are storing a harmless UI state or a highly sensitive biometric token, KSafe is the only local persistence dependency your KMP app needs.
-
-#### Both worlds — `MutableState` and `MutableStateFlow`
-
-KSafe gives you the full flexibility of **both** Compose and standard Kotlin patterns, with encryption and persistence behind the scenes:
+### One line. Encrypted by default.
 
 ```kotlin
-// Compose MutableState — reactive UI, persisted, encrypted
-var counter by kSafe.mutableStateOf(0)
-
-// Kotlin MutableStateFlow — standard _state/state pattern, persisted, encrypted
-private val _state by kSafe.asMutableStateFlow(MyState(), viewModelScope)
-val state = _state.asStateFlow()
-
-// Plain variable — no Compose, no Flow, just encrypted persistence
-var token by kSafe("")
+var counter by ksafe(0)
+counter++   // auto-encrypted (AES-256-GCM), auto-persisted, survives process death
 ```
 
-All three survive process death. All three are AES-256-GCM encrypted by default. No boilerplate.
+Read and write it like any normal Kotlin variable. No `suspend`. No `runBlocking`. No DataStore boilerplate. No explicit `encrypt`/`decrypt`. Reads come from a hot in-memory cache (~0.007ms); writes are encrypted and flushed to disk in the background.
 
-### Complex Objects? Well yes!
+### Don't need encryption? Same one-liner.
+
+```kotlin
+// Same delegate, plain storage — still synchronous, still survives process death
+var counter by ksafe(0, mode = KSafeWriteMode.Plain)
+```
+
+That's it. Switch a single argument and you've got the simplicity of `SharedPreferences` / `NSUserDefaults` — but multiplatform, type-safe, object-aware, and backed by atomic DataStore writes.
+
+### Compose `MutableState`? `MutableStateFlow`? Plain delegate? All persisted.
+
+KSafe gives you **every** persistence shape you reach for, all with the same encryption-and-persistence guarantees behind them:
+
+```kotlin
+// 1. Plain property delegate — no Compose, no Flow, no coroutines required
+var token by ksafe("")
+
+// 2. Compose MutableState — reactive UI, persisted, encrypted
+var username by ksafe.mutableStateOf("Guest")
+
+// 3. Kotlin MutableStateFlow — the standard _state / state pattern, persisted
+private val _state by ksafe.asMutableStateFlow(MoviesState(), viewModelScope)
+val state = _state.asStateFlow()
+```
+
+All three survive process death. All three are AES-256-GCM encrypted by default. All three can be made plain with `mode = KSafeWriteMode.Plain`. **Zero boilerplate, on every target.**
+
+> Even though KSafe is built on top of DataStore, **it does not force you to use coroutines**. The property delegate, the Compose `mutableStateOf` variant, and `getDirect`/`putDirect` are all fully synchronous. Use `suspend` only when *you* want to.
+
+### Need a database passphrase? Also one line. (v1.8.0)
+
+KSafe isn't only for key/value pairs — it's the easiest way to bootstrap an encrypted SQLCipher / SQLDelight / Room database too:
+
+```kotlin
+// Generates a 256-bit secret on first call, returns the same one forever after.
+// Stored hardware-isolated (StrongBox on Android, Secure Enclave on iOS).
+val passphrase = ksafe.getOrCreateSecret("main.db")
+
+Room.databaseBuilder(context, AppDatabase::class.java, "main.db")
+    .openHelperFactory(SupportFactory(passphrase))
+    .build()
+```
+
+One line replaces all of: secure random generation, hardware-backed key storage, persistence, and retrieval.
+
+### Complex Objects? Of course.
 
 Here's what that looks like in a real app — Ktor bearer authentication with **zero encryption boilerplate**:
 
