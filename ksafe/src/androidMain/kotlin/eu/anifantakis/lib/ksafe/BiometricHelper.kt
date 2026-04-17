@@ -67,6 +67,10 @@ object BiometricHelper {
     /**
      * Whether users must explicitly confirm after successful biometric recognition.
      * Keep `true` for sensitive actions; set `false` to allow faster passive-auth flows.
+     *
+     * Note: this only affects weak/passive biometric modalities (e.g. face). For
+     * `BIOMETRIC_STRONG` modalities like fingerprint, the physical action is the
+     * confirmation and this flag has no effect.
      */
     var confirmationRequired: Boolean = true
 
