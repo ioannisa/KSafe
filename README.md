@@ -197,8 +197,8 @@ Data is now AES-256-GCM encrypted — keys in Android Keystore, iOS Keychain, so
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:1.8.0")
-implementation("eu.anifantakis:ksafe-compose:1.8.0") // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe:1.8.1")
+implementation("eu.anifantakis:ksafe-compose:1.8.1") // ← Compose state (optional)
 ```
 
 > Skip `ksafe-compose` if you don't use Jetpack Compose or `mutableStateOf` persistence.
