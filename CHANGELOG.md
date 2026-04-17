@@ -2,6 +2,34 @@
 
 All notable changes to KSafe will be documented in this file.
 
+## [1.8.1] - 2026-04-17
+
+### Added
+
+#### Android: `BiometricHelper.confirmationRequired` ([#11](https://github.com/ioannisa/KSafe/pull/11) — thanks @HansHolz09)
+
+Added a `confirmationRequired: Boolean = true` property on `BiometricHelper` that wraps `BiometricPrompt.PromptInfo.Builder.setConfirmationRequired(...)`. Keep the default for sensitive actions — the prompt only resolves after an explicit user confirmation. Set to `false` for passive flows where the biometric match itself should be sufficient.
+
+```kotlin
+BiometricHelper.confirmationRequired = false // allow passive face-unlock
+```
+
+Note: this flag only affects weak/passive biometric modalities (e.g. face). For `BIOMETRIC_STRONG` modalities like fingerprint, the physical action is the confirmation and this flag has no effect.
+
+### Fixed
+
+#### iOS: Keychain NSString Memory Leak on Background Threads ([#22](https://github.com/ioannisa/KSafe/issues/22))
+
+Fixed a memory leak in `IosKeychainEncryption` where Kotlin → NSString bridging conversions (e.g. inside `CFBridgingRetain(keyId)`) accumulated indefinitely when keychain operations ran on coroutine worker threads. The root cause is that Kotlin/Native emits autorelease-convention NSString allocations for string bridging, and `Dispatchers.Default` / SKIE-bridged Swift `async` worker threads do not have an ambient ObjC autorelease pool to drain them. Over time this surfaced as continuously growing memory in Instruments, dominated by `Kotlin_ObjCExport_CreateRetainedNSStringFromKString` allocations attributed to `IosKeychainEncryption#getExistingKeychainKey` and related paths.
+
+The fix wraps the `memScoped { ... }` body of every keychain-touching internal method in `kotlinx.cinterop.autoreleasepool { ... }` so autoreleased bridged NSStrings drain promptly regardless of which thread the caller is on. No public API changes.
+
+Affected methods (all internal): `createSecureEnclaveKey`, `getSecureEnclaveKey`, `deleteSecureEnclaveKey`, `updateSecureEnclaveKeyAccessibility`, `getExistingKeychainKeyRaw`, `getExistingKeychainKeyPlain`, `getOrCreateKeychainKeyPlain`, `storeInKeychain`, `updateKeychainItemAccessibility`, `deleteFromKeychain`.
+
+A regression test (`IosKeychainEncryptionLeakTest`) was added that runs 5,000 keychain operations on `Dispatchers.Default` and asserts peak RSS growth stays under 2 MB via `getrusage(RUSAGE_SELF)`. Pre-fix the test reports ~7 MB of growth; post-fix it stays within allocator slack.
+
+---
+
 ## [1.8.0] - 2026-04-14
 
 ### Added
