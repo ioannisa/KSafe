@@ -7,6 +7,7 @@ import kotlinx.cinterop.BetaInteropApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
+import kotlinx.cinterop.autoreleasepool
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.refTo
@@ -188,7 +189,10 @@ internal class IosKeychainEncryption(
         // and duplicate keys cause SecItemCopyMatching to return the wrong one.
         deleteSecureEnclaveKey(tag)
 
-        return memScoped {
+        // autoreleasepool drains NSStrings bridged from Kotlin Strings (via
+        // `(tag as NSString)` / `CFBridgingRetain(...)`) on threads without an
+        // ambient pool (e.g. coroutine workers). See issue #22.
+        return autoreleasepool { memScoped {
             val tagData = (tag as NSString).dataUsingEncoding(NSUTF8StringEncoding)
                 ?: throw IllegalStateException("KSafe: Failed to encode SE tag")
 
@@ -233,7 +237,7 @@ internal class IosKeychainEncryption(
                 )
             }
             privateKey
-        }
+        } }
     }
 
     /**
@@ -246,7 +250,7 @@ internal class IosKeychainEncryption(
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun getSecureEnclaveKey(tag: String): SecKeyRef? {
-        return memScoped {
+        return autoreleasepool { memScoped {
             val tagData = (tag as NSString).dataUsingEncoding(NSUTF8StringEncoding)
                 ?: return null
 
@@ -282,7 +286,7 @@ internal class IosKeychainEncryption(
                     "KSafe: Keychain error $status retrieving SE key for tag $tag"
                 )
             }
-        }
+        } }
     }
 
     /**
@@ -379,8 +383,9 @@ internal class IosKeychainEncryption(
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun deleteSecureEnclaveKey(tag: String) {
-        memScoped {
-            val tagData = (tag as NSString).dataUsingEncoding(NSUTF8StringEncoding) ?: return
+        autoreleasepool { memScoped {
+            val tagData = (tag as NSString).dataUsingEncoding(NSUTF8StringEncoding)
+                ?: return@autoreleasepool
 
             val query = CFDictionaryCreateMutable(
                 kCFAllocatorDefault, 0, null, null
@@ -392,7 +397,7 @@ internal class IosKeychainEncryption(
 
             SecItemDelete(query)
             CFRelease(query as CFTypeRef?)
-        }
+        } }
     }
 
     // ============ KEYCHAIN KEY RETRIEVAL (NULL-RETURNING) ============
@@ -407,7 +412,7 @@ internal class IosKeychainEncryption(
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun getExistingKeychainKeyRaw(keyId: String): ByteArray? {
-        return memScoped {
+        return autoreleasepool { memScoped {
             val query = CFDictionaryCreateMutable(
                 kCFAllocatorDefault, 0, null, null
             ).apply {
@@ -435,7 +440,7 @@ internal class IosKeychainEncryption(
                     "KSafe: Keychain error $status for key $keyId"
                 )
             }
-        }
+        } }
     }
 
     // ============ SE-AWARE KEY RETRIEVAL / CREATION ============
@@ -476,7 +481,7 @@ internal class IosKeychainEncryption(
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun getExistingKeychainKeyPlain(keyId: String): ByteArray {
-        memScoped {
+        return autoreleasepool { memScoped {
             val query = CFDictionaryCreateMutable(
                 kCFAllocatorDefault, 0, null, null
             ).apply {
@@ -494,7 +499,7 @@ internal class IosKeychainEncryption(
             when (status) {
                 errSecSuccess -> {
                     val data = CFBridgingRelease(resultRef.value) as NSData
-                    return data.toByteArray()
+                    data.toByteArray()
                 }
                 platform.Security.errSecItemNotFound -> {
                     throw IllegalStateException("KSafe: No encryption key found for identifier: $keyId")
@@ -506,7 +511,7 @@ internal class IosKeychainEncryption(
                     throw IllegalStateException("KSafe: Keychain error $status for key $keyId")
                 }
             }
-        }
+        } }
     }
 
     /**
@@ -615,7 +620,7 @@ internal class IosKeychainEncryption(
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun getOrCreateKeychainKeyPlain(keyId: String, requireUnlockedDevice: Boolean?): ByteArray {
         // Try to retrieve existing key from Keychain
-        memScoped {
+        val existingKey: ByteArray? = autoreleasepool { memScoped {
             val query = CFDictionaryCreateMutable(
                 kCFAllocatorDefault, 0, null, null
             ).apply {
@@ -633,12 +638,10 @@ internal class IosKeychainEncryption(
             when (status) {
                 errSecSuccess -> {
                     val data = CFBridgingRelease(resultRef.value) as NSData
-                    return data.toByteArray()
+                    data.toByteArray()
                 }
                 // Item not found - will create new key below
-                platform.Security.errSecItemNotFound -> {
-                    // Continue to key generation
-                }
+                platform.Security.errSecItemNotFound -> null
                 // Device is locked - key exists but cannot be accessed right now
                 // Do NOT create a new key, throw error to avoid data loss
                 errSecInteractionNotAllowed -> {
@@ -649,7 +652,8 @@ internal class IosKeychainEncryption(
                     throw IllegalStateException("KSafe: Keychain error $status for key $keyId")
                 }
             }
-        }
+        } }
+        if (existingKey != null) return existingKey
 
         // Key doesn't exist, generate new one with configured size
         val newKey = secureRandomBytes(keySizeBytes)
@@ -662,7 +666,7 @@ internal class IosKeychainEncryption(
 
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun storeInKeychain(keyId: String, keyData: ByteArray, requireUnlockedDevice: Boolean?) {
-        memScoped {
+        autoreleasepool { memScoped {
             val nsData = NSData.create(
                 bytes = keyData.refTo(0).getPointer(this),
                 length = keyData.size.toULong()
@@ -713,7 +717,7 @@ internal class IosKeychainEncryption(
                     )
                 }
             }
-        }
+        } }
     }
 
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
@@ -736,8 +740,9 @@ internal class IosKeychainEncryption(
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun updateSecureEnclaveKeyAccessibility(tag: String, requireUnlocked: Boolean) {
-        memScoped {
-            val tagData = (tag as NSString).dataUsingEncoding(NSUTF8StringEncoding) ?: return
+        autoreleasepool { memScoped {
+            val tagData = (tag as NSString).dataUsingEncoding(NSUTF8StringEncoding)
+                ?: return@autoreleasepool
 
             val query = CFDictionaryCreateMutable(
                 kCFAllocatorDefault, 0, null, null
@@ -773,12 +778,12 @@ internal class IosKeychainEncryption(
                     )
                 }
             }
-        }
+        } }
     }
 
-    @OptIn(ExperimentalForeignApi::class)
+    @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun updateKeychainItemAccessibility(account: String, requireUnlocked: Boolean) {
-        memScoped {
+        autoreleasepool { memScoped {
             // Build query to find the existing Keychain item
             val query = CFDictionaryCreateMutable(
                 kCFAllocatorDefault, 0, null, null
@@ -814,12 +819,12 @@ internal class IosKeychainEncryption(
                     )
                 }
             }
-        }
+        } }
     }
 
-    @OptIn(ExperimentalForeignApi::class)
+    @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun deleteFromKeychain(keyId: String) {
-        memScoped {
+        autoreleasepool { memScoped {
             val query = CFDictionaryCreateMutable(
                 kCFAllocatorDefault,
                 0,
@@ -833,7 +838,7 @@ internal class IosKeychainEncryption(
 
             SecItemDelete(query)
             CFRelease(query as CFTypeRef?)
-        }
+        } }
     }
 
     /**

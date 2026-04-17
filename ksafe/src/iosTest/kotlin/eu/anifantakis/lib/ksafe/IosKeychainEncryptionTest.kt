@@ -127,37 +127,11 @@ class IosKeychainEncryptionTest {
     // ============ SECURE ENCLAVE TESTS ============
 
     @Test
-    fun testSecureEnclaveLookupOrder_enabledReadsWrappedThenPlain() {
-        val order = IosKeychainEncryption.keychainLookupOrder(
-            keyId = "mykey",
-            useSecureEnclave = true
-        )
+    fun testKeychainLookupOrder_checksWrappedThenPlain() {
+        // keychainLookupOrder always returns SE-wrapped account first so decrypt
+        // can transparently find keys regardless of how they were created.
+        val order = IosKeychainEncryption.keychainLookupOrder(keyId = "mykey")
         assertEquals(listOf("se.mykey", "mykey"), order)
-    }
-
-    @Test
-    fun testSecureEnclaveLookupOrder_disabledReadsPlainOnly() {
-        val order = IosKeychainEncryption.keychainLookupOrder(
-            keyId = "mykey",
-            useSecureEnclave = false
-        )
-        assertEquals(listOf("mykey"), order)
-    }
-
-    /**
-     * Regression test for flag toggling behavior:
-     * - SE=true readers can read legacy plain keys (fallback path)
-     * - SE=false readers do NOT look up wrapped keys created under SE=true
-     */
-    @Test
-    fun testSecureEnclaveFlagToggleLookupRegression() {
-        val keyId = "token"
-        val readerWithSe = IosKeychainEncryption.keychainLookupOrder(keyId, useSecureEnclave = true)
-        val readerWithoutSe = IosKeychainEncryption.keychainLookupOrder(keyId, useSecureEnclave = false)
-
-        assertTrue(readerWithSe.contains("se.$keyId"))
-        assertTrue(readerWithSe.contains(keyId))
-        assertEquals(listOf(keyId), readerWithoutSe)
     }
 
     @Test
@@ -181,12 +155,12 @@ class IosKeychainEncryptionTest {
      */
     @Test
     fun testSecureEnclaveThrowsInTestEnvironment() {
-        val encryption = IosKeychainEncryption(useSecureEnclave = true)
+        val encryption = IosKeychainEncryption()
         val keyId = uniqueKeyId()
         val plaintext = "test data".encodeToByteArray()
 
         val exception = assertFailsWith<IllegalStateException> {
-            encryption.encrypt(keyId, plaintext)
+            encryption.encrypt(keyId, plaintext, hardwareIsolated = true)
         }
 
         // After SE fallback, should get a Keychain error (same as non-SE in test env)
@@ -200,12 +174,13 @@ class IosKeychainEncryptionTest {
     }
 
     /**
-     * Verifies that deleteKey with useSecureEnclave=true doesn't throw.
+     * Verifies that deleteKey doesn't throw — deleteKey always attempts to
+     * clean up SE artifacts regardless of whether they exist.
      * Delete operations are permissive — no data loss risk from silent failure.
      */
     @Test
     fun testSecureEnclaveDeleteDoesNotThrow() {
-        val encryption = IosKeychainEncryption(useSecureEnclave = true)
+        val encryption = IosKeychainEncryption()
         val keyId = uniqueKeyId()
 
         // Should not throw - delete is always permissive
