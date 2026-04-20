@@ -23,9 +23,17 @@ by [Mark Andrachek](https://github.com/mandrachek)
 # Run iOS tests on simulator
 ./gradlew :ksafe:iosSimulatorArm64Test
 
+# Run Kotlin/WASM tests in a headless browser
+./gradlew :ksafe:wasmJsBrowserTest
+
+# Run Kotlin/JS (IR) tests in a headless browser
+./gradlew :ksafe:jsBrowserTest
+
 # Run a specific test class
 ./gradlew :ksafe:commonTest --tests "*.KSafeTest"
 ```
+
+**Note:** Both `wasmJsBrowserTest` and `jsBrowserTest` share the `KSafeTest` suite through the intermediate `webTest` source set, plus a small `WebInteropSmokeTest` that asserts per-target actuals (localStorage, `currentTimeMillisWeb`, `secureRandomBytes`). Headless Chrome is launched by Karma — no manual browser setup required.
 
 **Note:** iOS Simulator uses real Keychain APIs (software-backed), while real devices store Keychain data in a hardware-encrypted container protected by the device passcode.
 

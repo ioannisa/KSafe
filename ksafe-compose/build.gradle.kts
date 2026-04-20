@@ -12,7 +12,7 @@ plugins {
 
 // Set the same group and version as your main library
 group = "eu.anifantakis"
-version = "1.8.1"
+version = "1.9.0"
 
 kotlin {
     androidLibrary {
@@ -59,6 +59,10 @@ kotlin {
 
     @OptIn(ExperimentalWasmDsl::class)
     wasmJs {
+        browser()
+    }
+
+    js(IR) {
         browser()
     }
 

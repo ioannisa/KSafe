@@ -2,6 +2,57 @@
 
 All notable changes to KSafe will be documented in this file.
 
+## [1.9.0] - 2026-04-19
+
+### Added
+
+#### Kotlin/JS (IR) target — browser support beyond WasmGC
+
+KSafe now publishes a dedicated Kotlin/JS (IR) artifact alongside the existing Kotlin/WASM target. Projects that build for the legacy JS toolchain — or that need to ship to browsers without WasmGC (anything older than Chrome 119 / Firefox 120 / Safari 18) — are no longer dead-ended.
+
+```kotlin
+kotlin {
+    js(IR) { browser() }
+
+    // existing
+    @OptIn(ExperimentalWasmDsl::class)
+    wasmJs { browser() }
+
+    sourceSets {
+        // no extra work — :ksafe and :ksafe-compose expose the JS variant automatically
+    }
+}
+```
+
+Behaviour is identical to the wasmJs target:
+- AES-256-GCM via WebCrypto through `cryptography-kotlin`.
+- Persistence to browser `localStorage` with the same key layout, so switching a project between the two targets reads the same data back.
+- Async-only crypto, `PLAIN_TEXT` internal memory policy, biometric calls return `true`, security checks are no-ops.
+
+The JS implementation is a thin `actual` over `kotlinx.browser.localStorage`, `kotlin.js.Date.now()`, and a direct `crypto.getRandomValues()` binding — no Base64 round-trip for random bytes, unlike the WASM actual.
+
+#### Shared `webMain` / `webTest` source sets
+
+The bulk of the previous `wasmJsMain` implementation — `KSafe`, the WebCrypto-backed encryption engine, the `SecurityChecker` no-ops — moved into a new intermediate `webMain` source set shared between `jsMain` and `wasmJsMain`. Each target keeps only a small `WebInterop` actual file (`@JsFun` bindings for wasmJs; plain `external` + `kotlinx.browser` for js). The full `KSafeTest` suite now runs on **both** targets via a shared `webTest/WebKSafeTest.kt`.
+
+A new `WebInteropSmokeTest` runs on both targets and asserts the per-target actuals: `localStorage` round-trip, `localStorage` enumeration, `currentTimeMillisWeb()` plausibility, and `secureRandomBytes()` non-determinism. This guards against Long / Int / Float conversion regressions specific to either target.
+
+### Fixed
+
+#### Kotlin/JS: Float / Double reads collapsing into the Int branch
+
+On Kotlin/JS, `Float` and `Double` share a single runtime representation with `Int` (`0f is Int` returns `true` because JS stores `0f` as the integer `0`). The internal `convertStoredValueRaw` dispatch on the **runtime type of the default value** therefore routed Float / Double reads into the Int branch, returning the default (`0`) instead of the stored value — visible as `testPutAndGetUnencryptedFloat`, `testPutAndGetUnencryptedDouble`, and `testNegativeNumbers` failures on the js target.
+
+Dispatch now goes through a new `primitiveKindOrNull(serializer)` helper that reads the `PrimitiveKind` off the serializer's descriptor, which preserves the declared type regardless of how the runtime represents the value. This path is only hit on the web targets — JVM / Android / iOS continue to use DataStore's typed preferences and are unaffected.
+
+### Changed
+
+#### `wasmJsMain` is now minimal
+
+`KSafe.wasmJs.kt`, `WasmSoftwareEncryption.kt`, `SecurityChecker.wasmJs.kt`, and `LocalStorage.kt` no longer exist. Their contents live in `webMain` as `KSafe.web.kt`, `WebSoftwareEncryption.kt`, `SecurityChecker.web.kt`, and `WebInterop.kt` respectively. The only wasmJs-specific file is `WebInterop.wasmJs.kt` (which still uses `@JsFun` / `ExperimentalWasmJsInterop`) plus the existing `KSafeSecureRandom.wasmJs.kt`. No public API changes; no migration required.
+
+---
+
 ## [1.8.1] - 2026-04-17
 
 ### Added

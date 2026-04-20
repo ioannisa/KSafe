@@ -68,7 +68,7 @@ actual val platformModule = module {
 }
 
 // ──────────────────────────────────────────────
-// WASM — call ksafe.awaitCacheReady() before first encrypted read (see note below)
+// Web (Kotlin/WASM + Kotlin/JS) — call ksafe.awaitCacheReady() before first encrypted read (see note below)
 // ──────────────────────────────────────────────
 actual val platformModule = module {
     single(named("prefs")) {
@@ -115,15 +115,15 @@ actual val platformModule = module {
     single { KSafe(androidApplication()) }
 }
 
-// iOS / JVM / WASM
+// iOS / JVM / WASM / JS
 actual val platformModule = module {
     single { KSafe() }
 }
 ```
 
-### `ksafe.awaitCacheReady()` Required ONLY at WasmJs
+### `ksafe.awaitCacheReady()` Required ONLY on the Web Targets (wasmJs + js)
 
-> **WASM/JS:** WebCrypto encryption is async-only, so KSafe must finish decrypting its cache before your UI reads any encrypted values. Call `awaitCacheReady()` before rendering content.
+> **Kotlin/WASM and Kotlin/JS:** WebCrypto encryption is async-only, so KSafe must finish decrypting its cache before your UI reads any encrypted values. Call `awaitCacheReady()` before rendering content. The same code works for both `wasmJsMain` and `jsMain` — nothing target-specific here.
 >
 > **With `startKoin` (classic):**
 > ```kotlin

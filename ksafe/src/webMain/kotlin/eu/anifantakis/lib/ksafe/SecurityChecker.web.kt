@@ -1,7 +1,7 @@
 package eu.anifantakis.lib.ksafe
 
 /**
- * WASM/JS security checker implementation.
+ * Web (wasmJs + js) security checker implementation.
  * Security checks are not applicable in browser environments.
  */
 internal actual object SecurityChecker {

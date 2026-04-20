@@ -11,12 +11,24 @@ import kotlinx.serialization.json.Json
  */
 @PublishedApi
 internal fun isStringSerializer(serializer: KSerializer<*>): Boolean {
+    return primitiveKindOrNull(serializer) == PrimitiveKind.STRING
+}
+
+/**
+ * Returns the [PrimitiveKind] of the serializer, unwrapping nullable wrappers,
+ * or `null` if the serializer's descriptor is not a primitive.
+ *
+ * This is the robust way to dispatch a stored `String` back into its declared
+ * type on targets where runtime type checks collapse (notably Kotlin/JS, where
+ * `0f is Int` returns `true` because JS represents `0f` as the integer `0`).
+ */
+@PublishedApi
+internal fun primitiveKindOrNull(serializer: KSerializer<*>): PrimitiveKind? {
     var desc = serializer.descriptor
-    // Unwrap nullable wrapper
     if (desc.isNullable && desc.elementsCount > 0) {
         desc = desc.getElementDescriptor(0)
     }
-    return desc.kind == PrimitiveKind.STRING
+    return desc.kind as? PrimitiveKind
 }
 
 /**

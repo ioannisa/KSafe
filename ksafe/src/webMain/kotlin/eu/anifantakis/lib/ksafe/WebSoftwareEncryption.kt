@@ -8,7 +8,7 @@ import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 /**
- * WASM/JS implementation of [KSafeEncryption] using WebCrypto API via cryptography-kotlin.
+ * Web (wasmJs + js) implementation of [KSafeEncryption] using WebCrypto API via cryptography-kotlin.
  *
  * WebCrypto is async-only, so the blocking [encrypt]/[decrypt] methods from the interface
  * throw [UnsupportedOperationException]. All actual crypto work goes through the suspend
@@ -21,7 +21,7 @@ import kotlin.io.encoding.ExperimentalEncodingApi
  * @property storagePrefix Prefix for localStorage keys (scoped to the KSafe instance).
  */
 @PublishedApi
-internal class WasmSoftwareEncryption(
+internal class WebSoftwareEncryption(
     private val config: KSafeConfig = KSafeConfig(),
     private val storagePrefix: String = ""
 ) : KSafeEncryption {
@@ -40,7 +40,7 @@ internal class WasmSoftwareEncryption(
     private val keyMutex = Mutex()
 
     /**
-     * Not supported on WASM — WebCrypto is async-only.
+     * Not supported on web — WebCrypto is async-only.
      * All encryption is routed through [encryptSuspend].
      */
     override fun encrypt(
@@ -49,15 +49,15 @@ internal class WasmSoftwareEncryption(
         hardwareIsolated: Boolean,
         requireUnlockedDevice: Boolean?
     ): ByteArray {
-        throw UnsupportedOperationException("WASM encryption is async-only. Use encryptSuspend().")
+        throw UnsupportedOperationException("Web encryption is async-only. Use encryptSuspend().")
     }
 
     /**
-     * Not supported on WASM — WebCrypto is async-only.
+     * Not supported on web — WebCrypto is async-only.
      * All decryption is routed through [decryptSuspend].
      */
     override fun decrypt(identifier: String, data: ByteArray): ByteArray {
-        throw UnsupportedOperationException("WASM decryption is async-only. Use decryptSuspend().")
+        throw UnsupportedOperationException("Web decryption is async-only. Use decryptSuspend().")
     }
 
     override fun deleteKey(identifier: String) {
@@ -105,7 +105,7 @@ internal class WasmSoftwareEncryption(
      */
     @OptIn(ExperimentalEncodingApi::class)
     private suspend fun getOrCreateKey(alias: String): AES.GCM.Key {
-        // Fast path: memory cache (no lock needed, WASM is single-threaded
+        // Fast path: memory cache (no lock needed, web is single-threaded
         // but the mutex protects across suspend points)
         keyCache[alias]?.let { return it }
 

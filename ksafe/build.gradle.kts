@@ -11,7 +11,7 @@ plugins {
 }
 
 group = "eu.anifantakis"
-version = "1.8.1"
+version = "1.9.0"
 
 kotlin {
     androidTarget {
@@ -44,6 +44,18 @@ kotlin {
     wasmJs {
         browser()
     }
+
+    // Add a plain JS/IR target for legacy JS projects and projects that
+    // need both js + wasmJs artifacts.
+    js(IR) {
+        browser()
+    }
+
+    // Explicitly apply the default KMP hierarchy template. This creates
+    // the intermediate source sets we use (nativeMain/appleMain/iosMain
+    // for the Apple targets, and webMain/webTest shared between js and
+    // wasmJs). Without this call, `webMain` does not exist.
+    applyDefaultHierarchyTemplate()
 
     sourceSets {
         androidMain.dependencies {
@@ -81,14 +93,14 @@ kotlin {
             }
         }
 
-        // Dependencies for the WASM/JS target
-        val wasmJsMain by getting {
+        // Dependencies shared by wasmJs + js targets.
+        val webMain by getting {
             dependencies {
                 implementation(libs.cryptography.provider.webcrypto)
             }
         }
 
-        val wasmJsTest by getting {
+        val webTest by getting {
             dependencies {
                 implementation(kotlin("test"))
             }

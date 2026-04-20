@@ -41,7 +41,7 @@ val customJson = Json {
 
 ```kotlin
 val ksafe = KSafe(
-    context = context,                              // Android; omit on JVM/iOS/WASM
+    context = context,                              // Android; omit on JVM/iOS/WASM/JS
     config = KSafeConfig(json = customJson)
 )
 ```

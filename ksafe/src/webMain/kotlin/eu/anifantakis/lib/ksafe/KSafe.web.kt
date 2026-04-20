@@ -22,14 +22,14 @@ import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalEncodingApi::class)
 @PublishedApi
-internal fun encodeBase64Wasm(bytes: ByteArray): String = Base64.encode(bytes)
+internal fun encodeBase64Web(bytes: ByteArray): String = Base64.encode(bytes)
 
 @OptIn(ExperimentalEncodingApi::class)
 @PublishedApi
-internal fun decodeBase64Wasm(encoded: String): ByteArray = Base64.decode(encoded)
+internal fun decodeBase64Web(encoded: String): ByteArray = Base64.decode(encoded)
 
 /**
- * WASM/JS implementation of KSafe.
+ * Shared web (wasmJs + js) implementation of KSafe.
  *
  * This class manages secure key-value storage using:
  * 1. **Browser localStorage:** For persistent storage across sessions.
@@ -40,9 +40,10 @@ internal fun decodeBase64Wasm(encoded: String): ByteArray = Base64.decode(encode
  * - Uses `localStorage` instead of DataStore for persistence.
  * - WebCrypto is async-only, so `memoryPolicy` is always treated as `PLAIN_TEXT`.
  *   All encrypted values are decrypted at initialization and stored as plaintext in RAM.
- * - No `runBlocking` — WASM is single-threaded. Cold `getDirect` reads synchronously
- *   from localStorage for unencrypted values, or returns default for encrypted values
- *   until async init completes (but always checks memoryCache first for optimistic writes).
+ * - No `runBlocking` — browser JS is single-threaded. Cold `getDirect` reads
+ *   synchronously from localStorage for unencrypted values, or returns default
+ *   for encrypted values until async init completes (but always checks memoryCache
+ *   first for optimistic writes).
  * - Uses `HashMap` instead of `ConcurrentHashMap` (single-threaded).
  * - Uses `Dispatchers.Default` instead of `Dispatchers.IO`.
  *
@@ -54,10 +55,10 @@ internal fun decodeBase64Wasm(encoded: String): ByteArray = Base64.decode(encode
  *
  * @property fileName Optional namespace for the storage. Must be lower-case letters only.
  * @property lazyLoad Whether to start the background preloader immediately.
- * @property memoryPolicy Ignored on WASM — always treated as PLAIN_TEXT.
+ * @property memoryPolicy Ignored on web — always treated as PLAIN_TEXT.
  * @property config Encryption configuration (key size, etc.)
- * @property securityPolicy Security policy for detecting threats (no-op on WASM).
- * @property plaintextCacheTtl Ignored on WASM — always PLAIN_TEXT.
+ * @property securityPolicy Security policy for detecting threats (no-op on web).
+ * @property plaintextCacheTtl Ignored on web — always PLAIN_TEXT.
  */
 actual class KSafe(
     @PublishedApi internal val fileName: String? = null,
@@ -71,7 +72,7 @@ actual class KSafe(
     /**
      * Internal constructor for testing with custom encryption engine.
      *
-     * Note: On WASM (single-threaded), coroutines launched in init blocks are
+     * Note: On web (single-threaded), coroutines launched in init blocks are
      * scheduled but don't execute until the current synchronous block completes.
      * So _testEngine is set before any background work actually runs.
      */
@@ -157,7 +158,7 @@ actual class KSafe(
     @PublishedApi internal val memoryCache = HashMap<String, Any>()
     @PublishedApi internal val protectionMap = HashMap<String, String>()
 
-    // Cache initialization flag (simple Boolean — WASM is single-threaded)
+    // Cache initialization flag (simple Boolean — web is single-threaded)
     @PublishedApi internal var cacheInitialized: Boolean = false
 
     /** Completes when `loadCacheFromStorage()` has finished decrypting all values. */
@@ -168,7 +169,7 @@ actual class KSafe(
     /**
      * Flow-based state for observing changes.
      *
-     * Unlike JVM/iOS where this mirrors DataStore, on WASM this mirrors the memoryCache.
+     * Unlike JVM/iOS where this mirrors DataStore, on web this mirrors the memoryCache.
      * This ensures that optimistic writes via putDirect are immediately visible to Flow
      * observers without waiting for localStorage persistence.
      */
@@ -210,8 +211,8 @@ actual class KSafe(
 
     // Encryption engine — only used when _testEngine is null (production path)
     @PublishedApi
-    internal val engine: WasmSoftwareEncryption by lazy {
-        WasmSoftwareEncryption(config, storagePrefix)
+    internal val engine: WebSoftwareEncryption by lazy {
+        WebSoftwareEncryption(config, storagePrefix)
     }
 
     // --- Unified crypto helpers ---
@@ -287,9 +288,9 @@ actual class KSafe(
                 val firstOp = writeChannel.receive()
                 batch.add(firstOp)
 
-                val deadline = currentTimeMillis() + writeCoalesceWindowMs
+                val deadline = currentTimeMillisWeb() + writeCoalesceWindowMs
                 while (batch.size < maxBatchSize) {
-                    val remaining = deadline - currentTimeMillis()
+                    val remaining = deadline - currentTimeMillisWeb()
                     if (remaining <= 0) break
 
                     val nextOp = withTimeoutOrNull(remaining) {
@@ -342,7 +343,7 @@ actual class KSafe(
                             requireUnlockedDevice = op.requireUnlockedDevice
                         )
                         val storageKey = valueStorageKey(op.key)
-                        safeLocalStorageSet(storageKey, encodeBase64Wasm(ciphertext))
+                        safeLocalStorageSet(storageKey, encodeBase64Web(ciphertext))
                         safeLocalStorageSet(
                             metaStorageKey(op.key),
                             protectionToMetaJson(
@@ -397,7 +398,7 @@ actual class KSafe(
 
     /**
      * Loads all localStorage entries into the in-memory cache.
-     * Decrypts encrypted values at init (PLAIN_TEXT behavior on WASM).
+     * Decrypts encrypted values at init (PLAIN_TEXT behavior on web).
      */
     private suspend fun loadCacheFromStorage() {
         val length = localStorageLength()
@@ -440,7 +441,7 @@ actual class KSafe(
             if (isEncrypted) {
                 try {
                     val alias = fileName?.let { "$it:$userKey" } ?: userKey
-                    val encryptedBytes = decodeBase64Wasm(value)
+                    val encryptedBytes = decodeBase64Web(value)
                     val plainBytes = doDecrypt(alias, encryptedBytes)
                     memoryCache[cacheKey] = plainBytes.decodeToString()
                 } catch (e: Exception) {
@@ -507,7 +508,7 @@ actual class KSafe(
             val alias = fileName?.let { "$it:$originalKey" } ?: originalKey
 
             try {
-                val ciphertext = decodeBase64Wasm(encryptedString)
+                val ciphertext = decodeBase64Web(encryptedString)
                 doDecrypt(alias, ciphertext)
             } catch (e: Exception) {
                 val msg = e.message ?: ""
@@ -527,7 +528,7 @@ actual class KSafe(
         }
     }
 
-    /** WASM has no lock-based key accessibility concept. */
+    /** Web has no lock-based key accessibility concept. */
     private fun migrateAccessPolicyIfNeeded() = Unit
 
     @PublishedApi
@@ -552,7 +553,7 @@ actual class KSafe(
 
     /**
      * Non-inline version of [resolveFromCache]. Returns raw [Any?].
-     * On WASM, cache always contains plaintext (PLAIN_TEXT mode internally).
+     * On web, cache always contains plaintext (PLAIN_TEXT mode internally).
      */
     @PublishedApi
     internal fun resolveFromCacheRaw(cache: Map<String, Any>, key: String, defaultValue: Any?, protection: KSafeProtection?, serializer: KSerializer<*>): Any? {
@@ -575,7 +576,12 @@ actual class KSafe(
     }
 
     /**
-     * Non-inline version of [convertStoredValue]. On WASM all localStorage values are Strings.
+     * Non-inline version of [convertStoredValue]. On web all localStorage values are Strings.
+     *
+     * Dispatch uses the serializer's [kotlinx.serialization.descriptors.PrimitiveKind]
+     * rather than the runtime type of [defaultValue] because Kotlin/JS collapses
+     * numeric types (e.g. `0f is Int` returns `true` since JS stores `0f` as the
+     * integer `0`). The serializer descriptor preserves the declared type.
      */
     @PublishedApi
     internal fun convertStoredValueRaw(storedValue: Any?, defaultValue: Any?, serializer: KSerializer<*>): Any? {
@@ -584,16 +590,21 @@ actual class KSafe(
 
         val stringValue = storedValue as? String ?: return defaultValue
 
-        return when (defaultValue) {
-            is Boolean -> stringValue.toBooleanStrictOrNull() ?: defaultValue
-            is Int -> stringValue.toIntOrNull() ?: defaultValue
-            is Long -> stringValue.toLongOrNull() ?: defaultValue
-            is Float -> stringValue.toFloatOrNull() ?: defaultValue
-            is Double -> stringValue.toDoubleOrNull() ?: defaultValue
-            is String -> stringValue
+        return when (primitiveKindOrNull(serializer)) {
+            kotlinx.serialization.descriptors.PrimitiveKind.BOOLEAN ->
+                stringValue.toBooleanStrictOrNull() ?: defaultValue
+            kotlinx.serialization.descriptors.PrimitiveKind.INT ->
+                stringValue.toIntOrNull() ?: defaultValue
+            kotlinx.serialization.descriptors.PrimitiveKind.LONG ->
+                stringValue.toLongOrNull() ?: defaultValue
+            kotlinx.serialization.descriptors.PrimitiveKind.FLOAT ->
+                stringValue.toFloatOrNull() ?: defaultValue
+            kotlinx.serialization.descriptors.PrimitiveKind.DOUBLE ->
+                stringValue.toDoubleOrNull() ?: defaultValue
+            kotlinx.serialization.descriptors.PrimitiveKind.STRING ->
+                stringValue
             else -> {
                 if (stringValue == NULL_SENTINEL) return null
-                if (isStringSerializer(serializer)) return stringValue
                 try { jsonDecode(json, serializer, stringValue) } catch (_: Exception) { defaultValue }
             }
         }
@@ -723,7 +734,7 @@ actual class KSafe(
 
         val plainBytes = rawString.encodeToByteArray()
         val encryptedBytes = doEncrypt(alias, plainBytes, requireUnlockedDevice)
-        val encryptedString = encodeBase64Wasm(encryptedBytes)
+        val encryptedString = encodeBase64Web(encryptedBytes)
 
         val storageKey = valueStorageKey(key)
         safeLocalStorageSet(storageKey, encryptedString)
@@ -765,7 +776,7 @@ actual class KSafe(
 
         try {
             val alias = fileName?.let { "$it:$key" } ?: key
-            val encryptedBytes = decodeBase64Wasm(encryptedValue)
+            val encryptedBytes = decodeBase64Web(encryptedValue)
             val plainBytes = doDecrypt(alias, encryptedBytes)
             val rawString = plainBytes.decodeToString()
 
@@ -1039,11 +1050,3 @@ internal fun safeLocalStorageSet(key: String, value: String) {
         )
     }
 }
-
-/**
- * Returns current time in milliseconds.
- * Uses `Date.now()` via JS interop.
- */
-@OptIn(kotlin.js.ExperimentalWasmJsInterop::class)
-@JsFun("() => { return BigInt(Date.now()); }")
-private external fun currentTimeMillis(): Long

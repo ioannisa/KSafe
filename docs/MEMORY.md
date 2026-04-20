@@ -66,7 +66,7 @@ KSafe(
     plaintextCacheTtl: Duration = 5.seconds  // only used with ENCRYPTED_WITH_TIMED_CACHE
 )
 
-// iOS / JVM / WASM
+// iOS / JVM / WASM / JS
 KSafe(
     fileName: String? = null,
     lazyLoad: Boolean = false,
@@ -123,7 +123,8 @@ val ksafe = KSafe(
 | **Android** | Keys accessible at any time | `setUnlockedDeviceRequired(true)` (API 28+) |
 | **iOS** | `AfterFirstUnlockThisDeviceOnly` | `WhenUnlockedThisDeviceOnly` |
 | **JVM** | No effect (software keys) | No effect (software keys) |
-| **WASM** | No effect (browser has no lock concept) | No effect |
+| **Kotlin/WASM** | No effect (browser has no lock concept) | No effect |
+| **Kotlin/JS** | No effect (browser has no lock concept) | No effect |
 
 **Important:** `requireUnlockedDevice` applies only to encrypted writes.
 `KSafeWriteMode.Plain` intentionally does not use unlock policy.

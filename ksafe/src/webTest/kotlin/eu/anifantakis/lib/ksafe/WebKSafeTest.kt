@@ -1,16 +1,18 @@
 package eu.anifantakis.lib.ksafe
 
 /**
- * WASM/JS test implementation.
+ * Shared web (wasmJs + js) test implementation.
  *
- * Uses FakeEncryption (synchronous XOR) for testing since WebCrypto
- * requires a browser environment. The test engine is injected via
- * the internal constructor.
+ * Uses [FakeEncryption] (synchronous XOR) for testing since WebCrypto
+ * requires a browser environment. The test engine is injected via the
+ * internal constructor.
  *
- * Each test gets a unique KSafe instance with a unique file name
- * to avoid localStorage key collisions between tests.
+ * Each test gets a unique KSafe instance with a unique file name to
+ * avoid `localStorage` key collisions between tests. The counter is
+ * per-target (each target has its own classloader / module), which is
+ * fine because tests for different targets run in separate processes.
  */
-class WasmJsKSafeTest : KSafeTest() {
+class WebKSafeTest : KSafeTest() {
 
     companion object {
         private var testCounter = 0

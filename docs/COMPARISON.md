@@ -2,7 +2,7 @@
 
 | Feature | KSafe | EncryptedSharedPrefs | KVault | Multiplatform Settings | SQLCipher |
 |---------|-------|---------------------|--------|------------------------|-----------|
-| **KMP Support** | ✅ Android, iOS, JVM, WASM | ❌ Android only | ✅ Android, iOS | ✅ Multi-platform | ⚠️ Limited |
+| **KMP Support** | ✅ Android, iOS, JVM, WASM, JS | ❌ Android only | ✅ Android, iOS | ✅ Multi-platform | ⚠️ Limited |
 | **Hardware-backed Keys** | ✅ Keystore/Keychain | ✅ Keystore | ✅ Keystore/Keychain | ❌ No encryption | ❌ Software |
 | **Zero Boilerplate** | ✅ `by ksafe(0)` | ❌ Verbose API | ⚠️ Moderate | ⚠️ Moderate | ❌ SQL required |
 | **Biometric Helper** | ✅ Built-in | ❌ Manual | ❌ Manual | ❌ Manual | ❌ Manual |

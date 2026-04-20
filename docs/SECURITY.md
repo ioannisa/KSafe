@@ -19,8 +19,8 @@ val ksafe = KSafe(
 )
 ```
 
-| Check | Android | iOS | JVM | WASM | Description |
-|-------|---------|-----|-----|------|-------------|
+| Check | Android | iOS | JVM | Web (wasmJs+js) | Description |
+|-------|---------|-----|-----|-----------------|-------------|
 | `rootedDevice` | ✅ | ✅ | ❌ | ❌ | Detects rooted/jailbroken devices |
 | `debuggerAttached` | ✅ | ✅ | ✅ | ❌ | Detects attached debuggers |
 | `debugBuild` | ✅ | ✅ | ✅ | ❌ | Detects debug builds |
@@ -187,6 +187,8 @@ The [KSafeDemo app](https://github.com/ioannisa/KSafeDemo) makes use of `UiSecur
 
 KSafe provides enterprise-grade encrypted persistence using DataStore Preferences with platform-specific secure key storage.
 
+> **Want to see it with your own eyes?** [docs/ENCRYPTION_PROOF.md](ENCRYPTION_PROOF.md) walks through the per-platform automated proof tests (`*EncryptionProofTest`) and gives manual commands to dump the raw `.preferences_pb` / `localStorage` bytes so you can verify the ciphertext-not-plaintext property yourself.
+
 ### Platform Details
 
 | Platform | Cipher | Key Storage | Security |
@@ -194,7 +196,8 @@ KSafe provides enterprise-grade encrypted persistence using DataStore Preference
 | **Android** | AES-256-GCM | Android Keystore — TEE by default, StrongBox opt-in | Keys non-exportable, app-bound, auto-deleted on uninstall |
 | **iOS** | AES-256-GCM via CryptoKit | iOS Keychain Services — Secure Enclave opt-in | Protected by device passcode/biometrics, not in backups |
 | **JVM/Desktop** | AES-256-GCM via javax.crypto | Software-backed in `~/.eu_anifantakis_ksafe/` | Relies on OS file permissions (0700 on POSIX) |
-| **WASM/Browser** | AES-256-GCM via WebCrypto | `localStorage` (Base64-encoded) | Scoped per origin, ~5-10 MB limit |
+| **Kotlin/WASM (Browser)** | AES-256-GCM via WebCrypto | `localStorage` (Base64-encoded) | Scoped per origin, ~5-10 MB limit. Requires WasmGC (Chrome 119+ / Firefox 120+ / Safari 18+) |
+| **Kotlin/JS (Browser)** | AES-256-GCM via WebCrypto | `localStorage` (Base64-encoded) | Scoped per origin, ~5-10 MB limit. Same format as wasmJs — data can be read by either target |
 
 ### Encryption Flow
 
@@ -290,7 +293,7 @@ The `KSafeKeyStorage` enum has three levels with natural ordinal ordering:
 
 | Level | Meaning | Platforms |
 |-------|---------|-----------|
-| `SOFTWARE` | Software-only (file system / localStorage) | JVM, WASM |
+| `SOFTWARE` | Software-only (file system / localStorage) | JVM, Kotlin/WASM, Kotlin/JS |
 | `HARDWARE_BACKED` | On-chip hardware (TEE / Keychain) | Android, iOS |
 | `HARDWARE_ISOLATED` | Dedicated security chip (StrongBox / Secure Enclave) | Android (if available), iOS (real devices) |
 
@@ -303,7 +306,8 @@ Query what hardware security levels the device supports:
 | **Android** | Always `{HARDWARE_BACKED}`. Adds `HARDWARE_ISOLATED` if `PackageManager.FEATURE_STRONGBOX_KEYSTORE` is present (API 28+). |
 | **iOS** | Always `{HARDWARE_BACKED}`. Adds `HARDWARE_ISOLATED` on real devices (not simulator). |
 | **JVM** | `{SOFTWARE}` |
-| **WASM** | `{SOFTWARE}` |
+| **Kotlin/WASM** | `{SOFTWARE}` |
+| **Kotlin/JS** | `{SOFTWARE}` |
 
 #### `getKeyInfo(key)` — Per-Key Protection and Storage
 
@@ -320,7 +324,7 @@ ksafe.getKeyInfo("nonexistent")   // null (key doesn't exist)
 | Key not found | `null` |
 | Unencrypted key | `KSafeKeyInfo(null, SOFTWARE)` |
 | Encrypted key (Android/iOS) | `KSafeKeyInfo(DEFAULT, HARDWARE_BACKED)` |
-| Encrypted key (JVM/WASM) | `KSafeKeyInfo(DEFAULT, SOFTWARE)` |
+| Encrypted key (JVM / Kotlin-WASM / Kotlin-JS) | `KSafeKeyInfo(DEFAULT, SOFTWARE)` |
 | `HARDWARE_ISOLATED` key (device supports it) | `KSafeKeyInfo(HARDWARE_ISOLATED, HARDWARE_ISOLATED)` |
 | `HARDWARE_ISOLATED` key (device lacks it, fell back) | `KSafeKeyInfo(HARDWARE_ISOLATED, HARDWARE_BACKED)` |
 
@@ -387,11 +391,12 @@ Migration is lazy and safe:
 * Keys stored in user home directory with restricted permissions
 * Suitable for desktop applications and server-side use
 
-#### WASM/Browser
-* AES-256-GCM encryption via WebCrypto API
-* Keys and data stored in browser `localStorage` (Base64-encoded)
+#### Web (Kotlin/WASM + Kotlin/JS)
+* AES-256-GCM encryption via WebCrypto API on both browser targets
+* Keys and data stored in browser `localStorage` (Base64-encoded) using the same key layout, so data written from one target reads back from the other
 * Scoped per origin (~5-10 MB storage limit)
 * Memory policy always `PLAIN_TEXT` internally (WebCrypto is async-only)
+* Kotlin/WASM requires WasmGC (Chrome 119+, Firefox 120+, Safari 18+); Kotlin/JS runs on any modern browser
 
 ### Hardware Verified
 
@@ -436,7 +441,7 @@ On startup, KSafe probes each encrypted DataStore entry by attempting decryption
 * **iOS:** Keychain access may require device to be unlocked depending on `requireUnlockedDevice` setting (default: accessible after first unlock)
 * **Android:** Some devices may not have hardware-backed keystore; `setUnlockedDeviceRequired` requires API 28+
 * **JVM:** No hardware security module; relies on file system permissions
-* **WASM:** No hardware security; relies on browser `localStorage` which can be cleared by the user. Security checks (root, debugger, emulator) are no-ops
+* **Web (wasmJs + js):** No hardware security; relies on browser `localStorage` which can be cleared by the user. Security checks (root, debugger, emulator) are no-ops on both targets
 * **All Platforms:** Encrypted data is lost if encryption keys are deleted (by design for security)
 
 ***
@@ -460,7 +465,8 @@ Each platform delegates to its strongest available CSPRNG:
 | Android  | `java.security.SecureRandom` |
 | JVM      | `java.security.SecureRandom` |
 | iOS      | `arc4random_buf` (kernel CSPRNG) |
-| WASM     | `crypto.getRandomValues()` (WebCrypto API) |
+| Kotlin/WASM | `crypto.getRandomValues()` (WebCrypto API), via `@JsFun` + Base64 round-trip |
+| Kotlin/JS | `crypto.getRandomValues()` (WebCrypto API), direct `Uint8Array → ByteArray` |
 
 This is the same primitive KSafe uses internally for IV and encryption key generation.
 

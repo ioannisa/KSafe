@@ -23,7 +23,7 @@ From the author and the community:
 
 **Fast. Easy. Synchronous *or* asynchronous. Encrypted *or* unencrypted.**
 
-A complete persistence layer for Kotlin Multiplatform — encrypted or plain, synchronous or asynchronous, property delegates or coroutines, with a hot in-memory cache and atomic DataStore writes. Runs on **Android**, **iOS**, **JVM/Desktop**, and **WASM/JS (Browser)** with one API and one code path.
+A complete persistence layer for Kotlin Multiplatform — encrypted or plain, synchronous or asynchronous, property delegates or coroutines, with a hot in-memory cache and atomic DataStore writes. Runs on **Android**, **iOS**, **JVM/Desktop**, and both browser targets — **Kotlin/WASM** and **Kotlin/JS (IR)** — with one API and one code path.
 
 * **Easy?** ✔ Yes — one-line setup, property-delegate API
 * **Encrypted?** ✔ Yes — hardware-backed AES-256-GCM by default
@@ -134,7 +134,7 @@ install(Auth) {
 }
 ```
 
-Under the hood, each platform uses its native crypto engine — Android Keystore, iOS Keychain + CryptoKit, JVM's `javax.crypto`, browser WebCrypto — unified behind one API. Values are AES-256-GCM encrypted and persisted to DataStore (localStorage on WASM). Cross-screen sync (`scope =`), biometric auth, memory policies, and runtime security detection are all built in.
+Under the hood, each platform uses its native crypto engine — Android Keystore, iOS Keychain + CryptoKit, JVM's `javax.crypto`, browser WebCrypto (on both Kotlin/WASM and Kotlin/JS) — unified behind one API. Values are AES-256-GCM encrypted and persisted to DataStore (localStorage on the web targets). Cross-screen sync (`scope =`), biometric auth, memory policies, and runtime security detection are all built in.
 
 ## Table of Contents
 
@@ -159,7 +159,7 @@ Under the hood, each platform uses its native crypto engine — Android Keystore
 ```kotlin
 // 1. Create instance (Android needs context, others don't)
 val ksafe = KSafe(context) // Android
-val ksafe = KSafe()        // iOS / JVM / WASM
+val ksafe = KSafe()        // iOS / JVM / WASM / JS / JS
 
 // 2. Store & retrieve with property delegation
 var counter by ksafe(0)
@@ -185,7 +185,7 @@ ksafe.verifyBiometricDirect("Confirm payment") { success ->
 }
 ```
 
-Data is now AES-256-GCM encrypted — keys in Android Keystore, iOS Keychain, software-backed on JVM, WebCrypto on WASM.
+Data is now AES-256-GCM encrypted — keys in Android Keystore, iOS Keychain, software-backed on JVM, WebCrypto on the browser targets (Kotlin/WASM and Kotlin/JS).
 
 ***
 
@@ -197,8 +197,8 @@ Data is now AES-256-GCM encrypted — keys in Android Keystore, iOS Keychain, so
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:1.8.1")
-implementation("eu.anifantakis:ksafe-compose:1.8.1") // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe:1.9.0")
+implementation("eu.anifantakis:ksafe-compose:1.9.0") // ← Compose state (optional)
 ```
 
 > Skip `ksafe-compose` if you don't use Jetpack Compose or `mutableStateOf` persistence.
@@ -230,7 +230,7 @@ plugins {
 // Android
 val ksafe = KSafe(context)
 
-// iOS / JVM / WASM
+// iOS / JVM / WASM / JS
 val ksafe = KSafe()
 ```
 
@@ -242,13 +242,13 @@ actual val platformModule = module {
     single { KSafe(androidApplication()) }
 }
 
-// iOS / JVM / WASM
+// iOS / JVM / WASM / JS
 actual val platformModule = module {
     single { KSafe() }
 }
 ```
 
-Multi-instance setups, WASM `awaitCacheReady()`, and full per-platform Koin examples: [docs/SETUP.md](docs/SETUP.md).
+Multi-instance setups, web `awaitCacheReady()` (wasmJs + js), and full per-platform Koin examples: [docs/SETUP.md](docs/SETUP.md).
 
 
 ## Basic Usage
@@ -338,7 +338,7 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 * **Ease of use** — `var launchCount by ksafe(0)`, that is literally it
 * **Versatility** — primitives, data classes, sealed hierarchies, lists, sets, nullables
 * **Performance** — zero-latency UI reads via hybrid hot cache
-* **Desktop & Web** — full JVM/Desktop and WASM/Browser alongside Android and iOS
+* **Desktop & Web** — full JVM/Desktop and browser support on both Kotlin/WASM and Kotlin/JS alongside Android and iOS
 
 ***
 
@@ -351,13 +351,37 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 | **Data corruption** | :x: Crash = data loss | :white_check_mark: Atomic | :x: Platform-dependent | :white_check_mark: Atomic | :white_check_mark: Uses DataStore atomicity |
 | **API style** | :x: Callbacks | :white_check_mark: Flow | :white_check_mark: Sync | :white_check_mark: Sync | :white_check_mark: Both sync & async |
 | **Encryption** | :x: None | :x: None | :x: None | :white_check_mark: Hardware-backed | :white_check_mark: Hardware-backed |
-| **Cross-platform** | :x: Android only | :x: Android only | :white_check_mark: KMP | :white_check_mark: KMP | :white_check_mark: Android/iOS/JVM/WASM |
-| **Nullable support** | :x: No | :x: No | :white_check_mark: Yes | :white_check_mark: Yes | :white_check_mark: Full support |
+| **Cross-platform** | :x: Android only | :x: Android only | :white_check_mark: KMP | :white_check_mark: KMP | :white_check_mark: Android/iOS/JVM/WASM/JS |
+| **Nullable support** | :x: No | :x: No | :white_check_mark: Primitives (`*OrNull` getters) | :white_check_mark: Primitives | :white_check_mark: Primitives + objects + delegates * |
 | **Complex types** | :x: Manual | :x: Manual/Proto | :x: Manual | :x: Manual | :white_check_mark: Auto-serialization |
 | **Biometric auth** | :x: Manual | :x: Manual | :x: Manual | :x: Manual | :white_check_mark: Built-in |
 | **Memory policy** | N/A | N/A | N/A | N/A | :white_check_mark: 3 policies (PLAIN_TEXT / ENCRYPTED / TIMED_CACHE) |
-| **Hot cache** | :white_check_mark: Yes | :x: No | :white_check_mark: Yes | :x: No | :white_check_mark: ConcurrentHashMap |
+| **Hot cache** | :white_check_mark: Synchronized `HashMap` | :x: No (Flow only) | :white_check_mark: Platform-native cache | :x: No | :white_check_mark: `ConcurrentHashMap` + optimistic writes |
 | **Write batching** | :x: No | :x: No | :x: No | :x: No | :white_check_mark: 16ms coalescing |
+
+> **\* "Primitives + objects + delegates"** — nullability flows uniformly through every API shape and every type KSafe stores, not just scalar getters. Specifically:
+>
+> - **Primitives** — `Boolean?`, `Int?`, `Long?`, `Float?`, `Double?`, `String?` all round-trip through `get` / `put` / `getDirect` / `putDirect` / `getFlow`. `null` is a distinct state, not "missing"; it's preserved on reads and persisted on writes.
+>   ```kotlin
+>   ksafe.putDirect("nickname", null as String?)   // stored as null, not "default"
+>   val nickname: String? = ksafe.getDirect("nickname", "Guest")  // returns null, NOT "Guest"
+>   ```
+> - **Objects** — any `@Serializable` class can be stored nullably. `null` round-trips through the same encrypted JSON path as the payload; no extra boilerplate.
+>   ```kotlin
+>   @Serializable data class User(val id: String, val name: String)
+>   var currentUser: User? by ksafe(null)          // encrypted, persisted, nullable
+>   currentUser = User("u1", "Alice")              // -> encrypted JSON
+>   currentUser = null                              // -> null sentinel, round-trips
+>   ```
+> - **Delegates** — every delegate shape accepts a nullable default, including Compose state and `MutableStateFlow`. The persisted null survives process death and emits correctly through Flow observers.
+>   ```kotlin
+>   var token: String? by ksafe(null)                              // plain delegate
+>   var profile: User? by ksafe.mutableStateOf(null)               // Compose state
+>   val user: StateFlow<User?> by ksafe.asStateFlow(null, scope)   // read-only Flow
+>   private val _state by ksafe.asMutableStateFlow<User?>(null, scope)  // read/write Flow
+>   ```
+>
+> By contrast, `multiplatform-settings` exposes nullability only through separate `getStringOrNull` / `getIntOrNull` scalar getters — there is no nullable support for custom types, property delegates, or Compose state, because the library has no serialization or delegate layer. KVault is similar: nullable return types on its primitive getters, no object or delegate support.
 
 ***
 
@@ -380,7 +404,8 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 | **Android** | API 23 (Android 6.0) | Hardware-backed Keystore on supported devices |
 | **iOS** | iOS 13+ | Keychain-backed symmetric keys (protected by device passcode) |
 | **JVM/Desktop** | JDK 11+ | Software-backed encryption |
-| **WASM/Browser** | Any modern browser | WebCrypto API + localStorage |
+| **Kotlin/WASM (Browser)** | Browsers with WasmGC (Chrome 119+, Firefox 120+, Safari 18+) | WebCrypto API + localStorage |
+| **Kotlin/JS (Browser)** | Any modern browser | WebCrypto API + localStorage — use this for older browsers or pre-existing JS builds |
 
 | Dependency | Tested Version |
 |------------|----------------|
@@ -466,11 +491,12 @@ Internals, advanced features, reference material:
 | Topic | Description |
 |-------|-------------|
 | [Complete Usage Guide](docs/USAGE.md) | Every API shape: delegates, flow delegates, Compose state, suspend/direct APIs, write modes, nullables, full ViewModel |
-| [Setup with Koin](docs/SETUP.md) | Multi-instance setups (prefs vs vault), WASM `awaitCacheReady()`, full platform examples |
+| [Setup with Koin](docs/SETUP.md) | Multi-instance setups (prefs vs vault), web `awaitCacheReady()` (wasmJs + js), full platform examples |
 | [Custom JSON Serialization](docs/SERIALIZATION.md) | Registering `KSerializer`s for `UUID`, `Instant`, and other third-party types |
 | [Performance Benchmarks](docs/BENCHMARKS.md) | Full benchmark tables, cold start numbers, architecture deep-dive |
 | [Biometric Authentication](docs/BIOMETRICS.md) | Authorization caching, scoped sessions, platform setup, complete examples |
 | [Security](docs/SECURITY.md) | Runtime security policy, encryption internals, threat model, hardware isolation, key storage queries, crypto utilities |
+| [Encryption Proof](docs/ENCRYPTION_PROOF.md) | Per-platform automated proof tests + manual commands to inspect the raw stored bytes and see the ciphertext yourself |
 | [Memory Policy](docs/MEMORY.md) | Timed cache, constructor parameters, encryption config, device lock-state policies |
 | [Architecture](docs/ARCHITECTURE.md) | Hybrid hot cache, optimistic updates, encryption architecture diagram |
 | [Testing](docs/TESTING.md) | Running tests, building iOS test app, test features |

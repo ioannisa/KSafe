@@ -36,9 +36,9 @@ KSafe 1.2.0 introduced a completely rewritten core architecture focusing on zero
                           │
           ┌───────────────┼───────────────┬───────────────┐
           ▼               ▼               ▼               ▼
-┌─────────────────┐ ┌───────────────┐ ┌─────────────┐ ┌─────────────┐
-│    Android      │ │     iOS       │ │     JVM     │ │    WASM     │
-│    Keystore     │ │   Keychain    │ │  Software   │ │  WebCrypto  │
-│   Encryption    │ │  Encryption   │ │  Encryption │ │  Encryption │
-└─────────────────┘ └───────────────┘ └─────────────┘ └─────────────┘
+┌─────────────────┐ ┌───────────────┐ ┌─────────────┐ ┌──────────────────┐
+│    Android      │ │     iOS       │ │     JVM     │ │  Web (wasmJs+js) │
+│    Keystore     │ │   Keychain    │ │  Software   │ │     WebCrypto    │
+│   Encryption    │ │  Encryption   │ │  Encryption │ │    Encryption    │
+└─────────────────┘ └───────────────┘ └─────────────┘ └──────────────────┘
 ```

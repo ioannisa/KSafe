@@ -3,14 +3,11 @@
 package eu.anifantakis.lib.ksafe
 
 /**
- * Browser localStorage access via Kotlin/WASM JS interop.
- *
- * These functions provide synchronous access to the browser's localStorage API.
- * localStorage is scoped per origin and persists across browser sessions.
+ * wasmJs actual implementations of the web-interop surface.
  *
  * External functions are private (Kotlin/WASM requirement: external functions
- * cannot be internal due to name mangling). Internal delegating functions are
- * marked `@PublishedApi` so they can be called from public inline functions in KSafe.
+ * cannot be internal due to name mangling). The internal `actual` functions
+ * below delegate to them.
  */
 
 @JsFun("(key) => { const v = window.localStorage.getItem(key); return v === null ? null : v; }")
@@ -28,17 +25,23 @@ private external fun _localStorageLength(): Int
 @JsFun("(index) => { const k = window.localStorage.key(index); return k === null ? null : k; }")
 private external fun _localStorageKey(index: Int): String?
 
-@PublishedApi
-internal fun localStorageGet(key: String): String? = _localStorageGet(key)
+@JsFun("() => { return BigInt(Date.now()); }")
+private external fun _currentTimeMillis(): Long
 
 @PublishedApi
-internal fun localStorageSet(key: String, value: String) = _localStorageSet(key, value)
+internal actual fun localStorageGet(key: String): String? = _localStorageGet(key)
 
 @PublishedApi
-internal fun localStorageRemove(key: String) = _localStorageRemove(key)
+internal actual fun localStorageSet(key: String, value: String) = _localStorageSet(key, value)
 
 @PublishedApi
-internal fun localStorageLength(): Int = _localStorageLength()
+internal actual fun localStorageRemove(key: String) = _localStorageRemove(key)
 
 @PublishedApi
-internal fun localStorageKey(index: Int): String? = _localStorageKey(index)
+internal actual fun localStorageLength(): Int = _localStorageLength()
+
+@PublishedApi
+internal actual fun localStorageKey(index: Int): String? = _localStorageKey(index)
+
+@PublishedApi
+internal actual fun currentTimeMillisWeb(): Long = _currentTimeMillis()
