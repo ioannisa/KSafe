@@ -2,7 +2,9 @@
 
 All notable changes to KSafe will be documented in this file.
 
-## [1.9.0] - 2026-04-19
+## [2.0.0] - 2026-04-21
+
+Major internal refactor, plus the Kotlin/JS (IR) target and shared web source sets that were staged under a never-shipped 1.9.0 tag. **Public API is unchanged** — every consumer import resolves the same way, every call site behaves the same way, every on-disk format is preserved. The jump to 2.0 signals the scale of the internal rewrite and is a checkpoint for consumers to verify on upgrade, not a breaking change.
 
 ### Added
 
@@ -33,23 +35,88 @@ The JS implementation is a thin `actual` over `kotlinx.browser.localStorage`, `k
 
 #### Shared `webMain` / `webTest` source sets
 
-The bulk of the previous `wasmJsMain` implementation — `KSafe`, the WebCrypto-backed encryption engine, the `SecurityChecker` no-ops — moved into a new intermediate `webMain` source set shared between `jsMain` and `wasmJsMain`. Each target keeps only a small `WebInterop` actual file (`@JsFun` bindings for wasmJs; plain `external` + `kotlinx.browser` for js). The full `KSafeTest` suite now runs on **both** targets via a shared `webTest/WebKSafeTest.kt`.
+The bulk of the previous `wasmJsMain` implementation — `KSafe`, the WebCrypto-backed encryption engine, the `SecurityChecker` no-ops — moved into an intermediate `webMain` source set shared between `jsMain` and `wasmJsMain`. Each target keeps only a small `WebInterop` actual file (`@JsFun` bindings for wasmJs; plain `external` + `kotlinx.browser` for js). The full `KSafeTest` suite now runs on **both** targets via a shared `webTest/WebKSafeTest.kt`.
 
 A new `WebInteropSmokeTest` runs on both targets and asserts the per-target actuals: `localStorage` round-trip, `localStorage` enumeration, `currentTimeMillisWeb()` plausibility, and `secureRandomBytes()` non-determinism. This guards against Long / Int / Float conversion regressions specific to either target.
 
-### Fixed
+#### Cross-type migration tests (run on all four platforms)
 
-#### Kotlin/JS: Float / Double reads collapsing into the Int branch
+Added to `commonTest/KSafeTest.kt`, covering the scenarios where an app's storage type for a given key changes between releases:
 
-On Kotlin/JS, `Float` and `Double` share a single runtime representation with `Int` (`0f is Int` returns `true` because JS stores `0f` as the integer `0`). The internal `convertStoredValueRaw` dispatch on the **runtime type of the default value** therefore routed Float / Double reads into the Int branch, returning the default (`0`) instead of the stored value — visible as `testPutAndGetUnencryptedFloat`, `testPutAndGetUnencryptedDouble`, and `testNegativeNumbers` failures on the js target.
+- `testCrossTypeIntToLongPlain` — `put(Int 42)` → `get(Long)` returns 42L (widening).
+- `testCrossTypeLongToIntPlainInRange` — `put(Long 42)` → `get(Int)` returns 42 (safe narrowing).
+- `testCrossTypeLongToIntPlainOutOfRange` — `put(Long.MAX_VALUE)` → `get(Int, -1)` returns -1 (refuses to silently truncate).
+- `testCrossTypeIntToLongEncrypted` / `testCrossTypeLongToIntEncrypted` — same three scenarios through the encrypted write path.
+- `testSequentialTypeMigrationIntThenLong` / `...Encrypted` — `put(Int)` then `put(bigLong)` on the same key; subsequent reads return the updated value with the correct type, and out-of-range reads fall back to default.
 
-Dispatch now goes through a new `primitiveKindOrNull(serializer)` helper that reads the `PrimitiveKind` off the serializer's descriptor, which preserves the declared type regardless of how the runtime represents the value. This path is only hit on the web targets — JVM / Android / iOS continue to use DataStore's typed preferences and are unaffected.
+These lock in the cross-type safety contract that was implicit in pre-refactor code.
+
+#### iOS Keychain orphan sweep strengthened
+
+`KSafe.ios.kt`'s startup Keychain sweep — which removes Keychain entries whose DataStore counterpart is gone (the reverse of Android's ciphertext orphan cleanup) — was refactored into a standalone `cleanupOrphanedKeychainEntries` function in `iosMain/internal/`. It now covers two item classes: generic-password items (both plain AES keys and SE-wrapped blobs) and `kSecClassKey` EC private keys (the SE-held ECIES keys used for `HARDWARE_ISOLATED` writes — the second pass catches SE keys that exist without a matching generic-password item, e.g. after a crash between SE-key creation and wrapped-AES-key storage).
+
+The function takes `KSafePlatformStorage` + `KSafeEncryption` + the fileName/prefix parameters as explicit arguments, making it unit-testable without a full `KSafe` instance.
 
 ### Changed
+
+#### Shared `KSafeCore` orchestrator in `commonMain`
+
+Everything that was previously duplicated across `KSafe.android.kt`, `KSafe.ios.kt`, `KSafe.jvm.kt`, and `KSafe.web.kt` — the hot cache, the per-frame write coalescer, the protection-metadata classifier, the orphan-ciphertext cleanup, the raw `get/put/delete/getFlow` plumbing — now lives in a single `KSafeCore` class in `commonMain`. The four platform files are thin shells (~220–330 lines each) that own only genuinely platform-specific concerns: constructor signatures, DataStore/localStorage creation, hardware-detection, engine wiring, biometric prompts.
+
+| File | Before 2.0.0 | After 2.0.0 |
+|---|---:|---:|
+| `commonMain` (KSafe.kt + KSafeCore + storage interface + concurrency shims) | ~500 | ~1,400 |
+| `KSafe.jvm.kt` | 1,360 | 219 |
+| `KSafe.android.kt` | 1,584 | 254 |
+| `KSafe.ios.kt` | 1,938 | 330 |
+| `KSafe.web.kt` | 1,052 | 155 |
+| **Platform-shell total** | **5,934** | **958** |
+
+Bug fixes and feature additions now ship once instead of four times.
+
+#### New `KSafePlatformStorage` interface + shared `DataStoreStorage` adapter
+
+A new `KSafePlatformStorage` abstraction sits between `KSafeCore` and the persistent backend. Three of four platforms (Android, iOS, JVM) all use Jetpack DataStore Preferences, so a single `DataStoreStorage` adapter lives in a new `datastoreMain` intermediate source set shared by all three. Web keeps its own `LocalStorageStorage` adapter for `localStorage`. The split makes the two concerns — "where bytes live" and "how the cache/coalescing/metadata orchestration works" — independently testable and pluggable.
+
+#### `KSafeEncryption` gained `suspend` variants
+
+Added `encryptSuspend`, `decryptSuspend`, and `deleteKeySuspend` to `KSafeEncryption` with default bodies that delegate to the existing blocking methods. Android/iOS/JVM engines are untouched — their blocking implementations satisfy the new contract via the defaults. `WebSoftwareEncryption` overrides the suspend variants with real WebCrypto calls and continues to throw `UnsupportedOperationException` from the blocking paths (WebCrypto is async-only). `KSafeCore` calls the suspend variants from every coroutine-context code path, which is how web now rides the shared orchestrator.
+
+#### Inline public API moved to `commonMain` top-level extensions
+
+The `inline fun <reified T> getDirect/put/get/putDirect/getFlow` functions — and their deprecated `encrypted: Boolean` overloads — are now top-level extension functions in `commonMain` instead of member declarations on the `expect class`. Consumer syntax is identical: `ksafe.getDirect("k", "d")` resolves the same way whether the function is a member or an extension, because Kotlin treats them identically at call sites. Each inline body is inlined into the consumer's bytecode at compile time, so binary compatibility is preserved.
+
+The `@PublishedApi internal` non-inline `*Raw` helpers remain as `actual` members of each platform `KSafe` class — they're what the inline wrappers forward into.
+
+#### Internal types moved to `eu.anifantakis.lib.ksafe.internal`
+
+`KSafeCore`, `KSafePlatformStorage`, `KSafeEncryption`, `KeySafeMetadataManager`, `SecurityChecker`, `KSafeSecureRandom`, and the per-platform engines (`AndroidKeystoreEncryption`, `IosKeychainEncryption`, `JvmSoftwareEncryption`, `WebSoftwareEncryption`) — plus every `expect/actual` shim — now live under the `.internal` subpackage. Public-facing types (`KSafe`, `KSafeConfig`, `KSafeProtection`, `KSafeWriteMode`, `KSafeKeyInfo`, `KSafeKeyStorage`, `KSafeSecurityPolicy`, `KSafeSecret`, `KSafeDelegate`, `BiometricAuthorizationDuration`, `KSafeMemoryPolicy`) stay at the root package. No consumer imports break.
 
 #### `wasmJsMain` is now minimal
 
 `KSafe.wasmJs.kt`, `WasmSoftwareEncryption.kt`, `SecurityChecker.wasmJs.kt`, and `LocalStorage.kt` no longer exist. Their contents live in `webMain` as `KSafe.web.kt`, `WebSoftwareEncryption.kt`, `SecurityChecker.web.kt`, and `WebInterop.kt` respectively. The only wasmJs-specific file is `WebInterop.wasmJs.kt` (which still uses `@JsFun` / `ExperimentalWasmJsInterop`) plus the existing `KSafeSecureRandom.wasmJs.kt`. No public API changes; no migration required.
+
+### Fixed
+
+#### Serializer-kind dispatch replaces runtime-class dispatch in `convertStoredValue`
+
+Two bugs shared a root cause — `convertStoredValue` dispatched on the runtime class of the `defaultValue` parameter (`when (defaultValue) { is Int -> …, is Long -> …, is Boolean -> … }`), which misbehaved in two distinct ways:
+
+- **Kotlin/JS: Float / Double reads collapsed into the Int branch.** `Float` and `Double` share a single runtime representation with `Int` on JS (`0f is Int` returns `true` because `0f` is stored as the integer `0`), so Float / Double reads routed into the Int branch and returned the default. Visible as `testPutAndGetUnencryptedFloat`, `testPutAndGetUnencryptedDouble`, and `testNegativeNumbers` failures on the js target.
+- **Nullable-typed reads with a `null` default lost stored primitives.** For `get<Int?>("counter", null)`, no `is X` branch matched (because `null` doesn't satisfy `is Int`), and the path fell through to returning `defaultValue` — `null` — regardless of whether a value was stored. Regression test: `JvmKSafeTest.testNullableIntGetReturnsStoredValue`.
+
+Dispatch now runs through `primitiveKindOrNull(serializer)`, a helper that reads the `PrimitiveKind` off the serializer's descriptor and preserves the declared type regardless of how the runtime represents the value or how the default is typed. One code path, uniform across every platform.
+
+#### Transient keystore decrypt errors now propagate on every platform
+
+Pre-refactor only Android's read path re-threw `"device is locked"` / `"Keystore"` errors instead of silently returning `defaultValue`; iOS and JVM swallowed the same errors. `KSafeCore.isTransientDecryptFailure` now runs on every platform so a locked device (or analogous iOS Keychain error) reliably surfaces to the caller for retry handling. JVM software encryption never produces such errors — the check is a no-op there.
+
+### Upgrade notes
+
+- **On-disk format is unchanged.** Existing 1.8.x data reads cleanly.
+- **Public API is unchanged.** `import eu.anifantakis.lib.ksafe.KSafe` and friends still resolve; `ksafe.put(...)` / `ksafe.get(...)` / `by ksafe(0)` delegates continue to work.
+- **Recommended smoke-test on upgrade:** write a handful of values of each type in a pre-2.0 build, upgrade the library, and verify reads on first launch. The cross-type migration tests above give high confidence, but custom `KSerializer` or `@Contextual` users should validate their specific types once.
+- **Known follow-up:** `isStringSerializer` in `internal/KSafeSerializerUtil.kt` is now unused (superseded by `primitiveKindOrNull` dispatch). Kept for one release for anyone inlining against it; will be removed in 2.1.
 
 ---
 

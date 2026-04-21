@@ -1,4 +1,4 @@
-package eu.anifantakis.lib.ksafe
+package eu.anifantakis.lib.ksafe.internal
 
 import kotlinx.browser.localStorage
 import kotlin.js.Date

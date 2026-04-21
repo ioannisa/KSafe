@@ -1,4 +1,4 @@
-package eu.anifantakis.lib.ksafe
+package eu.anifantakis.lib.ksafe.internal
 
 import java.lang.management.ManagementFactory
 

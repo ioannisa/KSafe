@@ -1,4 +1,4 @@
-package eu.anifantakis.lib.ksafe
+package eu.anifantakis.lib.ksafe.internal
 
 /**
  * Generates a [ByteArray] of cryptographically secure random bytes.

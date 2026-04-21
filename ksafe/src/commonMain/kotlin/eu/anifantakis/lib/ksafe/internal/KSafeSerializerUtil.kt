@@ -1,4 +1,4 @@
-package eu.anifantakis.lib.ksafe
+package eu.anifantakis.lib.ksafe.internal
 
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationStrategy

@@ -3,6 +3,7 @@ package eu.anifantakis.lib.ksafe
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.edit
+import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest

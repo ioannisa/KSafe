@@ -1,4 +1,4 @@
-package eu.anifantakis.lib.ksafe
+package eu.anifantakis.lib.ksafe.internal
 
 import org.khronos.webgl.Uint8Array
 import org.khronos.webgl.get

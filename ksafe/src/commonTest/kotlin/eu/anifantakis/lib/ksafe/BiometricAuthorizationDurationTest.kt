@@ -2,10 +2,8 @@ package eu.anifantakis.lib.ksafe
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
-import kotlin.test.assertTrue
 
 /**
  * Tests for [BiometricAuthorizationDuration] data class.

@@ -1,4 +1,4 @@
-# KSafe — Secure Persist Library for Kotlin Multiplatform
+# KSafe — Secure-by-Default Key/Value Persistence for Kotlin Multiplatform
 
 _**The Universal Persistence Layer: `MutableState`, `MutableStateFlow`, and plain variables — all encrypted, all persisted, all surviving process death. For Android, iOS, Desktop, and Web.**_
 
@@ -19,18 +19,24 @@ From the author and the community:
 | [<img width="200" alt="image" src="https://github.com/user-attachments/assets/8c317a36-4baa-491e-8c88-4c44b8545bad" />](https://youtu.be/mFKGx0DMZEA) | [<img width="200" alt="image" src="https://github.com/user-attachments/assets/59cce32b-634e-4b17-bb5f-5e084dff899f" />](https://youtu.be/cLyxWGV6GKg) | [<img width="200" alt="image" src="https://github.com/user-attachments/assets/65dba780-9c80-470c-9ad0-927a86510a26" />](https://youtu.be/M4U06OnAl-I) | 
 | [KSafe - Kotlin Multiplatform Encrypted DataStore Persistence Library](https://youtu.be/mFKGx0DMZEA) | [How to Encrypt Local Preferences In KMP With KSafe](https://youtu.be/cLyxWGV6GKg) | [Encripta datos localmente en Kotlin Multiplatform con KSafe - Ejemplo + Arquitectura](https://youtu.be/M4U06OnAl-I) |
 
-## What is KSafe
 
-**Fast. Easy. Synchronous *or* asynchronous. Encrypted *or* unencrypted.**
+## What is KSafe?
 
-A complete persistence layer for Kotlin Multiplatform — encrypted or plain, synchronous or asynchronous, property delegates or coroutines, with a hot in-memory cache and atomic DataStore writes. Runs on **Android**, **iOS**, **JVM/Desktop**, and both browser targets — **Kotlin/WASM** and **Kotlin/JS (IR)** — with one API and one code path.
+KSafe is a secure-by-default Kotlin Multiplatform key/value persistence library.
 
-* **Easy?** ✔ Yes — one-line setup, property-delegate API
-* **Encrypted?** ✔ Yes — hardware-backed AES-256-GCM by default
-* **Unencrypted?** ✔ Yes — opt out with a single parameter
-* **Synchronous?** ✔ Yes — non-blocking hot cache when you don't want coroutines
-* **Asynchronous?** ✔ Yes — full suspend API talking directly to DataStore when you do
+It lets you persist ordinary Kotlin variables, Compose `MutableState`, and `MutableStateFlow` across app restarts using one API across Android, iOS, JVM/Desktop, WASM, and Kotlin/JS.
 
+Encrypted storage is the default. Plain storage is available per entry with `mode = KSafeWriteMode.Plain`.
+
+**Fast. Easy. Synchronous or asynchronous. Encrypted or plain.**
+
+KSafe gives you a complete persistence layer for Kotlin Multiplatform: property delegates or coroutines, encrypted or plain storage, hot in-memory reads, atomic DataStore writes, automatic serialization, and one API across platforms.
+
+- **Easy?** ✔ Yes — one-line setup, property-delegate API
+- **Encrypted by default?** ✔ Yes — AES-256-GCM by default
+- **Plain storage?** ✔ Yes — opt out with one parameter
+- **Synchronous?** ✔ Yes — non-blocking hot-cache reads when you do not want coroutines
+- **Asynchronous?** ✔ Yes — full suspend API when you want guaranteed disk flushes
 **Extras when you encrypt:**
 
 * **Biometrics?** ✔ Yes — Face ID / Touch ID / Fingerprint on Android + iOS, with auth caching
@@ -38,7 +44,18 @@ A complete persistence layer for Kotlin Multiplatform — encrypted or plain, sy
 * **Memory policy?** ✔ Yes — three RAM modes trading security vs performance
 * **Database passphrase in one line?** ✔ Yes — hardware-isolated 256-bit secret for SQLCipher / SQLDelight / Room
 
+## Where KSafe fits
 
+KSafe brings together two things that are usually separate in Kotlin Multiplatform: 
+1) effortless key/value persistence 
+2) and serious encrypted storage.
+
+Use it as a general-purpose persistence layer for settings, preferences, app state, Compose `MutableState`, and `MutableStateFlow`. 
+
+* By default, KSafe stores values with AES-256-GCM encryption, backed by platform security primitives where available. 
+* When encryption is not required for a specific entry, you can opt into plain storage with `mode = KSafeWriteMode.Plain`.
+
+This gives you the best of both worlds: the simplicity of ordinary key/value storage and the protection of a secure storage layer, without changing APIs or rewriting your persistence model.
 ### One line. Encrypted by default.
 
 ```kotlin

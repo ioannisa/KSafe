@@ -1,5 +1,6 @@
 package eu.anifantakis.lib.ksafe
 
+import eu.anifantakis.lib.ksafe.internal.IosKeychainEncryption
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped

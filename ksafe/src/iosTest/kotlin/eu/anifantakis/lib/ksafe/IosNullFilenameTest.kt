@@ -3,7 +3,6 @@ package eu.anifantakis.lib.ksafe
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import eu.anifantakis.lib.ksafe.KSafeProtection
 
 /**
  * iOS-specific test for null filename (default DataStore) behavior.

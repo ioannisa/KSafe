@@ -1,5 +1,7 @@
 package eu.anifantakis.lib.ksafe
 
+import eu.anifantakis.lib.ksafe.internal.SecurityChecker
+import eu.anifantakis.lib.ksafe.internal.validateSecurityPolicy
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertIs

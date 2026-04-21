@@ -1,7 +1,6 @@
 package eu.anifantakis.lib.ksafe
 
 import app.cash.turbine.test
-import eu.anifantakis.lib.ksafe.KSafeProtection
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
@@ -781,6 +780,116 @@ abstract class KSafeTest {
         val minLongKey = "min_long"
         ksafe.put(minLongKey, Long.MIN_VALUE, KSafeWriteMode.Plain)
         assertEquals(Long.MIN_VALUE, ksafe.get(minLongKey, 0L))
+    }
+
+    // ============ CROSS-TYPE MIGRATION TESTS ============
+    //
+    // These guarantee that an app that changes a stored value's type between
+    // releases doesn't silently lose data. A user who originally called
+    // `put(key, 42)` (Int) should still be able to read the same key as a Long
+    // after upgrading — and vice versa when the stored Long still fits in Int.
+    // Out-of-range narrowing must fall back to the default rather than
+    // silently truncate.
+
+    /** Plain Int → read as Long: widening must succeed. */
+    @Test
+    fun testCrossTypeIntToLongPlain() = runTest {
+        val ksafe = createKSafe()
+        val key = "cross_int_to_long_plain"
+        ksafe.put(key, 42, KSafeWriteMode.Plain)
+        assertEquals(42L, ksafe.get(key, 0L), "Int 42 should widen to Long 42 on read")
+    }
+
+    /** Plain Long in Int range → read as Int: range-checked narrow must succeed. */
+    @Test
+    fun testCrossTypeLongToIntPlainInRange() = runTest {
+        val ksafe = createKSafe()
+        val key = "cross_long_to_int_plain"
+        ksafe.put(key, 42L, KSafeWriteMode.Plain)
+        assertEquals(42, ksafe.get(key, 0), "Long 42 (in Int range) should narrow to Int 42 on read")
+    }
+
+    /** Plain Long out of Int range → read as Int: must return defaultValue, never silently truncate. */
+    @Test
+    fun testCrossTypeLongToIntPlainOutOfRange() = runTest {
+        val ksafe = createKSafe()
+        val key = "cross_long_to_int_plain_oor"
+        ksafe.put(key, Long.MAX_VALUE, KSafeWriteMode.Plain)
+        assertEquals(
+            -1,
+            ksafe.get(key, -1),
+            "Long.MAX_VALUE read as Int must fall back to default — silent truncation would corrupt data"
+        )
+    }
+
+    /** Encrypted Int → read as Long: widening must survive the encrypt/decrypt round-trip. */
+    @Test
+    fun testCrossTypeIntToLongEncrypted() = runTest {
+        val ksafe = createKSafe()
+        val key = "cross_int_to_long_encrypted"
+        ksafe.put(key, 42)
+        assertEquals(42L, ksafe.get(key, 0L))
+    }
+
+    /** Encrypted Long in Int range → read as Int: narrow after decrypt must succeed. */
+    @Test
+    fun testCrossTypeLongToIntEncrypted() = runTest {
+        val ksafe = createKSafe()
+        val key = "cross_long_to_int_encrypted"
+        ksafe.put(key, 100L)
+        assertEquals(100, ksafe.get(key, 0))
+    }
+
+    /**
+     * Sequential writes of different types to the same key.
+     *
+     * Simulates an app that shipped `put(key, 42)` (Int) in v1 and later
+     * switched to `put(key, largeLong)` in v2. The second write must cleanly
+     * replace the first (no coexistence, no corruption), and reads must
+     * reflect whichever type they ask for — correctly for Long, and with a
+     * safe default fallback for Int (out of range).
+     */
+    @Test
+    fun testSequentialTypeMigrationIntThenLong() = runTest {
+        val ksafe = createKSafe()
+        val key = "type_migration_int_then_long"
+        val bigLong = 8_223_372_036_854_775_807L   // > Int.MAX_VALUE, < Long.MAX_VALUE
+
+        // v1 — user stores an Int
+        ksafe.put(key, 42, KSafeWriteMode.Plain)
+        assertEquals(42, ksafe.get(key, 0), "v1 write should round-trip as Int")
+
+        // v2 — user overwrites with a Long that doesn't fit in Int
+        ksafe.put(key, bigLong, KSafeWriteMode.Plain)
+
+        // Reading as Long returns the updated value
+        assertEquals(
+            bigLong,
+            ksafe.get(key, 0L),
+            "v2 write should replace v1 and read back as Long"
+        )
+
+        // Reading as Int must refuse to silently truncate — returns default
+        assertEquals(
+            -1,
+            ksafe.get(key, -1),
+            "bigLong read as Int must fall back to default rather than truncate"
+        )
+    }
+
+    /** Same scenario but through the encrypted write path. */
+    @Test
+    fun testSequentialTypeMigrationIntThenLongEncrypted() = runTest {
+        val ksafe = createKSafe()
+        val key = "type_migration_int_then_long_encrypted"
+        val bigLong = 8_223_372_036_854_775_807L
+
+        ksafe.put(key, 42)
+        assertEquals(42, ksafe.get(key, 0))
+
+        ksafe.put(key, bigLong)
+        assertEquals(bigLong, ksafe.get(key, 0L))
+        assertEquals(-1, ksafe.get(key, -1))
     }
 
     // ============ DIRECT API TESTS ============

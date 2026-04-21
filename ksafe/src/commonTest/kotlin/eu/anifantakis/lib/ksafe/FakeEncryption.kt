@@ -1,5 +1,7 @@
 package eu.anifantakis.lib.ksafe
 
+import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
+
 /**
  * Fake implementation of [KSafeEncryption] for testing purposes.
  *

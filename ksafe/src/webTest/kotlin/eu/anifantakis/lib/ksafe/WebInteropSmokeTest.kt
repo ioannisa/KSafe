@@ -1,8 +1,14 @@
 package eu.anifantakis.lib.ksafe
 
+import eu.anifantakis.lib.ksafe.internal.currentTimeMillisWeb
+import eu.anifantakis.lib.ksafe.internal.localStorageGet
+import eu.anifantakis.lib.ksafe.internal.localStorageKey
+import eu.anifantakis.lib.ksafe.internal.localStorageLength
+import eu.anifantakis.lib.ksafe.internal.localStorageRemove
+import eu.anifantakis.lib.ksafe.internal.localStorageSet
+import eu.anifantakis.lib.ksafe.internal.secureRandomBytes
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 

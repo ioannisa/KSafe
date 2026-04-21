@@ -1,6 +1,9 @@
 package eu.anifantakis.lib.ksafe
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.ExperimentalForInheritanceCoroutinesApi
+import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -145,8 +148,8 @@ inline fun <reified T> KSafe.asStateFlow(
  * the new value via [KSafe.putDirect].
  */
 @OptIn(
-    kotlinx.coroutines.ExperimentalCoroutinesApi::class,
-    kotlinx.coroutines.InternalCoroutinesApi::class,
+    ExperimentalCoroutinesApi::class,
+    InternalCoroutinesApi::class, ExperimentalForInheritanceCoroutinesApi::class,
 )
 @PublishedApi
 internal class KSafeMutableStateFlow<T>(

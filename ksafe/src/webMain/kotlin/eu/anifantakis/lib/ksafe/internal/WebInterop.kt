@@ -1,4 +1,4 @@
-package eu.anifantakis.lib.ksafe
+package eu.anifantakis.lib.ksafe.internal
 
 /**
  * Browser localStorage + time-of-day interop declarations, shared between

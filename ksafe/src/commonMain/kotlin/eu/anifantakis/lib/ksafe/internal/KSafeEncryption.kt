@@ -1,4 +1,4 @@
-package eu.anifantakis.lib.ksafe
+package eu.anifantakis.lib.ksafe.internal
 
 /**
  * Internal interface for encryption engines.
@@ -96,4 +96,30 @@ internal interface KSafeEncryption {
      * @param requireUnlocked If true, restrict access to when the device is unlocked.
      */
     fun updateKeyAccessibility(identifier: String, requireUnlocked: Boolean) { /* no-op by default */ }
+
+    // ------------------------------------------------------------------------
+    // Suspend variants. Default impls delegate to the blocking ones so every
+    // existing engine (Android/iOS/JVM) works unchanged. The web engine
+    // overrides these with real async WebCrypto work and throws from the
+    // blocking counterparts — browsers have no blocking crypto.
+    //
+    // KSafeCore calls the suspend variants from every code path that is
+    // already inside a coroutine (write coalescer, orphan cleanup, background
+    // preload, suspend `put`). The one remaining blocking call site is
+    // `resolveFromCache` invoked via `getDirect`; web avoids it by running
+    // exclusively in PLAIN_TEXT memory-policy mode, where decryption happens
+    // at bootstrap time and the cache already holds plaintext.
+    // ------------------------------------------------------------------------
+
+    suspend fun encryptSuspend(
+        identifier: String,
+        data: ByteArray,
+        hardwareIsolated: Boolean = false,
+        requireUnlockedDevice: Boolean? = null,
+    ): ByteArray = encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
+
+    suspend fun decryptSuspend(identifier: String, data: ByteArray): ByteArray =
+        decrypt(identifier, data)
+
+    suspend fun deleteKeySuspend(identifier: String) = deleteKey(identifier)
 }

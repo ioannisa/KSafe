@@ -79,53 +79,6 @@ expect class KSafe {
     fun getKeyInfo(key: String): KSafeKeyInfo?
 
 
-    // --- NON-BLOCKING API (UI Safe) ---
-
-    /**
-     * Retrieves a value from the in-memory cache immediately.
-     *
-     * This method is **non-blocking** and safe to call on the Main/UI thread.
-     * It reads directly from an atomic memory reference, ensuring zero UI freeze.
-     * Protection is auto-detected from stored metadata — no need to specify
-     * whether the value was encrypted or not.
-     *
-     * **Cold Start Behavior:** On the very first app launch, if the cache has not
-     * finished initializing, this will block once to ensure data consistency.
-     * Subsequent calls are always instant.
-     *
-     * ## Example
-     * ```kotlin
-     * val username = ksafe.getDirect("username", "Guest")
-     * val token = ksafe.getDirect("auth_token", "")
-     * ```
-     *
-     * @param T The type of value to retrieve. Supported: [Boolean], [Int], [Long],
-     *          [Float], [Double], [String], and `@Serializable` objects.
-     * @param key The unique key for the value.
-     * @param defaultValue The value to return if the key doesn't exist or decryption fails.
-     * @return The stored value or [defaultValue].
-     * @see putDirect for the corresponding write operation
-     * @see get for the suspending alternative
-     */
-    inline fun <reified T> getDirect(key: String, defaultValue: T): T
-
-
-    /**
-     * Updates a value asynchronously with optimistic caching using default encrypted mode.
-     *
-     * Default encrypted writes use `KSafeConfig.requireUnlockedDevice` as unlock-policy default.
-     * Use the overload with explicit [KSafeWriteMode] for plaintext writes or per-entry options.
-     */
-    inline fun <reified T> putDirect(key: String, value: T)
-
-    /**
-     * Updates a value asynchronously with optimistic caching using explicit [KSafeWriteMode].
-     *
-     * Use this overload for plaintext writes ([KSafeWriteMode.Plain]) or encrypted options
-     * such as `requireUnlockedDevice`.
-     */
-    inline fun <reified T> putDirect(key: String, value: T, mode: KSafeWriteMode)
-
     /**
      * Deletes a value and its associated encryption key asynchronously.
      *
@@ -135,53 +88,6 @@ expect class KSafe {
      * @param key The key to delete.
      */
     fun deleteDirect(key: String)
-
-    // --- SUSPEND API (Coroutine Safe) ---
-
-    /**
-     * Retrieves a value suspending-ly.
-     *
-     * Like [getDirect], this checks the memory cache first for performance.
-     * If the cache is not ready, it suspends (instead of blocking) until data is loaded.
-     * Protection is auto-detected from stored metadata.
-     *
-     * @param T The type of value to retrieve.
-     * @param key The unique key.
-     * @param defaultValue The fallback value.
-     * @return The stored value.
-     */
-    suspend inline fun <reified T> get(key: String, defaultValue: T): T
-
-
-    /**
-     * Returns a [Flow] that emits the value whenever it changes.
-     *
-     * The Flow emits the current value immediately and then emits any subsequent updates.
-     * It is distinct-until-changed, meaning it only emits when the value actually changes.
-     * Protection is auto-detected from stored metadata per emission.
-     *
-     * @param T The type of value.
-     * @param key The unique key.
-     * @param defaultValue The fallback value.
-     */
-    inline fun <reified T> getFlow(key: String, defaultValue: T): Flow<T>
-
-
-    /**
-     * Persists a value to disk suspending-ly using default encrypted mode.
-     *
-     * Default encrypted writes use `KSafeConfig.requireUnlockedDevice` as unlock-policy default.
-     * Use the overload with explicit [KSafeWriteMode] for plaintext writes or per-entry options.
-     */
-    suspend inline fun <reified T> put(key: String, value: T)
-
-    /**
-     * Persists a value to disk suspending-ly using explicit [KSafeWriteMode].
-     *
-     * Use this overload for plaintext writes ([KSafeWriteMode.Plain]) or encrypted options
-     * such as `requireUnlockedDevice`.
-     */
-    suspend inline fun <reified T> put(key: String, value: T, mode: KSafeWriteMode)
 
     /**
      * Deletes a value and its associated encryption key (if any) from storage.
@@ -199,48 +105,6 @@ expect class KSafe {
      * This operation is destructive and cannot be undone.
      */
     suspend fun clearAll()
-
-    // --- DEPRECATED OVERLOADS (encrypted: Boolean) ---
-
-    /** @deprecated Use [getDirect] without protection/encrypted parameter. */
-    @Deprecated(
-        "Use getDirect(key, defaultValue) instead. Protection is auto-detected on reads.",
-        ReplaceWith("getDirect(key, defaultValue)"),
-        level = DeprecationLevel.WARNING
-    )
-    inline fun <reified T> getDirect(key: String, defaultValue: T, encrypted: Boolean): T
-
-    /** @deprecated Use [putDirect] with [KSafeWriteMode] parameter instead. */
-    @Deprecated(
-        "Replace \"encrypted\" parameter with \"mode\" parameter.\n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeWriteMode.Encrypted()\nencrypted=false -> KSafeWriteMode.Plain",
-        ReplaceWith("putDirect(key, value, if (encrypted) KSafeWriteMode.Encrypted() else KSafeWriteMode.Plain)"),
-        level = DeprecationLevel.WARNING
-    )
-    inline fun <reified T> putDirect(key: String, value: T, encrypted: Boolean)
-
-    /** @deprecated Use [get] without protection/encrypted parameter. */
-    @Deprecated(
-        "Use get(key, defaultValue) instead. Protection is auto-detected on reads.",
-        ReplaceWith("get(key, defaultValue)"),
-        level = DeprecationLevel.WARNING
-    )
-    suspend inline fun <reified T> get(key: String, defaultValue: T, encrypted: Boolean): T
-
-    /** @deprecated Use [put] with [KSafeWriteMode] parameter instead. */
-    @Deprecated(
-        "Replace \"encrypted\" parameter with \"mode\" parameter.\n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeWriteMode.Encrypted()\nencrypted=false -> KSafeWriteMode.Plain",
-        ReplaceWith("put(key, value, if (encrypted) KSafeWriteMode.Encrypted() else KSafeWriteMode.Plain)"),
-        level = DeprecationLevel.WARNING
-    )
-    suspend inline fun <reified T> put(key: String, value: T, encrypted: Boolean)
-
-    /** @deprecated Use [getFlow] without protection/encrypted parameter. */
-    @Deprecated(
-        "Use getFlow(key, defaultValue) instead. Protection is auto-detected on reads.",
-        ReplaceWith("getFlow(key, defaultValue)"),
-        level = DeprecationLevel.WARNING
-    )
-    inline fun <reified T> getFlow(key: String, defaultValue: T, encrypted: Boolean): Flow<T>
 
     // --- INTERNAL RAW API (non-inline, used by thin inline wrappers to reduce bytecode) ---
 
@@ -269,6 +133,13 @@ expect class KSafe {
      * Non-inline version of [getFlow] that takes an explicit [KSerializer].
      */
     @PublishedApi internal fun getFlowRaw(key: String, defaultValue: Any?, serializer: KSerializer<*>): Flow<Any?>
+
+    /**
+     * Builds the [KSafeWriteMode] used by the no-mode `put`/`putDirect` overloads.
+     * Platform-specific because each actual reads `config.requireUnlockedDevice` from
+     * its own private constructor parameter.
+     */
+    @PublishedApi internal fun defaultEncryptedMode(): KSafeWriteMode
 
     // --- BIOMETRIC API ---
 
@@ -356,6 +227,147 @@ expect class KSafe {
      */
     fun clearBiometricAuth(scope: String? = null)
 }
+
+// ============================================================================
+// Public inline wrappers (reified T) — extension functions so the single copy
+// lives in commonMain and every platform inherits it without re-declaring.
+// Consumer syntax (`ksafe.getDirect(...)`, `ksafe.put(...)`) is unchanged since
+// Kotlin resolves member and extension calls identically at the call site.
+// ============================================================================
+
+// --- NON-BLOCKING API (UI Safe) ---
+
+/**
+ * Retrieves a value from the in-memory cache immediately.
+ *
+ * This method is **non-blocking** and safe to call on the Main/UI thread.
+ * It reads directly from an atomic memory reference, ensuring zero UI freeze.
+ * Protection is auto-detected from stored metadata — no need to specify
+ * whether the value was encrypted or not.
+ *
+ * **Cold Start Behavior:** On the very first app launch, if the cache has not
+ * finished initializing, this will block once to ensure data consistency.
+ * Subsequent calls are always instant.
+ *
+ * ## Example
+ * ```kotlin
+ * val username = ksafe.getDirect("username", "Guest")
+ * val token = ksafe.getDirect("auth_token", "")
+ * ```
+ *
+ * @param T The type of value to retrieve. Supported: [Boolean], [Int], [Long],
+ *          [Float], [Double], [String], and `@Serializable` objects.
+ * @param key The unique key for the value.
+ * @param defaultValue The value to return if the key doesn't exist or decryption fails.
+ * @return The stored value or [defaultValue].
+ */
+inline fun <reified T> KSafe.getDirect(key: String, defaultValue: T): T {
+    @Suppress("UNCHECKED_CAST")
+    return getDirectRaw(key, defaultValue, serializer<T>()) as T
+}
+
+/**
+ * Updates a value asynchronously with optimistic caching using default encrypted mode.
+ *
+ * Default encrypted writes use `KSafeConfig.requireUnlockedDevice` as unlock-policy default.
+ * Use the overload with explicit [KSafeWriteMode] for plaintext writes or per-entry options.
+ */
+inline fun <reified T> KSafe.putDirect(key: String, value: T) {
+    putDirectRaw(key, value, defaultEncryptedMode(), serializer<T>())
+}
+
+/**
+ * Updates a value asynchronously with optimistic caching using explicit [KSafeWriteMode].
+ *
+ * Use this overload for plaintext writes ([KSafeWriteMode.Plain]) or encrypted options
+ * such as `requireUnlockedDevice`.
+ */
+inline fun <reified T> KSafe.putDirect(key: String, value: T, mode: KSafeWriteMode) {
+    putDirectRaw(key, value, mode, serializer<T>())
+}
+
+// --- SUSPEND API (Coroutine Safe) ---
+
+/**
+ * Retrieves a value suspending-ly.
+ *
+ * Like [getDirect], this checks the memory cache first for performance.
+ * If the cache is not ready, it suspends (instead of blocking) until data is loaded.
+ * Protection is auto-detected from stored metadata.
+ */
+suspend inline fun <reified T> KSafe.get(key: String, defaultValue: T): T {
+    @Suppress("UNCHECKED_CAST")
+    return getRaw(key, defaultValue, serializer<T>()) as T
+}
+
+/**
+ * Returns a [kotlinx.coroutines.flow.Flow] that emits the value whenever it changes.
+ *
+ * The Flow emits the current value immediately and then emits any subsequent updates.
+ * It is distinct-until-changed. Protection is auto-detected from stored metadata per emission.
+ */
+inline fun <reified T> KSafe.getFlow(key: String, defaultValue: T): Flow<T> {
+    @Suppress("UNCHECKED_CAST")
+    return getFlowRaw(key, defaultValue, serializer<T>()) as Flow<T>
+}
+
+/**
+ * Persists a value to disk suspending-ly using default encrypted mode.
+ */
+suspend inline fun <reified T> KSafe.put(key: String, value: T) {
+    putRaw(key, value, defaultEncryptedMode(), serializer<T>())
+}
+
+/**
+ * Persists a value to disk suspending-ly using explicit [KSafeWriteMode].
+ */
+suspend inline fun <reified T> KSafe.put(key: String, value: T, mode: KSafeWriteMode) {
+    putRaw(key, value, mode, serializer<T>())
+}
+
+// --- DEPRECATED OVERLOADS (encrypted: Boolean) ---
+
+@Deprecated(
+    "Use getDirect(key, defaultValue) instead. Protection is auto-detected on reads.",
+    ReplaceWith("getDirect(key, defaultValue)"),
+    level = DeprecationLevel.WARNING,
+)
+inline fun <reified T> KSafe.getDirect(key: String, defaultValue: T, encrypted: Boolean): T =
+    getDirect(key, defaultValue)
+
+@Deprecated(
+    "Replace \"encrypted\" parameter with \"mode\" parameter.\n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeWriteMode.Encrypted()\nencrypted=false -> KSafeWriteMode.Plain",
+    ReplaceWith("putDirect(key, value, if (encrypted) KSafeWriteMode.Encrypted() else KSafeWriteMode.Plain)"),
+    level = DeprecationLevel.WARNING,
+)
+inline fun <reified T> KSafe.putDirect(key: String, value: T, encrypted: Boolean) {
+    putDirect(key, value, if (encrypted) defaultEncryptedMode() else KSafeWriteMode.Plain)
+}
+
+@Deprecated(
+    "Use get(key, defaultValue) instead. Protection is auto-detected on reads.",
+    ReplaceWith("get(key, defaultValue)"),
+    level = DeprecationLevel.WARNING,
+)
+suspend inline fun <reified T> KSafe.get(key: String, defaultValue: T, encrypted: Boolean): T =
+    get(key, defaultValue)
+
+@Deprecated(
+    "Replace \"encrypted\" parameter with \"mode\" parameter.\n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeWriteMode.Encrypted()\nencrypted=false -> KSafeWriteMode.Plain",
+    ReplaceWith("put(key, value, if (encrypted) KSafeWriteMode.Encrypted() else KSafeWriteMode.Plain)"),
+    level = DeprecationLevel.WARNING,
+)
+suspend inline fun <reified T> KSafe.put(key: String, value: T, encrypted: Boolean) {
+    put(key, value, if (encrypted) defaultEncryptedMode() else KSafeWriteMode.Plain)
+}
+
+@Deprecated(
+    "Use getFlow(key, defaultValue) instead. Protection is auto-detected on reads.",
+    ReplaceWith("getFlow(key, defaultValue)"),
+    level = DeprecationLevel.WARNING,
+)
+inline fun <reified T> KSafe.getFlow(key: String, defaultValue: T, encrypted: Boolean): Flow<T> =
+    getFlow(key, defaultValue)
 
 /**
  * Configuration for biometric authorization duration caching.

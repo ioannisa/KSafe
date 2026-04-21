@@ -58,11 +58,6 @@ kotlin {
     applyDefaultHierarchyTemplate()
 
     sourceSets {
-        androidMain.dependencies {
-            implementation(libs.androidx.datastore.preferences)
-            implementation(libs.cryptography.provider.jdk)
-            implementation(libs.androidx.biometric)
-        }
         @Suppress("unused")
         val commonMain by getting {
             dependencies {
@@ -75,13 +70,35 @@ kotlin {
                 implementation(libs.cryptography.provider.base)
             }
         }
-        iosMain.dependencies {
-            implementation(libs.androidx.datastore.preferences.core)
-            implementation(libs.cryptography.provider.cryptokit)
+
+        // Intermediate source set shared by Android, iOS and JVM — all three use
+        // Jetpack DataStore Preferences as their on-disk backend, so the
+        // DataStoreStorage adapter lives here instead of being duplicated.
+        val datastoreMain by creating {
+            dependsOn(commonMain)
+            dependencies {
+                implementation(libs.androidx.datastore.preferences.core)
+            }
+        }
+
+        androidMain {
+            dependsOn(datastoreMain)
+            dependencies {
+                implementation(libs.androidx.datastore.preferences)
+                implementation(libs.cryptography.provider.jdk)
+                implementation(libs.androidx.biometric)
+            }
+        }
+        iosMain {
+            dependsOn(datastoreMain)
+            dependencies {
+                implementation(libs.cryptography.provider.cryptokit)
+            }
         }
 
         // Dependencies for the JVM target
         val jvmMain by getting {
+            dependsOn(datastoreMain)
             dependencies {
                 implementation(libs.androidx.datastore.preferences)
             }

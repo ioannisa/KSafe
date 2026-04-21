@@ -1,5 +1,6 @@
 package eu.anifantakis.lib.ksafe
 
+import eu.anifantakis.lib.ksafe.internal.secureRandomBytes
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.io.encoding.Base64

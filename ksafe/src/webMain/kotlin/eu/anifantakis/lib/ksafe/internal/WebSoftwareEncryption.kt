@@ -1,7 +1,8 @@
-package eu.anifantakis.lib.ksafe
+package eu.anifantakis.lib.ksafe.internal
 
 import dev.whyoleg.cryptography.CryptographyProvider
 import dev.whyoleg.cryptography.algorithms.AES
+import eu.anifantakis.lib.ksafe.KSafeConfig
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.io.encoding.Base64
@@ -69,12 +70,17 @@ internal class WebSoftwareEncryption(
     /**
      * Encrypts data using WebCrypto AES-GCM (suspend).
      *
-     * @param identifier Unique key alias.
-     * @param data Plaintext bytes.
-     * @return Ciphertext bytes (IV + ciphertext + auth tag, managed by WebCrypto).
+     * Overrides the default delegating implementation on [KSafeEncryption]. The
+     * extra parameters (`hardwareIsolated`, `requireUnlockedDevice`) don't map
+     * to anything in WebCrypto so they are accepted and ignored.
      */
     @OptIn(ExperimentalEncodingApi::class)
-    suspend fun encryptSuspend(identifier: String, data: ByteArray): ByteArray {
+    override suspend fun encryptSuspend(
+        identifier: String,
+        data: ByteArray,
+        hardwareIsolated: Boolean,
+        requireUnlockedDevice: Boolean?,
+    ): ByteArray {
         val key = getOrCreateKey(identifier)
         val cipher = key.cipher()
         return cipher.encrypt(data)
@@ -82,13 +88,9 @@ internal class WebSoftwareEncryption(
 
     /**
      * Decrypts data using WebCrypto AES-GCM (suspend).
-     *
-     * @param identifier Unique key alias.
-     * @param data Ciphertext bytes.
-     * @return Decrypted plaintext bytes.
      */
     @OptIn(ExperimentalEncodingApi::class)
-    suspend fun decryptSuspend(identifier: String, data: ByteArray): ByteArray {
+    override suspend fun decryptSuspend(identifier: String, data: ByteArray): ByteArray {
         val key = getOrCreateKey(identifier)
         val cipher = key.cipher()
         return cipher.decrypt(data)

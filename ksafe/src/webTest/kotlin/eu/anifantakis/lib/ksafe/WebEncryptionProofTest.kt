@@ -1,5 +1,8 @@
 package eu.anifantakis.lib.ksafe
 
+import eu.anifantakis.lib.ksafe.internal.localStorageGet
+import eu.anifantakis.lib.ksafe.internal.localStorageKey
+import eu.anifantakis.lib.ksafe.internal.localStorageLength
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test

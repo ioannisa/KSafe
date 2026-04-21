@@ -1,6 +1,6 @@
 @file:OptIn(kotlin.js.ExperimentalWasmJsInterop::class)
 
-package eu.anifantakis.lib.ksafe
+package eu.anifantakis.lib.ksafe.internal
 
 /**
  * wasmJs actual implementations of the web-interop surface.

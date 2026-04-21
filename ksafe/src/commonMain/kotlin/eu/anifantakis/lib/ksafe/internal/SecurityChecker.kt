@@ -1,4 +1,9 @@
-package eu.anifantakis.lib.ksafe
+package eu.anifantakis.lib.ksafe.internal
+
+import eu.anifantakis.lib.ksafe.KSafeSecurityPolicy
+import eu.anifantakis.lib.ksafe.SecurityAction
+import eu.anifantakis.lib.ksafe.SecurityViolation
+import eu.anifantakis.lib.ksafe.SecurityViolationException
 
 /**
  * Platform-specific security checker.
