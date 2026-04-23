@@ -1,6 +1,6 @@
 [versions]
 agp = "8.13.1"
-kotlin = "2.2.21"
+kotlin = "2.3.20"
 android-minSdk = "24"
 android-compileSdk = "36"
 datastorePreferences = "1.2.1"
