@@ -4,7 +4,13 @@ All notable changes to KSafe will be documented in this file.
 
 ## [2.0.0] - 2026-04-21
 
-Major internal refactor, plus the Kotlin/JS (IR) target and shared web source sets that were staged under a never-shipped 1.9.0 tag. **Public API is unchanged** — every consumer import resolves the same way, every call site behaves the same way, every on-disk format is preserved. The jump to 2.0 signals the scale of the internal rewrite and is a checkpoint for consumers to verify on upgrade, not a breaking change.
+Major internal refactor, plus the Kotlin/JS (IR) target and shared web source sets that were staged under a never-shipped 1.9.0 tag. 
+
+**Public API is unchanged**: Every consumer import resolves the same way, every call site behaves the same way, every on-disk format is preserved. 
+
+> The 2.0 bump signals an architectural shift, not an API break. 
+> 
+> KSafe is now built around a single `KSafeCore` orchestrator in `commonMain`, with platform files reduced to thin shells (~200–330 lines) that own only genuinely platform-specific concerns. From this release forward, bug fixes and feature additions ship once and apply to every target instead of being implemented and tested four times. The new mindset is the reason for the major version — public API is unchanged, every consumer import resolves the same way, and the on-disk format is preserved.
 
 ### Added
 
