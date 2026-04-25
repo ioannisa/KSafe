@@ -57,6 +57,7 @@ internal fun decodeBase64(encoded: String): ByteArray = Base64.decode(encoded)
  * 4. **Hybrid Loading:** Preloads data in background, but falls back to blocking load if accessed early.
  *
  * @property fileName Optional namespace for the storage file. Must be lower-case letters only.
+ * @property baseDirFile Optional custom location for the storage file. Directory must exist.
  * @property lazyLoad Whether to start the background preloader immediately.
  * @property memoryPolicy Whether to decrypt and store values in RAM, or keep them encrypted in RAM for additional security
  * @property config Encryption configuration (key size, etc.)
@@ -64,6 +65,7 @@ internal fun decodeBase64(encoded: String): ByteArray = Base64.decode(encoded)
  */
 actual class KSafe(
     @PublishedApi internal val fileName: String? = null,
+    @PublishedApi internal val baseDirFile: File? = null,
     private val lazyLoad: Boolean = false,
     @PublishedApi internal val memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
     private val config: KSafeConfig = KSafeConfig(),
@@ -77,13 +79,14 @@ actual class KSafe(
     @PublishedApi
     internal constructor(
         fileName: String? = null,
+        baseDirFile: File? = null,
         lazyLoad: Boolean = false,
         memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
         config: KSafeConfig = KSafeConfig(),
         securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
         plaintextCacheTtl: Duration = 5.seconds,
         testEngine: KSafeEncryption
-    ) : this(fileName, lazyLoad, memoryPolicy, config, securityPolicy, plaintextCacheTtl) {
+    ) : this(fileName, baseDirFile, lazyLoad, memoryPolicy, config, securityPolicy, plaintextCacheTtl) {
         _testEngine = testEngine
     }
 
@@ -147,12 +150,15 @@ actual class KSafe(
     @PublishedApi internal val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
         produceFile = {
-            val homeDir = Paths.get(System.getProperty("user.home")).toFile()
-            val baseDir = File(homeDir, ".eu_anifantakis_ksafe")
-            if (!baseDir.exists()) {
-                baseDir.mkdirs()
-                secureDirectory(baseDir)
-            }
+            val baseDir = if(baseDirFile == null) {
+                val homeDir = Paths.get(System.getProperty("user.home")).toFile()
+                val homeBaseDir = File(homeDir, ".eu_anifantakis_ksafe")
+                if (!homeBaseDir.exists()) {
+                    homeBaseDir.mkdirs()
+                    secureDirectory(homeBaseDir)
+                }
+                homeBaseDir
+            } else baseDirFile
             val base = fileName?.let { "eu_anifantakis_ksafe_datastore_$it" } ?: "eu_anifantakis_ksafe_datastore"
             val fnameWithSuffix = "$base.preferences_pb"
             File(baseDir, fnameWithSuffix)

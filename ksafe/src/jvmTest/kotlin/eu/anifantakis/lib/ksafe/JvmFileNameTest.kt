@@ -5,6 +5,9 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlin.test.*
 import kotlinx.serialization.Serializable
+import java.io.File
+import java.nio.file.Files
+import java.nio.file.Paths
 
 /**
  * Exhaustive tests for custom file names (letters-only).
@@ -63,6 +66,19 @@ class JvmFileNameTest {
         KSafe("abc123")
         KSafe("with_underscore")
         KSafe("data_v2")
+    }
+
+    /** Verfied if ksafe file gets stored on developers defined directory */
+    @Test
+    fun baseDirPath_allows_changing_default_directory() = runTest {
+        val tmpDir = Files.createTempDirectory("tmpKsafeTest").toFile()
+
+        val safe = KSafe("temporary_ksafe", tmpDir)
+        safe.put("hello", "world")
+
+        assertEquals(tmpDir.list().size, 1)
+
+        tmpDir.deleteRecursively()
     }
 
     /** Verifies filename validation rejects invalid characters */
