@@ -8,7 +8,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.structuralEqualityPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -205,12 +204,14 @@ inline fun <reified T> KSafe.mutableStateOf(
         } else if (initialValue == defaultValue) {
             // Self-heal: on platforms with async cache loading (WASM WebCrypto),
             // getDirect may return the default before decryption completes.
-            // Observe getFlow for the first post-init emission and update reactively.
+            // getFlow's first emission already carries the persisted (and, for
+            // encrypted entries, decrypted) value — take it and update.
+            // updateFromStorage is a no-op once the user has written, so a
+            // redundant idempotent set on platforms where the cache was already
+            // warm is harmless.
             CoroutineScope(Dispatchers.Default).launch {
                 withTimeoutOrNull(5_000L) {
-                    ksafe.getFlow<T>(actualKey, defaultValue)
-                        .drop(1)    // skip current snapshot (same as getDirect result)
-                        .first()    // wait for next emission (cache load)
+                    ksafe.getFlow<T>(actualKey, defaultValue).first()
                 }?.let { composeState.updateFromStorage(it) }
             }
         }

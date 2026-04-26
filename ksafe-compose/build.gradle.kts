@@ -66,6 +66,11 @@ kotlin {
         browser()
     }
 
+    // Mirror :ksafe — the default hierarchy gives us the shared webMain/webTest
+    // intermediate source sets used by both wasmJs and js(IR). Without this
+    // call, `webTest` does not exist.
+    applyDefaultHierarchyTemplate()
+
     sourceSets {
         commonMain {
             dependencies {
@@ -80,6 +85,7 @@ kotlin {
         commonTest {
             dependencies {
                 implementation(libs.kotlin.test)
+                implementation(libs.kotlinx.coroutines.test)
                 implementation(libs.runtime)
             }
         }
@@ -101,6 +107,12 @@ kotlin {
         iosMain {
             dependencies {
                 // Add iOS-specific dependencies here
+            }
+        }
+
+        getByName("webTest") {
+            dependencies {
+                implementation(libs.kotlinx.coroutines.test)
             }
         }
     }
