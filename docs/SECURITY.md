@@ -380,10 +380,11 @@ Migration is lazy and safe:
 * Automatic cleanup on app uninstall
 
 #### iOS
-* Keys stored in iOS Keychain Services
+* Keys stored in iOS Keychain Services with `…ThisDeviceOnly` accessibility (and Secure Enclave-backed wrapping for `HARDWARE_ISOLATED` writes)
 * Optional Secure Enclave support via `KSafeEncryptedProtection.HARDWARE_ISOLATED` (through `KSafeWriteMode.Encrypted`) — uses envelope encryption (SE-backed EC P-256 wraps/unwraps the AES key) with automatic Keychain fallback on devices without SE
 * Protected by device authentication
-* Not included in iCloud/iTunes backups
+* **Effectively device-local** — encryption keys never leave the device, so even if the DataStore file is included in an iCloud Backup, the ciphertext is undecryptable on a restored device. KSafe does not set `NSURLIsExcludedFromBackupKey` because DataStore's atomic-write strategy (write-to-temp + rename) clobbers the xattr on every flush; the security guarantee already comes from key locality. Apps that need device-portable preferences should use `UserDefaults`.
+* DataStore stored under `NSApplicationSupportDirectory` (the Apple-recommended location for invisible app data) since 2.0; pre-2.0 used `NSDocumentDirectory` and is auto-migrated on first 2.0 launch.
 * Automatic cleanup of orphaned keys on first app use after reinstall
 
 #### JVM/Desktop
@@ -420,7 +421,7 @@ KSafe ensures clean reinstalls on all platforms:
 * **iOS:** Orphaned Keychain entries (keys without data) detected and cleaned on first use. Orphaned ciphertext (data without keys) detected and cleaned on startup.
 * **JVM:** Orphaned ciphertext detected and cleaned on startup if encryption key files are lost.
 
-> **Note on unencrypted values:** The orphaned ciphertext cleanup targets only encrypted entries (those with the `encrypted_` prefix in DataStore). Unencrypted values (`encrypted = false`) are not affected by this cleanup. On Android, if `android:allowBackup="true"` is set in the manifest, Auto Backup may restore unencrypted DataStore entries after reinstall with stale values from the last backup snapshot.
+> **Note on unencrypted values:** The orphaned ciphertext cleanup targets only encrypted entries (those with the `encrypted_` legacy prefix or `__ksafe_meta_` canonical metadata indicating encryption in DataStore). Unencrypted values (written with `mode = KSafeWriteMode.Plain`) are not affected by this cleanup. On Android, if `android:allowBackup="true"` is set in the manifest, Auto Backup may restore unencrypted DataStore entries after reinstall with stale values from the last backup snapshot.
 
 ### iOS Keychain Cleanup Mechanism
 

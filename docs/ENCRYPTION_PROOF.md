@@ -85,19 +85,20 @@ You will see:
 # Path to the booted simulator's app data directory:
 APP_DATA="$(xcrun simctl get_app_container booted <bundle-id> data)"
 
-# List KSafe's preferences file(s):
-ls "$APP_DATA/Documents/"
+# List KSafe's preferences file(s) — KSafe 2.0 stores in Application Support
+# (pre-2.0 used Documents and is auto-migrated on first 2.0 launch):
+ls "$APP_DATA/Library/Application Support/"
 # Expected: eu_anifantakis_ksafe_datastore.preferences_pb
 
 # Decode the protobuf:
-protoc --decode_raw < "$APP_DATA/Documents/eu_anifantakis_ksafe_datastore.preferences_pb"
+protoc --decode_raw < "$APP_DATA/Library/Application Support/eu_anifantakis_ksafe_datastore.preferences_pb"
 ```
 
 Same layout as Android — `__ksafe_value_<key>` (Base64 ciphertext or raw), `__ksafe_meta_<key>__` (JSON). The AES keys live in the iOS Keychain.
 
 ### 2c. iOS (Real Device)
 
-Xcode → *Window* → *Devices and Simulators* → select device → select app in the *Installed Apps* list → ⚙️ → *Download Container…* → save the `.xcappdata` bundle. Right-click it in Finder → *Show Package Contents* → `AppData/Documents/eu_anifantakis_ksafe_datastore.preferences_pb`.
+Xcode → *Window* → *Devices and Simulators* → select device → select app in the *Installed Apps* list → ⚙️ → *Download Container…* → save the `.xcappdata` bundle. Right-click it in Finder → *Show Package Contents* → `AppData/Library/Application Support/eu_anifantakis_ksafe_datastore.preferences_pb`.
 
 ### 2d. JVM / Desktop
 

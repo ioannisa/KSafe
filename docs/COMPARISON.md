@@ -5,7 +5,7 @@
 | **KMP Support** | ✅ Android, iOS, JVM, WASM, JS | ❌ Android only | ✅ Android, iOS | ✅ Multi-platform | ⚠️ Limited |
 | **Hardware-backed Keys** | ✅ Keystore/Keychain | ✅ Keystore | ✅ Keystore/Keychain | ❌ No encryption | ❌ Software |
 | **Zero Boilerplate** | ✅ `by ksafe(0)` | ❌ Verbose API | ⚠️ Moderate | ⚠️ Moderate | ❌ SQL required |
-| **Biometric Helper** | ✅ Built-in | ❌ Manual | ❌ Manual | ❌ Manual | ❌ Manual |
+| **Biometric Helper** | ✅ Optional `:ksafe-biometrics` module | ❌ Manual | ❌ Manual | ❌ Manual | ❌ Manual |
 | **Compose State** | ✅ `mutableStateOf` | ❌ Manual | ❌ Manual | ❌ Manual | ❌ Manual |
 | **Type Safety** | ✅ Reified generics | ⚠️ Limited | ✅ Good | ✅ Good | ❌ SQL strings |
 | **Auth Caching** | ✅ Scoped sessions | ❌ No | ❌ No | ❌ No | ❌ No |

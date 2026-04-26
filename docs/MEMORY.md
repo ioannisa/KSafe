@@ -63,17 +63,44 @@ KSafe(
     memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
     config: KSafeConfig = KSafeConfig(),
     securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
-    plaintextCacheTtl: Duration = 5.seconds  // only used with ENCRYPTED_WITH_TIMED_CACHE
+    plaintextCacheTtl: Duration = 5.seconds,  // only used with ENCRYPTED_WITH_TIMED_CACHE
+    useStrongBox: Boolean = false,            // deprecated — use KSafeProtection.HARDWARE_ISOLATED per-property
+    baseDir: File? = null                     // override the default DataStore directory (see docs/SETUP.md)
 )
 
-// iOS / JVM / WASM / JS
+// JVM
 KSafe(
     fileName: String? = null,
     lazyLoad: Boolean = false,
     memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
     config: KSafeConfig = KSafeConfig(),
     securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
-    plaintextCacheTtl: Duration = 5.seconds  // only used with ENCRYPTED_WITH_TIMED_CACHE
+    plaintextCacheTtl: Duration = 5.seconds,
+    baseDir: File? = null                     // override the default DataStore directory (default: ~/.eu_anifantakis_ksafe)
+)
+
+// iOS
+KSafe(
+    fileName: String? = null,
+    lazyLoad: Boolean = false,
+    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+    config: KSafeConfig = KSafeConfig(),
+    securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
+    plaintextCacheTtl: Duration = 5.seconds,
+    useSecureEnclave: Boolean = false,        // deprecated — use KSafeProtection.HARDWARE_ISOLATED per-property
+    directory: String? = null                 // override the default DataStore directory (default: NSApplicationSupportDirectory)
+)
+
+// Web (Kotlin/WASM + Kotlin/JS)
+KSafe(
+    fileName: String? = null,
+    lazyLoad: Boolean = false,
+    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,  // ignored — always PLAIN_TEXT internally
+    config: KSafeConfig = KSafeConfig(),
+    securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
+    plaintextCacheTtl: Duration = 5.seconds
+    // No baseDir / directory: localStorage has no directory concept — instances are isolated
+    // by the `ksafe_<fileName>_` storage-key prefix.
 )
 ```
 
