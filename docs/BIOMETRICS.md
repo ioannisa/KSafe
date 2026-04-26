@@ -15,29 +15,17 @@ implementation("eu.anifantakis:ksafe-biometrics:2.0.0-RC1")
 
 That's it — no transitive dependency on `:ksafe`. Apps that don't need biometrics simply don't add this artifact.
 
-### 2 - Instantiate
+### 2 - Call it
+
+There is no init step. `KSafeBiometrics` is a static API:
 
 ```kotlin
-// Android — pass the application or activity context
-val biometrics = KSafeBiometrics(context)
-
-// iOS / JVM / web — no platform deps
-val biometrics = KSafeBiometrics()
+val ok = KSafeBiometrics.verifyBiometric("Authenticate to continue")
 ```
 
-With Koin (recommended for KMP):
+Same call shape on every platform — no `Context`, no instance, no DI wiring.
 
-```kotlin
-// Android
-actual val platformBiometricsModule = module {
-    single { KSafeBiometrics(androidApplication()) }
-}
-
-// iOS / JVM / web
-actual val platformBiometricsModule = module {
-    single { KSafeBiometrics() }
-}
-```
+On Android, the library auto-initializes via a `ContentProvider` declared in its merged `AndroidManifest.xml` (the same pattern WorkManager / Firebase / AppCompat use). The provider runs at process startup with the application Context and registers the activity-lifecycle observers that `BiometricPrompt` needs. The consumer doesn't have to touch their `Application` class.
 
 ### 3 - Platform behaviour
 
@@ -52,14 +40,13 @@ actual val platformBiometricsModule = module {
 
 | Method | Type | Use Case |
 |--------|------|----------|
-| `verifyBiometricDirect(reason, authorizationDuration?) { success -> }` | Callback-based | Simple, non-blocking, works anywhere |
-| `verifyBiometric(reason, authorizationDuration?): Boolean` | Suspend function | Coroutine-based, cleaner async code |
+| `KSafeBiometrics.verifyBiometricDirect(reason, authorizationDuration?) { success -> }` | Callback-based | Simple, non-blocking, works anywhere |
+| `KSafeBiometrics.verifyBiometric(reason, authorizationDuration?): Boolean` | Suspend function | Coroutine-based, cleaner async code |
 
 ## Basic Usage
 
 ```kotlin
 class MyViewModel(
-    private val biometrics: KSafeBiometrics,
     private val ksafe: KSafe,                  // optional — only if you also use KSafe
 ) : ViewModel() {
 
@@ -68,7 +55,7 @@ class MyViewModel(
 
     // Always prompt (no caching)
     fun incrementWithBiometric() {
-        biometrics.verifyBiometricDirect("Authenticate to increment") { success ->
+        KSafeBiometrics.verifyBiometricDirect("Authenticate to increment") { success ->
             if (success) secureCounter++
         }
     }
@@ -76,13 +63,15 @@ class MyViewModel(
     // Coroutine-based approach
     fun incrementWithBiometricSuspend() {
         viewModelScope.launch {
-            if (biometrics.verifyBiometric("Authenticate to increment")) {
+            if (KSafeBiometrics.verifyBiometric("Authenticate to increment")) {
                 secureCounter++
             }
         }
     }
 }
 ```
+
+`KSafeBiometrics` is not injected — it's called directly. There is no Koin / Hilt module to add for biometrics.
 
 ## Authorization Duration Caching
 
@@ -95,7 +84,7 @@ data class BiometricAuthorizationDuration(
 )
 
 // Cache for 60 seconds (scoped to this ViewModel)
-biometrics.verifyBiometricDirect(
+KSafeBiometrics.verifyBiometricDirect(
     reason = "Authenticate",
     authorizationDuration = BiometricAuthorizationDuration(
         duration = 60_000L,
@@ -110,6 +99,8 @@ biometrics.verifyBiometricDirect(
 | `duration > 0` | Cache auth for this many milliseconds |
 | `scope = null` | Global scope - any call benefits from cached auth |
 | `scope = "xyz"` | Scoped auth - only calls with same scope benefit |
+
+The auth cache is process-wide. Use `scope` to partition it per feature / screen / user / flow.
 
 ## Scoped Authorization Use Cases
 
@@ -127,8 +118,8 @@ BiometricAuthorizationDuration(120_000L, "checkout_flow")
 ## Clearing Cached Authorization
 
 ```kotlin
-biometrics.clearBiometricAuth()              // Clear all cached authorizations
-biometrics.clearBiometricAuth("settings")    // Clear specific scope only
+KSafeBiometrics.clearBiometricAuth()              // Clear all cached authorizations
+KSafeBiometrics.clearBiometricAuth("settings")    // Clear specific scope only
 ```
 
 ## Protecting Any Action
@@ -136,21 +127,21 @@ biometrics.clearBiometricAuth("settings")    // Clear specific scope only
 ```kotlin
 // Protect API calls
 fun deleteAccount() {
-    biometrics.verifyBiometricDirect("Confirm account deletion") { success ->
+    KSafeBiometrics.verifyBiometricDirect("Confirm account deletion") { success ->
         if (success) api.deleteAccount()
     }
 }
 
 // Protect navigation
 fun navigateToSecrets() {
-    biometrics.verifyBiometricDirect("Authenticate to view secrets") { success ->
+    KSafeBiometrics.verifyBiometricDirect("Authenticate to view secrets") { success ->
         if (success) navController.navigate("secrets")
     }
 }
 
 // Protect a KSafe write — biometrics and storage are completely independent
 fun saveSecret(value: String) {
-    biometrics.verifyBiometricDirect("Confirm save") { success ->
+    KSafeBiometrics.verifyBiometricDirect("Confirm save") { success ->
         if (success) ksafe.putDirect("secret", value)
     }
 }
@@ -174,19 +165,7 @@ class MainActivity : ComponentActivity()
 class MainActivity : AppCompatActivity()
 ```
 
-**Early Initialization** — `KSafeBiometrics` must be instantiated before any Activity is created so it can register lifecycle callbacks. The cleanest place is the `Application.onCreate()`:
-```kotlin
-class MyApplication : Application() {
-    override fun onCreate() {
-        super.onCreate()
-        startKoin {
-            androidContext(this@MyApplication)
-            modules(appModule)
-        }
-        get<KSafeBiometrics>()  // Force initialization — registers Activity tracking
-    }
-}
-```
+**Auto-init** — `KSafeBiometrics` registers its activity-lifecycle observer automatically via a `ContentProvider` declared in the library's merged manifest. You do **not** need to call any init function in your `Application.onCreate`. The provider's authority is `${applicationId}.ksafe-biometrics-init` so it can't collide with other libraries. If you specifically want to disable auto-init (rare), override the provider in your app's manifest with `tools:node="remove"` — but in nearly every case there's no reason to.
 
 **Customizing the Prompt:**
 ```kotlin
@@ -213,7 +192,6 @@ BiometricHelper.confirmationRequired = true   // false to allow passive face-unl
 
 ```kotlin
 class SecureViewModel(
-    private val biometrics: KSafeBiometrics,
     private val ksafe: KSafe,
 ) : ViewModel() {
 
@@ -231,7 +209,7 @@ class SecureViewModel(
 
     // Always prompt
     fun incrementBioCounter() {
-        biometrics.verifyBiometricDirect("Authenticate to save") { success ->
+        KSafeBiometrics.verifyBiometricDirect("Authenticate to save") { success ->
             if (success) {
                 bioCounter++
             }
@@ -240,7 +218,7 @@ class SecureViewModel(
 
     // With 60s duration caching (scoped to this ViewModel instance)
     fun incrementBioCounterCached() {
-        biometrics.verifyBiometricDirect(
+        KSafeBiometrics.verifyBiometricDirect(
             reason = "Authenticate to save",
             authorizationDuration = BiometricAuthorizationDuration(
                 duration = 60_000L,
@@ -260,7 +238,7 @@ class SecureViewModel(
                 duration = 60_000L,
                 scope = viewModelScope.hashCode().toString()
             )
-            if (biometrics.verifyBiometric("Authenticate to save", authDuration)) {
+            if (KSafeBiometrics.verifyBiometric("Authenticate to save", authDuration)) {
                 bioCounter++
             }
         }
@@ -268,10 +246,27 @@ class SecureViewModel(
 
     // Call on logout to force re-authentication
     fun onLogout() {
-        biometrics.clearBiometricAuth()  // Clear all cached auth
+        KSafeBiometrics.clearBiometricAuth()  // Clear all cached auth
     }
 }
 ```
+
+## Mocking in tests
+
+`KSafeBiometrics` is a Kotlin `object`, so you can't substitute it through normal constructor injection. The recommended pattern is to wrap calls in your own thin interface that you do inject:
+
+```kotlin
+interface BiometricGate {
+    suspend fun verify(reason: String): Boolean
+}
+
+class DefaultBiometricGate : BiometricGate {
+    override suspend fun verify(reason: String): Boolean =
+        KSafeBiometrics.verifyBiometric(reason)
+}
+```
+
+Inject `BiometricGate` into your ViewModels; provide a fake in tests. This keeps the friction-free static call shape for production code while preserving testability where it matters. Mockk can also mock objects directly if you prefer — `mockkObject(KSafeBiometrics)` works.
 
 ## Migration from KSafe 1.x
 
@@ -283,7 +278,7 @@ import eu.anifantakis.lib.ksafe.BiometricAuthorizationDuration
 ksafe.verifyBiometricDirect(reason, BiometricAuthorizationDuration(60_000L)) { ok -> }
 ```
 
-In 2.0 it moved to its own module ([issue #14](https://github.com/ioannisa/KSafe/issues/14)):
+In 2.0 it moved to its own module ([issue #14](https://github.com/ioannisa/KSafe/issues/14)) as a static API:
 
 ```kotlin
 // After (2.0)
@@ -291,17 +286,17 @@ In 2.0 it moved to its own module ([issue #14](https://github.com/ioannisa/KSafe
 import eu.anifantakis.lib.ksafe.biometrics.KSafeBiometrics
 import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration
 
-val biometrics = KSafeBiometrics(context) // Android
-biometrics.verifyBiometricDirect(reason, BiometricAuthorizationDuration(60_000L)) { ok -> }
+KSafeBiometrics.verifyBiometricDirect(reason, BiometricAuthorizationDuration(60_000L)) { ok -> }
 ```
 
 Method names and signatures are preserved — only the receiver and import paths change. `BiometricHelper.confirmationRequired` and `BiometricHelper.promptTitle` continue to work the same way, just imported from `eu.anifantakis.lib.ksafe.biometrics` instead of `eu.anifantakis.lib.ksafe`.
 
 **Key Points:**
 - Biometrics is a **standalone module** — `:ksafe-biometrics` does not depend on `:ksafe`
+- **Static API** — call `KSafeBiometrics.verifyBiometric(...)` directly. No DI, no `Context`, no init.
 - Use it to protect **any action** (persistence, API calls, navigation, etc.)
 - Two APIs: callback-based (`verifyBiometricDirect`) and suspend (`verifyBiometric`)
 - Optional duration caching with `BiometricAuthorizationDuration`
 - Scoped authorization for fine-grained control over cache invalidation
 - Works on Android (BiometricPrompt) and iOS (LocalAuthentication); JVM / JS / WasmJS return `true` so shared KMP business logic compiles unchanged
-- On Android, requires `AppCompatActivity` and early `KSafeBiometrics` initialization
+- On Android, requires `AppCompatActivity`. Auto-init via ContentProvider — no `Application` changes needed.

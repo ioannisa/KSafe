@@ -18,22 +18,21 @@ ksafe.clearBiometricAuth()
 ```
 
 ```kotlin
-// After — biometrics on a standalone KSafeBiometrics instance
+// After — biometrics is a static API in :ksafe-biometrics
 // build.gradle.kts:
 //   implementation("eu.anifantakis:ksafe-biometrics:2.0.0-RC1")
 
 import eu.anifantakis.lib.ksafe.biometrics.KSafeBiometrics
 import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration
 
-val biometrics = KSafeBiometrics(context) // Android — pass context
-val biometrics = KSafeBiometrics()        // iOS / JVM / web
-
-biometrics.verifyBiometricDirect(reason, BiometricAuthorizationDuration(60_000L)) { ok -> }
-biometrics.verifyBiometric(reason)
-biometrics.clearBiometricAuth()
+KSafeBiometrics.verifyBiometricDirect(reason, BiometricAuthorizationDuration(60_000L)) { ok -> }
+KSafeBiometrics.verifyBiometric(reason)
+KSafeBiometrics.clearBiometricAuth()
 ```
 
 Method names (`verifyBiometric`, `verifyBiometricDirect`, `clearBiometricAuth`) and signatures are preserved — only the receiver and import paths change. `BiometricHelper.confirmationRequired` and `BiometricHelper.promptTitle` continue to work the same way, just imported from `eu.anifantakis.lib.ksafe.biometrics`.
+
+**No DI wiring needed.** `KSafeBiometrics` is a Kotlin `object` — call it directly from anywhere. There's no instance to construct, no `Context` parameter, no Koin / Hilt / manual injection. On Android the library bootstraps itself via a `ContentProvider` declared in its merged manifest (the same pattern WorkManager / Firebase / AppCompat use), so your `Application.onCreate()` doesn't need any biometric init either. iOS / JVM / web have no init at all.
 
 If you don't use biometrics, no migration is needed — don't add the new artifact and the old `androidx.biometric` / `androidx.fragment` transitive deps stop being pulled in.
 

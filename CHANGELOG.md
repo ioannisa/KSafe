@@ -12,7 +12,7 @@ Major internal refactor; new standalone `:ksafe-biometrics` module; the Kotlin/J
 
 Resolves [issue #14](https://github.com/ioannisa/KSafe/issues/14) (thanks @Coding-Meet for the suggestion).
 
-`verifyBiometric`, `verifyBiometricDirect`, `clearBiometricAuth`, `BiometricAuthorizationDuration`, and the Android-side `BiometricHelper` no longer live on `KSafe`. They now belong to the new `KSafeBiometrics` class published as a separate, optional artifact:
+`verifyBiometric`, `verifyBiometricDirect`, `clearBiometricAuth`, `BiometricAuthorizationDuration`, and the Android-side `BiometricHelper` no longer live on `KSafe`. They now belong to a new `KSafeBiometrics` static API published as a separate, optional artifact:
 
 ```kotlin
 implementation("eu.anifantakis:ksafe-biometrics:2.0.0")
@@ -20,7 +20,15 @@ implementation("eu.anifantakis:ksafe-biometrics:2.0.0")
 
 `:ksafe-biometrics` has zero dependency on `:ksafe` — apps that only need biometric verification can use it without pulling in the storage library. Apps that don't need biometrics at all no longer pay for the `androidx.biometric` / `androidx.fragment` transitive deps that `:ksafe` used to drag in.
 
-The class targets the same six platforms as `:ksafe` and `:ksafe-compose` (Android, iOS x64/arm64/simArm64, JVM, JS-IR, WasmJS). Behavior is identical to the pre-2.0 implementation — Android uses `BiometricPrompt` (BIOMETRIC_STRONG + DEVICE_CREDENTIAL), iOS uses `LAContext` (Face ID / Touch ID), JVM/JS/WasmJS keep returning `true` so shared business logic in `commonMain` continues to compile and run unchanged.
+`KSafeBiometrics` is a **Kotlin `object`**, not an instantiable class. There is no DI wiring, no `Context` parameter, no `Application.onCreate` init. On Android the library auto-initializes via a `ContentProvider` declared in its merged manifest (the same pattern WorkManager / Firebase / AppCompat use); other platforms have no init at all. The call shape is identical on every target:
+
+```kotlin
+val ok = KSafeBiometrics.verifyBiometric("Authenticate")
+KSafeBiometrics.verifyBiometricDirect("Authenticate") { success -> }
+KSafeBiometrics.clearBiometricAuth()
+```
+
+The module targets the same six platforms as `:ksafe` and `:ksafe-compose` (Android, iOS x64/arm64/simArm64, JVM, JS-IR, WasmJS). Behavior is identical to the pre-2.0 implementation — Android uses `BiometricPrompt` (BIOMETRIC_STRONG + DEVICE_CREDENTIAL), iOS uses `LAContext` (Face ID / Touch ID), JVM/JS/WasmJS keep returning `true` so shared business logic in `commonMain` continues to compile and run unchanged.
 
 **Migration:**
 
@@ -29,17 +37,15 @@ The class targets the same six platforms as `:ksafe` and `:ksafe-compose` (Andro
 import eu.anifantakis.lib.ksafe.BiometricAuthorizationDuration
 ksafe.verifyBiometricDirect(reason, BiometricAuthorizationDuration(60_000L)) { ok -> }
 
-// After (2.0)
+// After (2.0) — static API, no instance, no DI
 // build.gradle.kts: + implementation("eu.anifantakis:ksafe-biometrics:2.0.0")
 import eu.anifantakis.lib.ksafe.biometrics.KSafeBiometrics
 import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration
 
-val biometrics: KSafeBiometrics = KSafeBiometrics(context) // Android
-// val biometrics = KSafeBiometrics() // iOS / JVM / web — no platform deps
-biometrics.verifyBiometricDirect(reason, BiometricAuthorizationDuration(60_000L)) { ok -> }
+KSafeBiometrics.verifyBiometricDirect(reason, BiometricAuthorizationDuration(60_000L)) { ok -> }
 ```
 
-Method names (`verifyBiometric` / `verifyBiometricDirect` / `clearBiometricAuth`) and signatures are preserved; only the receiver and import paths change. `BiometricHelper.confirmationRequired` and `BiometricHelper.promptTitle` continue to be configured the same way, just imported from the new package.
+Method names (`verifyBiometric` / `verifyBiometricDirect` / `clearBiometricAuth`) and signatures are preserved; only the receiver and import paths change. `BiometricHelper.confirmationRequired` and `BiometricHelper.promptTitle` continue to be configured the same way, just imported from the new package. Existing Koin / Hilt modules that registered `KSafe` for biometric injection can drop that wiring entirely — biometric methods are now called directly on `KSafeBiometrics`.
 
 ### Added
 

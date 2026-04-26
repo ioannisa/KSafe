@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Auto-init for KSafeBiometrics on Android.
+
+    This ContentProvider runs at process startup with the application Context,
+    which we use to bootstrap BiometricHelper's activity-lifecycle tracking.
+    Same pattern as WorkManager / Firebase / AppCompat.
+
+    Apps that specifically want to opt out can override this in their own
+    manifest with tools:node="remove".
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <provider
+            android:name="eu.anifantakis.lib.ksafe.biometrics.KSafeBiometricsInitProvider"
+            android:authorities="${applicationId}.ksafe-biometrics-init"
+            android:exported="false"
+            android:multiprocess="false" />
+    </application>
+
+</manifest>

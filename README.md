@@ -197,8 +197,7 @@ viewModelScope.launch {
 }
 
 // 6. Protect actions with biometrics (optional — add `ksafe-biometrics`)
-val biometrics = KSafeBiometrics(context)  // Android: pass context. iOS / JVM / web: no args.
-biometrics.verifyBiometricDirect("Confirm payment") { success ->
+KSafeBiometrics.verifyBiometricDirect("Confirm payment") { success ->
     if (success) processPayment()
 }
 ```
@@ -445,25 +444,25 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 
 A standalone biometric helper (Android + iOS) that can gate **any action** in your app — not just KSafe ops. Ships as the optional `:ksafe-biometrics` artifact and depends on nothing else from KSafe, so apps that need only biometric verification can use it on its own.
 
+**Static API.** No instance, no DI wiring, no `Context` parameter. On Android the library auto-initializes via a `ContentProvider` declared in its merged manifest (the same pattern WorkManager / Firebase use), so consumers don't need to touch their `Application` class.
+
 ```kotlin
-// Construct (Android needs context, others don't)
-val biometrics = KSafeBiometrics(context) // Android
-val biometrics = KSafeBiometrics()        // iOS / JVM / web
+// Same call shape on every platform — Android, iOS, JVM, web.
 
 // Callback-based
-biometrics.verifyBiometricDirect("Authenticate to increment") { success ->
+KSafeBiometrics.verifyBiometricDirect("Authenticate to increment") { success ->
     if (success) secureCounter++
 }
 
 // Suspend-based
-if (biometrics.verifyBiometric("Authenticate to increment")) {
+if (KSafeBiometrics.verifyBiometric("Authenticate to increment")) {
     secureCounter++
 }
 ```
 
 Auth caching, scoped sessions, platform setup, complete examples: [docs/BIOMETRICS.md](docs/BIOMETRICS.md).
 
-> **Migrating from KSafe ≤1.x?** Biometric methods used to live on `KSafe` itself. In 2.0 they moved to a separate module. Add `implementation("eu.anifantakis:ksafe-biometrics:2.0.0-RC1")`, change `import eu.anifantakis.lib.ksafe.BiometricAuthorizationDuration` → `import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration`, replace `ksafe.verifyBiometric(...)` with `biometrics.verifyBiometric(...)` on a `KSafeBiometrics` instance. Method names and signatures are unchanged.
+> **Migrating from KSafe ≤1.x?** Biometric methods used to live on `KSafe` itself. In 2.0 they moved to a separate module. Add `implementation("eu.anifantakis:ksafe-biometrics:2.0.0-RC1")`, change `import eu.anifantakis.lib.ksafe.BiometricAuthorizationDuration` → `import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration`, replace `ksafe.verifyBiometric(...)` with `KSafeBiometrics.verifyBiometric(...)`. Method names and signatures are unchanged. No instance to construct, no DI wiring needed.
 
 ***
 

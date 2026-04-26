@@ -3,24 +3,23 @@ package eu.anifantakis.lib.ksafe.biometrics
 /**
  * Standalone biometric authentication helper.
  *
- * `KSafeBiometrics` is an independent module — it has no dependency on the
- * `:ksafe` storage library and can be used on its own. Use it alongside
- * KSafe when you want to gate storage access (or any other action) behind
- * biometric verification.
+ * `KSafeBiometrics` is a process-wide static API. Call its methods directly —
+ * no instance, no DI wiring. Android initializes itself automatically via a
+ * `ContentProvider` declared in the library's merged manifest; other
+ * platforms have no init.
+ *
+ * The module is independent of `:ksafe`: use it on its own to gate any action,
+ * or alongside `:ksafe` to require biometric verification before storage access.
  *
  * ## Example
  * ```kotlin
- * // Android: pass the application context
- * val biometrics = KSafeBiometrics(context)
- *
- * // iOS / JVM / web: no platform deps
- * val biometrics = KSafeBiometrics()
+ * // Same call shape on every platform — no instance, no Context, no DI
  *
  * // Always prompt
- * val ok = biometrics.verifyBiometric("Authenticate to delete account")
+ * val ok = KSafeBiometrics.verifyBiometric("Authenticate to delete account")
  *
  * // Cache successful auth for 60s within a scope
- * biometrics.verifyBiometricDirect(
+ * KSafeBiometrics.verifyBiometricDirect(
  *     reason = "Authenticate",
  *     authorizationDuration = BiometricAuthorizationDuration(60_000L, "settings")
  * ) { success -> /* ... */ }
@@ -36,7 +35,7 @@ package eu.anifantakis.lib.ksafe.biometrics
  *   If you need a hard refusal on these platforms, gate the call in your own code.
  */
 @Suppress("unused")
-expect class KSafeBiometrics {
+object KSafeBiometrics {
 
     /**
      * Verifies biometric authentication.
@@ -48,16 +47,16 @@ expect class KSafeBiometrics {
      * ## Example
      * ```kotlin
      * // Always prompt
-     * val ok = biometrics.verifyBiometric("Authenticate to delete account")
+     * val ok = KSafeBiometrics.verifyBiometric("Authenticate to delete account")
      *
      * // Cache for 60s globally
-     * val ok = biometrics.verifyBiometric(
+     * val ok = KSafeBiometrics.verifyBiometric(
      *     reason = "Authenticate",
      *     authorizationDuration = BiometricAuthorizationDuration(60_000L)
      * )
      *
      * // Cache for 60s scoped to settings screen
-     * val ok = biometrics.verifyBiometric(
+     * val ok = KSafeBiometrics.verifyBiometric(
      *     reason = "Authenticate",
      *     authorizationDuration = BiometricAuthorizationDuration(60_000L, "settings-screen")
      * )
@@ -71,18 +70,18 @@ expect class KSafeBiometrics {
     suspend fun verifyBiometric(
         reason: String = "Authenticate to continue",
         authorizationDuration: BiometricAuthorizationDuration? = null
-    ): Boolean
+    ): Boolean = platformVerifyBiometric(reason, authorizationDuration)
 
     /**
      * Non-blocking variant of [verifyBiometric].
      *
      * ## Example
      * ```kotlin
-     * biometrics.verifyBiometricDirect("Authenticate") { success ->
+     * KSafeBiometrics.verifyBiometricDirect("Authenticate") { success ->
      *     if (success) { /* … */ }
      * }
      *
-     * biometrics.verifyBiometricDirect(
+     * KSafeBiometrics.verifyBiometricDirect(
      *     reason = "Authenticate to save",
      *     authorizationDuration = BiometricAuthorizationDuration(60_000L)
      * ) { success -> /* ... */ }
@@ -97,7 +96,7 @@ expect class KSafeBiometrics {
         reason: String = "Authenticate to continue",
         authorizationDuration: BiometricAuthorizationDuration? = null,
         onResult: (Boolean) -> Unit
-    )
+    ) = platformVerifyBiometricDirect(reason, authorizationDuration, onResult)
 
     /**
      * Clears cached biometric authorization for a specific scope or all scopes.
@@ -106,8 +105,27 @@ expect class KSafeBiometrics {
      *
      * @param scope The scope to clear. If `null`, clears ALL cached authorizations.
      */
-    fun clearBiometricAuth(scope: String? = null)
+    fun clearBiometricAuth(scope: String? = null) = platformClearBiometricAuth(scope)
 }
+
+// ─── Platform helpers ──────────────────────────────────────────────────────
+//
+// `KSafeBiometrics` delegates to these per-platform top-level functions.
+// Each platform owns its own session-cache state (Android/iOS: real cache;
+// JVM/JS/WasmJS: no cache, always returns true).
+
+internal expect suspend fun platformVerifyBiometric(
+    reason: String,
+    authorizationDuration: BiometricAuthorizationDuration?,
+): Boolean
+
+internal expect fun platformVerifyBiometricDirect(
+    reason: String,
+    authorizationDuration: BiometricAuthorizationDuration?,
+    onResult: (Boolean) -> Unit,
+)
+
+internal expect fun platformClearBiometricAuth(scope: String?)
 
 /**
  * Configuration for biometric authorization duration caching.
