@@ -1,7 +1,8 @@
-# KSafe — Universal Key/Value Persistence for Kotlin Multiplatform - Encrypted By Default / Unencrypted Supported
+# KSafe — Universal Key/Value Persistence for Kotlin Multiplatform and Android
 
-_**The Universal Persistence Layer: `MutableState`, `MutableStateFlow`, and plain variables — all encrypted, all persisted, all surviving process death. For Android, iOS, Desktop, and Web.**_
-
+* **Encrypted by default. Plain _(unencrypted)_ when needed.**
+* **Persist variables, Compose State, StateFlow, and serializable objects across Android, iOS, Desktop, and Web**
+* **Easy to use by design**
 
 [![Maven Central](https://img.shields.io/maven-central/v/eu.anifantakis/ksafe.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/eu.anifantakis/ksafe)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
