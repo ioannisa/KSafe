@@ -91,7 +91,7 @@ class AndroidConcurrencyTest {
             }
         }
 
-        jobs.forEach { it.join() }
+        jobs.joinAll()
 
         assertEquals(0, errors.get(), "No exceptions during encrypted put/get stress")
         assertEquals(
@@ -152,9 +152,9 @@ class AndroidConcurrencyTest {
             }
         }
 
-        writers.forEach { it.join() }
+        writers.joinAll()
         running.set(false)
-        readers.forEach { it.join() }
+        readers.joinAll()
 
         assertEquals(0, errors.get(), "No exceptions during concurrent read/write")
         assertEquals(
@@ -202,7 +202,7 @@ class AndroidConcurrencyTest {
             }
         }
 
-        jobs.forEach { it.join() }
+        jobs.joinAll()
 
         assertEquals(
             0, errors.get(),
@@ -241,7 +241,7 @@ class AndroidConcurrencyTest {
             }
         }
 
-        jobs.forEach { it.join() }
+        jobs.joinAll()
 
         // The value should be SOMETHING written, never the default
         val finalValue = ksafe.getDirect(key, default)

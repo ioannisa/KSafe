@@ -106,7 +106,7 @@ class JvmKSafeTest : KSafeTest() {
         }
 
         // Wait for all writers to complete
-        jobs.forEach { it.join() }
+        jobs.joinAll()
 
         // No delay needed - errors are caught during putDirect() execution
         // Background persistence happens async but doesn't affect test correctness
@@ -146,7 +146,7 @@ class JvmKSafeTest : KSafeTest() {
             }
         }
 
-        jobs.forEach { it.join() }
+        jobs.joinAll()
 
         assertEquals(0, errors.get(), "Should have no errors during concurrent encrypted writes")
     }
@@ -198,7 +198,7 @@ class JvmKSafeTest : KSafeTest() {
         }
 
         writer.join()
-        readers.forEach { it.join() }
+        readers.joinAll()
 
         assertEquals(0, errors.get(), "Should have no errors during concurrent read/write")
     }
@@ -231,7 +231,7 @@ class JvmKSafeTest : KSafeTest() {
             }
         }
 
-        jobs.forEach { it.join() }
+        jobs.joinAll()
 
         assertTrue(
             errors.get() == 0,
@@ -282,7 +282,7 @@ class JvmKSafeTest : KSafeTest() {
             }
         }
 
-        jobs.forEach { it.join() }
+        jobs.joinAll()
 
         assertEquals(0, errors.get(), "No exceptions during test")
         assertEquals(
@@ -485,9 +485,9 @@ class JvmKSafeTest : KSafeTest() {
             }
         }
 
-        writers.forEach { it.join() }
+        writers.joinAll()
         running.set(false)
-        readers.forEach { it.join() }
+        readers.joinAll()
 
         assertEquals(0, errors.get(), "No exceptions during test")
         assertEquals(
@@ -585,7 +585,7 @@ class JvmKSafeTest : KSafeTest() {
         delay(200)
 
         // Simulate pre-1.8.0 encrypted storage shape.
-        val alias = ksafe.fileName?.let { "$it:$key" } ?: key
+        val alias = ksafe.core.keyAlias(key)
         val oldJson = "\"legacy_v1\""
         val oldCiphertext = encodeBase64(ksafe.engine.encrypt(alias, oldJson.encodeToByteArray()))
         ksafe.dataStore.edit { prefs ->

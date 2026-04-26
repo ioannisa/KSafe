@@ -1,5 +1,48 @@
 # Migration Guide
 
+### From v1.x to v2.0
+
+The 2.0 release is largely a non-breaking architectural refactor (single `KSafeCore` orchestrator, thin platform shells, on-disk format preserved). The **one consumer-visible breaking change** is that biometric authentication has moved into a separate, optional module.
+
+#### Biometrics extracted into `:ksafe-biometrics` ([#14](https://github.com/ioannisa/KSafe/issues/14))
+
+Pre-2.0, biometric verification was a member of `KSafe`. In 2.0 it lives in its own artifact with no dependency on the storage library:
+
+```kotlin
+// Before — biometrics on KSafe
+import eu.anifantakis.lib.ksafe.BiometricAuthorizationDuration
+
+ksafe.verifyBiometricDirect(reason, BiometricAuthorizationDuration(60_000L)) { ok -> }
+ksafe.verifyBiometric(reason)
+ksafe.clearBiometricAuth()
+```
+
+```kotlin
+// After — biometrics on a standalone KSafeBiometrics instance
+// build.gradle.kts:
+//   implementation("eu.anifantakis:ksafe-biometrics:2.0.0-RC1")
+
+import eu.anifantakis.lib.ksafe.biometrics.KSafeBiometrics
+import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration
+
+val biometrics = KSafeBiometrics(context) // Android — pass context
+val biometrics = KSafeBiometrics()        // iOS / JVM / web
+
+biometrics.verifyBiometricDirect(reason, BiometricAuthorizationDuration(60_000L)) { ok -> }
+biometrics.verifyBiometric(reason)
+biometrics.clearBiometricAuth()
+```
+
+Method names (`verifyBiometric`, `verifyBiometricDirect`, `clearBiometricAuth`) and signatures are preserved — only the receiver and import paths change. `BiometricHelper.confirmationRequired` and `BiometricHelper.promptTitle` continue to work the same way, just imported from `eu.anifantakis.lib.ksafe.biometrics`.
+
+If you don't use biometrics, no migration is needed — don't add the new artifact and the old `androidx.biometric` / `androidx.fragment` transitive deps stop being pulled in.
+
+Storage API (`getDirect`, `putDirect`, `get`, `put`, `getFlow`, property delegates, Compose state) is unchanged. `import eu.anifantakis.lib.ksafe.KSafe` still resolves; `ksafe.put(...)` / `ksafe.get(...)` / `by ksafe(0)` keep working without code changes.
+
+Full migration walkthrough and rationale: [docs/BIOMETRICS.md](BIOMETRICS.md#migration-from-ksafe-1x).
+
+***
+
 ### From v1.6.x to v1.7.0
 
 #### `encrypted: Boolean` → `KSafeWriteMode` (WARNING)

@@ -2,7 +2,6 @@ package eu.anifantakis.lib.ksafe
 
 import kotlinx.coroutines.*
 import kotlinx.coroutines.test.runTest
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
@@ -96,7 +95,7 @@ class Jvm160FixesTest {
         }
 
         latch.countDown() // unleash all threads
-        jobs.forEach { it.join() }
+        jobs.joinAll()
 
         assertEquals(
             0, errors.get(),
@@ -145,7 +144,7 @@ class Jvm160FixesTest {
         }
 
         latch.countDown()
-        jobs.forEach { it.join() }
+        jobs.joinAll()
 
         assertEquals(
             0, errors.get(),
@@ -195,7 +194,7 @@ class Jvm160FixesTest {
             }
         }
 
-        jobs.forEach { it.join() }
+        jobs.joinAll()
 
         assertEquals(0, exceptionCount.get(), "No exceptions during stress test")
         assertEquals(
@@ -312,7 +311,7 @@ class Jvm160FixesTest {
         }
 
         deleter.join()
-        workers.forEach { it.join() }
+        workers.joinAll()
 
         assertEquals(
             0, exceptions.get(),
@@ -400,7 +399,7 @@ class Jvm160FixesTest {
             }
         }
 
-        jobs.forEach { it.join() }
+        jobs.joinAll()
 
         assertEquals(
             0, errors.get(),
@@ -457,7 +456,7 @@ class Jvm160FixesTest {
         }
 
         latch.countDown()
-        jobs.forEach { it.join() }
+        jobs.joinAll()
 
         assertEquals(
             0, errors.get(),
@@ -519,7 +518,7 @@ class Jvm160FixesTest {
         }
 
         latch.countDown()
-        jobs.forEach { it.join() }
+        jobs.joinAll()
 
         assertEquals(
             0, errors.get(),

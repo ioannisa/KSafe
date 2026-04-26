@@ -5,7 +5,6 @@ import androidx.compose.runtime.referentialEqualityPolicy
 import androidx.compose.runtime.neverEqualPolicy
 import eu.anifantakis.lib.ksafe.KSafe
 import eu.anifantakis.lib.ksafe.compose.mutableStateOf
-import eu.anifantakis.lib.ksafe.getDirect
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals

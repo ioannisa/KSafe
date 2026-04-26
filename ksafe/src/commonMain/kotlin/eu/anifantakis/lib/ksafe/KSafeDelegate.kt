@@ -30,11 +30,11 @@ internal class KSafeDelegate<T>(
 ) : ReadWriteProperty<Any?, T> {
     override fun getValue(thisRef: Any?, property: KProperty<*>): T {
         @Suppress("UNCHECKED_CAST")
-        return ksafe.getDirectRaw(key ?: property.name, defaultValue, serializer) as T
+        return ksafe.core.getDirectRaw(key ?: property.name, defaultValue, serializer) as T
     }
 
     override fun setValue(thisRef: Any?, property: KProperty<*>, value: T) {
-        ksafe.putDirectRaw(key ?: property.name, value, mode, serializer)
+        ksafe.core.putDirectRaw(key ?: property.name, value, mode, serializer)
     }
 }
 
@@ -68,7 +68,7 @@ internal class KSafeFlowDelegate<T>(
     override fun getValue(thisRef: Any?, property: KProperty<*>): Flow<T> {
         return flow ?: run {
             @Suppress("UNCHECKED_CAST")
-            val f = ksafe.getFlowRaw(key ?: property.name, defaultValue, serializer) as Flow<T>
+            val f = ksafe.core.getFlowRaw(key ?: property.name, defaultValue, serializer) as Flow<T>
             flow = f
             f
         }
@@ -219,16 +219,16 @@ internal class KSafeMutableStateFlowDelegate<T>(
             val actualKey = key ?: property.name
 
             @Suppress("UNCHECKED_CAST")
-            val initial = ksafe.getDirectRaw(actualKey, defaultValue, serializer) as T
+            val initial = ksafe.core.getDirectRaw(actualKey, defaultValue, serializer) as T
 
             val msf = KSafeMutableStateFlow(initial) { newValue ->
-                ksafe.putDirectRaw(actualKey, newValue, mode, serializer)
+                ksafe.core.putDirectRaw(actualKey, newValue, mode, serializer)
             }
 
             // Observe external changes (other screens, background writes)
             scope.launch {
                 @Suppress("UNCHECKED_CAST")
-                (ksafe.getFlowRaw(actualKey, defaultValue, serializer) as Flow<T>)
+                (ksafe.core.getFlowRaw(actualKey, defaultValue, serializer) as Flow<T>)
                     .collect { msf.updateFromFlow(it) }
             }
 

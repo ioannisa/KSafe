@@ -18,7 +18,7 @@ kotlin {
         publishLibraryVariants("release")
         @OptIn(ExperimentalKotlinGradlePluginApi::class)
         compilerOptions {
-            jvmTarget.set(JvmTarget.JVM_1_8)
+            jvmTarget.set(JvmTarget.JVM_11)
         }
     }
     listOf(
@@ -86,7 +86,6 @@ kotlin {
             dependencies {
                 implementation(libs.androidx.datastore.preferences)
                 implementation(libs.cryptography.provider.jdk)
-                implementation(libs.androidx.biometric)
             }
         }
         iosMain {
@@ -165,8 +164,8 @@ android {
         testInstrumentationRunnerArguments["clearPackageData"] = "true"
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
     }
 
     testOptions {

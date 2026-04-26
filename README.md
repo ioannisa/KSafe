@@ -39,7 +39,7 @@ KSafe gives you a complete persistence layer for Kotlin Multiplatform: property 
 - **Asynchronous?** ✔ Yes — full suspend API when you want guaranteed disk flushes
 **Extras when you encrypt:**
 
-* **Biometrics?** ✔ Yes — Face ID / Touch ID / Fingerprint on Android + iOS, with auth caching
+* **Biometrics?** ✔ Yes — Face ID / Touch ID / Fingerprint on Android + iOS, with auth caching. Ships as the standalone optional `ksafe-biometrics` module so apps that don't need it pay nothing.
 * **Root/jailbreak detection?** ✔ Yes — configurable WARN/BLOCK actions + analytics callback
 * **Memory policy?** ✔ Yes — three RAM modes trading security vs performance
 * **Database passphrase in one line?** ✔ Yes — hardware-isolated 256-bit secret for SQLCipher / SQLDelight / Room
@@ -196,8 +196,9 @@ viewModelScope.launch {
     val token = ksafe.get("user_token", "")
 }
 
-// 6. Protect actions with biometrics
-ksafe.verifyBiometricDirect("Confirm payment") { success ->
+// 6. Protect actions with biometrics (optional — add `ksafe-biometrics`)
+val biometrics = KSafeBiometrics(context)  // Android: pass context. iOS / JVM / web: no args.
+biometrics.verifyBiometricDirect("Confirm payment") { success ->
     if (success) processPayment()
 }
 ```
@@ -214,11 +215,14 @@ Data is now AES-256-GCM encrypted — keys in Android Keystore, iOS Keychain, so
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:1.9.0")
-implementation("eu.anifantakis:ksafe-compose:1.9.0") // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe:2.0.0-RC1")
+implementation("eu.anifantakis:ksafe-compose:2.0.0-RC1")     // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe-biometrics:2.0.0-RC1")  // ← Biometric auth (optional)
 ```
 
 > Skip `ksafe-compose` if you don't use Jetpack Compose or `mutableStateOf` persistence.
+>
+> Skip `ksafe-biometrics` if you don't need Face ID / Touch ID / Fingerprint verification. The biometrics module is fully independent — it has no dependency on `:ksafe` and can be used on its own to protect any action in your app.
 
 > **Note:** `kotlinx-serialization-json` comes in transitively — don't add it yourself.
 
@@ -439,21 +443,27 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 
 ## Biometric Authentication
 
-A standalone biometric helper (Android + iOS) that can gate **any action** in your app — not just KSafe ops.
+A standalone biometric helper (Android + iOS) that can gate **any action** in your app — not just KSafe ops. Ships as the optional `:ksafe-biometrics` artifact and depends on nothing else from KSafe, so apps that need only biometric verification can use it on its own.
 
 ```kotlin
+// Construct (Android needs context, others don't)
+val biometrics = KSafeBiometrics(context) // Android
+val biometrics = KSafeBiometrics()        // iOS / JVM / web
+
 // Callback-based
-ksafe.verifyBiometricDirect("Authenticate to increment") { success ->
+biometrics.verifyBiometricDirect("Authenticate to increment") { success ->
     if (success) secureCounter++
 }
 
 // Suspend-based
-if (ksafe.verifyBiometric("Authenticate to increment")) {
+if (biometrics.verifyBiometric("Authenticate to increment")) {
     secureCounter++
 }
 ```
 
 Auth caching, scoped sessions, platform setup, complete examples: [docs/BIOMETRICS.md](docs/BIOMETRICS.md).
+
+> **Migrating from KSafe ≤1.x?** Biometric methods used to live on `KSafe` itself. In 2.0 they moved to a separate module. Add `implementation("eu.anifantakis:ksafe-biometrics:2.0.0-RC1")`, change `import eu.anifantakis.lib.ksafe.BiometricAuthorizationDuration` → `import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration`, replace `ksafe.verifyBiometric(...)` with `biometrics.verifyBiometric(...)` on a `KSafeBiometrics` instance. Method names and signatures are unchanged.
 
 ***
 

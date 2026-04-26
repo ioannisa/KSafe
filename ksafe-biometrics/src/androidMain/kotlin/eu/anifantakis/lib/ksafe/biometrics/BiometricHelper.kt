@@ -1,4 +1,4 @@
-package eu.anifantakis.lib.ksafe
+package eu.anifantakis.lib.ksafe.biometrics
 
 import android.app.Activity
 import android.app.Application
@@ -9,7 +9,7 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import eu.anifantakis.lib.ksafe.BiometricHelper.activityWaitTimeoutMs
+import eu.anifantakis.lib.ksafe.biometrics.BiometricHelper.activityWaitTimeoutMs
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -31,8 +31,8 @@ class BiometricActivityNotFoundException(message: String) : Exception(message)
 /**
  * Helper object that tracks the current Activity and handles biometric authentication.
  *
- * This is initialized automatically when KSafe is created with a Context.
- * It enables zero-config biometric support for property delegation.
+ * This is initialized automatically when [KSafeBiometrics] is created with a Context.
+ * It enables zero-config biometric support for ViewModel-style usage.
  *
  * You can customize the biometric prompt text:
  * ```kotlin
@@ -75,7 +75,7 @@ object BiometricHelper {
     var confirmationRequired: Boolean = true
 
     /**
-     * Initialize activity tracking. Called automatically by KSafe.
+     * Initialize activity tracking. Called automatically by [KSafeBiometrics].
      */
     fun init(application: Application) {
         if (isInitialized) return
@@ -255,7 +255,7 @@ object BiometricHelper {
                             }
                         } else {
                             activity.lifecycle.addObserver(observer)
-                            
+
                             // Remove observer on cancellation
                             continuation.invokeOnCancellation {
                                 activity.runOnUiThread {

@@ -27,7 +27,7 @@ import kotlinx.coroutines.flow.map
  */
 @PublishedApi
 internal class DataStoreStorage(
-    private val dataStore: DataStore<Preferences>,
+    @PublishedApi internal val dataStore: DataStore<Preferences>,
 ) : KSafePlatformStorage {
 
     override suspend fun snapshot(): Map<String, StoredValue> =

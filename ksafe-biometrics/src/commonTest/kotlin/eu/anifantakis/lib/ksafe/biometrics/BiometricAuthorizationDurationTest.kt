@@ -1,4 +1,4 @@
-package eu.anifantakis.lib.ksafe
+package eu.anifantakis.lib.ksafe.biometrics
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -199,8 +199,6 @@ class BiometricAuthorizationDurationTest {
     /** Verifies zero duration is allowed (validation elsewhere) */
     @Test
     fun biometricAuthorizationDuration_zeroDuration() {
-        // While 0 duration might not make practical sense,
-        // the data class should allow it (validation is elsewhere)
         val duration = BiometricAuthorizationDuration(0L, null)
         assertEquals(0L, duration.duration)
     }
@@ -208,8 +206,6 @@ class BiometricAuthorizationDurationTest {
     /** Verifies negative duration is allowed (validation elsewhere) */
     @Test
     fun biometricAuthorizationDuration_negativeDuration() {
-        // While negative duration doesn't make sense,
-        // the data class should allow it (validation is elsewhere)
         val duration = BiometricAuthorizationDuration(-1000L, null)
         assertEquals(-1000L, duration.duration)
     }

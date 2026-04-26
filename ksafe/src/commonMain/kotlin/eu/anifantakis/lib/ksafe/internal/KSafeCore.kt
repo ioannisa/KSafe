@@ -46,7 +46,7 @@ import kotlin.time.TimeSource
  */
 @PublishedApi
 internal class KSafeCore(
-    private val storage: KSafePlatformStorage,
+    @PublishedApi internal val storage: KSafePlatformStorage,
     /**
      * Lazily-resolved engine. A provider (rather than the engine itself) lets
      * the platform shell inject a `testEngine` via a secondary constructor
@@ -76,7 +76,7 @@ internal class KSafeCore(
      * `"$KEY_ALIAS_PREFIX.$fileName?.$key"`; iOS/JVM use `"$fileName?:$key"`
      * (or just `key` when `fileName` is null).
      */
-    private val keyAlias: (userKey: String) -> String,
+    @PublishedApi internal val keyAlias: (userKey: String) -> String,
     /**
      * Prefix used to recognise legacy-format encrypted entries on disk.
      * Default is `"encrypted_"`. iOS overrides this to `"${fileName}_"` when
@@ -91,9 +91,16 @@ internal class KSafeCore(
      */
     private val legacyEncryptedKeyFor: (userKey: String) -> String =
         KeySafeMetadataManager::legacyEncryptedRawKey,
+    /**
+     * Optional pre-write mode transform. Android/iOS use this to honor the
+     * deprecated `useStrongBox`/`useSecureEnclave` constructor flags by
+     * promoting `KSafeWriteMode.Encrypted(DEFAULT)` to `HARDWARE_ISOLATED`.
+     * JVM/Web pass the identity (default).
+     */
+    private val modeTransformer: (KSafeWriteMode) -> KSafeWriteMode = { it },
 ) {
 
-    private val engine: KSafeEncryption by lazy(engineProvider)
+    @PublishedApi internal val engine: KSafeEncryption by lazy(engineProvider)
 
     @PublishedApi internal val json: Json = config.json
 
@@ -524,6 +531,7 @@ internal class KSafeCore(
 
     @PublishedApi
     internal fun putDirectRaw(key: String, value: Any?, mode: KSafeWriteMode, serializer: KSerializer<*>) {
+        @Suppress("NAME_SHADOWING") val mode = modeTransformer(mode)
         val protection = mode.toProtection()
         val requireUnlockedDevice = mode is KSafeWriteMode.Encrypted && mode.requireUnlockedDevice
 
@@ -574,6 +582,7 @@ internal class KSafeCore(
 
     @PublishedApi
     internal suspend fun putRaw(key: String, value: Any?, mode: KSafeWriteMode, serializer: KSerializer<*>) {
+        @Suppress("NAME_SHADOWING") val mode = modeTransformer(mode)
         if (mode is KSafeWriteMode.Encrypted) {
             putEncryptedSuspend(key, value, mode.toProtection()!!, mode.requireUnlockedDevice, serializer)
         } else {

@@ -2,15 +2,44 @@
 
 All notable changes to KSafe will be documented in this file.
 
-## [2.0.0] - 2026-04-21
+## [2.0.0] - 2026-04-26
 
-Major internal refactor, plus the Kotlin/JS (IR) target and shared web source sets that were staged under a never-shipped 1.9.0 tag. 
+Major internal refactor; new standalone `:ksafe-biometrics` module; the Kotlin/JS (IR) target and shared web source sets that were staged under a never-shipped 1.9.0 tag.
 
-**Public API is unchanged**: Every consumer import resolves the same way, every call site behaves the same way, every on-disk format is preserved. 
+### Breaking changes
 
-> The 2.0 bump signals an architectural shift, not an API break. 
-> 
-> KSafe is now built around a single `KSafeCore` orchestrator in `commonMain`, with platform files reduced to thin shells (~200–330 lines) that own only genuinely platform-specific concerns. From this release forward, bug fixes and feature additions ship once and apply to every target instead of being implemented and tested four times. The new mindset is the reason for the major version — public API is unchanged, every consumer import resolves the same way, and the on-disk format is preserved.
+#### Biometric authentication extracted into a standalone `:ksafe-biometrics` module ([#14](https://github.com/ioannisa/KSafe/issues/14))
+
+Resolves [issue #14](https://github.com/ioannisa/KSafe/issues/14) (thanks @Coding-Meet for the suggestion).
+
+`verifyBiometric`, `verifyBiometricDirect`, `clearBiometricAuth`, `BiometricAuthorizationDuration`, and the Android-side `BiometricHelper` no longer live on `KSafe`. They now belong to the new `KSafeBiometrics` class published as a separate, optional artifact:
+
+```kotlin
+implementation("eu.anifantakis:ksafe-biometrics:2.0.0")
+```
+
+`:ksafe-biometrics` has zero dependency on `:ksafe` — apps that only need biometric verification can use it without pulling in the storage library. Apps that don't need biometrics at all no longer pay for the `androidx.biometric` / `androidx.fragment` transitive deps that `:ksafe` used to drag in.
+
+The class targets the same six platforms as `:ksafe` and `:ksafe-compose` (Android, iOS x64/arm64/simArm64, JVM, JS-IR, WasmJS). Behavior is identical to the pre-2.0 implementation — Android uses `BiometricPrompt` (BIOMETRIC_STRONG + DEVICE_CREDENTIAL), iOS uses `LAContext` (Face ID / Touch ID), JVM/JS/WasmJS keep returning `true` so shared business logic in `commonMain` continues to compile and run unchanged.
+
+**Migration:**
+
+```kotlin
+// Before (1.x / pre-RC)
+import eu.anifantakis.lib.ksafe.BiometricAuthorizationDuration
+ksafe.verifyBiometricDirect(reason, BiometricAuthorizationDuration(60_000L)) { ok -> }
+
+// After (2.0)
+// build.gradle.kts: + implementation("eu.anifantakis:ksafe-biometrics:2.0.0")
+import eu.anifantakis.lib.ksafe.biometrics.KSafeBiometrics
+import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration
+
+val biometrics: KSafeBiometrics = KSafeBiometrics(context) // Android
+// val biometrics = KSafeBiometrics() // iOS / JVM / web — no platform deps
+biometrics.verifyBiometricDirect(reason, BiometricAuthorizationDuration(60_000L)) { ok -> }
+```
+
+Method names (`verifyBiometric` / `verifyBiometricDirect` / `clearBiometricAuth`) and signatures are preserved; only the receiver and import paths change. `BiometricHelper.confirmationRequired` and `BiometricHelper.promptTitle` continue to be configured the same way, just imported from the new package.
 
 ### Added
 
@@ -67,16 +96,16 @@ The function takes `KSafePlatformStorage` + `KSafeEncryption` + the fileName/pre
 
 #### Shared `KSafeCore` orchestrator in `commonMain`
 
-Everything that was previously duplicated across `KSafe.android.kt`, `KSafe.ios.kt`, `KSafe.jvm.kt`, and `KSafe.web.kt` — the hot cache, the per-frame write coalescer, the protection-metadata classifier, the orphan-ciphertext cleanup, the raw `get/put/delete/getFlow` plumbing — now lives in a single `KSafeCore` class in `commonMain`. The four platform files are thin shells (~220–330 lines each) that own only genuinely platform-specific concerns: constructor signatures, DataStore/localStorage creation, hardware-detection, engine wiring, biometric prompts.
+Everything that was previously duplicated across `KSafe.android.kt`, `KSafe.ios.kt`, `KSafe.jvm.kt`, and `KSafe.web.kt` — the hot cache, the per-frame write coalescer, the protection-metadata classifier, the orphan-ciphertext cleanup, the raw `get/put/delete/getFlow` plumbing — now lives in a single `KSafeCore` class in `commonMain`.
 
 | File | Before 2.0.0 | After 2.0.0 |
 |---|---:|---:|
-| `commonMain` (KSafe.kt + KSafeCore + storage interface + concurrency shims) | ~500 | ~1,400 |
-| `KSafe.jvm.kt` | 1,360 | 219 |
-| `KSafe.android.kt` | 1,584 | 254 |
-| `KSafe.ios.kt` | 1,938 | 330 |
-| `KSafe.web.kt` | 1,052 | 155 |
-| **Platform-shell total** | **5,934** | **958** |
+| `commonMain` (KSafe.kt + KSafeCore + storage interface + concurrency shims) | ~500 | ~1,500 |
+| `KSafe.jvm.kt` | 1,360 | 212 |
+| `KSafe.android.kt` | 1,584 | 176 |
+| `KSafe.ios.kt` | 1,938 | 225 |
+| `KSafe.web.kt` | 1,052 | 128 |
+| **Platform-shell total** | **5,934** | **741** |
 
 Bug fixes and feature additions now ship once instead of four times.
 
@@ -88,11 +117,32 @@ A new `KSafePlatformStorage` abstraction sits between `KSafeCore` and the persis
 
 Added `encryptSuspend`, `decryptSuspend`, and `deleteKeySuspend` to `KSafeEncryption` with default bodies that delegate to the existing blocking methods. Android/iOS/JVM engines are untouched — their blocking implementations satisfy the new contract via the defaults. `WebSoftwareEncryption` overrides the suspend variants with real WebCrypto calls and continues to throw `UnsupportedOperationException` from the blocking paths (WebCrypto is async-only). `KSafeCore` calls the suspend variants from every coroutine-context code path, which is how web now rides the shared orchestrator.
 
-#### Inline public API moved to `commonMain` top-level extensions
+#### `KSafe` is now a regular common class — no more `expect/actual`
 
-The `inline fun <reified T> getDirect/put/get/putDirect/getFlow` functions — and their deprecated `encrypted: Boolean` overloads — are now top-level extension functions in `commonMain` instead of member declarations on the `expect class`. Consumer syntax is identical: `ksafe.getDirect("k", "d")` resolves the same way whether the function is a member or an extension, because Kotlin treats them identically at call sites. Each inline body is inlined into the consumer's bytecode at compile time, so binary compatibility is preserved.
+`KSafe` is no longer an `expect class`. It is a regular `class` declared once in `commonMain`, with its public storage API (`getDirect`, `putDirect`, `get`, `put`, `getFlow`, plus the deprecated `encrypted: Boolean` overloads, plus `delete`, `deleteDirect`, `clearAll`, `getKeyInfo`) defined a single time in commonMain — including the inline reified bodies. There is no per-platform duplication of inline shims, and no `*Raw` trampoline layer on `KSafe`. Inline reified members forward straight to `core.getDirectRaw(...)` etc.; that is the only boundary between reified and non-reified code.
 
-The `@PublishedApi internal` non-inline `*Raw` helpers remain as `actual` members of each platform `KSafe` class — they're what the inline wrappers forward into.
+Construction moves to per-platform top-level factory functions named `KSafe`, so the consumer call site is unchanged — `KSafe(context, ...)` on Android, `KSafe(...)` on iOS / JVM / web — Kotlin treats `KSafe(...)` as either a constructor or a top-level function with the same name, and resolves identically at the call site:
+
+```kotlin
+// commonMain
+class KSafe @PublishedApi internal constructor(
+    @PublishedApi internal val core: KSafeCore,
+    val deviceKeyStorages: Set<KSafeKeyStorage>,
+    @PublishedApi internal val onClearAllCleanup: suspend () -> Unit = {},
+) {
+    inline fun <reified T> getDirect(key: String, defaultValue: T): T { ... }
+    // ...all storage methods, ONCE
+}
+
+// androidMain — same call syntax as before
+fun KSafe(context: Context, fileName: String? = null, ...): KSafe = ...
+```
+
+Test secondary constructors (the pre-2.0 `internal constructor(..., testEngine: KSafeEncryption)`) are now `@PublishedApi internal fun KSafe(..., testEngine: KSafeEncryption): KSafe` overloads alongside the public factories. Tests that called `KSafe(context, fileName, ..., testEngine = engine)` work unchanged.
+
+The deprecated `useStrongBox` / `useSecureEnclave` flags on Android / iOS that promote default-protection encrypted writes to `HARDWARE_ISOLATED` are honored via a new optional `modeTransformer: (KSafeWriteMode) -> KSafeWriteMode = { it }` parameter on `KSafeCore`. Android/iOS pass `::promoteMode`; JVM/web rely on the identity default. Result: every per-platform shell shrinks to genuinely thin glue (engine wiring, key-storage tier resolution, the JVM `clearAll` file-cleanup callback). Compose / property-delegate / state-flow callers unchanged — they all reach `core` via `ksafe.core` exactly as before.
+
+Web's `awaitCacheReady()` and JVM's test-only `dataStore` / `engine` / `updateCache(prefs)` accessors are now platform-source-set extension functions/properties on `KSafe` (same package as `KSafe`, so tests need no new imports). Their behaviour is identical to the pre-2.0 members.
 
 #### Internal types moved to `eu.anifantakis.lib.ksafe.internal`
 
@@ -120,7 +170,8 @@ Pre-refactor only Android's read path re-threw `"device is locked"` / `"Keystore
 ### Upgrade notes
 
 - **On-disk format is unchanged.** Existing 1.8.x data reads cleanly.
-- **Public API is unchanged.** `import eu.anifantakis.lib.ksafe.KSafe` and friends still resolve; `ksafe.put(...)` / `ksafe.get(...)` / `by ksafe(0)` delegates continue to work.
+- **Storage API is unchanged.** `import eu.anifantakis.lib.ksafe.KSafe` and friends still resolve; `ksafe.put(...)` / `ksafe.get(...)` / `by ksafe(0)` delegates continue to work.
+- **Biometric API moved.** See the **Breaking changes** section above for the migration to `:ksafe-biometrics`. If your project doesn't use biometric verification, no action needed.
 - **Recommended smoke-test on upgrade:** write a handful of values of each type in a pre-2.0 build, upgrade the library, and verify reads on first launch. The cross-type migration tests above give high confidence, but custom `KSerializer` or `@Contextual` users should validate their specific types once.
 - **Known follow-up:** `isStringSerializer` in `internal/KSafeSerializerUtil.kt` is now unused (superseded by `primitiveKindOrNull` dispatch). Kept for one release for anyone inlining against it; will be removed in 2.1.
 
