@@ -1,13 +1,12 @@
 package eu.anifantakis.ksafe.compose
 
 import androidx.compose.runtime.structuralEqualityPolicy
-import androidx.compose.runtime.referentialEqualityPolicy
-import androidx.compose.runtime.neverEqualPolicy
 import eu.anifantakis.lib.ksafe.KSafe
 import eu.anifantakis.lib.ksafe.compose.mutableStateOf
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 
 /**
  * Tests for [KSafe.mutableStateOf] extension function.
@@ -83,7 +82,7 @@ abstract class KSafeMutableStateOfTest {
 
     // ============ ENCRYPTION TESTS ============
 
-    /** Verifies mutableStateOf encrypts by default */
+    /** Verifies mutableStateOf encrypts by default. */
     @Test
     fun mutableStateOf_encryptsByDefault() {
         val ksafe = createKSafe()
@@ -93,16 +92,23 @@ abstract class KSafeMutableStateOfTest {
 
         delegate.setValue(null, ::testProperty, "SecretData")
 
-        // Should be stored encrypted
-        val encrypted = ksafe.getDirect("encrypted_key", "fallback", encrypted = true)
-        assertEquals("SecretData", encrypted)
+        // Roundtrip — auto-detection on read decrypts and returns the original value.
+        assertEquals("SecretData", ksafe.getDirect("encrypted_key", "fallback"))
 
-        // Reading unencrypted should return default (data is encrypted)
-        val unencrypted = ksafe.getDirect("encrypted_key", "fallback", encrypted = false)
-        assertNotEquals("SecretData", unencrypted)
+        // 2.0 way to verify "encrypted by default": the key's metadata reports a
+        // non-null protection. Pre-2.0 the test asserted that an `encrypted = false`
+        // read returned defaults (proving on-disk data was ciphertext); in 2.0 the
+        // deprecated `encrypted` parameter is ignored and protection is auto-detected
+        // from metadata, so we check the metadata directly via `getKeyInfo`.
+        val keyInfo = ksafe.getKeyInfo("encrypted_key")
+        assertNotNull(keyInfo, "Key info should exist for stored value")
+        assertNotNull(
+            keyInfo.protection,
+            "Default mutableStateOf write must record an encrypted protection tier",
+        )
     }
 
-    /** Verifies mutableStateOf can store unencrypted when specified */
+    /** Verifies mutableStateOf can store unencrypted when specified. */
     @Test
     fun mutableStateOf_canStoreUnencrypted() {
         val ksafe = createKSafe()
@@ -112,9 +118,18 @@ abstract class KSafeMutableStateOfTest {
 
         delegate.setValue(null, ::testProperty, "PlainData")
 
-        // Should be readable as unencrypted
-        val plain = ksafe.getDirect("plain_key", "fallback", encrypted = false)
-        assertEquals("PlainData", plain)
+        // Roundtrip works whether we ask via the auto-detected or the legacy path.
+        assertEquals("PlainData", ksafe.getDirect("plain_key", "fallback"))
+
+        // Plain writes record `protection = null` in metadata — `getKeyInfo` makes
+        // the difference observable in 2.0 even though the deprecated `encrypted`
+        // parameter on reads no longer affects behaviour.
+        val keyInfo = ksafe.getKeyInfo("plain_key")
+        assertNotNull(keyInfo, "Key info should exist for stored value")
+        assertNull(
+            keyInfo.protection,
+            "Plain write must record a null protection tier (not encrypted)",
+        )
     }
 
     // ============ TYPE TESTS ============

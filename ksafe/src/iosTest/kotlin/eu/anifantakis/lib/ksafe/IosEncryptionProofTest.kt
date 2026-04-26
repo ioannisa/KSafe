@@ -6,8 +6,8 @@ import kotlinx.cinterop.get
 import kotlinx.cinterop.reinterpret
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
+import platform.Foundation.NSApplicationSupportDirectory
 import platform.Foundation.NSData
-import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSURL
 import platform.Foundation.NSUserDomainMask
@@ -45,14 +45,16 @@ class IosEncryptionProofTest {
 
     @OptIn(ExperimentalForeignApi::class)
     private fun readDataStoreFile(fileName: String): ByteArray? {
-        val docDir: NSURL = NSFileManager.defaultManager.URLForDirectory(
-            directory = NSDocumentDirectory,
+        // 2.0 iOS stores the DataStore in NSApplicationSupportDirectory, not in
+        // NSDocumentDirectory as it did pre-2.0. (See iOS migration in CHANGELOG.)
+        val supportDir: NSURL = NSFileManager.defaultManager.URLForDirectory(
+            directory = NSApplicationSupportDirectory,
             inDomain = NSUserDomainMask,
             appropriateForURL = null,
             create = false,
             error = null
         ) ?: return null
-        val path = docDir.path!! + "/eu_anifantakis_ksafe_datastore_$fileName.preferences_pb"
+        val path = supportDir.path!! + "/eu_anifantakis_ksafe_datastore_$fileName.preferences_pb"
         val data: NSData = NSData.dataWithContentsOfURL(NSURL.fileURLWithPath(path))
             ?: return null
 
