@@ -214,8 +214,58 @@ class ScreenB { val prefs = KSafe(fileName = "userdata") }  // DON'T DO THIS!
 ```
 
 **File Name Requirements:**
-- Must contain only lowercase letters (a-z)
-- No numbers, special characters, or uppercase letters allowed
-- Examples: `"userdata"`, `"settings"`, `"cache"`
+- Must match the regex `[a-z][a-z0-9_]*` — start with a lowercase letter, followed by lowercase letters, digits, or underscores
+- No spaces, dots, slashes, hyphens, or uppercase letters allowed
+- Examples: `"userdata"`, `"settings"`, `"data_v2"`, `"cache"`
+
+***
+
+## Custom Storage Directory
+
+By default KSafe picks a platform-appropriate location for its DataStore file:
+
+| Platform | Default location |
+|----------|-----------------|
+| **Android** | `/data/data/<package>/files/datastore/eu_anifantakis_ksafe_datastore[_<fileName>].preferences_pb` (the app sandbox — recommended) |
+| **iOS** | `<NSApplicationSupportDirectory>/eu_anifantakis_ksafe_datastore[_<fileName>].preferences_pb`. Always excluded from iCloud Backup (encryption keys are device-local, so a restored ciphertext would be undecryptable — see migration guide for details). |
+| **JVM/Desktop** | `~/.eu_anifantakis_ksafe/eu_anifantakis_ksafe_datastore[_<fileName>].preferences_pb`, with POSIX `0700` permissions |
+| **Web** | `localStorage`, prefixed `ksafe_<fileName>_` (no directory concept) |
+
+Most apps should stick with the default. But on JVM, Android, and iOS you can pass a custom path when you need to control where data lives — for example to align with `$XDG_DATA_HOME` on Linux, store inside `noBackupFilesDir` on Android, or place data in your app's own working directory.
+
+```kotlin
+// JVM — store under XDG data home (or %APPDATA% on Windows, your own dir, etc.)
+val xdg = System.getenv("XDG_DATA_HOME") ?: "${System.getProperty("user.home")}/.local/share"
+val ksafe = KSafe(
+    fileName = "vault",
+    baseDir = java.io.File("$xdg/myapp/ksafe"),
+)
+// KSafe creates the directory if missing and applies POSIX 0700.
+
+// Android — store inside no-backup files dir (excluded from auto-backup)
+val ksafe = KSafe(
+    context = context,
+    fileName = "vault",
+    baseDir = java.io.File(context.noBackupFilesDir, "ksafe"),
+)
+// If null, KSafe uses the Context-managed app-private path —
+// recommended for most apps because the Android sandbox enforces correct
+// permissions there. Do NOT point baseDir at external storage for sensitive data.
+
+// iOS — supply an absolute path string
+val ksafe = KSafe(
+    fileName = "vault",
+    directory = "/path/to/your/dir",
+)
+// If null, KSafe uses NSApplicationSupportDirectory — the iOS-correct
+// location for invisible app data. KSafe data is always excluded from
+// iCloud Backup on iOS (the encryption keys are device-local, so a
+// restored ciphertext would be undecryptable — backing it up would mean
+// silent data loss on the new device).
+```
+
+**Web** doesn't expose a directory concept — `localStorage` is per-origin and KSafe already isolates instances via the `ksafe_<fileName>_` storage prefix. There's no `baseDir` parameter on the web factory.
+
+**iOS upgraders: migration is automatic.** Pre-2.0 KSafe stored its DataStore in `NSDocumentDirectory`. 2.0 moves the default to `NSApplicationSupportDirectory`. When you don't pass `directory` and the new path is empty, KSafe checks for a legacy file at the old location and moves it on first launch — no code changes needed. Details in the [iOS migration section](MIGRATION.md#ios-default-storage-path-moved-from-nsdocumentdirectory-to-nsapplicationsupportdirectory).
 
 ***

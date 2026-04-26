@@ -66,17 +66,43 @@ class JvmFileNameTest {
         KSafe("data_v2")
     }
 
-    /** Verfied if ksafe file gets stored on developers defined directory */
+    /** Verifies that supplying a custom `baseDir` redirects storage to that directory. */
     @Test
-    fun baseDirPath_allows_changing_default_directory() = runTest {
+    fun baseDir_storesFileInProvidedDirectory() = runTest {
         val tmpDir = Files.createTempDirectory("tmpKsafeTest").toFile()
+        try {
+            val name = "temporary_ksafe"
+            val safe = KSafe(fileName = name, baseDir = tmpDir)
+            safe.put("hello", "world")
 
-        val safe = KSafe("temporary_ksafe", tmpDir)
-        safe.put("hello", "world")
+            // File created in the custom dir, with the expected datastore name.
+            val expected = java.io.File(tmpDir, "eu_anifantakis_ksafe_datastore_$name.preferences_pb")
+            assertTrue(expected.exists(), "Expected $expected to exist")
+            assertEquals(1, tmpDir.list()?.size ?: 0)
 
-        assertEquals(tmpDir.list().size, 1)
+            // Roundtrip the value through the same instance.
+            assertEquals("world", safe.get("hello", "fallback"))
+        } finally {
+            tmpDir.deleteRecursively()
+        }
+    }
 
-        tmpDir.deleteRecursively()
+    /** Verifies that `clearAll()` removes the file from a custom `baseDir`. */
+    @Test
+    fun baseDir_clearAll_removesFileFromProvidedDirectory() = runTest {
+        val tmpDir = Files.createTempDirectory("tmpKsafeClearTest").toFile()
+        try {
+            val name = "temporary_clear_ksafe"
+            val safe = KSafe(fileName = name, baseDir = tmpDir)
+            safe.put("k", "v")
+            val expected = java.io.File(tmpDir, "eu_anifantakis_ksafe_datastore_$name.preferences_pb")
+            assertTrue(expected.exists(), "Expected $expected to exist before clearAll()")
+
+            safe.clearAll()
+            assertFalse(expected.exists(), "Expected $expected to be deleted by clearAll()")
+        } finally {
+            tmpDir.deleteRecursively()
+        }
     }
 
     /** Verifies filename validation rejects invalid characters */

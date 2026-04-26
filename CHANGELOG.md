@@ -49,6 +49,45 @@ Method names (`verifyBiometric` / `verifyBiometricDirect` / `clearBiometricAuth`
 
 ### Added
 
+#### Custom storage directory ([#25](https://github.com/ioannisa/KSafe/pull/25) — thanks @DeStilleGast)
+
+`KSafe(...)` factories on JVM, Android, and iOS now accept an optional override for the directory where the underlying DataStore file lives.
+
+**JVM** — new `baseDir: File? = null` parameter:
+
+```kotlin
+val safe = KSafe(fileName = "settings", baseDir = File(System.getenv("XDG_DATA_HOME") ?: "${System.getProperty("user.home")}/.local/share/myapp"))
+```
+
+If null, the default `~/.eu_anifantakis_ksafe` is used. KSafe creates the directory if missing and applies POSIX `0700` permissions on POSIX file systems regardless of which path is used (originally the user-supplied path skipped the permission hardening — that's fixed). The same resolved path is now also used by `clearAll()`'s file-cleanup callback (originally it hardcoded the home dir, so `clearAll()` failed silently to delete the file when `baseDir` was set — that's also fixed).
+
+**Android** — new `baseDir: File? = null` parameter:
+
+```kotlin
+val safe = KSafe(context, fileName = "vault", baseDir = File(context.noBackupFilesDir, "ksafe"))
+```
+
+If null (the recommended default), KSafe uses Context's app-private path (`/data/data/<package>/files/datastore/...`). The Android sandbox enforces correct permissions on that path. Custom paths are useful for `noBackupFilesDir` or test isolation; do not point them at external storage for sensitive data. The DataStore cache key now reflects the actual file path so two `KSafe` instances pointing at different `baseDir`s get separate DataStores instead of conflicting.
+
+**iOS** — new `directory: String? = null` parameter (path string), plus a behavior change to the default location described under *Breaking changes* below.
+
+#### iOS default storage moved to `NSApplicationSupportDirectory` with automatic 1.x migration
+
+Pre-2.0 iOS stored the DataStore in `NSDocumentDirectory`. That's user-visible (exposed via iTunes File Sharing if `UIFileSharingEnabled` is set) and iCloud-syncable by default — both wrong defaults for KSafe's content. 2.0 moves the default to `NSApplicationSupportDirectory`, the Apple-recommended location for invisible app data.
+
+```kotlin
+// New default: ~/Library/Application Support/<bundle>/eu_anifantakis_ksafe_datastore.preferences_pb
+// Old default (pre-2.0): ~/Documents/eu_anifantakis_ksafe_datastore.preferences_pb
+val safe = KSafe(fileName = "vault")
+
+// Or pass a custom path
+val safe = KSafe(fileName = "vault", directory = "/some/path")
+```
+
+**Automatic migration for 1.x → 2.0 upgraders.** When the consumer doesn't pass an explicit `directory` and the new path is empty, KSafe checks for a legacy file at the old `NSDocumentDirectory` path on first launch and moves it. Idempotent (only runs while the new path is empty), best-effort (a failed move logs a warning and leaves the legacy file in place — the consumer can recover by passing `directory = "<old Documents path>"`). Apps bumping the dep from 1.x to 2.0 don't need any code changes to keep their data.
+
+**KSafe data on iOS is always excluded from iCloud Backup.** The DataStore file is unconditionally marked with `NSURLIsExcludedFromBackupKey`. This is not a configurable knob — there's no scenario where backing up KSafe's encrypted ciphertext produces working data on a restored device. Encryption keys live in the Keychain with `…ThisDeviceOnly` accessibility (and Secure Enclave keys never leave the device for `HARDWARE_ISOLATED` writes), so a backup of the ciphertext would be undecryptable on restore — silent data loss disguised as "settings preserved." Forcing exclusion makes KSafe's contract on iOS consistent: **data is device-local**, encrypted or plain. Apps that want device-portable preferences should use `UserDefaults`, which is the right tool for that semantics.
+
 #### Kotlin/JS (IR) target — browser support beyond WasmGC
 
 KSafe now publishes a dedicated Kotlin/JS (IR) artifact alongside the existing Kotlin/WASM target. Projects that build for the legacy JS toolchain — or that need to ship to browsers without WasmGC (anything older than Chrome 119 / Firefox 120 / Safari 18) — are no longer dead-ended.

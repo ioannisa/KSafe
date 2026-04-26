@@ -43,23 +43,41 @@ private val fileNameRegex = Regex("[a-z][a-z0-9_]*")
  * POSIX permissions on the base directory, the [JvmSoftwareEncryption] engine,
  * extra `clearAll` file cleanup) and hands them to the shared
  * [KSafeCore] orchestrator.
+ *
+ * @param fileName Optional logical file name (lowercase letters / digits /
+ *   underscores). Used to differentiate multiple [KSafe] instances in the same
+ *   process. If null, the default datastore name is used.
+ * @param lazyLoad Defer cache preload until first access.
+ * @param memoryPolicy How decrypted values live in RAM (default
+ *   [KSafeMemoryPolicy.ENCRYPTED]).
+ * @param config Cryptographic + JSON configuration.
+ * @param securityPolicy Runtime security checks (root / debugger / etc.).
+ * @param plaintextCacheTtl TTL for the
+ *   [KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE] policy.
+ * @param baseDir Optional override for the directory in which the DataStore
+ *   `.preferences_pb` file is stored. If null (default) KSafe uses
+ *   `~/.eu_anifantakis_ksafe`. If provided, KSafe will create the directory if
+ *   it doesn't exist and apply POSIX 0700 permissions on POSIX file systems.
+ *   The caller-supplied directory must be on a local file system the process
+ *   can write to. Useful for storing data in your application's working
+ *   directory, `$XDG_DATA_HOME`, `%APPDATA%`, or a per-test temp directory.
  */
 fun KSafe(
     fileName: String? = null,
-    baseDirFile: File? = null,
     lazyLoad: Boolean = false,
     memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
     config: KSafeConfig = KSafeConfig(),
     securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
     plaintextCacheTtl: Duration = 5.seconds,
+    baseDir: File? = null,
 ): KSafe = buildJvmKSafe(
     fileName = fileName,
-    baseDirFile = baseDirFile,
     lazyLoad = lazyLoad,
     memoryPolicy = memoryPolicy,
     config = config,
     securityPolicy = securityPolicy,
     plaintextCacheTtl = plaintextCacheTtl,
+    baseDir = baseDir,
     testEngine = null,
 )
 
@@ -70,32 +88,32 @@ fun KSafe(
 @PublishedApi
 internal fun KSafe(
     fileName: String? = null,
-    baseDirFile: File? = null,
     lazyLoad: Boolean = false,
     memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
     config: KSafeConfig = KSafeConfig(),
     securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
     plaintextCacheTtl: Duration = 5.seconds,
+    baseDir: File? = null,
     testEngine: KSafeEncryption,
 ): KSafe = buildJvmKSafe(
     fileName = fileName,
-    baseDirFile = baseDirFile,
     lazyLoad = lazyLoad,
     memoryPolicy = memoryPolicy,
     config = config,
     securityPolicy = securityPolicy,
     plaintextCacheTtl = plaintextCacheTtl,
+    baseDir = baseDir,
     testEngine = testEngine,
 )
 
 private fun buildJvmKSafe(
     fileName: String?,
-    baseDirFile: File?,
     lazyLoad: Boolean,
     memoryPolicy: KSafeMemoryPolicy,
     config: KSafeConfig,
     securityPolicy: KSafeSecurityPolicy,
     plaintextCacheTtl: Duration,
+    baseDir: File?,
     testEngine: KSafeEncryption?,
 ): KSafe {
     if (fileName != null && !fileName.matches(fileNameRegex)) {
@@ -103,22 +121,26 @@ private fun buildJvmKSafe(
     }
     validateSecurityPolicy(securityPolicy)
 
+    // Resolve the storage directory once. Both the produceFile lambda and the
+    // onClearAllCleanup callback use this exact path so they stay in sync —
+    // before the fix, cleanup hardcoded the home dir and lost the file when
+    // baseDir was set.
+    val resolvedBaseDir: File = baseDir ?: File(
+        Paths.get(System.getProperty("user.home")).toFile(),
+        ".eu_anifantakis_ksafe",
+    )
+    if (!resolvedBaseDir.exists()) {
+        resolvedBaseDir.mkdirs()
+    }
+    secureDirectory(resolvedBaseDir)
+
+    val baseFileName = fileName?.let { "eu_anifantakis_ksafe_datastore_$it" }
+        ?: "eu_anifantakis_ksafe_datastore"
+    val datastoreFile = File(resolvedBaseDir, "$baseFileName.preferences_pb")
+
     val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
-        produceFile = {
-            val baseDir = if(baseDirFile == null) {
-                val homeDir = Paths.get(System.getProperty("user.home")).toFile()
-                val homeBaseDir = File(homeDir, ".eu_anifantakis_ksafe")
-                if (!homeBaseDir.exists()) {
-                    homeBaseDir.mkdirs()
-                    secureDirectory(homeBaseDir)
-                }
-                homeBaseDir
-            } else baseDirFile
-            val base = fileName?.let { "eu_anifantakis_ksafe_datastore_$it" }
-                ?: "eu_anifantakis_ksafe_datastore"
-            File(baseDir, "$base.preferences_pb")
-        }
+        produceFile = { datastoreFile }
     )
 
     val engine: KSafeEncryption = testEngine ?: JvmSoftwareEncryption(config, dataStore)
@@ -142,12 +164,7 @@ private fun buildJvmKSafe(
         // `DataStore.edit { clear() }` leaves an empty protobuf behind.
         onClearAllCleanup = {
             try {
-                val homeDir = Paths.get(System.getProperty("user.home")).toFile()
-                val baseDir = File(homeDir, ".eu_anifantakis_ksafe")
-                val base = fileName?.let { "eu_anifantakis_ksafe_datastore_$it" }
-                    ?: "eu_anifantakis_ksafe_datastore"
-                val file = File(baseDir, "$base.preferences_pb")
-                if (file.exists()) file.delete()
+                if (datastoreFile.exists()) datastoreFile.delete()
             } catch (_: Exception) { /* best-effort */ }
         },
     )

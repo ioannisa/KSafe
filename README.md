@@ -268,7 +268,7 @@ actual val platformModule = module {
 }
 ```
 
-Multi-instance setups, web `awaitCacheReady()` (wasmJs + js), and full per-platform Koin examples: [docs/SETUP.md](docs/SETUP.md).
+Multi-instance setups, web `awaitCacheReady()` (wasmJs + js), full per-platform Koin examples, and the **custom storage directory** option (`baseDir` on JVM/Android, `directory` on iOS — for example to align with `$XDG_DATA_HOME` or `noBackupFilesDir`): [docs/SETUP.md](docs/SETUP.md).
 
 
 ## Basic Usage
@@ -517,7 +517,7 @@ Internals, advanced features, reference material:
 | Topic | Description |
 |-------|-------------|
 | [Complete Usage Guide](docs/USAGE.md) | Every API shape: delegates, flow delegates, Compose state, suspend/direct APIs, write modes, nullables, full ViewModel |
-| [Setup with Koin](docs/SETUP.md) | Multi-instance setups (prefs vs vault), web `awaitCacheReady()` (wasmJs + js), full platform examples |
+| [Setup with Koin](docs/SETUP.md) | Multi-instance setups (prefs vs vault), web `awaitCacheReady()` (wasmJs + js), full platform examples, custom storage directory (`baseDir` / `directory`) |
 | [Custom JSON Serialization](docs/SERIALIZATION.md) | Registering `KSerializer`s for `UUID`, `Instant`, and other third-party types |
 | [Performance Benchmarks](docs/BENCHMARKS.md) | Full benchmark tables, cold start numbers, architecture deep-dive |
 | [Biometric Authentication](docs/BIOMETRICS.md) | Authorization caching, scoped sessions, platform setup, complete examples |

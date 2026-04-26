@@ -15,10 +15,12 @@ import eu.anifantakis.lib.ksafe.internal.cleanupOrphanedKeychainEntries
 import eu.anifantakis.lib.ksafe.internal.validateSecurityPolicy
 import kotlinx.cinterop.ExperimentalForeignApi
 import okio.Path.Companion.toPath
+import platform.Foundation.NSApplicationSupportDirectory
 import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSProcessInfo
 import platform.Foundation.NSURL
+import platform.Foundation.NSURLIsExcludedFromBackupKey
 import platform.Foundation.NSUserDomainMask
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
@@ -58,6 +60,39 @@ private fun isSimulator(): Boolean =
  *   `"encrypted_{key}"`, so we override [KSafeCore]'s legacy key resolver.
  * - **Keychain orphan cleanup.** Runs once, inside the migration hook —
  *   removes Keychain entries whose DataStore counterpart no longer exists.
+ *
+ * @param fileName Optional logical file name (lowercase letters / digits /
+ *   underscores). If null, the default datastore name is used.
+ * @param lazyLoad Defer cache preload until first access.
+ * @param memoryPolicy How decrypted values live in RAM (default
+ *   [KSafeMemoryPolicy.ENCRYPTED]).
+ * @param config Cryptographic + JSON configuration.
+ * @param securityPolicy Runtime security checks (jailbreak / debugger / etc.).
+ * @param plaintextCacheTtl TTL for the
+ *   [KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE] policy.
+ * @param useSecureEnclave Deprecated — use `KSafeProtection.HARDWARE_ISOLATED`
+ *   per property instead.
+ * @param directory Optional override for the directory in which the DataStore
+ *   `.preferences_pb` file is stored. Pass an absolute path string. If null
+ *   (default) KSafe uses `NSApplicationSupportDirectory` — the iOS-correct
+ *   location for invisible app data. If you supply a custom path, KSafe
+ *   creates the directory if it doesn't exist.
+ *
+ * **KSafe data is always device-local on iOS.** The DataStore file is marked
+ * `NSURLIsExcludedFromBackupKey`, so it never travels through iCloud Backup.
+ * Encryption keys live in the Keychain with `…ThisDeviceOnly` accessibility
+ * (and Secure Enclave keys never leave the device for `HARDWARE_ISOLATED`
+ * writes), so a backup of the ciphertext would be undecryptable on a restored
+ * device anyway. If you need device-portable preferences, use `UserDefaults`.
+ *
+ * **Behavior change (2.0):** Pre-2.0 KSafe stored data in
+ * `NSDocumentDirectory`, which is iCloud-syncable and exposed via iTunes
+ * File Sharing if `UIFileSharingEnabled` is on. The 2.0 default is
+ * `NSApplicationSupportDirectory`. **1.x → 2.0 upgrade is automatic:** when
+ * the new location is empty AND a legacy file exists at the old
+ * `NSDocumentDirectory` path, KSafe moves it on first launch (only when
+ * `directory` is null — explicit overrides skip the migration). No app code
+ * changes needed.
  */
 fun KSafe(
     fileName: String? = null,
@@ -67,6 +102,7 @@ fun KSafe(
     securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
     plaintextCacheTtl: Duration = 5.seconds,
     @Suppress("DEPRECATION") useSecureEnclave: Boolean = false,
+    directory: String? = null,
 ): KSafe = buildIosKSafe(
     fileName = fileName,
     lazyLoad = lazyLoad,
@@ -75,6 +111,7 @@ fun KSafe(
     securityPolicy = securityPolicy,
     plaintextCacheTtl = plaintextCacheTtl,
     useSecureEnclave = useSecureEnclave,
+    directory = directory,
     testEngine = null,
 )
 
@@ -87,6 +124,7 @@ internal fun KSafe(
     securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
     plaintextCacheTtl: Duration = 5.seconds,
     @Suppress("DEPRECATION") useSecureEnclave: Boolean = false,
+    directory: String? = null,
     testEngine: KSafeEncryption,
 ): KSafe = buildIosKSafe(
     fileName = fileName,
@@ -96,6 +134,7 @@ internal fun KSafe(
     securityPolicy = securityPolicy,
     plaintextCacheTtl = plaintextCacheTtl,
     useSecureEnclave = useSecureEnclave,
+    directory = directory,
     testEngine = testEngine,
 )
 
@@ -108,6 +147,7 @@ private fun buildIosKSafe(
     securityPolicy: KSafeSecurityPolicy,
     plaintextCacheTtl: Duration,
     useSecureEnclave: Boolean,
+    directory: String?,
     testEngine: KSafeEncryption?,
 ): KSafe {
     if (fileName != null && !fileName.matches(fileNameRegex)) {
@@ -127,22 +167,81 @@ private fun buildIosKSafe(
         if (hasSecureEnclave) add(KSafeKeyStorage.HARDWARE_ISOLATED)
     }
 
-    val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.createWithPath(
-        corruptionHandler = null,
-        migrations = emptyList(),
-        produceFile = {
-            val docDir: NSURL? = NSFileManager.defaultManager.URLForDirectory(
-                directory = NSDocumentDirectory,
+    val fm = NSFileManager.defaultManager
+
+    // Resolve the DataStore directory once: caller-supplied path, or the
+    // platform-recommended NSApplicationSupportDirectory.
+    val resolvedDirPath: String = directory
+        ?: requireNotNull(
+            fm.URLForDirectory(
+                directory = NSApplicationSupportDirectory,
                 inDomain = NSUserDomainMask,
                 appropriateForURL = null,
                 create = true,
                 error = null,
             )
-            requireNotNull(docDir).path.plus(
-                fileName?.let { "/eu_anifantakis_ksafe_datastore_$it.preferences_pb" }
-                    ?: "/eu_anifantakis_ksafe_datastore.preferences_pb"
-            ).toPath()
-        },
+        ) { "Unable to resolve NSApplicationSupportDirectory" }.path
+            ?: error("NSApplicationSupportDirectory has no path")
+
+    // Ensure the directory exists. NSFileManager's URLForDirectory(create=true)
+    // creates the system directory; for a caller-supplied path we may also
+    // need to mkdir it.
+    fm.createDirectoryAtPath(
+        resolvedDirPath,
+        withIntermediateDirectories = true,
+        attributes = null,
+        error = null,
+    )
+
+    val baseFileName = fileName?.let { "eu_anifantakis_ksafe_datastore_$it" }
+        ?: "eu_anifantakis_ksafe_datastore"
+    val datastoreFilePath = "$resolvedDirPath/$baseFileName.preferences_pb"
+
+    // 1.x → 2.0 auto-migration: pre-2.0 iOS stored the DataStore in
+    // NSDocumentDirectory. If the consumer didn't pass an explicit `directory`
+    // and the new location is empty BUT a legacy file exists at the old
+    // Documents path, move it. Idempotent — runs only when the new path is
+    // empty. Best-effort — failure leaves both files in place; the caller can
+    // recover by passing `directory = "<old Documents path>"` if needed.
+    if (directory == null && !fm.fileExistsAtPath(datastoreFilePath)) {
+        val docsDirPath: String? = fm.URLForDirectory(
+            directory = NSDocumentDirectory,
+            inDomain = NSUserDomainMask,
+            appropriateForURL = null,
+            create = false,
+            error = null,
+        )?.path
+        if (docsDirPath != null) {
+            val legacyPath = "$docsDirPath/$baseFileName.preferences_pb"
+            if (fm.fileExistsAtPath(legacyPath)) {
+                val moved = fm.moveItemAtPath(legacyPath, toPath = datastoreFilePath, error = null)
+                if (!moved) {
+                    println(
+                        "KSafe: Failed to migrate legacy DataStore file from \"$legacyPath\" to \"$datastoreFilePath\". " +
+                            "If you need access to legacy data, pass `directory = \"$docsDirPath\"` to point at the old location."
+                    )
+                }
+            }
+        }
+    }
+
+    val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.createWithPath(
+        corruptionHandler = null,
+        migrations = emptyList(),
+        produceFile = { datastoreFilePath.toPath() },
+    )
+
+    // KSafe data is always excluded from iCloud Backup. The encryption keys
+    // live in the Keychain with `…ThisDeviceOnly` accessibility (and Secure
+    // Enclave keys never leave the device for HARDWARE_ISOLATED writes), so
+    // a backup of the ciphertext would be undecryptable on restore — there's
+    // no scenario where backing up the DataStore produces working data on a
+    // new device. Re-applied each construction so the attribute survives the
+    // file being created on first write.
+    NSURL.fileURLWithPath(datastoreFilePath).setResourceValue(
+        value = true,
+        forKey = NSURLIsExcludedFromBackupKey,
+        error = null,
     )
 
     val engine: KSafeEncryption =

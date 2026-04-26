@@ -40,6 +40,45 @@ Storage API (`getDirect`, `putDirect`, `get`, `put`, `getFlow`, property delegat
 
 Full migration walkthrough and rationale: [docs/BIOMETRICS.md](BIOMETRICS.md#migration-from-ksafe-1x).
 
+#### iOS default storage path moved from `NSDocumentDirectory` to `NSApplicationSupportDirectory`
+
+Pre-2.0 iOS stored its DataStore file under `NSDocumentDirectory` — visible to iTunes File Sharing (if `UIFileSharingEnabled` was set) and iCloud-syncable by default. 2.0 moves the default to `NSApplicationSupportDirectory`, the Apple-recommended location for invisible app data.
+
+**The migration is automatic.** When you don't pass an explicit `directory` and the new location is empty, KSafe checks the legacy `NSDocumentDirectory` path on first launch and moves the file. Idempotent (only runs while the new path is empty), best-effort (a failed move logs a warning and leaves the legacy file in place). Apps bumping the dep from 1.x to 2.0 need **no code changes** to keep their data — just bump the version, ship, done.
+
+```kotlin
+// 1.x and 2.0 — same call, KSafe handles the move internally.
+val safe = KSafe(fileName = "vault")
+```
+
+If for some reason you want to keep reading from the old Documents location indefinitely (instead of letting KSafe migrate), you can pass `directory` explicitly — that disables the automatic migration:
+
+```kotlin
+import platform.Foundation.NSDocumentDirectory
+import platform.Foundation.NSFileManager
+import platform.Foundation.NSUserDomainMask
+import kotlinx.cinterop.ExperimentalForeignApi
+
+@OptIn(ExperimentalForeignApi::class)
+val docsPath = NSFileManager.defaultManager.URLForDirectory(
+    directory = NSDocumentDirectory,
+    inDomain = NSUserDomainMask,
+    appropriateForURL = null,
+    create = false,
+    error = null,
+)?.path
+
+val safe = KSafe(fileName = "vault", directory = docsPath)
+```
+
+#### KSafe data on iOS is always excluded from iCloud Backup
+
+KSafe data is unconditionally marked with `NSURLIsExcludedFromBackupKey` on iOS. There's no parameter and no opt-out — the DataStore file never travels through iCloud Backup.
+
+This is not a security feature so much as a correctness one: KSafe's encryption keys live in the Keychain with `…ThisDeviceOnly` accessibility (and Secure Enclave keys never leave the device for `HARDWARE_ISOLATED` writes), so a restored device would have the ciphertext but not the keys — KSafe would fail to decrypt and return defaults. Backing up the ciphertext would manifest as silent data loss on a restored device, disguised as "your data is here" when in fact it's unrecoverable. Forcing exclusion prevents that broken state.
+
+If you need device-portable preferences (theme, settings, onboarding flags that should follow the user to a new iPhone), use `UserDefaults`. That's the right tool for that semantics. KSafe is for device-local encrypted (or explicitly local plain) storage.
+
 ***
 
 ### From v1.6.x to v1.7.0
