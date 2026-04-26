@@ -46,6 +46,7 @@ private val fileNameRegex = Regex("[a-z][a-z0-9_]*")
  */
 fun KSafe(
     fileName: String? = null,
+    baseDirFile: File? = null,
     lazyLoad: Boolean = false,
     memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
     config: KSafeConfig = KSafeConfig(),
@@ -53,6 +54,7 @@ fun KSafe(
     plaintextCacheTtl: Duration = 5.seconds,
 ): KSafe = buildJvmKSafe(
     fileName = fileName,
+    baseDirFile = baseDirFile,
     lazyLoad = lazyLoad,
     memoryPolicy = memoryPolicy,
     config = config,
@@ -68,6 +70,7 @@ fun KSafe(
 @PublishedApi
 internal fun KSafe(
     fileName: String? = null,
+    baseDirFile: File? = null,
     lazyLoad: Boolean = false,
     memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
     config: KSafeConfig = KSafeConfig(),
@@ -76,6 +79,7 @@ internal fun KSafe(
     testEngine: KSafeEncryption,
 ): KSafe = buildJvmKSafe(
     fileName = fileName,
+    baseDirFile = baseDirFile,
     lazyLoad = lazyLoad,
     memoryPolicy = memoryPolicy,
     config = config,
@@ -86,6 +90,7 @@ internal fun KSafe(
 
 private fun buildJvmKSafe(
     fileName: String?,
+    baseDirFile: File?,
     lazyLoad: Boolean,
     memoryPolicy: KSafeMemoryPolicy,
     config: KSafeConfig,
@@ -101,12 +106,15 @@ private fun buildJvmKSafe(
     val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
         produceFile = {
-            val homeDir = Paths.get(System.getProperty("user.home")).toFile()
-            val baseDir = File(homeDir, ".eu_anifantakis_ksafe")
-            if (!baseDir.exists()) {
-                baseDir.mkdirs()
-                secureDirectory(baseDir)
-            }
+            val baseDir = if(baseDirFile == null) {
+                val homeDir = Paths.get(System.getProperty("user.home")).toFile()
+                val homeBaseDir = File(homeDir, ".eu_anifantakis_ksafe")
+                if (!homeBaseDir.exists()) {
+                    homeBaseDir.mkdirs()
+                    secureDirectory(homeBaseDir)
+                }
+                homeBaseDir
+            } else baseDirFile
             val base = fileName?.let { "eu_anifantakis_ksafe_datastore_$it" }
                 ?: "eu_anifantakis_ksafe_datastore"
             File(baseDir, "$base.preferences_pb")
