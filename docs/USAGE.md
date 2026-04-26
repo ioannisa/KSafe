@@ -39,7 +39,7 @@ class MyViewModel(ksafe: KSafe): ViewModel() {
 }
 ```
 
-> **Important:** The property delegate can ONLY use the default KSafe instance. If you need to use multiple KSafe instances with different file names, you must use the suspend or direct APIs.
+> The property delegate works with any `KSafe` instance — the receiver of `by myKSafe(...)` becomes the storage backend. See [docs/SETUP.md](SETUP.md#multiple-instances) for the named-instance pattern (e.g. `var theme by prefs(...)`, `var token by vault("")`). The variable name is used as the storage key when no explicit `key` is supplied.
 
 ## Flow Delegates (Reactive Reads)
 

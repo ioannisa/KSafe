@@ -337,12 +337,16 @@ For third-party types you can't annotate (`UUID`, `Instant`, `BigDecimal`…), r
 Two small cross-platform helpers:
 
 ```kotlin
+import eu.anifantakis.lib.ksafe.internal.secureRandomBytes
+
 // Secure random bytes (SecureRandom / arc4random_buf / WebCrypto)
 val nonce = secureRandomBytes(16)
 
 // Generate-or-retrieve a hardware-isolated 256-bit secret (great for DB passphrases)
 val passphrase = ksafe.getOrCreateSecret("main.db")
 ```
+
+> `secureRandomBytes` lives under `eu.anifantakis.lib.ksafe.internal` — it's the same primitive KSafe uses internally, exposed for app code that needs a CSPRNG.
 
 Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURITY.md#cryptographic-utilities](docs/SECURITY.md#cryptographic-utilities)**.
 
@@ -421,7 +425,7 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 
 | Platform | Minimum Version | Notes |
 |----------|-----------------|-------|
-| **Android** | API 23 (Android 6.0) | Hardware-backed Keystore on supported devices |
+| **Android** | API 24 (Android 7.0) | Hardware-backed Keystore on supported devices |
 | **iOS** | iOS 13+ | Keychain-backed symmetric keys (protected by device passcode) |
 | **JVM/Desktop** | JDK 11+ | Software-backed encryption |
 | **Kotlin/WASM (Browser)** | Browsers with WasmGC (Chrome 119+, Firefox 120+, Safari 18+) | WebCrypto API + localStorage |
@@ -527,7 +531,7 @@ Internals, advanced features, reference material:
 | [Architecture](docs/ARCHITECTURE.md) | The conceptual model: three modules, three rings (public API / `KSafeCore` orchestrator / platform shells), hot cache + write coalescer, the `KSafePlatformStorage` and `KSafeEncryption` interfaces, memory policies, and how 2.0 consolidated ~5,900 lines of duplicated platform logic into ~890 |
 | [Source-tree tour](docs/TOUR.md) | File-by-file walkthrough of every Kotlin source file in `:ksafe`: where each behaviour lives and why. Companion to the Architecture doc — Architecture is "the model," TOUR is "the map." |
 | [Testing](docs/TESTING.md) | Running tests, building iOS test app, test features |
-| [Migration Guide](docs/MIGRATION.md) | Upgrading from v1.6.x → v1.7.0 and v1.1.x → v1.2.0+ |
+| [Migration Guide](docs/MIGRATION.md) | Upgrading from v1.x → v2.0 (biometric module extraction, iOS path migration), v1.6.x → v1.7.0 (`encrypted: Boolean` → `KSafeWriteMode`), and v1.1.x → v1.2.0+ |
 | [Alternatives & Comparison](docs/COMPARISON.md) | KSafe vs EncryptedSharedPrefs, KVault, SQLCipher, and more |
 
 ***

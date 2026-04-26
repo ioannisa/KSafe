@@ -18,6 +18,8 @@
 - You're using Jetpack Compose and want reactive encrypted state
 - Performance is critical — KSafe is **14x faster** than KVault for encrypted reads, **34x faster** for writes
 
+**Browser support, specifically:** KSafe ships **two independent web artifacts** — a Kotlin/WASM build (requires WasmGC; Chrome 119+ / Firefox 120+ / Safari 18+) and a Kotlin/JS (IR) build for older browsers and pre-existing JS toolchains. Both use the same `localStorage` layout and AES-256-GCM via WebCrypto, so a project can switch between targets without losing data. Web is the only target where memory policy is forced to `PLAIN_TEXT` internally (WebCrypto is async-only, so the synchronous `getDirect` path can't decrypt on demand) — call `awaitCacheReady()` once at startup before the first encrypted read.
+
 **When to consider alternatives:**
 - You need complex queries → Consider SQLCipher or Room with encryption
 - Android-only app with simple needs → EncryptedSharedPreferences works

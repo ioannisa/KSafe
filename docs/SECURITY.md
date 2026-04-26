@@ -257,7 +257,7 @@ Hardware isolation provides the highest security level — keys live on a dedica
 **Migrating existing keys to hardware isolation:** Using `HARDWARE_ISOLATED` only affects *new* key generation. Existing keys continue working from wherever they were originally generated. To migrate existing data to hardware-isolated keys, delete the KSafe data (or the specific keys) and reinitialize.
 
 **Per-key metadata (single entry):** Each key stores one metadata entry (`__ksafe_meta_{key}__`) that includes:
-- `p` → protection tier (`NONE`, `DEFAULT`, `HARDWARE_ISOLATED`)
+- `p` → protection-tier *literal string* (`"NONE"`, `"DEFAULT"`, `"HARDWARE_ISOLATED"`). The `KSafeProtection` enum itself only has `DEFAULT` and `HARDWARE_ISOLATED`; the literal `"NONE"` is what's persisted for plaintext entries (it surfaces as `KSafeProtection? = null` through `getKeyInfo().protection`).
 - optional `u` → unlock policy (`"unlocked"` when `requireUnlockedDevice=true`)
 
 This metadata is used for read auto-detection and `getKeyInfo()`.

@@ -185,8 +185,8 @@ Per-instance declaration of what the library should do on detecting a rooted dev
 
 **Key declarations:**
 
-- `data class KSafeSecurityPolicy(rootDetection, debuggerDetection, debuggableApp, emulatorDetection, onViolation)` — each check is a `SecurityCheckAction` (`IGNORE` / `WARN` / `BLOCK`).
-- `enum class SecurityViolation { ROOT_DETECTED, DEBUGGER_ATTACHED, APP_DEBUGGABLE, EMULATOR_DETECTED }`.
+- `data class KSafeSecurityPolicy(rootedDevice, debuggerAttached, debugBuild, emulator, onViolation)` — each check is a `SecurityAction` (`IGNORE` / `WARN` / `BLOCK`). Three preset companion values: `Default` (all `IGNORE`), `Strict` (`BLOCK` on root/debugger, `WARN` on debug/emulator), `WarnOnly` (everything `WARN`).
+- `enum class SecurityViolation { RootedDevice, DebuggerAttached, DebugBuild, Emulator }`.
 - `class SecurityViolationException` — thrown when a `BLOCK` check fails.
 - `internal fun validateSecurityPolicy(policy: KSafeSecurityPolicy)` — runs the checks at `KSafe` construction by delegating to the platform-specific `SecurityChecker` object.
 
@@ -384,7 +384,7 @@ Every platform also exposes an `@PublishedApi internal fun KSafe(..., testEngine
 
 ### `KSafe.android.kt` — the factory
 
-~214 lines. Owns:
+~176 lines (down from ~1,584 pre-2.0). Owns:
 
 - **Top-level `KSafe(context: Context, fileName: String? = null, ..., useStrongBox: Boolean = false, baseDir: File? = null): KSafe`** — public factory.
 - **Top-level `@PublishedApi internal fun KSafe(..., baseDir: File? = null, testEngine: KSafeEncryption)`** — test overload.
@@ -416,7 +416,7 @@ Implements `KSafeEncryption` via `javax.crypto` talking to the `"AndroidKeyStore
 
 ### `KSafe.ios.kt` — the factory
 
-~313 lines. Owns:
+~225 lines (down from ~1,938 pre-2.0). Owns:
 
 - **Top-level `KSafe(fileName: String? = null, ..., useSecureEnclave: Boolean = false, directory: String? = null): KSafe`** — public factory.
 - **Top-level `@PublishedApi internal fun KSafe(..., directory: String? = null, testEngine: KSafeEncryption)`** — test overload.
@@ -475,7 +475,7 @@ Standalone suspend function `cleanupOrphanedKeychainEntries(storage, engine, ser
 
 ### `KSafe.jvm.kt` — the factory + test extensions
 
-~235 lines. Owns:
+~212 lines (down from ~1,360 pre-2.0). Owns:
 
 - **Top-level `KSafe(fileName: String? = null, ..., baseDir: File? = null): KSafe`** — public factory.
 - **Top-level `@PublishedApi internal fun KSafe(..., baseDir: File? = null, testEngine: KSafeEncryption)`** — test overload.
@@ -499,13 +499,13 @@ Implements `KSafeEncryption` via `javax.crypto` (`Cipher.getInstance("AES/GCM/No
 
 - `KSafeConcurrent` — `ConcurrentHashMap` + `AtomicBoolean` — same as Android.
 - `KSafeSecureRandom` — `java.security.SecureRandom.nextBytes(...)`.
-- `SecurityChecker` — everything is a no-op. `isDeviceRooted` / `isEmulator` don't map to desktop, and pretending they did would be dishonest.
+- `SecurityChecker` — `isDeviceRooted()` and `isEmulator()` are no-ops (return `false`) because they don't map to desktop and pretending they did would be dishonest. `isDebuggerAttached()` and `isDebugBuild()` are real implementations: the former scans `ManagementFactory.getRuntimeMXBean().inputArguments` for `-agentlib:jdwp` / `-Xdebug` / `-Xrunjdwp`; the latter probes whether assertions are enabled via the `assert` keyword.
 
 ## Web (js + wasmJs)
 
 ### `KSafe.web.kt` — the shared factory
 
-~128 lines, lives in `webMain` (shared by both `jsMain` and `wasmJsMain`). Owns:
+~128 lines (down from ~1,052 pre-2.0), lives in `webMain` (shared by both `jsMain` and `wasmJsMain`). Owns:
 
 - **Top-level `KSafe(fileName: String? = null, ...): KSafe`** — public factory. The `memoryPolicy` parameter is accepted for API parity but ignored — see below.
 - **Top-level `@PublishedApi internal fun KSafe(..., testEngine: KSafeEncryption)`** — test overload.

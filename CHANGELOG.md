@@ -2,7 +2,7 @@
 
 All notable changes to KSafe will be documented in this file.
 
-## [2.0.0] - 2026-04-26
+## [2.0.0-RC1] - 2026-04-26
 
 Major internal refactor; new standalone `:ksafe-biometrics` module; the Kotlin/JS (IR) target and shared web source sets that were staged under a never-shipped 1.9.0 tag.
 
@@ -15,7 +15,7 @@ Resolves [issue #14](https://github.com/ioannisa/KSafe/issues/14) (thanks @Codin
 `verifyBiometric`, `verifyBiometricDirect`, `clearBiometricAuth`, `BiometricAuthorizationDuration`, and the Android-side `BiometricHelper` no longer live on `KSafe`. They now belong to a new `KSafeBiometrics` static API published as a separate, optional artifact:
 
 ```kotlin
-implementation("eu.anifantakis:ksafe-biometrics:2.0.0")
+implementation("eu.anifantakis:ksafe-biometrics:2.0.0-RC1")
 ```
 
 `:ksafe-biometrics` has zero dependency on `:ksafe` — apps that only need biometric verification can use it without pulling in the storage library. Apps that don't need biometrics at all no longer pay for the `androidx.biometric` / `androidx.fragment` transitive deps that `:ksafe` used to drag in.
@@ -38,7 +38,7 @@ import eu.anifantakis.lib.ksafe.BiometricAuthorizationDuration
 ksafe.verifyBiometricDirect(reason, BiometricAuthorizationDuration(60_000L)) { ok -> }
 
 // After (2.0) — static API, no instance, no DI
-// build.gradle.kts: + implementation("eu.anifantakis:ksafe-biometrics:2.0.0")
+// build.gradle.kts: + implementation("eu.anifantakis:ksafe-biometrics:2.0.0-RC1")
 import eu.anifantakis.lib.ksafe.biometrics.KSafeBiometrics
 import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration
 

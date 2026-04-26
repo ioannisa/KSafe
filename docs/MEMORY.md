@@ -95,7 +95,7 @@ KSafe(
 KSafe(
     fileName: String? = null,
     lazyLoad: Boolean = false,
-    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,  // ignored — always PLAIN_TEXT internally
+    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.PLAIN_TEXT,  // accepted for API parity; ignored — always PLAIN_TEXT internally
     config: KSafeConfig = KSafeConfig(),
     securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
     plaintextCacheTtl: Duration = 5.seconds
@@ -110,8 +110,10 @@ KSafe(
 val ksafe = KSafe(
     context = context,
     config = KSafeConfig(
-        keySize = 256,                  // AES key size: 128 or 256 bits
-        requireUnlockedDevice = false   // Default for protection-based encrypted writes
+        keySize = 256,                       // AES key size: 128 or 256 bits
+        androidAuthValiditySeconds = 30,     // reserved for future use (currently unused; default 30, must be > 0)
+        requireUnlockedDevice = false,       // Default for protection-based encrypted writes
+        json = KSafeDefaults.json            // Custom kotlinx.serialization Json — see docs/SERIALIZATION.md
     )
 )
 ```
