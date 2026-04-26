@@ -227,7 +227,7 @@ By default KSafe picks a platform-appropriate location for its DataStore file:
 | Platform | Default location |
 |----------|-----------------|
 | **Android** | `/data/data/<package>/files/datastore/eu_anifantakis_ksafe_datastore[_<fileName>].preferences_pb` (the app sandbox — recommended) |
-| **iOS** | `<NSApplicationSupportDirectory>/eu_anifantakis_ksafe_datastore[_<fileName>].preferences_pb`. Always excluded from iCloud Backup (encryption keys are device-local, so a restored ciphertext would be undecryptable — see migration guide for details). |
+| **iOS** | `<NSApplicationSupportDirectory>/eu_anifantakis_ksafe_datastore[_<fileName>].preferences_pb`. Encryption keys are device-local (`…ThisDeviceOnly` Keychain accessibility), so backed-up ciphertext is undecryptable on a restored device — effectively device-local in practice. See migration guide for details. |
 | **JVM/Desktop** | `~/.eu_anifantakis_ksafe/eu_anifantakis_ksafe_datastore[_<fileName>].preferences_pb`, with POSIX `0700` permissions |
 | **Web** | `localStorage`, prefixed `ksafe_<fileName>_` (no directory concept) |
 
@@ -258,10 +258,11 @@ val ksafe = KSafe(
     directory = "/path/to/your/dir",
 )
 // If null, KSafe uses NSApplicationSupportDirectory — the iOS-correct
-// location for invisible app data. KSafe data is always excluded from
-// iCloud Backup on iOS (the encryption keys are device-local, so a
-// restored ciphertext would be undecryptable — backing it up would mean
-// silent data loss on the new device).
+// location for invisible app data. KSafe doesn't set
+// NSURLIsExcludedFromBackupKey on the file (DataStore's atomic-write
+// strategy would clobber the xattr on every flush), but the encryption
+// keys are device-local, so even an iCloud-Backup of the ciphertext is
+// undecryptable on a restored device — effectively device-local data.
 ```
 
 **Web** doesn't expose a directory concept — `localStorage` is per-origin and KSafe already isolates instances via the `ksafe_<fileName>_` storage prefix. There's no `baseDir` parameter on the web factory.

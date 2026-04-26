@@ -71,13 +71,13 @@ val docsPath = NSFileManager.defaultManager.URLForDirectory(
 val safe = KSafe(fileName = "vault", directory = docsPath)
 ```
 
-#### KSafe data on iOS is always excluded from iCloud Backup
+#### KSafe data on iOS is effectively device-local
 
-KSafe data is unconditionally marked with `NSURLIsExcludedFromBackupKey` on iOS. There's no parameter and no opt-out — the DataStore file never travels through iCloud Backup.
+KSafe's encryption keys live in the Keychain with `…ThisDeviceOnly` accessibility (and Secure Enclave keys never leave the device for `HARDWARE_ISOLATED` writes). Even if the DataStore file is included in an iCloud Backup, its encrypted bytes are undecryptable on a restored device — the keys are not there. So backed-up ciphertext is benign in practice: it's just dead bytes, not exfiltrable secrets.
 
-This is not a security feature so much as a correctness one: KSafe's encryption keys live in the Keychain with `…ThisDeviceOnly` accessibility (and Secure Enclave keys never leave the device for `HARDWARE_ISOLATED` writes), so a restored device would have the ciphertext but not the keys — KSafe would fail to decrypt and return defaults. Backing up the ciphertext would manifest as silent data loss on a restored device, disguised as "your data is here" when in fact it's unrecoverable. Forcing exclusion prevents that broken state.
+The library does **not** set `NSURLIsExcludedFromBackupKey` on the DataStore file. We tried, and it doesn't work reliably: DataStore's atomic-write strategy (write-to-temp then rename) creates a new inode on every flush and clobbers the extended attribute. Reliable file-level exclusion would require architectural gymnastics (a per-instance subdirectory whose directory-level xattr the inner file inherits), and the security guarantee already comes from key locality.
 
-If you need device-portable preferences (theme, settings, onboarding flags that should follow the user to a new iPhone), use `UserDefaults`. That's the right tool for that semantics. KSafe is for device-local encrypted (or explicitly local plain) storage.
+If you need device-portable preferences (theme, settings, onboarding flags that should follow the user to a new iPhone), use `UserDefaults`. That's the right tool for that semantics. KSafe is for encrypted (or explicitly local plain) storage where the keys do not roam.
 
 ***
 

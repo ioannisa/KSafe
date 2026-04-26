@@ -20,7 +20,6 @@ import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSProcessInfo
 import platform.Foundation.NSURL
-import platform.Foundation.NSURLIsExcludedFromBackupKey
 import platform.Foundation.NSUserDomainMask
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
@@ -78,12 +77,17 @@ private fun isSimulator(): Boolean =
  *   location for invisible app data. If you supply a custom path, KSafe
  *   creates the directory if it doesn't exist.
  *
- * **KSafe data is always device-local on iOS.** The DataStore file is marked
- * `NSURLIsExcludedFromBackupKey`, so it never travels through iCloud Backup.
- * Encryption keys live in the Keychain with `…ThisDeviceOnly` accessibility
- * (and Secure Enclave keys never leave the device for `HARDWARE_ISOLATED`
- * writes), so a backup of the ciphertext would be undecryptable on a restored
- * device anyway. If you need device-portable preferences, use `UserDefaults`.
+ * **KSafe data is effectively device-local on iOS.** Encryption keys live in
+ * the Keychain with `…ThisDeviceOnly` accessibility (and Secure Enclave keys
+ * never leave the device for `HARDWARE_ISOLATED` writes), so even if the
+ * DataStore file is included in an iCloud Backup, its encrypted bytes are
+ * undecryptable on a restored device — the keys are not there. The library
+ * does **not** set `NSURLIsExcludedFromBackupKey` on the file because
+ * DataStore's atomic-write strategy (write-to-temp then rename) replaces the
+ * file's inode and would clobber the extended attribute on every flush.
+ * Reliable file-level exclusion is therefore impossible without architectural
+ * gymnastics, and the security guarantee already comes from key locality. If
+ * you need device-portable preferences, use `UserDefaults`.
  *
  * **Behavior change (2.0):** Pre-2.0 KSafe stored data in
  * `NSDocumentDirectory`, which is iCloud-syncable and exposed via iTunes
@@ -229,19 +233,6 @@ private fun buildIosKSafe(
         corruptionHandler = null,
         migrations = emptyList(),
         produceFile = { datastoreFilePath.toPath() },
-    )
-
-    // KSafe data is always excluded from iCloud Backup. The encryption keys
-    // live in the Keychain with `…ThisDeviceOnly` accessibility (and Secure
-    // Enclave keys never leave the device for HARDWARE_ISOLATED writes), so
-    // a backup of the ciphertext would be undecryptable on restore — there's
-    // no scenario where backing up the DataStore produces working data on a
-    // new device. Re-applied each construction so the attribute survives the
-    // file being created on first write.
-    NSURL.fileURLWithPath(datastoreFilePath).setResourceValue(
-        value = true,
-        forKey = NSURLIsExcludedFromBackupKey,
-        error = null,
     )
 
     val engine: KSafeEncryption =
