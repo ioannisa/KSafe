@@ -99,12 +99,19 @@ val user: StateFlow<User> by ksafe.asStateFlow(User(), viewModelScope)
 private val _state by ksafe.asMutableStateFlow(MoviesState(), viewModelScope)
 val state = _state.asStateFlow()
 
-// 6. Read/write Flow — observe + set() in one declaration, no scope needed
-val themeMode: WritableKSafeFlow<ThemeMode> by ksafe.asWritableFlow(ThemeMode.DEVICE)
-// themeMode.set(ThemeMode.NIGHT) persists; collectors see it on the next emission
+// 6. Read-only Flow alone — the simplest reactive shape; pair with a plain `ksafe(...)` delegate
+//    when you also need to write back to the same key (two bindings, kept in sync by the matching key)
+val theme: Flow<ThemeMode> by ksafe.asFlow(ThemeMode.DEVICE, key = "theme")
+private var themeWriter: ThemeMode by ksafe(ThemeMode.DEVICE, key = "theme")
+fun setTheme(mode: ThemeMode) { themeWriter = mode }   // collectors of `theme` see the new value
+
+// 7. Read/write Flow — collapses (6) into a single declaration: one binding instead of two,
+//    no scope needed, no key sync to keep right
+val theme: WritableKSafeFlow<ThemeMode> by ksafe.asWritableFlow(ThemeMode.DEVICE)
+theme.set(ThemeMode.NIGHT) // persists; collectors see it on the next emission
 ```
 
-All six survive process death, are AES-256-GCM encrypted by default (except `rememberKSafeState`, which defaults to plain since it's typically UI ephemera — pass `mode = KSafeWriteMode.Encrypted(...)` to opt in), and can be made plain with `mode = KSafeWriteMode.Plain`. **Zero boilerplate, on every target.**
+All seven survive process death, are AES-256-GCM encrypted by default (except `rememberKSafeState`, which defaults to plain since it's typically UI ephemera — pass `mode = KSafeWriteMode.Encrypted(...)` to opt in), and can be made plain with `mode = KSafeWriteMode.Plain`. **Zero boilerplate, on every target.**
 
 > **DataStore without the coroutines tax.** The property delegate, `mutableStateOf`, `rememberKSafeState`, and `getDirect`/`putDirect` are fully synchronous — **but never blocking**. Reads come from a hot in-memory cache; writes update the cache immediately and enqueue the encrypt-and-flush onto a background thread. Call sites return instantly. Use the `suspend` API (`get` / `put`) only when *you* want to.
 
