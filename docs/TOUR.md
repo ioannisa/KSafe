@@ -66,14 +66,14 @@ ksafe/src/
 │       ├── KSafeSecureRandom.android.kt
 │       └── SecurityChecker.android.kt
 │
-├── iosMain/
-│   ├── KSafe.ios.kt                    (top-level `fun KSafe(...)` factory)
+├── appleMain/                          (shared by iosX64/iosArm64/iosSimulatorArm64 + macosX64/macosArm64)
+│   ├── KSafe.apple.kt                  (top-level `fun KSafe(...)` factory)
 │   └── internal/
-│       ├── IosKeychainEncryption.kt
+│       ├── AppleKeychainEncryption.kt
 │       ├── KeychainOrphanCleanup.kt
-│       ├── KSafeConcurrent.ios.kt
-│       ├── KSafeSecureRandom.ios.kt
-│       └── SecurityChecker.ios.kt
+│       ├── KSafeConcurrent.apple.kt
+│       ├── KSafeSecureRandom.apple.kt
+│       └── SecurityChecker.apple.kt
 │
 ├── jvmMain/
 │   ├── KSafe.jvm.kt                    (top-level `fun KSafe(...)` factory + test extensions)
@@ -412,30 +412,34 @@ Implements `KSafeEncryption` via `javax.crypto` talking to the `"AndroidKeyStore
 - `KSafeSecureRandom` — `java.security.SecureRandom.nextBytes(...)`.
 - `SecurityChecker` — reads `BuildConfig.DEBUG`, probes for root binaries / Magisk, checks `Debug.isDebuggerConnected()`, detects emulator via build fingerprints + the standard `goldfish` / `sdk` heuristics.
 
-## iOS
+## Apple platforms (iOS + native macOS)
 
-### `KSafe.ios.kt` — the factory
+The Apple-platform implementation lives in **`appleMain/`** — a single source set shared by all five Apple targets (`iosX64`, `iosArm64`, `iosSimulatorArm64`, `macosX64`, `macosArm64`). Every Apple-side concern listed below ships once and runs identically on iOS and macOS, because Keychain Services, CryptoKit, the Secure Enclave token attribute, `NSFileManager`, and DataStore Preferences all expose byte-for-byte identical APIs across both platforms — only the *location* of the Keychain database differs (per-app on iOS, per-user on macOS). Pre-2.0.1 the same code lived in `iosMain/` under `Ios*` filenames; the move was a mechanical rename, with one behaviour fix (see `SecurityChecker.apple.kt` below).
+
+### `KSafe.apple.kt` — the factory
 
 ~225 lines (down from ~1,938 pre-2.0). Owns:
 
 - **Top-level `KSafe(fileName: String? = null, ..., useSecureEnclave: Boolean = false, directory: String? = null): KSafe`** — public factory.
 - **Top-level `@PublishedApi internal fun KSafe(..., directory: String? = null, testEngine: KSafeEncryption)`** — test overload.
 - **`@PublishedApi internal const val KEY_PREFIX = "eu.anifantakis.ksafe"`** — top-level constant. Used to build the Keychain alias passed to `KSafeCore`.
-- **CryptoKit registration + AES.GCM retention** inside `buildIosKSafe`. Kotlin/Native's dead-code elimination can strip CryptoKit bindings if nothing references them statically. The factory body references `CryptographyProvider.CryptoKit` and captures `AES.GCM` into a `@Suppress("UNUSED_VARIABLE")` val.
-- **Secure Enclave detection** via `isSimulator()` (top-level helper). Returns `true` on Simulator (no hardware); every real device has an SEP. Drives `deviceKeyStorages`.
+- **CryptoKit registration + AES.GCM retention** inside `buildAppleKSafe`. Kotlin/Native's dead-code elimination can strip CryptoKit bindings if nothing references them statically. The factory body references `CryptographyProvider.CryptoKit` and captures `AES.GCM` into a `@Suppress("UNUSED_VARIABLE")` val.
+- **Secure Enclave detection** via `isSimulator()` (top-level helper). On iOS the helper returns `true` on Simulator (no hardware) and `false` on real devices, all of which have an SEP. On native macOS the helper always returns `false` (no `SIMULATOR_UDID`), so `hasSecureEnclave = !isSimulator()` resolves to `true` for every Mac — correct for Apple Silicon and T2-equipped Intel Macs. On older Intel Macs without a T2 chip, SE key creation fails at runtime and the engine's automatic fallback in `getOrCreateKeychainKey` quietly downgrades to plain Keychain storage, so the heuristic is forgiving in the one case where it's optimistic. Drives `deviceKeyStorages`.
 - **Legacy encrypted-key format override.** Pre-1.8 iOS builds wrote encrypted entries under `"{fileName}_{key}"` rather than the common `"encrypted_{key}"`. Local helpers `iosLegacyEncryptedKey(userKey)` / `iosLegacyEncryptedPrefix()` are passed to `KSafeCore`, which uses them throughout its legacy-read paths so upgraders never lose data.
 - **`useSecureEnclave` deprecated flag.** Same role as Android's `useStrongBox`: promoted via local `promoteMode` helper passed as `modeTransformer = ::promoteMode`.
 - **`cleanupOrphanedKeychainEntriesSafe()`** — local suspend helper passed as `migrateAccessPolicy = { cleanupOrphanedKeychainEntriesSafe() }`. Delegates to `internal/KeychainOrphanCleanup.kt`.
-- **DataStore directory resolution.** If `directory == null` (default), uses `NSFileManager.URLForDirectory(NSApplicationSupportDirectory, NSUserDomainMask, create = true)` — the Apple-recommended location for invisible app data. If a custom path is supplied, it's used as-is. Either way the directory is `mkdir`ed via `createDirectoryAtPath(withIntermediateDirectories = true)` and the resolved file path is `"$dir/eu_anifantakis_ksafe_datastore[_<fileName>].preferences_pb"`.
-- **1.x → 2.0 auto-migration from `NSDocumentDirectory`.** Pre-2.0 iOS stored the DataStore in `NSDocumentDirectory` — the wrong place (user-visible via iTunes File Sharing if `UIFileSharingEnabled`, iCloud-syncable by default). 2.0 moves the default to `NSApplicationSupportDirectory`. To avoid forcing 1.x consumers to write migration code, the factory checks: when `directory == null` AND the new path is empty AND a legacy file exists at `"$NSDocumentDirectory/eu_anifantakis_ksafe_datastore[_<fileName>].preferences_pb"`, it calls `NSFileManager.moveItemAtPath` to relocate the file. Idempotent (only triggers when the new location is empty) and best-effort (a failed move logs a recovery message and leaves the legacy file alone — the consumer can recover by passing `directory = "<old Documents path>"`). Apps bumping the dep from 1.x to 2.0 keep their data with zero code changes.
-- **No file-level `NSURLIsExcludedFromBackupKey` setting.** An earlier draft set the attribute unconditionally, but DataStore's atomic-write strategy (write-to-temp then rename) creates a new inode on every flush and clobbers the xattr — making the setting unreliable in practice. The actual security guarantee comes from key locality: encryption keys live in the Keychain with `…ThisDeviceOnly` accessibility (and Secure Enclave keys never leave the device for `HARDWARE_ISOLATED` writes), so a backed-up ciphertext is undecryptable on a restored device — effectively device-local even when the bytes themselves traverse iCloud. Apps that need a hard file-level exclusion can do it themselves on the resolved path or use a per-instance subdirectory layout.
+- **DataStore directory resolution.** If `directory == null` (default), uses `NSFileManager.URLForDirectory(NSApplicationSupportDirectory, NSUserDomainMask, create = true)`. On iOS this resolves to the per-app sandbox `…/Library/Application Support/`; on sandboxed macOS apps it resolves to `~/Library/Containers/<bundle-id>/Data/Library/Application Support/`; on unsandboxed macOS binaries it resolves to `~/Library/Application Support/`. If a custom path is supplied, it's used as-is. Either way the directory is `mkdir`ed via `createDirectoryAtPath(withIntermediateDirectories = true)` and the resolved file path is `"$dir/eu_anifantakis_ksafe_datastore[_<fileName>].preferences_pb"`.
+- **1.x → 2.0 auto-migration from `NSDocumentDirectory`.** Pre-2.0 iOS stored the DataStore in `NSDocumentDirectory` — the wrong place on iOS (user-visible via iTunes File Sharing if `UIFileSharingEnabled`, iCloud-syncable by default). 2.0 moves the default to `NSApplicationSupportDirectory`. To avoid forcing 1.x consumers to write migration code, the factory checks: when `directory == null` AND the new path is empty AND a legacy file exists at `"$NSDocumentDirectory/eu_anifantakis_ksafe_datastore[_<fileName>].preferences_pb"`, it calls `NSFileManager.moveItemAtPath` to relocate the file. Idempotent (only triggers when the new location is empty) and best-effort (a failed move logs a recovery message and leaves the legacy file alone — the consumer can recover by passing `directory = "<old Documents path>"`). Apps bumping the dep from 1.x to 2.0 keep their data with zero code changes. On native macOS the migration is a benign no-op for fresh installs (1.x never shipped on macOS).
+- **No file-level `NSURLIsExcludedFromBackupKey` setting.** An earlier draft set the attribute unconditionally, but DataStore's atomic-write strategy (write-to-temp then rename) creates a new inode on every flush and clobbers the xattr — making the setting unreliable in practice. The actual security guarantee comes from key locality: encryption keys live in the Keychain with `…ThisDeviceOnly` accessibility (and Secure Enclave keys never leave the device for `HARDWARE_ISOLATED` writes), so a backed-up ciphertext is undecryptable on a restored device — effectively device-local even when the bytes themselves traverse iCloud (iOS) or Time Machine (macOS). Apps that need a hard file-level exclusion can do it themselves on the resolved path or use a per-instance subdirectory layout.
 - **`fun obtainAesGcm(): AES.GCM`** — public top-level helper retained from pre-refactor for external Swift callers that warm up the cipher.
 
 What's *not* here anymore: `verifyBiometric` / `verifyBiometricDirect` / `clearBiometricAuth`, the LAContext glue, and the `biometricAuthSessions` map. All moved to `:ksafe-biometrics`.
 
-### `internal/IosKeychainEncryption.kt` — the engine
+### `internal/AppleKeychainEncryption.kt` — the engine
 
 Implements `KSafeEncryption` using `cryptography-kotlin`'s CryptoKit provider for AES-GCM, and the raw Apple Security framework (`SecItemAdd`, `SecItemCopyMatching`, `SecKeyCreateRandomKey`) for key persistence. At ~640 lines it's still the biggest engine — raw `platform.Security.*` cinterop has no JCA-style shortcut — but it's built on a small helper layer so the same boilerplate doesn't repeat.
+
+The class was named `IosKeychainEncryption` through 2.0.0; renamed to `AppleKeychainEncryption` in 2.0.1 alongside the `iosMain` → `appleMain` move. It's `@PublishedApi internal`, so the rename is invisible to direct consumer source — but stack traces and the `testEngine` constructor parameter expose it, so anything that names the class explicitly needs the rename.
 
 **Key behaviours:**
 
@@ -443,6 +447,7 @@ Implements `KSafeEncryption` using `cryptography-kotlin`'s CryptoKit provider fo
 - `HARDWARE_ISOLATED` writes use ECIES: an EC private key is created in the Secure Enclave (`kSecAttrTokenIDSecureEnclave`), and the AES key is wrapped with its public key and stored as a `kSecClassGenericPassword` item under `"se.<prefix>.<userKey>"`.
 - `updateKeyAccessibility(identifier, requireUnlocked)` — the only engine that actually implements this, via `SecItemUpdate`.
 - Every `memScoped` body is wrapped in `kotlinx.cinterop.autoreleasepool { … }` (fix from 1.8.1) to drain Kotlin→NSString bridging allocations on worker threads that lack an ambient Objective-C autorelease pool.
+- `getOrCreateKeychainKey(keyId, hardwareIsolated, requireUnlockedDevice)` — when `hardwareIsolated = true`, attempts the SE-backed ECIES path and falls back to plain Keychain storage if SE creation throws with a non-transient error. This is what makes the Apple-Silicon-vs-Intel-Mac edge case work: on a Mac without a T2 chip, SE key creation fails, the catch swallows the failure, and the engine writes a plain AES key to the Keychain instead. iPhone 5/5C without an SE went through the same path.
 
 **Internal helper layer** (top of the class, above the `KSafeEncryption` interface impls):
 
@@ -463,13 +468,13 @@ Standalone suspend function `cleanupOrphanedKeychainEntries(storage, engine, ser
 - Scans `kSecClassKey` EC private keys separately — catches SE keys that exist without a matching generic-password item (e.g. after a crash between SE-key creation and wrapped-AES-key storage).
 - Deletes orphans by calling `engine.deleteKeySuspend(fullIdentifier)`, which unconditionally removes plain + SE-wrapped + SE EC artifacts for the same identifier.
 
-**Why separate from `IosKeychainEncryption`:** the sweep needs both the `KSafePlatformStorage` snapshot (to know what's valid) and the `KSafeEncryption` engine (to delete). Keeping it as a standalone function lets it be unit-tested against fakes of both.
+**Why separate from `AppleKeychainEncryption`:** the sweep needs both the `KSafePlatformStorage` snapshot (to know what's valid) and the `KSafeEncryption` engine (to delete). Keeping it as a standalone function lets it be unit-tested against fakes of both.
 
-### `internal/KSafeConcurrent.ios.kt` / `internal/KSafeSecureRandom.ios.kt` / `internal/SecurityChecker.ios.kt`
+### `internal/KSafeConcurrent.apple.kt` / `internal/KSafeSecureRandom.apple.kt` / `internal/SecurityChecker.apple.kt`
 
 - `KSafeConcurrent` — `actual` via `kotlin.concurrent.AtomicReference` with copy-on-write semantics (Kotlin/Native lacks `ConcurrentHashMap`). `KSafeAtomicFlag` is backed by `AtomicInt` (0/1) rather than `AtomicReference<Boolean>` because boxed `Boolean` doesn't have stable reference identity on Kotlin/Native.
-- `KSafeSecureRandom` — `arc4random_buf` via `kotlinx.cinterop`.
-- `SecurityChecker` — jailbreak detection (probes for `/Applications/Cydia.app`, `/bin/bash`, etc.), debugger check via `sysctl(CTL_KERN, KERN_PROC, …)` and `P_TRACED`, simulator via `NSProcessInfo.processInfo.environment["SIMULATOR_UDID"]`.
+- `KSafeSecureRandom` — `arc4random_buf` via `kotlinx.cinterop`. Same on iOS and macOS.
+- `SecurityChecker` — jailbreak detection (probes for `/Applications/Cydia.app`, `/bin/bash`, etc.), debugger check via `sysctl(CTL_KERN, KERN_PROC, …)` and `P_TRACED`, simulator via `NSProcessInfo.processInfo.environment["SIMULATOR_UDID"]`. **macOS short-circuit:** `isDeviceRooted()` early-returns `false` when `Platform.osFamily == OsFamily.MACOSX` — every Mac has `/bin/sh`, `/usr/bin/ssh`, and (after a Homebrew install) an `/etc/apt`-shaped tree, so the iOS heuristics would otherwise unconditionally report every macOS host as jailbroken and `KSafeSecurityPolicy.Strict` would refuse to run anywhere. The macOS test suite includes `MacosSecurityCheckerTest` to lock the short-circuit in (asserts that `/bin/sh` does exist on the host, then asserts that `isDeviceRooted()` returns `false` regardless).
 
 ## JVM
 
@@ -554,21 +559,22 @@ Quick lookup table: if you're tracking down a specific behaviour, this is the fi
 | Feature | File |
 |---|---|
 | `KSafe` class itself (members defined once) | `commonMain/KSafe.kt` |
-| Per-platform factory functions | `{android,ios,jvm,web}Main/KSafe.{platform}.kt` |
-| Custom storage directory (`baseDir` / `directory`) | `{android,ios,jvm}Main/KSafe.{platform}.kt` factories |
-| iOS 1.x → 2.0 path migration (`NSDocumentDirectory` → `NSApplicationSupportDirectory`) | `iosMain/KSafe.ios.kt` (`buildIosKSafe`) |
-| iOS forced backup-exclusion (`NSURLIsExcludedFromBackupKey`) | `iosMain/KSafe.ios.kt` (`buildIosKSafe`) |
+| Per-platform factory functions | `{android,apple,jvm,web}Main/KSafe.{platform}.kt` (Apple factory shared by iOS + macOS) |
+| Custom storage directory (`baseDir` / `directory`) | `{android,apple,jvm}Main/KSafe.{platform}.kt` factories |
+| 1.x → 2.0 path migration (`NSDocumentDirectory` → `NSApplicationSupportDirectory`) | `appleMain/KSafe.apple.kt` (`buildAppleKSafe`) — runs on iOS + macOS |
+| Apple-platform backup-exclusion stance | `appleMain/KSafe.apple.kt` (`buildAppleKSafe`) — see KDoc rationale |
 | Hot cache + write coalescing | `commonMain/internal/KSafeCore.kt` |
 | `modeTransformer` callback (honors `useStrongBox` / `useSecureEnclave`) | `commonMain/internal/KSafeCore.kt` (constructor) — set per-platform in the factories |
 | Orphan-ciphertext cleanup (DataStore side) | `commonMain/internal/KSafeCore.kt` (`cleanupOrphanedCiphertext`) |
-| Orphan-key cleanup (iOS Keychain side) | `iosMain/internal/KeychainOrphanCleanup.kt` |
+| Orphan-key cleanup (Apple Keychain side, iOS + macOS) | `appleMain/internal/KeychainOrphanCleanup.kt` |
 | On-disk key naming | `commonMain/internal/KeySafeMetadataManager.kt` |
 | Int ↔ Long cross-type migration | `commonMain/internal/KSafeCore.kt` (`convertStoredValue`) |
 | Legacy-format read path | `commonMain/internal/KeySafeMetadataManager.kt` (`classifyStorageEntry`) |
 | `ENCRYPTED_WITH_TIMED_CACHE` TTL | `commonMain/internal/KSafeCore.kt` (`plaintextCache`) |
 | WebCrypto suspend crypto | `webMain/internal/WebSoftwareEncryption.kt` |
 | StrongBox request wiring | `androidMain/internal/AndroidKeystoreEncryption.kt` |
-| Secure Enclave ECIES wrapping | `iosMain/internal/IosKeychainEncryption.kt` |
+| Secure Enclave ECIES wrapping (iOS + macOS) | `appleMain/internal/AppleKeychainEncryption.kt` |
+| macOS jailbreak-check short-circuit | `appleMain/internal/SecurityChecker.apple.kt` (`isDeviceRooted` early-out for `OsFamily.MACOSX`) |
 | `var x by ksafe(0)` | `commonMain/KSafeDelegate.kt` |
 | `getOrCreateSecret` | `commonMain/KSafeSecret.kt` |
 | Root/debugger/emulator checks | `*Main/internal/SecurityChecker.*.kt` |
@@ -590,7 +596,8 @@ Not exhaustively covered, but briefly:
   - `FakeEncryption.kt`, `TestData.kt`, `ByteArraySearch.kt` — shared helpers.
   - Note: `BiometricAuthorizationDurationTest` is **not** here in 2.0 — it lives in `:ksafe-biometrics/commonTest/` along with the rest of biometric.
 - **`jvmTest/`** — JVM-specific tests: `JvmKSafeTest` (extends common), `Jvm160FixesTest` (regression suite for the v1.6.0 key-generation race fix), `JvmCustomJsonTest`, `JvmEncryptionProofTest` (verifies AES output round-trips), `JvmNullFilenameTest`, `JvmFileNameTest` (includes the 2.0 `baseDir_storesFileInProvidedDirectory` and `baseDir_clearAll_removesFileFromProvidedDirectory` tests for the custom-storage-directory feature), `JvmSecurityCheckerTest`, `KSafeKeyStorageTest`. `JvmKSafeTest` is the heaviest user of the platform-extension test surface (`ksafe.dataStore`, `ksafe.engine`, `ksafe.updateCache`).
-- **`iosTest/`** — `IosKSafeTest`, `IosEncryptionProofTest`, `IosKeychainEncryptionTest`, `IosKeychainEncryptionLeakTest` (`ru_maxrss`-based memory-leak regression for the 1.8.1 NSString-bridging fix), `IosNullFilenameTest`, **`IosStorageLocationTest`** (locks in the 2.0 storage-location behaviour: `directory` parameter routing, the 1.x → 2.0 auto-migration from `NSDocumentDirectory` to `NSApplicationSupportDirectory`, and the explicit-`directory` migration-skip).
+- **`iosTest/`** — iOS-sandbox-specific tests that don't transfer to a macOS dev host: `IosKSafeTest`, `IosEncryptionProofTest`, `IosKeychainEncryptionTest`, `IosKeychainEncryptionLeakTest` (`ru_maxrss`-based memory-leak regression for the 1.8.1 NSString-bridging fix), `IosNullFilenameTest`, **`IosStorageLocationTest`** (locks in the 2.0 storage-location behaviour: `directory` parameter routing, the 1.x → 2.0 auto-migration from `NSDocumentDirectory` to `NSApplicationSupportDirectory`, and the explicit-`directory` migration-skip). The Keychain-leaning tests stay here because the Kotlin/Native test runner on macOS has different Keychain-access semantics than on iOS Simulator (real login Keychain vs. sandboxed simulator keychain), and the storage-location tests use `NSApplicationSupportDirectory` directly — fine on iOS Simulator (per-instance sandbox), pollutes a real Mac dev's home directory.
+- **`macosTest/`** — added in 2.0.1, Mac-hygienic mirror of the parts of `iosTest` that DO apply to macOS. 73 tests across six files: `MacosKSafeTest` (full common `KSafeTest` suite via `FakeEncryption` + per-instance temp dir, 62 tests), `MacosSecurityCheckerTest` (4 tests locking in the macOS jailbreak short-circuit), `MacosStorageLocationTest` (4 tests on `directory` override behaviour), `MacosEncryptionProofTest` (2 tests asserting encrypted writes don't leak plaintext to disk), `MacosNullFilenameTest` (1 test for the default-basename code path), and the `MacosTestPaths` helper that routes every storage path through `NSTemporaryDirectory()` so nothing leaks to `~/Library/Application Support/`.
 - **`webTest/`** (shared by js + wasmJs) — `WebKSafeTest`, `WebEncryptionProofTest`, `WebInteropSmokeTest`. The smoke test asserts per-target `actual` correctness: `localStorage` round-trip, `localStorage` enumeration, `currentTimeMillisWeb()` plausibility, and `secureRandomBytes()` non-determinism.
 - **`androidInstrumentedTest/`** — `AndroidKSafeTest`, `AndroidEncryptionProofTest`, `AndroidConcurrencyTest`, `NullFilenameTest`, **`AndroidStorageLocationTest`** (locks in the 2.0 cache-key change: same `fileName` + different `baseDir` → isolated DataStores instead of DataStore's "multiple active instances" crash). Require a device or emulator.
 

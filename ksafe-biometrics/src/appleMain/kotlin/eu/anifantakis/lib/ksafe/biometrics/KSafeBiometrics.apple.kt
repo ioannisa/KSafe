@@ -10,10 +10,14 @@ import platform.Foundation.NSProcessInfo
 import kotlin.concurrent.AtomicReference
 
 /**
- * iOS implementation of [KSafeBiometrics] platform helpers.
+ * Apple-platform implementation of [KSafeBiometrics] platform helpers.
  *
- * Real `LAContext` (Face ID / Touch ID). Returns `true` on the simulator
- * (no biometric hardware available).
+ * Real `LAContext` — Face ID / Touch ID on iOS, Touch ID / Apple Watch on macOS.
+ * Returns `true` on the iOS Simulator (no biometric hardware available). On
+ * macOS, `LAContext.evaluatePolicy` will itself surface a
+ * `LAErrorBiometryNotAvailable` if the host has no Touch ID / Watch unlock —
+ * we do not pre-detect that, callers receive `false` like any other
+ * authentication failure.
  */
 
 private val biometricAuthSessions = AtomicReference<Map<String, Long>>(emptyMap())

@@ -1,7 +1,7 @@
 # KSafe — Universal Key/Value Persistence for Kotlin Multiplatform and Android
 
 * **Encrypted by default. Plain _(unencrypted)_ when needed.**
-* **Persist variables, Compose State, StateFlow, and serializable objects across Android, iOS, Desktop, and Web**
+* **Persist variables, Compose State, StateFlow, and serializable objects across Android, iOS, macOS, Desktop, and Web**
 * **Easy to use by design**
 
 [![Maven Central](https://img.shields.io/maven-central/v/eu.anifantakis/ksafe.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/eu.anifantakis/ksafe)
@@ -25,7 +25,7 @@ From the author and the community:
 
 KSafe is a secure-by-default Kotlin Multiplatform key/value persistence library.
 
-It lets you persist ordinary Kotlin variables, Compose `MutableState`, and `MutableStateFlow` across app restarts using one API across Android, iOS, JVM/Desktop, WASM, and Kotlin/JS.
+It lets you persist ordinary Kotlin variables, Compose `MutableState`, and `MutableStateFlow` across app restarts using one API across Android, iOS, macOS, JVM/Desktop, WASM, and Kotlin/JS.
 
 Encrypted storage is the default. Plain storage is available per entry with `mode = KSafeWriteMode.Plain`.
 
@@ -40,7 +40,7 @@ KSafe gives you a complete persistence layer for Kotlin Multiplatform: property 
 - **Asynchronous?** ✔ Yes — full suspend API when you want guaranteed disk flushes
 **Extras when you encrypt:**
 
-* **Biometrics?** ✔ Yes — Face ID / Touch ID / Fingerprint on Android + iOS, with auth caching. Ships as the standalone optional `ksafe-biometrics` module so apps that don't need it pay nothing.
+* **Biometrics?** ✔ Yes — Face ID / Touch ID / Fingerprint on Android + iOS + macOS, with auth caching. Ships as the standalone optional `ksafe-biometrics` module so apps that don't need it pay nothing.
 * **Root/jailbreak detection?** ✔ Yes — configurable WARN/BLOCK actions + analytics callback
 * **Memory policy?** ✔ Yes — three RAM modes trading security vs performance
 * **Database passphrase in one line?** ✔ Yes — hardware-isolated 256-bit secret for SQLCipher / SQLDelight / Room
@@ -131,7 +131,7 @@ KSafe isn't just for key/value pairs — it's the simplest way to bootstrap an e
 
 ```kotlin
 // Generates a 256-bit secret on first call, returns the same one thereafter.
-// Stored hardware-isolated (StrongBox on Android, Secure Enclave on iOS).
+// Stored hardware-isolated (StrongBox on Android, Secure Enclave on iOS / Apple Silicon and T2-equipped Macs).
 val passphrase = ksafe.getOrCreateSecret("main.db")
 
 Room.databaseBuilder(context, AppDatabase::class.java, "main.db")
@@ -170,7 +170,7 @@ install(Auth) {
 }
 ```
 
-Under the hood, each platform uses its native crypto engine — Android Keystore, iOS Keychain + CryptoKit, JVM's `javax.crypto`, browser WebCrypto (on both Kotlin/WASM and Kotlin/JS) — unified behind one API. Values are AES-256-GCM encrypted and persisted to DataStore (localStorage on the web targets). Cross-screen sync (`scope =`), biometric auth, memory policies, and runtime security detection are all built in.
+Under the hood, each platform uses its native crypto engine — Android Keystore, Apple Keychain + CryptoKit (shared by iOS and native macOS), JVM's `javax.crypto`, browser WebCrypto (on both Kotlin/WASM and Kotlin/JS) — unified behind one API. Values are AES-256-GCM encrypted and persisted to DataStore (localStorage on the web targets). Cross-screen sync (`scope =`), biometric auth, memory policies, and runtime security detection are all built in.
 
 ## Table of Contents
 
@@ -195,7 +195,7 @@ Under the hood, each platform uses its native crypto engine — Android Keystore
 ```kotlin
 // 1. Create instance (Android needs context, others don't)
 val ksafe = KSafe(context) // Android
-val ksafe = KSafe()        // iOS / JVM / WASM / JS / JS
+val ksafe = KSafe()        // iOS / macOS / JVM / WASM / JS
 
 // 2. Store & retrieve with property delegation
 var counter by ksafe(0)
@@ -223,7 +223,7 @@ KSafeBiometrics.verifyBiometricDirect("Confirm payment") { success ->
 }
 ```
 
-Data is now AES-256-GCM encrypted — keys in Android Keystore, iOS Keychain, software-backed on JVM, WebCrypto on the browser targets (Kotlin/WASM and Kotlin/JS).
+Data is now AES-256-GCM encrypted — keys in Android Keystore, Apple Keychain (iOS / macOS), software-backed on JVM, WebCrypto on the browser targets (Kotlin/WASM and Kotlin/JS).
 
 ***
 
@@ -271,7 +271,7 @@ plugins {
 // Android
 val ksafe = KSafe(context)
 
-// iOS / JVM / WASM / JS
+// iOS / macOS / JVM / WASM / JS
 val ksafe = KSafe()
 ```
 
@@ -283,13 +283,13 @@ actual val platformModule = module {
     single { KSafe(androidApplication()) }
 }
 
-// iOS / JVM / WASM / JS
+// iOS / macOS / JVM / WASM / JS
 actual val platformModule = module {
     single { KSafe() }
 }
 ```
 
-Multi-instance setups, web `awaitCacheReady()` (wasmJs + js), full per-platform Koin examples, the **custom storage directory** option (`baseDir` on JVM/Android, `directory` on iOS — for example to align with `$XDG_DATA_HOME` or `noBackupFilesDir`), and the optional `KSafe.close()` for apps that re-create instances mid-process: [docs/SETUP.md](docs/SETUP.md).
+Multi-instance setups, web `awaitCacheReady()` (wasmJs + js), full per-platform Koin examples, the **custom storage directory** option (`baseDir` on JVM/Android, `directory` on iOS / macOS — for example to align with `$XDG_DATA_HOME`, `noBackupFilesDir`, or a sandboxed Mac app's container), and the optional `KSafe.close()` for apps that re-create instances mid-process: [docs/SETUP.md](docs/SETUP.md).
 
 
 ## Basic Usage
@@ -379,7 +379,7 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 
 ## Why use KSafe?
 
-* **Hardware-backed security** — AES-256-GCM, keys in Android Keystore / iOS Keychain / JVM software / WebCrypto. Per-property control via `KSafeWriteMode` + `KSafeEncryptedProtection` tiers
+* **Hardware-backed security** — AES-256-GCM, keys in Android Keystore / Apple Keychain (iOS + macOS) / JVM software / WebCrypto. Per-property control via `KSafeWriteMode` + `KSafeEncryptedProtection` tiers
 * **Biometric auth** — Face ID, Touch ID, Fingerprint, with auth caching
 * **Root & jailbreak detection** — configurable WARN/BLOCK actions
 * **Clean reinstalls** — automatic cleanup on fresh install
@@ -387,7 +387,7 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 * **Ease of use** — `var launchCount by ksafe(0)`, that is literally it
 * **Versatility** — primitives, data classes, sealed hierarchies, lists, sets, nullables
 * **Performance** — zero-latency UI reads via hybrid hot cache
-* **Desktop & Web** — full JVM/Desktop and browser support on both Kotlin/WASM and Kotlin/JS alongside Android and iOS
+* **Desktop & Web** — full JVM/Desktop, native macOS, and browser support on both Kotlin/WASM and Kotlin/JS alongside Android and iOS
 
 ***
 
@@ -400,7 +400,7 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 | **Data corruption** | :x: Crash = data loss | :white_check_mark: Atomic | :x: Platform-dependent | :white_check_mark: Atomic | :white_check_mark: Uses DataStore atomicity |
 | **API style** | :x: Callbacks | :white_check_mark: Flow | :white_check_mark: Sync | :white_check_mark: Sync | :white_check_mark: Both sync & async |
 | **Encryption** | :x: None | :x: None | :x: None | :white_check_mark: Hardware-backed | :white_check_mark: Hardware-backed |
-| **Cross-platform** | :x: Android only | :x: Android only | :white_check_mark: KMP | :white_check_mark: KMP | :white_check_mark: Android/iOS/JVM/WASM/JS |
+| **Cross-platform** | :x: Android only | :x: Android only | :white_check_mark: KMP | :white_check_mark: KMP | :white_check_mark: Android/iOS/macOS/JVM/WASM/JS |
 | **Nullable support** | :x: No | :x: No | :white_check_mark: Primitives (`*OrNull` getters) | :white_check_mark: Primitives | :white_check_mark: Primitives + objects + delegates * |
 | **Complex types** | :x: Manual | :x: Manual/Proto | :x: Manual | :x: Manual | :white_check_mark: Auto-serialization |
 | **Biometric auth** | :x: Manual | :x: Manual | :x: Manual | :x: Manual | :white_check_mark: Built-in |
@@ -452,8 +452,9 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 | Platform | Minimum Version | Notes |
 |----------|-----------------|-------|
 | **Android** | API 24 (Android 7.0) | Hardware-backed Keystore on supported devices |
-| **iOS** | iOS 13+ | Keychain-backed symmetric keys (protected by device passcode) |
-| **JVM/Desktop** | JDK 11+ | Software-backed encryption |
+| **iOS** | iOS 13+ | Keychain-backed symmetric keys (protected by device passcode); Secure Enclave on real devices |
+| **macOS (native)** | macOS 11+ (`macosArm64`, `macosX64`) | Same Keychain + CryptoKit path as iOS; Secure Enclave on Apple Silicon and T2-equipped Macs |
+| **JVM/Desktop** | JDK 11+ | Software-backed encryption — runs on macOS, Windows, Linux |
 | **Kotlin/WASM (Browser)** | Browsers with WasmGC (Chrome 119+, Firefox 120+, Safari 18+) | WebCrypto API + localStorage |
 | **Kotlin/JS (Browser)** | Any modern browser | WebCrypto API + localStorage — use this for older browsers or pre-existing JS builds |
 
@@ -472,12 +473,12 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 
 ## Biometric Authentication
 
-A standalone biometric helper (Android + iOS) that can gate **any action** in your app — not just KSafe ops. Ships as the optional `:ksafe-biometrics` artifact and depends on nothing else from KSafe, so apps that need only biometric verification can use it on its own.
+A standalone biometric helper (Android + iOS + macOS) that can gate **any action** in your app — not just KSafe ops. Ships as the optional `:ksafe-biometrics` artifact and depends on nothing else from KSafe, so apps that need only biometric verification can use it on its own.
 
 **Static API.** No instance, no DI wiring, no `Context` parameter. On Android the library auto-initializes via a `ContentProvider` declared in its merged manifest (the same pattern WorkManager / Firebase use), so consumers don't need to touch their `Application` class.
 
 ```kotlin
-// Same call shape on every platform — Android, iOS, JVM, web.
+// Same call shape on every platform — Android, iOS, macOS, JVM, web.
 
 // Callback-based
 KSafeBiometrics.verifyBiometricDirect("Authenticate to increment") { success ->

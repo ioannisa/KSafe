@@ -11,7 +11,7 @@ plugins {
 }
 
 group = "eu.anifantakis"
-version = "2.0.0-RC2"
+version = "2.0.1-Beta01"
 
 kotlin {
     androidTarget {
@@ -24,7 +24,9 @@ kotlin {
     listOf(
         iosX64(),
         iosArm64(),
-        iosSimulatorArm64()
+        iosSimulatorArm64(),
+        macosX64(),
+        macosArm64(),
     ).forEach {
         it.binaries.framework {
             baseName = "ksafe"
@@ -88,7 +90,9 @@ kotlin {
                 implementation(libs.cryptography.provider.jdk)
             }
         }
-        iosMain {
+        // appleMain is shared by iosX64/iosArm64/iosSimulatorArm64 + macosX64/macosArm64.
+        // The default hierarchy template (applyDefaultHierarchyTemplate above) wires it up.
+        appleMain {
             dependsOn(datastoreMain)
             dependencies {
                 implementation(libs.cryptography.provider.cryptokit)

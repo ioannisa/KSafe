@@ -24,7 +24,7 @@ import kotlin.uuid.Uuid
  * Proof-test for encryption on iOS.
  *
  * **Test-engine note:** The Kotlin/Native test runner does not carry the
- * Keychain entitlement, so the production [IosKeychainEncryption] path
+ * Keychain entitlement, so the production [AppleKeychainEncryption] path
  * fails with `errSecMissingEntitlement` (-25291) — see [IosKeychainEncryptionTest]
  * for the coverage of that error path. To exercise KSafe's *write plumbing*
  * (the part that decides whether plaintext or ciphertext is written to the

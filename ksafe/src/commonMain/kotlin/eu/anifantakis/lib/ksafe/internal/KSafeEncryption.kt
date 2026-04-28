@@ -22,7 +22,7 @@ package eu.anifantakis.lib.ksafe.internal
  *   The encryption key must be removed alongside the encrypted data.
  *
  * @see AndroidKeystoreEncryption
- * @see IosKeychainEncryption
+ * @see AppleKeychainEncryption
  * @see JvmSoftwareEncryption
  */
 @PublishedApi

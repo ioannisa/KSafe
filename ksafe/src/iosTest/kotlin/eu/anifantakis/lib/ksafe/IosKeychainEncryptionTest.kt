@@ -1,6 +1,6 @@
 package eu.anifantakis.lib.ksafe
 
-import eu.anifantakis.lib.ksafe.internal.IosKeychainEncryption
+import eu.anifantakis.lib.ksafe.internal.AppleKeychainEncryption
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -10,13 +10,13 @@ import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
 /**
- * iOS-specific tests for IosKeychainEncryption error handling.
+ * iOS-specific tests for AppleKeychainEncryption error handling.
  *
  * ## Test Environment Limitations
  *
  * Direct Keychain operations require proper entitlements that are NOT available
  * in the Kotlin/Native test runner. This means:
- * - Direct IosKeychainEncryption tests will throw `errSecMissingEntitlement` (-25291)
+ * - Direct AppleKeychainEncryption tests will throw `errSecMissingEntitlement` (-25291)
  * - This is EXPECTED behavior - it proves our error handling works correctly
  * - Full encryption tests run through IosKSafeTest which uses KSafe's abstraction
  *
@@ -51,7 +51,7 @@ class IosKeychainEncryptionTest {
      */
     @Test
     fun testThrowsOnKeychainErrorInTestEnvironment() {
-        val encryption = IosKeychainEncryption()
+        val encryption = AppleKeychainEncryption()
         val keyId = uniqueKeyId()
         val plaintext = "test data".encodeToByteArray()
 
@@ -72,7 +72,7 @@ class IosKeychainEncryptionTest {
      */
     @Test
     fun testDecryptThrowsOnKeychainError() {
-        val encryption = IosKeychainEncryption()
+        val encryption = AppleKeychainEncryption()
         val keyId = uniqueKeyId()
         // Fake ciphertext - doesn't matter since we'll fail before decryption
         val fakeCiphertext = ByteArray(48) { it.toByte() }
@@ -94,7 +94,7 @@ class IosKeychainEncryptionTest {
      */
     @Test
     fun testDeleteKeyDoesNotThrow() {
-        val encryption = IosKeychainEncryption()
+        val encryption = AppleKeychainEncryption()
         val keyId = uniqueKeyId()
 
         // Should not throw - delete failures are generally harmless
@@ -112,8 +112,8 @@ class IosKeychainEncryptionTest {
         val config256 = KSafeConfig(keySize = 256)
 
         // These should not throw - just verifying configuration is accepted
-        val encryption128 = IosKeychainEncryption(config = config128)
-        val encryption256 = IosKeychainEncryption(config = config256)
+        val encryption128 = AppleKeychainEncryption(config = config128)
+        val encryption256 = AppleKeychainEncryption(config = config256)
 
         // Both should throw on encrypt (no entitlements), but with different configs
         val keyId = uniqueKeyId()
@@ -131,20 +131,20 @@ class IosKeychainEncryptionTest {
     fun testKeychainLookupOrder_checksWrappedThenPlain() {
         // keychainLookupOrder always returns SE-wrapped account first so decrypt
         // can transparently find keys regardless of how they were created.
-        val order = IosKeychainEncryption.keychainLookupOrder(keyId = "mykey")
+        val order = AppleKeychainEncryption.keychainLookupOrder(keyId = "mykey")
         assertEquals(listOf("se.mykey", "mykey"), order)
     }
 
     @Test
     fun testTransientUnwrapFailureClassification_deviceLockedAndInteraction() {
-        assertTrue(IosKeychainEncryption.isTransientUnwrapFailure("device is locked"))
-        assertTrue(IosKeychainEncryption.isTransientUnwrapFailure("Interaction not allowed"))
+        assertTrue(AppleKeychainEncryption.isTransientUnwrapFailure("device is locked"))
+        assertTrue(AppleKeychainEncryption.isTransientUnwrapFailure("Interaction not allowed"))
     }
 
     @Test
     fun testTransientUnwrapFailureClassification_permanentFailure() {
-        assertFalse(IosKeychainEncryption.isTransientUnwrapFailure("wrong key / corruption"))
-        assertFalse(IosKeychainEncryption.isTransientUnwrapFailure(null))
+        assertFalse(AppleKeychainEncryption.isTransientUnwrapFailure("wrong key / corruption"))
+        assertFalse(AppleKeychainEncryption.isTransientUnwrapFailure(null))
     }
 
     /**
@@ -156,7 +156,7 @@ class IosKeychainEncryptionTest {
      */
     @Test
     fun testSecureEnclaveThrowsInTestEnvironment() {
-        val encryption = IosKeychainEncryption()
+        val encryption = AppleKeychainEncryption()
         val keyId = uniqueKeyId()
         val plaintext = "test data".encodeToByteArray()
 
@@ -181,7 +181,7 @@ class IosKeychainEncryptionTest {
      */
     @Test
     fun testSecureEnclaveDeleteDoesNotThrow() {
-        val encryption = IosKeychainEncryption()
+        val encryption = AppleKeychainEncryption()
         val keyId = uniqueKeyId()
 
         // Should not throw - delete is always permissive

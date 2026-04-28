@@ -7,7 +7,7 @@ import dev.whyoleg.cryptography.CryptographyProvider
 import dev.whyoleg.cryptography.algorithms.AES
 import dev.whyoleg.cryptography.providers.cryptokit.CryptoKit
 import eu.anifantakis.lib.ksafe.internal.DataStoreStorage
-import eu.anifantakis.lib.ksafe.internal.IosKeychainEncryption
+import eu.anifantakis.lib.ksafe.internal.AppleKeychainEncryption
 import eu.anifantakis.lib.ksafe.internal.KSafeCore
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
 import eu.anifantakis.lib.ksafe.internal.KeySafeMetadataManager
@@ -49,15 +49,20 @@ private fun isSimulator(): Boolean =
     NSProcessInfo.processInfo.environment["SIMULATOR_UDID"] != null
 
 /**
- * iOS factory for [KSafe]. Resolves to the same call syntax as the pre-2.0
- * `KSafe(...)` constructor.
+ * Apple-platform factory for [KSafe]. Used by iOS, iPadOS and macOS targets;
+ * resolves to the same call syntax as the pre-2.0 `KSafe(...)` constructor.
  *
- * Owns the iOS-specific concerns:
+ * Owns the Apple-platform concerns:
  * - **CryptoKit registration.** Kotlin/Native's dead-code elimination can
  *   strip `AES.GCM` if nothing references it statically, so the factory body
  *   forces the symbol to be retained.
- * - **Secure Enclave detection.** Simulator = no hardware; real devices
- *   expose the Secure Enclave.
+ * - **Secure Enclave detection.** Heuristic: assume present on real devices,
+ *   absent on iOS Simulator. Apple Silicon and T2-equipped Intel Macs have an
+ *   SE; older Intel Macs without T2 do not. On those older Intel Macs the
+ *   factory still advertises [KSafeKeyStorage.HARDWARE_ISOLATED], but the
+ *   encryption layer ([eu.anifantakis.lib.ksafe.internal.AppleKeychainEncryption])
+ *   transparently falls back to plain Keychain storage when SE key creation
+ *   fails — same fallback that already covers old iPhone 5/5C devices.
  * - **Legacy encrypted-key format.** Pre-1.8 iOS builds wrote encrypted
  *   entries under `"{fileName}_{key}"` rather than the common
  *   `"encrypted_{key}"`, so we override [KSafeCore]'s legacy key resolver.
@@ -71,36 +76,46 @@ private fun isSimulator(): Boolean =
  *   [KSafeMemoryPolicy.ENCRYPTED]).
  * @param config Cryptographic + JSON configuration.
  * @param securityPolicy Runtime security checks (jailbreak / debugger / etc.).
+ *   On macOS the jailbreak check short-circuits to `false` — the iOS path
+ *   probes (`/bin/sh`, `/etc/apt`, …) all fire on every Mac.
  * @param plaintextCacheTtl TTL for the
  *   [KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE] policy.
  * @param useSecureEnclave Deprecated — use `KSafeProtection.HARDWARE_ISOLATED`
  *   per property instead.
  * @param directory Optional override for the directory in which the DataStore
  *   `.preferences_pb` file is stored. Pass an absolute path string. If null
- *   (default) KSafe uses `NSApplicationSupportDirectory` — the iOS-correct
- *   location for invisible app data. If you supply a custom path, KSafe
- *   creates the directory if it doesn't exist.
+ *   (default) KSafe uses `NSApplicationSupportDirectory` — the OS-correct
+ *   location for invisible app data (the app sandbox on iOS,
+ *   `~/Library/Application Support/<bundle-id>/` on sandboxed macOS apps,
+ *   `~/Library/Application Support/` on unsandboxed macOS binaries). If you
+ *   supply a custom path, KSafe creates the directory if it doesn't exist.
  *
- * **KSafe data is effectively device-local on iOS.** Encryption keys live in
- * the Keychain with `…ThisDeviceOnly` accessibility (and Secure Enclave keys
- * never leave the device for `HARDWARE_ISOLATED` writes), so even if the
- * DataStore file is included in an iCloud Backup, its encrypted bytes are
- * undecryptable on a restored device — the keys are not there. The library
- * does **not** set `NSURLIsExcludedFromBackupKey` on the file because
- * DataStore's atomic-write strategy (write-to-temp then rename) replaces the
- * file's inode and would clobber the extended attribute on every flush.
- * Reliable file-level exclusion is therefore impossible without architectural
- * gymnastics, and the security guarantee already comes from key locality. If
- * you need device-portable preferences, use `UserDefaults`.
+ * **KSafe data is effectively device-local.** Encryption keys live in the
+ * Keychain with `…ThisDeviceOnly` accessibility (and Secure Enclave keys never
+ * leave the device for `HARDWARE_ISOLATED` writes), so even if the DataStore
+ * file is included in an iCloud Backup or a Time Machine snapshot, its
+ * encrypted bytes are undecryptable on a restored device — the keys are not
+ * there. The library does **not** set `NSURLIsExcludedFromBackupKey` on the
+ * file because DataStore's atomic-write strategy (write-to-temp then rename)
+ * replaces the file's inode and would clobber the extended attribute on every
+ * flush. Reliable file-level exclusion is therefore impossible without
+ * architectural gymnastics, and the security guarantee already comes from key
+ * locality. If you need device-portable preferences, use `UserDefaults`.
  *
  * **Behavior change (2.0):** Pre-2.0 KSafe stored data in
- * `NSDocumentDirectory`, which is iCloud-syncable and exposed via iTunes
- * File Sharing if `UIFileSharingEnabled` is on. The 2.0 default is
+ * `NSDocumentDirectory`, which is iCloud-syncable on iOS and exposed via
+ * iTunes File Sharing if `UIFileSharingEnabled` is on. The 2.0 default is
  * `NSApplicationSupportDirectory`. **1.x → 2.0 upgrade is automatic:** when
  * the new location is empty AND a legacy file exists at the old
  * `NSDocumentDirectory` path, KSafe moves it on first launch (only when
  * `directory` is null — explicit overrides skip the migration). No app code
  * changes needed.
+ *
+ * **macOS Keychain note:** On unsandboxed macOS apps, accessing the Keychain
+ * for the first time triggers a system password prompt ("…wants to use the
+ * 'login' Keychain"). To suppress that, sign your app with a Keychain access
+ * group entitlement. KSafe currently uses the default access group; pinning
+ * to a specific group is on the roadmap.
  */
 fun KSafe(
     fileName: String? = null,
@@ -111,7 +126,7 @@ fun KSafe(
     plaintextCacheTtl: Duration = 5.seconds,
     @Suppress("DEPRECATION") useSecureEnclave: Boolean = false,
     directory: String? = null,
-): KSafe = buildIosKSafe(
+): KSafe = buildAppleKSafe(
     fileName = fileName,
     lazyLoad = lazyLoad,
     memoryPolicy = memoryPolicy,
@@ -134,7 +149,7 @@ internal fun KSafe(
     @Suppress("DEPRECATION") useSecureEnclave: Boolean = false,
     directory: String? = null,
     testEngine: KSafeEncryption,
-): KSafe = buildIosKSafe(
+): KSafe = buildAppleKSafe(
     fileName = fileName,
     lazyLoad = lazyLoad,
     memoryPolicy = memoryPolicy,
@@ -147,7 +162,7 @@ internal fun KSafe(
 )
 
 @OptIn(ExperimentalForeignApi::class)
-private fun buildIosKSafe(
+private fun buildAppleKSafe(
     fileName: String?,
     lazyLoad: Boolean,
     memoryPolicy: KSafeMemoryPolicy,
@@ -247,7 +262,7 @@ private fun buildIosKSafe(
     )
 
     val engine: KSafeEncryption =
-        testEngine ?: IosKeychainEncryption(config = config, serviceName = SERVICE_NAME)
+        testEngine ?: AppleKeychainEncryption(config = config, serviceName = SERVICE_NAME)
 
     fun iosKeyAlias(userKey: String): String =
         listOfNotNull(KEY_PREFIX, fileName, userKey).joinToString(".")
@@ -290,7 +305,7 @@ private fun buildIosKSafe(
                 keyPrefix = KEY_PREFIX,
                 fileName = fileName,
                 legacyEncryptedPrefix = iosLegacyEncryptedPrefix(),
-                seKeyTagPrefix = IosKeychainEncryption.SE_KEY_TAG_PREFIX,
+                seKeyTagPrefix = AppleKeychainEncryption.SE_KEY_TAG_PREFIX,
             )
         }.onFailure { t ->
             if (t is CancellationException) throw t

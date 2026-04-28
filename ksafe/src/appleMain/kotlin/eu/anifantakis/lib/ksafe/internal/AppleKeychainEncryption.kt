@@ -73,7 +73,12 @@ import platform.Security.kSecValueData
 import platform.posix.memcpy
 
 /**
- * iOS implementation of [KSafeEncryption] using iOS Keychain Services and CryptoKit.
+ * Apple-platform implementation of [KSafeEncryption] using Keychain Services and CryptoKit.
+ *
+ * Used by iOS, iPadOS and macOS targets. The Keychain APIs (`SecItemAdd`/`SecItemCopyMatching`/
+ * `SecKey…`), Secure Enclave token attribute and CryptoKit AES-GCM are all available and
+ * behave identically across these platforms; only the location of the Keychain database
+ * differs (per-app on iOS, per-user on macOS).
  *
  * This provides secure encryption with:
  * - Symmetric AES keys stored as Keychain generic-password items (protected by device passcode)
@@ -85,14 +90,15 @@ import platform.posix.memcpy
  * **envelope encryption**: an EC P-256 key pair is created in the Secure Enclave
  * hardware, which wraps/unwraps the AES symmetric key using ECIES. The AES key
  * itself is stored encrypted in the Keychain. This provides hardware-level protection
- * for the key material. If the Secure Enclave is unavailable (e.g. on simulators or
- * older devices), the path falls back to regular Keychain storage automatically.
+ * for the key material. If the Secure Enclave is unavailable (e.g. on simulators, on
+ * Intel Macs without a T2 chip, or older devices), the path falls back to regular
+ * Keychain storage automatically.
  *
  * @property config Configuration for encryption (key size, default unlock policy).
  * @property serviceName The Keychain service name all items are scoped under.
  */
 @PublishedApi
-internal class IosKeychainEncryption(
+internal class AppleKeychainEncryption(
     private val config: KSafeConfig = KSafeConfig(),
     private val serviceName: String = SERVICE_NAME,
 ) : KSafeEncryption {

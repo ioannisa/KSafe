@@ -41,10 +41,12 @@ The biometric module is fully independent of the storage core — apps that need
    ┌───────┴────────┐                  ┌──────┴───────────┐
    ▼                ▼                  ▼                  ▼
 ┌──────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│DataStore │  │LocalStorage  │  │AndroidKeystore│ │IosKeychain   │
+│DataStore │  │LocalStorage  │  │AndroidKeystore│ │AppleKeychain │
 │Storage   │  │Storage       │  │JvmSoftware   │  │WebSoftware   │
 │(Android, │  │(js + wasmJs) │  │Encryption    │  │Encryption    │
-│ iOS, JVM)│  │              │  │              │  │              │
+│ iOS,     │  │              │  │              │  │              │
+│ macOS,   │  │              │  │              │  │              │
+│ JVM)     │  │              │  │              │  │              │
 └──────────┘  └──────────────┘  └──────────────┘  └──────────────┘
 
   Ring 3 — per-platform shells: factory functions that build a
@@ -57,7 +59,7 @@ The biometric module is fully independent of the storage core — apps that need
 
 **Ring 2 is the orchestrator.** A single `KSafeCore` instance per `KSafe` holds all the cross-cutting state: the hot cache, the dirty-key set, the protection metadata, the write-coalescing channel, the JSON serializer. `KSafe`'s public methods delegate to `core.getDirectRaw(...)` / `core.putDirectRaw(...)` etc. Adding a new storage primitive or fixing a cache bug happens in one place.
 
-**Ring 3 is construction-only.** The platform shells (`KSafe.android.kt`, `KSafe.ios.kt`, `KSafe.jvm.kt`, `KSafe.web.kt`) are factories that gather platform-specific dependencies (Android `Context`, file paths, hardware probes) and pass them to `KSafeCore`'s constructor. Once a `KSafe` instance exists, **no platform-specific Kotlin code runs on the read/write hot path** — every read and write goes through `KSafeCore`.
+**Ring 3 is construction-only.** The platform shells (`KSafe.android.kt`, `KSafe.apple.kt` for iOS + macOS, `KSafe.jvm.kt`, `KSafe.web.kt`) are factories that gather platform-specific dependencies (Android `Context`, file paths, hardware probes) and pass them to `KSafeCore`'s constructor. Once a `KSafe` instance exists, **no platform-specific Kotlin code runs on the read/write hot path** — every read and write goes through `KSafeCore`.
 
 ## The hot cache + write coalescer
 
@@ -114,7 +116,7 @@ interface KSafePlatformStorage {
 
 Two implementations:
 
-- **`DataStoreStorage`** — wraps Jetpack DataStore Preferences. Lives in the `datastoreMain` intermediate source set, shared across Android, iOS, and JVM (all three use DataStore).
+- **`DataStoreStorage`** — wraps Jetpack DataStore Preferences. Lives in the `datastoreMain` intermediate source set, shared across Android, iOS, macOS, and JVM (all four use DataStore).
 - **`LocalStorageStorage`** — wraps the browser's `localStorage`. Lives in `webMain`, shared between `jsMain` and `wasmJsMain`.
 
 ### `KSafeEncryption` — *how they're encrypted*
@@ -134,7 +136,7 @@ interface KSafeEncryption {
 Four implementations, one per platform:
 
 - **`AndroidKeystoreEncryption`** — AES-256-GCM with hardware-backed keys (StrongBox when requested + available). Keys are handles; the bytes never leave the TEE.
-- **`IosKeychainEncryption`** — AES-256-GCM via CryptoKit; keys stored as Keychain `kSecClassGenericPassword` items with `…ThisDeviceOnly` accessibility (and Secure Enclave-backed ECIES wrapping for `HARDWARE_ISOLATED` writes).
+- **`AppleKeychainEncryption`** — AES-256-GCM via CryptoKit; keys stored as Keychain `kSecClassGenericPassword` items with `…ThisDeviceOnly` accessibility (and Secure Enclave-backed ECIES wrapping for `HARDWARE_ISOLATED` writes). One implementation, lives in `appleMain`, used by both iOS and native macOS — the Keychain Services + CryptoKit APIs are byte-for-byte identical between the two platforms; only the location of the Keychain database differs (per-app on iOS, per-user on macOS). On Apple Silicon and T2-equipped Intel Macs the Secure Enclave path works exactly as on iOS devices; on older Intel Macs without a T2 chip, SE key creation throws and the engine falls back to plain Keychain storage automatically (same fallback path that already covers iPhone 5/5C without an SE).
 - **`JvmSoftwareEncryption`** — AES-256-GCM via `javax.crypto`; keys stored Base64-encoded inside the same DataStore as the data, with the `~/.eu_anifantakis_ksafe/` directory enforced at POSIX `0700`.
 - **`WebSoftwareEncryption`** — AES-256-GCM via WebCrypto; keys in `localStorage`. WebCrypto is async-only, so this engine **only** implements the suspend variants and throws from the blocking ones — `KSafeCore` calls the suspend path from every coroutine-context site.
 
@@ -143,7 +145,7 @@ Four implementations, one per platform:
 Encrypted writes carry a protection tier — `KSafeProtection.DEFAULT` (the regular hardware-backed path) or `KSafeProtection.HARDWARE_ISOLATED` (StrongBox on Android, Secure Enclave on iOS). The tier decides where the *encryption key* lives at rest, not where the ciphertext lives:
 
 - **`DEFAULT`**: AES-256 key in the platform Keystore / Keychain, hardware-backed on devices with a TEE. The key bytes never leave the secure element.
-- **`HARDWARE_ISOLATED`**: a stronger guarantee, expressed differently per platform — Android requests `setIsStrongBoxBacked(true)` on the `KeyGenParameterSpec`, iOS creates an EC private key in the Secure Enclave (`kSecAttrTokenIDSecureEnclave`) and uses ECIES to wrap the AES key. The key generation hardware is physically separate from the main TEE.
+- **`HARDWARE_ISOLATED`**: a stronger guarantee, expressed differently per platform — Android requests `setIsStrongBoxBacked(true)` on the `KeyGenParameterSpec`, iOS / macOS create an EC private key in the Secure Enclave (`kSecAttrTokenIDSecureEnclave`) and use ECIES to wrap the AES key. The key generation hardware is physically separate from the main TEE.
 
 Not every device has StrongBox or a Secure Enclave. KSafe handles this with a **silent fallback**: a write that requested `HARDWARE_ISOLATED` on a device without the hardware lands in regular `HARDWARE_BACKED` storage. The data is still protected; it just doesn't have the stronger isolation tier.
 
@@ -160,7 +162,7 @@ The two fields can disagree. A request of `HARDWARE_ISOLATED` on a phone without
 
 ## The Android `modeTransformer`
 
-The deprecated `useStrongBox: Boolean` and `useSecureEnclave: Boolean` constructor flags promote default-protection encrypted writes to `HARDWARE_ISOLATED`. In 2.0 this is implemented as a `modeTransformer: (KSafeWriteMode) -> KSafeWriteMode` callback passed to `KSafeCore`'s constructor — Android passes `::promoteMode`, iOS passes its own, JVM and web pass identity. The transform runs once at the top of `putDirectRaw` / `putRaw`. This is the only platform-specific behaviour that crosses Ring 3 → Ring 2 on the write path.
+The deprecated `useStrongBox: Boolean` and `useSecureEnclave: Boolean` constructor flags promote default-protection encrypted writes to `HARDWARE_ISOLATED`. In 2.0 this is implemented as a `modeTransformer: (KSafeWriteMode) -> KSafeWriteMode` callback passed to `KSafeCore`'s constructor — Android passes `::promoteMode`, the Apple-platform factory (iOS + macOS) passes its own, JVM and web pass identity. The transform runs once at the top of `putDirectRaw` / `putRaw`. This is the only platform-specific behaviour that crosses Ring 3 → Ring 2 on the write path.
 
 ## Cross-type migration
 
@@ -189,17 +191,17 @@ Every stored value lands in storage under canonical raw keys:
 
 Pre-1.7 KSafe used different conventions (`encrypted_<userKey>` for ciphertext, `__ksafe_prot_<userKey>__` for metadata) and `KeySafeMetadataManager` still reads those legacy formats — when a legacy key is next written or deleted, it gets rewritten in the canonical form. iOS additionally honors a per-`fileName` legacy variant from pre-1.8 builds.
 
-For iOS specifically there's also a 1.x → 2.0 *path* migration: pre-2.0 the DataStore lived in `NSDocumentDirectory`; 2.0 defaults to `NSApplicationSupportDirectory`, and the factory transparently moves a legacy file across on first launch when the new path is empty.
+For Apple platforms there's also a 1.x → 2.0 *path* migration: pre-2.0 the DataStore lived in `NSDocumentDirectory`; 2.0 defaults to `NSApplicationSupportDirectory`, and the factory transparently moves a legacy file across on first launch when the new path is empty. iOS is the original target of this migration (1.x shipped on iOS); on native macOS the factory uses the same code, which means no-op for fresh installs and seamless behaviour if anyone happens to have a legacy file there.
 
 ## Orphan cleanup
 
 There are two failure modes that can leave KSafe in an inconsistent state across reinstalls and crashes, and there's a separate cleanup mechanism for each.
 
-**DataStore-side: stale ciphertext.** A write encrypts the value, stores the ciphertext in DataStore, then stores the encryption key in the platform Keystore / Keychain. If the app is uninstalled, on Android the DataStore file goes away but the Keystore entry survives uninstalls (it's per-package but per-device); on iOS the Keychain entry survives uninstalls outright. On reinstall, KSafe might find ciphertext on disk that it no longer has the key to decrypt — or, in the reverse direction, an uninstall that didn't fully clean up could leave a key in the Keystore for which there's no corresponding ciphertext.
+**DataStore-side: stale ciphertext.** A write encrypts the value, stores the ciphertext in DataStore, then stores the encryption key in the platform Keystore / Keychain. If the app is uninstalled, on Android the DataStore file goes away but the Keystore entry survives uninstalls (it's per-package but per-device); on iOS / macOS the Keychain entry survives uninstalls outright (Keychain items are not tied to the app's filesystem container). On reinstall, KSafe might find ciphertext on disk that it no longer has the key to decrypt — or, in the reverse direction, an uninstall that didn't fully clean up could leave a key in the Keystore for which there's no corresponding ciphertext.
 
 `KSafeCore.cleanupOrphanedCiphertext()` handles the DataStore side: at startup, it probes every encrypted entry. If decryption fails with a "key not found" error, the entry is deleted from storage. If it fails with a "device is locked" error (a transient condition), it's left alone — the entry might decrypt fine on the next launch.
 
-**iOS Keychain-side: stale Keychain entries.** The reverse problem on iOS specifically — a Keychain entry survives an app reinstall because Keychain items aren't tied to the app's filesystem container the way DataStore files are. On reinstall, KSafe finds Keychain entries that the new install's DataStore doesn't reference. `cleanupOrphanedKeychainEntries(...)` (in `iosMain/internal/KeychainOrphanCleanup.kt`) sweeps these on first launch: it reads `storage.snapshot()` to compute the live key set, scans Keychain generic-password and `kSecClassKey` items, and deletes any whose `kSecAttrAccount` doesn't match a live DataStore key. The two scans cover both the AES-key and the wrapped-EC-key shapes, so partially-failed `HARDWARE_ISOLATED` writes (a crash between SE-key creation and the wrapped-AES storage) get cleaned up too.
+**Apple Keychain-side: stale Keychain entries.** The reverse problem on iOS / macOS — a Keychain entry survives an app reinstall because Keychain items aren't tied to the app's filesystem container the way DataStore files are. On reinstall, KSafe finds Keychain entries that the new install's DataStore doesn't reference. `cleanupOrphanedKeychainEntries(...)` (in `appleMain/internal/KeychainOrphanCleanup.kt`) sweeps these on first launch: it reads `storage.snapshot()` to compute the live key set, scans Keychain generic-password and `kSecClassKey` items, and deletes any whose `kSecAttrAccount` doesn't match a live DataStore key. The two scans cover both the AES-key and the wrapped-EC-key shapes, so partially-failed `HARDWARE_ISOLATED` writes (a crash between SE-key creation and the wrapped-AES storage) get cleaned up too.
 
 Both sweeps are idempotent and "best-effort": failures during cleanup are swallowed (`runCatching`) rather than blocking startup. If a sweep can't run today (locked device, simulator quirks), it'll run cleanly on the next launch.
 
@@ -218,7 +220,7 @@ This split was a real bug pre-2.0: only Android's read path re-threw transient e
 KSafe is thread-safe by construction. The hot cache, the dirty-keys set, and per-instance flags all use `expect/actual` concurrency primitives (`KSafeConcurrentMap`, `KSafeConcurrentSet`, `KSafeAtomicFlag`, `runBlockingOnPlatform`):
 
 - JVM / Android: `java.util.concurrent.ConcurrentHashMap` + `AtomicBoolean`. `runBlockingOnPlatform` uses `runBlocking`.
-- iOS: `kotlin.concurrent.AtomicReference` with copy-on-write semantics (Kotlin/Native lacks `ConcurrentHashMap`). `KSafeAtomicFlag` is backed by `AtomicInt(0/1)` because boxed `Boolean` doesn't have stable reference identity on Native.
+- iOS / macOS: `kotlin.concurrent.AtomicReference` with copy-on-write semantics (Kotlin/Native lacks `ConcurrentHashMap`). `KSafeAtomicFlag` is backed by `AtomicInt(0/1)` because boxed `Boolean` doesn't have stable reference identity on Native. The implementation lives in `appleMain` and is shared by all five Apple targets.
 - Web: plain `HashMap` / `HashSet` / `var Boolean`. The browser is single-threaded so locking is unnecessary. `runBlockingOnPlatform` throws — the one site that calls it (`KSafeCore.ensureCacheReadyBlocking`) catches and falls through to returning the caller's default, since browsers can't block their main thread.
 
 The write-coalescer lives in a single coroutine that drains the channel and applies batches sequentially. There's no lock contention because there's exactly one consumer.
@@ -226,5 +228,7 @@ The write-coalescer lives in a single coroutine that drains the channel and appl
 ## What 2.0 changed vs. 1.x
 
 In one paragraph: pre-2.0, `KSafe` was an `expect class` with most of its logic duplicated four times across `KSafe.{android,ios,jvm,web}.kt` (the cache, write coalescer, metadata, orphan cleanup, `*Raw` plumbing — ~5,900 lines of platform-shell code total). 2.0 hoists everything that isn't genuinely platform-specific into `KSafeCore` in commonMain (a single ~1,500-line orchestrator), promotes `KSafe` itself to a regular common class with per-platform factory functions, factors storage and encryption behind two narrow interfaces, and extracts biometric verification into a separate optional module. Bug fixes and feature additions ship once and apply everywhere instead of being implemented and tested four times. The platform shells dropped from ~5,900 lines to ~890 lines; the tests pass identically on every target.
+
+2.0.1 then folded `iosMain` into `appleMain` so the same Keychain + CryptoKit + Secure Enclave code now serves both iOS and native macOS — the iOS implementation never reached for UIKit, so the merge was mechanical: file moves + `Ios*` → `Apple*` renames + a single behaviour fix in `SecurityChecker` (jailbreak-style path probes short-circuit on macOS, where `/bin/sh` and friends exist on every host).
 
 For the file-by-file map of where each concept lives in source, see **[docs/TOUR.md](TOUR.md)**.

@@ -17,7 +17,7 @@ plugins {
 
 // Set the same group and version as your main library
 group = "eu.anifantakis"
-version = "2.0.0-RC2"
+version = "2.0.1-Beta01"
 
 kotlin {
     androidLibrary {
@@ -55,6 +55,18 @@ kotlin {
     }
 
     iosSimulatorArm64 {
+        binaries.framework {
+            baseName = xcfName
+        }
+    }
+
+    macosX64 {
+        binaries.framework {
+            baseName = xcfName
+        }
+    }
+
+    macosArm64 {
         binaries.framework {
             baseName = xcfName
         }
@@ -109,11 +121,9 @@ kotlin {
             }
         }
 
-        iosMain {
-            dependencies {
-                // Add iOS-specific dependencies here
-            }
-        }
+        // appleMain is shared by iosX64/iosArm64/iosSimulatorArm64 + macosX64/macosArm64.
+        // No Apple-specific dependencies needed today; the source set exists so downstream
+        // consumers can target both iOS and macOS with the same Compose extensions.
 
         getByName("webTest") {
             dependencies {

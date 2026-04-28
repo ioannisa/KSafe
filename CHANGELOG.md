@@ -2,6 +2,79 @@
 
 All notable changes to KSafe will be documented in this file.
 
+## [2.0.1-Beta01] - 2026-04-28
+
+Adds **native macOS** as a first-class target across all three modules. The work is structurally a refactor — no behaviour change for existing iOS or Android consumers — plus one real bug fix on the macOS side and a cluster of doc updates.
+
+### Added
+
+#### Native macOS targets — `:ksafe`, `:ksafe-compose`, `:ksafe-biometrics`
+
+Every Apple-platform module now publishes `macosX64` + `macosArm64` artifacts alongside `iosX64`/`iosArm64`/`iosSimulatorArm64`. The encryption path is **the same code** as iOS — `Keychain Services` for symmetric key storage, `CryptoKit` for AES-256-GCM, `kSecAttrTokenIDSecureEnclave` for hardware-isolated keys when an SE is present (Apple Silicon and T2-equipped Macs). On Intel Macs without a T2 chip, SE key creation throws and the existing automatic-fallback in `getOrCreateKeychainKey` quietly downgrades to plain Keychain storage — same fallback that already handled iPhone 5/5C edge cases.
+
+DataStore now backs the on-disk store on macOS too (DataStore 1.2.x ships native macOS variants); the default storage location is `NSApplicationSupportDirectory`, which on macOS resolves to `~/Library/Application Support/<bundle-id>/` for sandboxed apps and `~/Library/Application Support/` for unsandboxed binaries.
+
+Source-set layout:
+
+```
+ksafe/src/
+├── commonMain/        ← unchanged
+├── androidMain/       ← unchanged
+├── appleMain/         ← was iosMain — now shared by iOS + macOS
+│   ├── KSafe.apple.kt                       (was KSafe.ios.kt)
+│   ├── internal/AppleKeychainEncryption.kt  (was IosKeychainEncryption.kt)
+│   ├── internal/SecurityChecker.apple.kt    (was SecurityChecker.ios.kt)
+│   ├── internal/KSafeConcurrent.apple.kt    (was KSafeConcurrent.ios.kt)
+│   ├── internal/KSafeSecureRandom.apple.kt  (was KSafeSecureRandom.ios.kt)
+│   └── internal/KeychainOrphanCleanup.kt    (unchanged location)
+├── iosTest/           ← unchanged — iOS-sandbox-specific tests stay here
+└── macosTest/         ← NEW — 73 macOS-specific tests
+```
+
+The default Kotlin Multiplatform hierarchy template (`applyDefaultHierarchyTemplate()`) wires `appleMain` as the parent of both `iosMain` and `macosMain`. No iOS-only code uses UIKit / `UIDevice` / `UIApplication` — all the iOS implementation was already pure Foundation + Security + CoreFoundation + CryptoKit, so the move to `appleMain` was mechanical.
+
+#### `SecurityChecker` — macOS short-circuit
+
+`SecurityChecker.isDeviceRooted()` previously checked for the presence of `/bin/sh`, `/usr/bin/ssh`, `/etc/apt`, and similar paths on the host. Every one of those exists on every Mac (Homebrew installs an `/etc/apt`-shaped tree, `/bin/sh` is part of the macOS base install). Without this fix the appleMain migration would have flipped every Mac into "rooted device" status, and any consumer using `KSafeSecurityPolicy.Strict` would have refused to operate.
+
+The check now early-returns `false` on macOS using `Platform.osFamily == OsFamily.MACOSX`, which compiles to a constant per-target. iOS behaviour is unchanged — the jailbreak heuristics still fire there. Callers wanting stronger guarantees on macOS hosts should plug in their own `KSafeSecurityPolicy`.
+
+#### `:ksafe` — `macosTest` source set with 73 tests
+
+New `ksafe/src/macosTest/` directory mirrors the value of `iosTest` for macOS hosts:
+
+| File | Tests | Coverage |
+|---|---|---|
+| `MacosTestPaths.kt` | — | Helper: unique temp dirs under `NSTemporaryDirectory()` so nothing leaks into `~/Library/Application Support/` on a dev's real Mac |
+| `MacosKSafeTest.kt` | 62 | Full common `KSafeTest` suite (CRUD, lifecycle, Flow, serialization, observability) running through the appleMain code path on a real macOS host |
+| `MacosSecurityCheckerTest.kt` | 4 | The macOS short-circuit above; sanity-checks that `/bin/sh` does exist and that `isDeviceRooted()` ignores it |
+| `MacosStorageLocationTest.kt` | 4 | `directory` override routing; missing-parent directory creation; legacy-migration safety; persistence across instance close/reopen |
+| `MacosEncryptionProofTest.kt` | 2 | Encrypted writes never land plaintext on disk; `KSafeWriteMode.Plain` does (negative control) |
+| `MacosNullFilenameTest.kt` | 1 | `KSafe(fileName = null)` produces a working store with the default basename |
+
+All hygiene: every test routes through a `NSTemporaryDirectory()` subdir and `FakeEncryption` (the existing common-test XOR engine) — no Keychain calls hit the dev's login keychain, no system password prompts trigger, no files leak into the user's home directory.
+
+iOS Simulator suite (`iosSimulatorArm64Test`) re-ran clean: 127 tests, 0 regressions.
+
+### Changed
+
+#### `IosKeychainEncryption` → `AppleKeychainEncryption`
+
+The internal Keychain-encryption class was renamed from `IosKeychainEncryption` to `AppleKeychainEncryption` to reflect that it now serves both iOS and macOS. The class is `@PublishedApi internal`, so it does not appear in any consumer source — but it is technically reachable from inline functions and could appear in stack traces or compiled bytecode of consumers using the test-engine constructor. If you have any code that names the class explicitly, rename the reference.
+
+The accompanying file moves use `git mv`, so blame and history are preserved.
+
+#### macOS Keychain access prompt — documentation only
+
+The factory KDoc on `KSafe(...)` now flags the macOS-specific behaviour: unsandboxed Mac apps that hit the Keychain for the first time get a system password prompt (*"…wants to use the 'login' keychain"*). To suppress that, sign your app with a Keychain access group entitlement. Pinning KSafe to a specific access group is on the roadmap; today it uses the default access group.
+
+### Validation
+
+- `:ksafe:macosArm64Test` — 118 tests pass (73 new macOS-specific + 45 common)
+- `:ksafe:iosSimulatorArm64Test` — 127 tests pass (no regression)
+- `:ksafe:linkDebugFrameworkMacosArm64`, `:ksafe-biometrics:linkDebugFrameworkMacosArm64`, `:ksafe-compose:compileKotlinMacosArm64` — all link cleanly
+- Tested end-to-end inside the [KSafeDemo](https://github.com/ioannisa/KSafeDemo) Compose Multiplatform app, which gained native macOS as a 6th target alongside Android, iOS, JVM/Desktop, wasmJs, and js — exercises the full appleMain code path through a real Compose UI
+
 ## [2.0.0] - 2026-04-28
 
 Cumulative delta over 2.0.0-RC1: four purely additive public APIs — `KSafe.close()`, `KSafe.asWritableFlow` (returning a `WritableKSafeFlow<T>`), `KSafe.rememberKSafeState` (Compose-body persistent state), and the internal `observeFromStorage` helper that unifies the persistence-observation lifecycle. Plus a hardening pass on `KSafeCore` that rethrows `CancellationException` from every previously-broad `catch (Throwable)` so `close()` shuts down silently without spurious "failed" logs. No breakage, no behavioural change for callers who do not opt in.

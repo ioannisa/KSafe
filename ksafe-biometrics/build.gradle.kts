@@ -10,7 +10,7 @@ plugins {
 }
 
 group = "eu.anifantakis"
-version = "2.0.0-RC2"
+version = "2.0.1-Beta01"
 
 kotlin {
     androidLibrary {
@@ -53,6 +53,18 @@ kotlin {
         }
     }
 
+    macosX64 {
+        binaries.framework {
+            baseName = xcfName
+        }
+    }
+
+    macosArm64 {
+        binaries.framework {
+            baseName = xcfName
+        }
+    }
+
     jvm()
 
     @OptIn(ExperimentalWasmDsl::class)
@@ -63,6 +75,10 @@ kotlin {
     js(IR) {
         browser()
     }
+
+    // Apply the default KMP hierarchy explicitly so the intermediate source
+    // sets we use (appleMain shared by iOS + macOS) are wired up.
+    applyDefaultHierarchyTemplate()
 
     sourceSets {
         compilerOptions {
@@ -88,11 +104,8 @@ kotlin {
             }
         }
 
-        iosMain {
-            dependencies {
-                // LocalAuthentication framework is part of the iOS SDK — no extra dep needed
-            }
-        }
+        // appleMain is shared by iosX64/iosArm64/iosSimulatorArm64 + macosX64/macosArm64.
+        // LocalAuthentication framework is part of the Apple SDKs — no extra dep needed.
     }
 
     targets.withType<KotlinAndroidTarget>().configureEach {

@@ -1,13 +1,26 @@
 package eu.anifantakis.lib.ksafe.internal
 
+import kotlin.experimental.ExperimentalNativeApi
+import kotlin.native.OsFamily
+import kotlin.native.Platform
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSProcessInfo
 
 /**
- * iOS-specific security checker implementation.
+ * Apple-platform security checker implementation. Shared by iOS and macOS.
+ *
+ * The jailbreak-style path probes only make sense on iOS — every macOS host has
+ * `/bin/sh`, `/usr/bin/ssh`, `/etc/apt` if Homebrew is installed, etc. So
+ * [isDeviceRooted] short-circuits to `false` on macOS rather than producing
+ * false positives. macOS hosts are assumed to be the user's own machine; if a
+ * caller wants stronger guarantees on macOS they should plug in their own
+ * [eu.anifantakis.lib.ksafe.KSafeSecurityPolicy].
  */
 internal actual object SecurityChecker {
+
+    @OptIn(ExperimentalNativeApi::class)
+    private val isMacOs: Boolean = Platform.osFamily == OsFamily.MACOSX
 
     // Common jailbreak paths to check
     private val jailbreakPaths = listOf(
@@ -46,8 +59,13 @@ internal actual object SecurityChecker {
     /**
      * Check if the device is jailbroken.
      * Uses multiple detection methods for better accuracy.
+     *
+     * macOS: returns `false` unconditionally — the iOS jailbreak heuristics
+     * (presence of `/bin/sh`, writability of `/private`, etc.) all fire on
+     * every Mac and would block the entire library on macOS otherwise.
      */
     actual fun isDeviceRooted(): Boolean {
+        if (isMacOs) return false
         // Don't check on simulator - it's expected to have different paths
         if (isEmulator()) return false
 

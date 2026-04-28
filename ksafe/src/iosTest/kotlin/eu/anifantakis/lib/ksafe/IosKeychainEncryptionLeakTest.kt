@@ -1,6 +1,6 @@
 package eu.anifantakis.lib.ksafe
 
-import eu.anifantakis.lib.ksafe.internal.IosKeychainEncryption
+import eu.anifantakis.lib.ksafe.internal.AppleKeychainEncryption
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
@@ -31,7 +31,7 @@ import kotlin.uuid.Uuid
  * keychain call errors out.
  *
  * Reproduction instructions: remove the `autoreleasepool { }` wrappers added
- * to IosKeychainEncryption.kt and these tests fail with peak RSS growing by
+ * to AppleKeychainEncryption.kt and these tests fail with peak RSS growing by
  * several megabytes beyond baseline.
  */
 class IosKeychainEncryptionLeakTest {
@@ -41,7 +41,7 @@ class IosKeychainEncryptionLeakTest {
 
     @Test
     fun testNoLeakOnBackgroundThread_decrypt() = runBlocking {
-        val encryption = IosKeychainEncryption()
+        val encryption = AppleKeychainEncryption()
         val keyId = uniqueKeyId()
         val fakeCiphertext = ByteArray(48) { it.toByte() }
 
@@ -73,7 +73,7 @@ class IosKeychainEncryptionLeakTest {
 
     @Test
     fun testNoLeakOnBackgroundThread_deleteKey() = runBlocking {
-        val encryption = IosKeychainEncryption()
+        val encryption = AppleKeychainEncryption()
 
         withContext(Dispatchers.Default) {
             repeat(WARMUP_ITERATIONS) { encryption.deleteKey(uniqueKeyId()) }
@@ -95,7 +95,7 @@ class IosKeychainEncryptionLeakTest {
             growthBytes < LEAK_GROWTH_THRESHOLD_BYTES,
             "Peak RSS grew by $growthMb MB after $LEAK_TEST_ITERATIONS background-thread $opName calls " +
                 "(threshold: ${LEAK_GROWTH_THRESHOLD_BYTES / 1_048_576} MB). " +
-                "Indicates Kotlin→NSString bridging allocations are leaking — missing autoreleasepool in IosKeychainEncryption?"
+                "Indicates Kotlin→NSString bridging allocations are leaking — missing autoreleasepool in AppleKeychainEncryption?"
         )
     }
 
