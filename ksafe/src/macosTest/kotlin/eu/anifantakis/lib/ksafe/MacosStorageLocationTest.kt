@@ -2,7 +2,6 @@ package eu.anifantakis.lib.ksafe
 
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.test.runTest
-import platform.Foundation.NSFileManager
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals

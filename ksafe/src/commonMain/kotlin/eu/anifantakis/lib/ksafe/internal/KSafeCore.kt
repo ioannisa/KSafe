@@ -222,11 +222,47 @@ internal class KSafeCore(
 
     private fun startBackgroundCollector() {
         collectorScope.launch {
-            runCatching { migrateAccessPolicy() }
-                .onFailure { if (it is CancellationException) throw it }
-            runCatching { cleanupOrphanedCiphertext() }
-                .onFailure { if (it is CancellationException) throw it }
-            storage.snapshotFlow().collect { snapshot -> updateCache(snapshot) }
+            // Run cleanup *after* the first snapshot has populated the cache.
+            //
+            // Why this order matters: on Apple platforms (iOS + macOS) the
+            // 1.x → 2.0 path migration in `KSafe.apple.kt` moves the legacy
+            // DataStore file from `NSDocumentDirectory` to
+            // `NSApplicationSupportDirectory` immediately before the
+            // DataStore is constructed. If cleanup ran first (the pre-fix
+            // ordering), `storage.snapshot()` could return an empty map
+            // whenever the move silently failed, the destination file got
+            // created empty, or DataStore's read-after-move raced — and the
+            // Keychain sweep would interpret "empty snapshot + populated
+            // Keychain" as "every Keychain entry is orphaned" and call
+            // `engine.deleteKeySuspend(...)` for each, *destroying the
+            // Secure Enclave EC private keys*. Once the SE private keys
+            // are gone they cannot be recreated (the SE never exports
+            // them), so any ciphertext that survived the move is
+            // permanently undecryptable.
+            //
+            // By contrast, observing one full `snapshotFlow` emission
+            // first guarantees DataStore has finished its initial read.
+            // If the migration succeeded, the snapshot reflects the moved
+            // file and the sweep correctly preserves all live keys.
+            //
+            // If the migration *did* fail and the snapshot is genuinely
+            // empty, the sweep will still delete Keychain entries — this
+            // fix narrows the race window but does not eliminate the
+            // empty-snapshot edge case entirely. A defensive guard inside
+            // KeychainOrphanCleanup (refuse to delete when snapshot is
+            // empty AND the Keychain has scoped entries) is the
+            // belt-and-suspenders follow-up tracked separately.
+            var firstEmission = true
+            storage.snapshotFlow().collect { snapshot ->
+                updateCache(snapshot)
+                if (firstEmission) {
+                    firstEmission = false
+                    runCatching { migrateAccessPolicy() }
+                        .onFailure { if (it is CancellationException) throw it }
+                    runCatching { cleanupOrphanedCiphertext() }
+                        .onFailure { if (it is CancellationException) throw it }
+                }
+            }
         }
     }
 

@@ -2,9 +2,17 @@
 
 All notable changes to KSafe will be documented in this file.
 
-## [2.0.1-Beta01] - 2026-04-28
+## [2.0.0] - 2026-04-29
 
-Adds **native macOS** as a first-class target across all three modules. The work is structurally a refactor — no behaviour change for existing iOS or Android consumers — plus one real bug fix on the macOS side and a cluster of doc updates.
+Version 2.0.0 brings major upgrades with one major refactor and the support for macOS and Kotlin JS, plus the separation of the Biometrics functionality into a separate and independent module.
+
+#### Features Split:
+* Addition of Kotlin JS: `2.0.0-RC1`
+* Biometrics on its own module: `2.0.0-RC1`'
+* Flows + Compose upgrades: See `2.0.0-RC2`
+* Addition of MacOS: `2.0.0` _(this release)_
+
+Other than the features found in `2.0.0-RC1` and `2.0.0-RC2`, the version `2.0.0` adds **native macOS** as a first-class target across all three modules. The work is structurally a refactor — no behaviour change for existing iOS or Android consumers — plus one critical destructive-data-loss fix on the Apple-platform startup path, one real bug fix on the macOS side, and a cluster of doc updates.
 
 ### Added
 
@@ -56,6 +64,31 @@ All hygiene: every test routes through a `NSTemporaryDirectory()` subdir and `Fa
 
 iOS Simulator suite (`iosSimulatorArm64Test`) re-ran clean: 127 tests, 0 regressions.
 
+### Fixed
+
+#### Apple-platform Secure Enclave key destruction during 1.x → 2.0 migration *(critical, latent in 2.0.0-RC1 and 2.0.0-RC2)*
+
+A startup-ordering bug in [`KSafeCore.startBackgroundCollector`][KSafeCore.kt] could permanently destroy Secure Enclave–wrapped data when an app upgraded **directly** from 1.8.x to 2.0.0. The destructive path:
+
+1. iOS factory in [`KSafe.apple.kt`][KSafe.apple.kt] resolves the new `NSApplicationSupportDirectory` path and detects the legacy file in `NSDocumentDirectory`. It calls `NSFileManager.moveItemAtPath` to relocate it.
+2. `KSafeCore` constructor immediately launches its background collector, which (pre-fix) called the platform's `migrateAccessPolicy` lambda *before* subscribing to `KSafePlatformStorage.snapshotFlow`.
+3. On Apple platforms `migrateAccessPolicy = cleanupOrphanedKeychainEntries`. That function reads `storage.snapshot()` to compute the live key set. If DataStore had not yet observed the just-moved file (a real-device timing race), the snapshot was empty.
+4. Empty snapshot ⇒ empty `validKeys` ⇒ every Keychain entry scoped to KSafe was treated as orphaned ⇒ `engine.deleteKeySuspend(...)` was called for each.
+5. `IosKeychainEncryption.deleteKey` *unconditionally* removes the plain key, the SE-wrapped generic-password entry, **and the Secure Enclave EC private key**. The SE never exports private keys, so once the EC private key is gone the wrapped AES key cannot be unwrapped — the ciphertext on disk is permanently undecryptable. Downgrading to 1.8.x doesn't recover the data either, because the path migration moved the file out of `NSDocumentDirectory` (where 1.8.x looks for it).
+
+Why it was hard to spot: the failure depended on real-device timing between `moveItemAtPath` and DataStore's first read. CI tests passed because there was no migration in the test environment. The 1.8.1 → 2.0.0-RC1 → 2.0.0-RC2 path also worked, because RC1's first launch happened to win the race more often, and once RC1 had loaded the file successfully the data was safe for any subsequent upgrade.
+
+**The fix** ([`KSafeCore.kt:223–262`][KSafeCore.kt]): `startBackgroundCollector` now subscribes to `snapshotFlow` first and only invokes `migrateAccessPolicy()` and `cleanupOrphanedCiphertext()` *after* the first emission has populated the cache. By then DataStore has confirmed its initial read, so the sweep sees the correct live key set.
+
+**Defence in depth** ([`KeychainOrphanCleanup.kt:106-147`][KeychainOrphanCleanup.kt]): the Keychain sweep now refuses to delete anything when the DataStore snapshot is empty AND the Keychain returned scoped entries. A populated Keychain alongside an empty DataStore is far more likely to mean "we have a partial view of storage" than "the user genuinely cleared everything but left Keychain residue", and the cost of the wrong call is irreversible. A log message points the user at `KSafe.clearAll()` if they actually intended a full wipe.
+
+**Regression coverage**: a new common-test [`KSafeCoreStartupOrderingTest`][KSafeCoreStartupOrderingTest.kt] constructs `KSafeCore` directly with a fake `KSafePlatformStorage` that records call order, then asserts that `migrateAccessPolicy` fires *after* the first `snapshotFlow` emission. The test runs on JVM, iOS Simulator and native macOS; if a future refactor flips the ordering back, this test fails with an explicit "REGRESSION:" message naming the bug.
+
+[KSafeCore.kt]: ksafe/src/commonMain/kotlin/eu/anifantakis/lib/ksafe/internal/KSafeCore.kt
+[KSafe.apple.kt]: ksafe/src/appleMain/kotlin/eu/anifantakis/lib/ksafe/KSafe.apple.kt
+[KeychainOrphanCleanup.kt]: ksafe/src/appleMain/kotlin/eu/anifantakis/lib/ksafe/internal/KeychainOrphanCleanup.kt
+[KSafeCoreStartupOrderingTest.kt]: ksafe/src/jvmTest/kotlin/eu/anifantakis/lib/ksafe/KSafeCoreStartupOrderingTest.kt
+
 ### Changed
 
 #### `IosKeychainEncryption` → `AppleKeychainEncryption`
@@ -75,7 +108,7 @@ The factory KDoc on `KSafe(...)` now flags the macOS-specific behaviour: unsandb
 - `:ksafe:linkDebugFrameworkMacosArm64`, `:ksafe-biometrics:linkDebugFrameworkMacosArm64`, `:ksafe-compose:compileKotlinMacosArm64` — all link cleanly
 - Tested end-to-end inside the [KSafeDemo](https://github.com/ioannisa/KSafeDemo) Compose Multiplatform app, which gained native macOS as a 6th target alongside Android, iOS, JVM/Desktop, wasmJs, and js — exercises the full appleMain code path through a real Compose UI
 
-## [2.0.0] - 2026-04-28
+## [2.0.0-RC2] - 2026-04-28
 
 Cumulative delta over 2.0.0-RC1: four purely additive public APIs — `KSafe.close()`, `KSafe.asWritableFlow` (returning a `WritableKSafeFlow<T>`), `KSafe.rememberKSafeState` (Compose-body persistent state), and the internal `observeFromStorage` helper that unifies the persistence-observation lifecycle. Plus a hardening pass on `KSafeCore` that rethrows `CancellationException` from every previously-broad `catch (Throwable)` so `close()` shuts down silently without spurious "failed" logs. No breakage, no behavioural change for callers who do not opt in.
 

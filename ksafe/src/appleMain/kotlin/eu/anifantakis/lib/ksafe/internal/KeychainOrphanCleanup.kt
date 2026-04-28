@@ -187,6 +187,43 @@ internal suspend fun cleanupOrphanedKeychainEntries(
         }
     }
 
+    // Belt-and-suspenders guard against the 1.x → 2.0 path-migration race:
+    // if the DataStore snapshot was empty AND the Keychain scans turned up
+    // entries scoped to *this* service + key prefix, we are almost certainly
+    // looking at a partial view of the storage — not a legitimate post-
+    // clearAll state. Scenarios where this happens:
+    //
+    //  - The path migration in `KSafe.apple.kt` moved the legacy file but
+    //    DataStore raced the move and read empty contents.
+    //  - The DataStore file became corrupt and was reinitialised empty.
+    //  - The user's app data was wiped via Settings but the Keychain
+    //    survived (Keychain is per-device, not per-app-container, and
+    //    survives uninstalls/data-wipes by default).
+    //
+    // In every one of those scenarios, deleting the Keychain entries
+    // destroys irrecoverable state — Secure Enclave EC private keys are
+    // gone for good once removed. The legitimate "user genuinely cleared
+    // KSafe + Keychain has stragglers" case is best handled by a future
+    // explicit migration tool, not by an automatic startup sweep that
+    // can't tell the two apart.
+    //
+    // KSafeCore.startBackgroundCollector now waits for the first
+    // `snapshotFlow` emission before invoking this function, which
+    // closes the race in the common path. This guard catches the
+    // remaining edge cases where the snapshot is *legitimately* empty
+    // because the migration failed outright.
+    if (snapshot.isEmpty() && orphanedKeyIds.isNotEmpty()) {
+        println(
+            "KSafe: Keychain orphan sweep skipped — DataStore is empty but " +
+                "${orphanedKeyIds.size} scoped Keychain entries exist. " +
+                "This usually indicates a 1.x → 2.0 migration where the " +
+                "DataStore file failed to move; deleting the Keychain " +
+                "entries would destroy data permanently. If you intended " +
+                "to clear KSafe, call KSafe.clearAll() instead."
+        )
+        return
+    }
+
     // engine.deleteKey unconditionally removes the plain key, the SE-wrapped
     // generic-password entry, and the SE EC private key for a given identifier.
     for (keyId in orphanedKeyIds) {
