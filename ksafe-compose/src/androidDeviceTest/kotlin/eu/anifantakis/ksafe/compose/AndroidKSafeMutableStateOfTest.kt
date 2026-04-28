@@ -49,7 +49,7 @@ class AndroidKSafeMutableStateOfTest : KSafeMutableStateOfTest() {
         println("Skipped: mutableStateOf_persistsAcrossInstances (Android DataStore limitation)")
     }
 
-    override fun createKSafe(fileName: String?): KSafe {
+    override fun newKSafe(fileName: String?): KSafe {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val uniqueName = if (fileName != null) {
             "composeandroid${runId}${fileName}"

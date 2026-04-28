@@ -62,6 +62,29 @@ class UserRepository(private val kSafe: KSafe) {
 }
 ```
 
+**`asWritableFlow`** returns a `WritableKSafeFlow<T>` — a cold `Flow<T>` you can also write to via `set()`. Use this when a single declaration should expose both reactive reads and writes, *without* committing to a `MutableStateFlow` or managing a `CoroutineScope`:
+
+```kotlin
+@Serializable
+enum class ThemeMode { DAY, NIGHT, DEVICE }
+
+class SettingsRepository(ksafe: KSafe) {
+    val themeMode: WritableKSafeFlow<ThemeMode> by ksafe.asWritableFlow(ThemeMode.DEVICE)
+
+    fun setThemeMode(mode: ThemeMode) {
+        themeMode.set(mode)  // persists; collectors see it on the next emission
+    }
+}
+```
+
+This is the natural fit when you previously had to declare two bindings to the same key — one `asFlow` and one writable property delegate — just to get observability + writability. `WritableKSafeFlow<T>` is a `Flow<T>` (so collectors see persisted changes from any writer), with one extra method:
+
+```kotlin
+fun set(value: T)  // calls ksafe.putDirect under the hood; respects the configured KSafeWriteMode
+```
+
+`asWritableFlow` defaults to `KSafeWriteMode.Encrypted()`, the same default as the property delegate `ksafe(...)` and `asMutableStateFlow`. Pass `mode = KSafeWriteMode.Plain` for unencrypted persistence. Reads happen only through flow collection — there is no synchronous getter, which keeps the contract identical on every platform (including web cold-start).
+
 **`asStateFlow`** returns a hot `StateFlow<T>` — ideal for ViewModels:
 
 ```kotlin
@@ -158,7 +181,7 @@ fun MoviesScreen(viewModel: MoviesViewModel) {
 }
 ```
 
-> `asFlow` and `asStateFlow` are **read-only** — writes go through `put`/`putDirect`. Use `asMutableStateFlow` when you want read/write + reactivity without Compose. All three automatically pick up changes made anywhere.
+> `asFlow` and `asStateFlow` are **read-only** — writes go through `put`/`putDirect`. `asWritableFlow` gives you a writable cold `Flow<T>` (`set(value)`) without any scope; `asMutableStateFlow` gives you a hot `MutableStateFlow<T>` (`.value = ...`) with a scope. All four automatically pick up changes made anywhere — KSafe writes from another screen, background sync, or another delegate against the same key.
 
 ## Composable State (One Liner)
 

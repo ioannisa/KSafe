@@ -91,9 +91,13 @@ val user: StateFlow<User> by ksafe.asStateFlow(User(), viewModelScope)
 // 4. Read/write MutableStateFlow — the classic _state / state pattern, persisted
 private val _state by ksafe.asMutableStateFlow(MoviesState(), viewModelScope)
 val state = _state.asStateFlow()
+
+// 5. Read/write Flow — observe + set() in one declaration, no scope needed
+val themeMode: WritableKSafeFlow<ThemeMode> by ksafe.asWritableFlow(ThemeMode.DEVICE)
+// themeMode.set(ThemeMode.NIGHT) persists; collectors see it on the next emission
 ```
 
-All four survive process death, are AES-256-GCM encrypted by default, and can be made plain with `mode = KSafeWriteMode.Plain`. **Zero boilerplate, on every target.**
+All five survive process death, are AES-256-GCM encrypted by default, and can be made plain with `mode = KSafeWriteMode.Plain`. **Zero boilerplate, on every target.**
 
 > **DataStore without the coroutines tax.** The property delegate, `mutableStateOf`, and `getDirect`/`putDirect` are fully synchronous — **but never blocking**. Reads come from a hot in-memory cache; writes update the cache immediately and enqueue the encrypt-and-flush onto a background thread. Call sites return instantly. Use the `suspend` API (`get` / `put`) only when *you* want to.
 
@@ -186,10 +190,12 @@ counter++  // Auto-encrypted, auto-persisted
 // 3. Compose state (read/write, reactive to external changes)
 var username by ksafe.mutableStateOf("Guest", scope = viewModelScope)
 
-// 4. Reactive flows — read-only StateFlow or read/write MutableStateFlow
+// 4. Reactive flows — read-only StateFlow, read/write MutableStateFlow, or read/write WritableKSafeFlow (no scope)
 val user: StateFlow<User> by ksafe.asStateFlow(User(), viewModelScope)
 private val _state by ksafe.asMutableStateFlow(UiState(), viewModelScope)
 val state = _state.asStateFlow()
+val themeMode: WritableKSafeFlow<ThemeMode> by ksafe.asWritableFlow(ThemeMode.DEVICE)
+// themeMode.set(ThemeMode.NIGHT)
 
 // 5. Or use suspend API
 viewModelScope.launch {
@@ -269,7 +275,7 @@ actual val platformModule = module {
 }
 ```
 
-Multi-instance setups, web `awaitCacheReady()` (wasmJs + js), full per-platform Koin examples, and the **custom storage directory** option (`baseDir` on JVM/Android, `directory` on iOS — for example to align with `$XDG_DATA_HOME` or `noBackupFilesDir`): [docs/SETUP.md](docs/SETUP.md).
+Multi-instance setups, web `awaitCacheReady()` (wasmJs + js), full per-platform Koin examples, the **custom storage directory** option (`baseDir` on JVM/Android, `directory` on iOS — for example to align with `$XDG_DATA_HOME` or `noBackupFilesDir`), and the optional `KSafe.close()` for apps that re-create instances mid-process: [docs/SETUP.md](docs/SETUP.md).
 
 
 ## Basic Usage
@@ -284,10 +290,11 @@ counter++
 // 2. Compose state — reactive UI + persistence (requires ksafe-compose)
 var username by ksafe.mutableStateOf("Guest")
 
-// 3. Reactive flows — read-only StateFlow and read/write MutableStateFlow
-val user: StateFlow<User> by ksafe.asStateFlow(User(), viewModelScope)        // read-only
-private val _state by ksafe.asMutableStateFlow(MoviesState(), viewModelScope) // read/write
+// 3. Reactive flows — read-only StateFlow, read/write MutableStateFlow, or read/write Flow without a scope
+val user: StateFlow<User> by ksafe.asStateFlow(User(), viewModelScope)         // read-only
+private val _state by ksafe.asMutableStateFlow(MoviesState(), viewModelScope)  // read/write, hot
 val state = _state.asStateFlow()
+val themeMode: WritableKSafeFlow<ThemeMode> by ksafe.asWritableFlow(ThemeMode.DEVICE) // read/write, cold; set() to write
 
 // 4. Suspend API — when you want to await the disk flush
 viewModelScope.launch {
@@ -400,10 +407,11 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 >   ```
 > - **Delegates** — every delegate shape accepts a nullable default, including Compose state and `MutableStateFlow`. The persisted null survives process death and emits correctly through Flow observers.
 >   ```kotlin
->   var token: String? by ksafe(null)                              // plain delegate
->   var profile: User? by ksafe.mutableStateOf(null)               // Compose state
->   val user: StateFlow<User?> by ksafe.asStateFlow(null, scope)   // read-only Flow
->   private val _state by ksafe.asMutableStateFlow<User?>(null, scope)  // read/write Flow
+>   var token: String? by ksafe(null)                                       // plain delegate
+>   var profile: User? by ksafe.mutableStateOf(null)                        // Compose state
+>   val user: StateFlow<User?> by ksafe.asStateFlow(null, scope)            // read-only StateFlow
+>   private val _state by ksafe.asMutableStateFlow<User?>(null, scope)      // read/write MutableStateFlow
+>   val themeMode: WritableKSafeFlow<ThemeMode?> by ksafe.asWritableFlow(null)    // read/write Flow, no scope
 >   ```
 >
 > By contrast, `multiplatform-settings` exposes nullability only through separate `getStringOrNull` / `getIntOrNull` scalar getters — there is no nullable support for custom types, property delegates, or Compose state, because the library has no serialization or delegate layer. KVault is similar: nullable return types on its primitive getters, no object or delegate support.

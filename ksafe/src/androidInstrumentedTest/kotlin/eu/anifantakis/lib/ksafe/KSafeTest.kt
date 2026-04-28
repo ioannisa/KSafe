@@ -3,17 +3,33 @@ package eu.anifantakis.lib.ksafe
 import app.cash.turbine.test
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.Serializable
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.assertNull
 
 /**
- * Abstract base class for KSafe tests.
- * Platform-specific implementations extend this class to provide actual KSafe instances.
+ * Abstract base class for KSafe tests (Android instrumented variant).
+ * Same teardown contract as the commonTest copy: subclasses implement
+ * [newKSafe]; the base class tracks every returned instance and calls
+ * [KSafe.close] in [tearDown] so abandoned instances don't pin their
+ * background coroutines in heap across tests.
  */
 abstract class KSafeTest {
-    abstract fun createKSafe(fileName: String? = null): KSafe
+    private val tracked = mutableListOf<KSafe>()
+
+    protected abstract fun newKSafe(fileName: String? = null): KSafe
+
+    fun createKSafe(fileName: String? = null): KSafe =
+        newKSafe(fileName).also { tracked += it }
+
+    @AfterTest
+    fun tearDown() {
+        tracked.forEach { runCatching { it.close() } }
+        tracked.clear()
+    }
 
     @Test
     fun testPutAndGetUnencryptedString() = runTest {
@@ -312,6 +328,95 @@ abstract class KSafeTest {
 
             cancelAndIgnoreRemainingEvents()
         }
+    }
+
+    // ============ asWritableFlow / WritableKSafeFlow ============
+
+    @Test
+    fun testAsMutableFlowEmitsOnSetUnencrypted() = runTest {
+        val ksafe = createKSafe()
+        class Host(s: KSafe) {
+            val pref: WritableKSafeFlow<String> by s.asWritableFlow(
+                defaultValue = "default",
+                key = "test_writable_plain",
+                mode = KSafeWriteMode.Plain,
+            )
+        }
+        val host = Host(ksafe)
+
+        host.pref.test {
+            assertEquals("default", awaitItem())
+            host.pref.set("first")
+            assertEquals("first", awaitItem())
+            host.pref.set("second")
+            assertEquals("second", awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun testAsMutableFlowEmitsOnSetEncryptedByDefault() = runTest {
+        val ksafe = createKSafe()
+        class Host(s: KSafe) {
+            val pref: WritableKSafeFlow<String> by s.asWritableFlow(
+                defaultValue = "default",
+                key = "test_writable_default_mode",
+            )
+        }
+        val host = Host(ksafe)
+
+        host.pref.test {
+            assertEquals("default", awaitItem())
+            host.pref.set("secret")
+            assertEquals("secret", awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+
+        assertEquals("secret", ksafe.get("test_writable_default_mode", "fallback"))
+        val info = ksafe.getKeyInfo("test_writable_default_mode")
+        assertNotNull(info)
+        assertNotNull(info.protection)
+    }
+
+    @Test
+    fun testAsMutableFlowReflectsExternalWrites() = runTest {
+        val ksafe = createKSafe()
+        val key = "test_writable_external"
+        class Host(s: KSafe) {
+            val pref: WritableKSafeFlow<String> by s.asWritableFlow(
+                defaultValue = "default",
+                key = key,
+                mode = KSafeWriteMode.Plain,
+            )
+        }
+        val host = Host(ksafe)
+
+        host.pref.test {
+            assertEquals("default", awaitItem())
+
+            ksafe.put(key, "external", KSafeWriteMode.Plain)
+            assertEquals("external", awaitItem())
+
+            host.pref.set("local")
+            assertEquals("local", awaitItem())
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun testAsMutableFlowUsesPropertyNameAsKey() = runTest {
+        val ksafe = createKSafe()
+        class Host(s: KSafe) {
+            val derived: WritableKSafeFlow<String> by s.asWritableFlow(
+                defaultValue = "default",
+                mode = KSafeWriteMode.Plain,
+            )
+        }
+        val host = Host(ksafe)
+
+        host.derived.set("named_by_property")
+        assertEquals("named_by_property", ksafe.get("derived", "fallback"))
     }
 
     @Test

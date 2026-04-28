@@ -12,6 +12,7 @@ import eu.anifantakis.lib.ksafe.internal.validateSecurityPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Paths
@@ -138,8 +139,15 @@ private fun buildJvmKSafe(
         ?: "eu_anifantakis_ksafe_datastore"
     val datastoreFile = File(resolvedBaseDir, "$baseFileName.preferences_pb")
 
+    // DataStore launches its own coroutines on the scope we hand it; we
+    // hold a reference so KSafe.close() can cancel it. Without this the
+    // scope (and its anchored DataStore + cached Preferences + file
+    // handle) stays alive on Dispatchers.IO for the rest of the process,
+    // which is harmless for a singleton KSafe but accumulates fast in
+    // tests that build one instance per case.
+    val storageScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
-        scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+        scope = storageScope,
         produceFile = { datastoreFile }
     )
 
@@ -154,6 +162,7 @@ private fun buildJvmKSafe(
         resolveKeyStorage = { _, _ -> KSafeKeyStorage.SOFTWARE },
         lazyLoad = lazyLoad,
         keyAlias = { userKey -> fileName?.let { "$it:$userKey" } ?: userKey },
+        onCancel = { storageScope.cancel() },
     )
 
     return KSafe(

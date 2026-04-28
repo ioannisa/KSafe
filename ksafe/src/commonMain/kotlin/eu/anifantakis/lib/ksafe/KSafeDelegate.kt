@@ -116,6 +116,121 @@ inline fun <reified T> KSafe.asFlow(
     key: String? = null,
 ): ReadOnlyProperty<Any?, Flow<T>> = KSafeFlowDelegate(this, serializer(), defaultValue, key)
 
+// ── WritableKSafeFlow (Flow + set()) ─────────────────────────────────────────────
+
+/**
+ * A cold [Flow] you can also write to.
+ *
+ * Returned by [KSafe.asWritableFlow]. The flow side delegates to the underlying
+ * [KSafe.getFlow], so collectors observe persisted changes (including external
+ * writes from other parts of the app) exactly as with [KSafe.asFlow]. The
+ * write side calls [KSafe.putDirect] via [set] — the new value lands in the
+ * memory cache immediately and is persisted asynchronously, and any active
+ * collector emits it on the next snapshot.
+ *
+ * Asymmetric on purpose: there is no synchronous getter. Reads happen only
+ * through flow collection, which keeps the contract identical on every
+ * platform (including web, where a synchronous read against a cold cache
+ * would return the default rather than the persisted value).
+ *
+ * Use this when you want one declaration to express "observe this stored
+ * value AND let me change it" without managing a [CoroutineScope] (the
+ * scope-bound alternative is [KSafe.asMutableStateFlow]).
+ *
+ * ## Example
+ * ```kotlin
+ * class SettingsRepository(ksafe: KSafe) {
+ *     val themeMode: WritableKSafeFlow<ThemeMode> by ksafe.asWritableFlow(ThemeMode.DEVICE)
+ *
+ *     fun setThemeMode(mode: ThemeMode) {
+ *         themeMode.set(mode)  // persists; collectors see it on next emission
+ *     }
+ * }
+ * ```
+ */
+class WritableKSafeFlow<T> @PublishedApi internal constructor(
+    private val source: Flow<T>,
+    private val writer: (T) -> Unit,
+) : Flow<T> by source {
+    /**
+     * Persists [value] via [KSafe.putDirect] using the [KSafeWriteMode]
+     * configured on the originating [KSafe.asWritableFlow] call. Active
+     * collectors of this flow see the new value on the next emission.
+     */
+    fun set(value: T) {
+        writer(value)
+    }
+}
+
+/**
+ * Non-inline delegate that lazily creates a [WritableKSafeFlow] on first access.
+ * The property name is used as the storage key unless [key] is provided.
+ */
+@PublishedApi
+internal class KSafeWritableFlowDelegate<T>(
+    private val ksafe: KSafe,
+    private val serializer: KSerializer<T>,
+    private val defaultValue: T,
+    private val key: String?,
+    private val mode: KSafeWriteMode,
+) : ReadOnlyProperty<Any?, WritableKSafeFlow<T>> {
+    private var writable: WritableKSafeFlow<T>? = null
+
+    override fun getValue(thisRef: Any?, property: KProperty<*>): WritableKSafeFlow<T> {
+        return writable ?: run {
+            val actualKey = key ?: property.name
+            @Suppress("UNCHECKED_CAST")
+            val source = ksafe.core.getFlowRaw(actualKey, defaultValue, serializer) as Flow<T>
+            val wf = WritableKSafeFlow<T>(
+                source = source,
+                writer = { newValue ->
+                    ksafe.core.putDirectRaw(actualKey, newValue, mode, serializer)
+                },
+            )
+            writable = wf
+            wf
+        }
+    }
+}
+
+/**
+ * Returns a read/write property delegate backed by a [WritableKSafeFlow] — a [Flow]
+ * you can call [WritableKSafeFlow.set] on.
+ *
+ * Folds the common pair of declarations
+ *
+ * ```kotlin
+ * val mode: Flow<ThemeMode>     by ksafe.asFlow(ThemeMode.DEVICE)
+ * private var modeValue: ThemeMode by ksafe(ThemeMode.DEVICE, key = "mode")
+ * ```
+ *
+ * into a single binding that exposes both halves. The property name is used
+ * as the storage key unless [key] is provided. Default [mode] is encrypted —
+ * matching the property delegate (`ksafe(...)`) and [asMutableStateFlow], so
+ * the new API does not silently change persistence semantics.
+ *
+ * No [CoroutineScope] is required: the flow is cold (collected on demand by
+ * the consumer's own scope), and the writer is synchronous fire-and-forget
+ * via [KSafe.putDirect].
+ *
+ * ## Example
+ * ```kotlin
+ * class SettingsRepository(ksafe: KSafe) {
+ *     val themeMode: WritableKSafeFlow<ThemeMode> by ksafe.asWritableFlow(ThemeMode.DEVICE)
+ *
+ *     fun setThemeMode(mode: ThemeMode) {
+ *         themeMode.set(mode)
+ *     }
+ * }
+ * ```
+ */
+inline fun <reified T> KSafe.asWritableFlow(
+    defaultValue: T,
+    key: String? = null,
+    mode: KSafeWriteMode = KSafeWriteMode.Encrypted(),
+): ReadOnlyProperty<Any?, WritableKSafeFlow<T>> =
+    KSafeWritableFlowDelegate(this, serializer(), defaultValue, key, mode)
+
 /**
  * Returns a read-only property delegate backed by [KSafe.getStateFlow].
  *

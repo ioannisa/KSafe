@@ -10,6 +10,7 @@ import eu.anifantakis.lib.ksafe.toProtection
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -98,6 +99,15 @@ internal class KSafeCore(
      * JVM/Web pass the identity (default).
      */
     private val modeTransformer: (KSafeWriteMode) -> KSafeWriteMode = { it },
+    /**
+     * Optional platform-specific cleanup invoked from [cancel]. DataStore-
+     * backed platforms use this to cancel the scope they passed to
+     * `PreferenceDataStoreFactory.create(...)` (DataStore launches its own
+     * coroutines on that scope and won't stop otherwise) and, on Android,
+     * to evict the per-file entry from the process-static DataStore cache.
+     * Web has no equivalent and passes the default no-op.
+     */
+    private val onCancel: () -> Unit = {},
 ) {
 
     @PublishedApi internal val engine: KSafeEncryption by lazy(engineProvider)
@@ -845,6 +855,42 @@ internal class KSafeCore(
     suspend fun ensureCacheReadySuspend() {
         if (cacheInitialized.get()) return
         updateCache(storage.snapshot())
+    }
+
+    /**
+     * Releases the long-running infrastructure this core owns: cancels both
+     * background scopes (write consumer + snapshot collector) and closes the
+     * write channel. Idempotent — safe to call multiple times. After cancel
+     * the instance can no longer process puts/reads; further calls behave
+     * as no-ops on the now-cancelled scopes.
+     *
+     * Production callers usually never need this — a singleton that lives
+     * for the process lifetime is the dominant usage and the OS reclaims
+     * everything on exit. The case that matters is **test suites** and any
+     * code that re-creates `KSafe` mid-process: without `cancel()` each
+     * abandoned instance is pinned in heap by its suspended coroutines
+     * (held as GC roots by `Dispatchers.Default`), and the live-set grows
+     * unboundedly across the run.
+     */
+    internal fun cancel() {
+        // Cancel the scopes only — do NOT close `writeChannel`. Closing the
+        // channel makes the consumer's pending `writeChannel.receive()`
+        // throw `ClosedReceiveChannelException`, which is *not* a
+        // CancellationException and therefore bubbles up to the scope's
+        // default uncaught-exception handler. Under kotlinx-coroutines-test
+        // that surfaces in the next test as `UncaughtExceptionsBeforeTest`.
+        // Cancelling the scope already terminates the consumer (its receive
+        // call resumes with CancellationException, which is normal and
+        // silenced); the channel is then reachable only via the cancelled
+        // scope and is GC'd along with the rest of the core.
+        writeScope.cancel()
+        collectorScope.cancel()
+        // Platform hook — cancels the DataStore scope on JVM/Android/iOS
+        // and evicts the Android process-static DataStore cache entry.
+        // Without this, DataStore's internal coroutines stay alive on
+        // `Dispatchers.IO` and pin the entire DataStore graph (file
+        // handle, MutableStateFlow, cached Preferences) in heap forever.
+        runCatching { onCancel() }
     }
 
     private fun isTransientDecryptFailure(e: Throwable): Boolean {

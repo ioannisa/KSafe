@@ -3,6 +3,7 @@ package eu.anifantakis.ksafe.compose
 import androidx.compose.runtime.structuralEqualityPolicy
 import eu.anifantakis.lib.ksafe.KSafe
 import eu.anifantakis.lib.ksafe.compose.mutableStateOf
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -11,13 +12,25 @@ import kotlin.test.assertNull
 /**
  * Tests for [KSafe.mutableStateOf] extension function.
  *
- * These tests verify the actual integration between KSafe persistence
- * and Compose MutableState. Platform-specific implementations extend
- * this class to provide actual KSafe instances.
+ * Subclasses implement [newKSafe]; tests call [createKSafe], which forwards
+ * and registers the instance for teardown. [tearDown] closes every tracked
+ * KSafe so abandoned instances do not pin their background coroutines (and
+ * the DataStore + caches they reference) in heap across tests.
  */
 abstract class KSafeMutableStateOfTest {
 
-    abstract fun createKSafe(fileName: String? = null): KSafe
+    private val tracked = mutableListOf<KSafe>()
+
+    protected abstract fun newKSafe(fileName: String? = null): KSafe
+
+    fun createKSafe(fileName: String? = null): KSafe =
+        newKSafe(fileName).also { tracked += it }
+
+    @AfterTest
+    fun tearDown() {
+        tracked.forEach { runCatching { it.close() } }
+        tracked.clear()
+    }
 
     // ============ BASIC MUTABLE STATE OF TESTS ============
 

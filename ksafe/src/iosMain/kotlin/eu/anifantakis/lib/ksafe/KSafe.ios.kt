@@ -14,6 +14,10 @@ import eu.anifantakis.lib.ksafe.internal.KeySafeMetadataManager
 import eu.anifantakis.lib.ksafe.internal.cleanupOrphanedKeychainEntries
 import eu.anifantakis.lib.ksafe.internal.validateSecurityPolicy
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import okio.Path.Companion.toPath
 import platform.Foundation.NSApplicationSupportDirectory
 import platform.Foundation.NSDocumentDirectory
@@ -229,9 +233,16 @@ private fun buildIosKSafe(
         }
     }
 
+    // DataStore launches its own coroutines on the scope it's given; we
+    // hold one we control so close() can dispose it. Kotlin/Native does
+    // not expose `Dispatchers.IO`, so use `Default` — DataStore's I/O
+    // path on iOS is non-blocking (NSFileManager / okio) and doesn't
+    // need a thread-pool isolation hint.
+    val storageScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.createWithPath(
         corruptionHandler = null,
         migrations = emptyList(),
+        scope = storageScope,
         produceFile = { datastoreFilePath.toPath() },
     )
 
@@ -299,6 +310,7 @@ private fun buildIosKSafe(
         legacyEncryptedPrefix = iosLegacyEncryptedPrefix(),
         legacyEncryptedKeyFor = ::iosLegacyEncryptedKey,
         modeTransformer = ::promoteMode,
+        onCancel = { storageScope.cancel() },
     )
 
     return KSafe(

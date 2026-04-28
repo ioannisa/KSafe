@@ -11,7 +11,7 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class AndroidKSafeTest : KSafeTest() {
-    override fun createKSafe(fileName: String?): KSafe {
+    override fun newKSafe(fileName: String?): KSafe {
         val context = ApplicationProvider.getApplicationContext<Context>()
         return KSafe(context, fileName)
     }

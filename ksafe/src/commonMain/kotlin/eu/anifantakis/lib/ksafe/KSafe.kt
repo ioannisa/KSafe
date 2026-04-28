@@ -126,6 +126,25 @@ class KSafe @PublishedApi internal constructor(
         onClearAllCleanup()
     }
 
+    /**
+     * Releases the long-running background infrastructure this instance owns
+     * (write consumer, snapshot collector, write channel) so the JVM can
+     * garbage-collect it.
+     *
+     * Optional in production: a `KSafe` that lives for the process lifetime
+     * (the typical singleton pattern) doesn't need this — the OS reclaims
+     * everything on exit. Call it when you re-create `KSafe` mid-process
+     * (test suites, hot-reload during dev, modular feature load/unload),
+     * because each abandoned instance is otherwise pinned in heap by its
+     * suspended coroutines held as GC roots on `Dispatchers.Default`.
+     *
+     * Idempotent. After `close()` the instance can no longer process
+     * puts or reads.
+     */
+    fun close() {
+        core.cancel()
+    }
+
     // --- NON-BLOCKING API (UI Safe) ---
 
     /**

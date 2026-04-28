@@ -61,7 +61,7 @@ class JvmKSafeTest : KSafeTest() {
         }
     }
 
-    override fun createKSafe(fileName: String?): KSafe {
+    override fun newKSafe(fileName: String?): KSafe {
         // If a specific fileName is requested (for isolation tests), make it unique too
         val uniqueName = if (fileName != null) {
             "run${runId}${fileName}"

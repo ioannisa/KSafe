@@ -34,7 +34,7 @@ class WebKSafeTest : KSafeTest() {
         }
     }
 
-    override fun createKSafe(fileName: String?): KSafe {
+    override fun newKSafe(fileName: String?): KSafe {
         val uniqueName = fileName ?: generateUniqueFileName()
         return KSafe(
             fileName = uniqueName,

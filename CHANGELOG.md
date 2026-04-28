@@ -2,6 +2,73 @@
 
 All notable changes to KSafe will be documented in this file.
 
+## [2.0.0] - 2026-04-27
+
+Cumulative delta over 2.0.0-RC1: two purely additive public APIs (`KSafe.close()` and `KSafe.asWritableFlow` returning a `WritableKSafeFlow<T>`). No breakage, no behavioural change for callers who do not opt in.
+
+### Added
+
+#### `KSafe.asWritableFlow` — observable + writable in one declaration
+
+New extension factory that returns a `WritableKSafeFlow<T>` — a cold `Flow<T>` you can also write to via `set(value)`. The flow side delegates to the underlying `KSafe.getFlow`, so collectors observe persisted changes from any writer (including external writes from other parts of the app); the write side calls `KSafe.putDirect` under the hood and respects the `KSafeWriteMode` you pass (defaults to `Encrypted()`, matching the property delegate `ksafe(...)` and `asMutableStateFlow`).
+
+The motivating case: previously, a repository that wanted to expose a single stored value as **both** an observable Flow and a writable handle had to declare two bindings to the same key —
+
+Let's say we have a flow that contains the device setting "day/night/device". Any number of observers might be observing it...
+
+Normally you'd have to declare two separate properties to cover the read and write sides:
+
+```kotlin
+val themeMode: Flow<ThemeMode> by ksafe.asFlow(ThemeMode.DEVICE, key = "themeMode")
+private var themeModeValue: ThemeMode by ksafe(ThemeMode.DEVICE, key = "themeMode")
+fun setThemeMode(mode: ThemeMode) { themeModeValue = mode }
+```
+
+— with the keys kept in sync manually. `asWritableFlow` collapses that into one declaration:
+
+```kotlin
+class SettingsRepository(ksafe: KSafe) {
+    val themeMode: WritableKSafeFlow<ThemeMode> by ksafe.asWritableFlow(ThemeMode.DEVICE)
+
+    fun setThemeMode(mode: ThemeMode) {
+        themeMode.set(mode)  // persists; collectors see it on next emission
+    }
+}
+```
+
+`WritableKSafeFlow<T> : Flow<T>` so any consumer that just needs to observe can take a `Flow<T>` parameter. The API is asymmetric on purpose: there is no synchronous getter, only collection through the flow. That keeps the contract identical on every platform — including web cold-start, where a synchronous read against an unwarmed cache would return the default rather than the persisted value.
+
+This sits alongside the existing flow-shape delegates with a clear division of labour:
+
+| API | Read | Write | Scope | Hot/Cold |
+|---|---|---|---|---|
+| `asFlow` | ✅ flow | — | none | cold |
+| `asStateFlow` | ✅ flow + `.value` | — | required | hot |
+| `asWritableFlow` *(new)* | ✅ flow | ✅ `set()` | none | cold |
+| `asMutableStateFlow` | ✅ flow + `.value` | ✅ `.value =` | required | hot |
+
+#### `KSafe.close()` — optional instance disposal
+
+New public method that releases the long-running coroutine infrastructure a `KSafe` instance owns. Calling it cancels the write-channel consumer, the snapshot collector, and — through a small refactor to how each platform factory constructs and owns the scope it hands to `PreferenceDataStoreFactory.create(...)` — the DataStore coroutine scope itself, including the file watcher, the write coordinator, and the cached-`Preferences` `MutableStateFlow`. On Android, `close()` additionally evicts the per-file entry from the process-static DataStore cache (only when this instance was the one that created the cache entry, so a `KSafe` sharing an existing entry does not pull state out from under another holder).
+
+Optional and almost always unnecessary. The dominant usage — one or a handful of `KSafe` singletons that live for the process lifetime — does not need it; the OS reclaims everything when the process exits, and pre-2.0 builds were operating under that implicit contract anyway. Call `close()` when you re-create `KSafe` mid-process:
+
+- **Account or profile switching** that changes the `fileName` and you want the previous instance fully released.
+- **Long-running JVM services** that construct a fresh instance per session, tenant, or request.
+- **Dev-time hot-reload** that rebuilds the DI graph and constructs new `KSafe`s on top of the previous ones.
+
+Without `close()` each abandoned instance pins its DataStore scope (and the file handle, cached `Preferences`, and `MutableStateFlow` it anchors) on `Dispatchers.IO`. Idempotent; after `close()` the instance can no longer process puts or reads — discard the reference and build a new one if you need storage again.
+
+```kotlin
+val ksafe = KSafe(fileName = "session_$userId")
+// ... use it ...
+ksafe.close()  // releases scopes, file handle, cached state
+```
+
+See [docs/SETUP.md](docs/SETUP.md) for the lifecycle scenarios in more detail.
+
+---
+
 ## [2.0.0-RC1] - 2026-04-26
 
 Major internal refactor; new standalone `:ksafe-biometrics` module; the Kotlin/JS (IR) target and shared web source sets that were staged under a never-shipped 1.9.0 tag.

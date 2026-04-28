@@ -52,7 +52,7 @@ class JvmKSafeMutableStateOfTest : KSafeMutableStateOfTest() {
         }
     }
 
-    override fun createKSafe(fileName: String?): KSafe {
+    override fun newKSafe(fileName: String?): KSafe {
         val uniqueName = if (fileName != null) {
             "composerun${runId}${fileName}"
         } else {

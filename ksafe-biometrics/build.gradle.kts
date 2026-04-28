@@ -10,7 +10,7 @@ plugins {
 }
 
 group = "eu.anifantakis"
-version = "2.0.0-RC1"
+version = "2.0.0-RC2"
 
 kotlin {
     androidLibrary {

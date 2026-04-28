@@ -7,17 +7,37 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.plus
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.Serializable
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
  * Abstract base class for KSafe tests.
  * Platform-specific implementations extend this class to provide actual KSafe instances.
+ *
+ * Subclasses implement [newKSafe] to construct a platform-appropriate instance;
+ * tests call [createKSafe], which forwards to [newKSafe] and registers the
+ * returned instance for teardown. [close][KSafe.close] is invoked on every
+ * tracked instance in [tearDown] so abandoned KSafes do not pin their
+ * background coroutines (and the DataStore + caches they reference) in heap
+ * across tests. Without this, the JVM-side test suite OOMs on CI.
  */
 abstract class KSafeTest {
-    abstract fun createKSafe(fileName: String? = null): KSafe
+    private val tracked = mutableListOf<KSafe>()
+
+    protected abstract fun newKSafe(fileName: String? = null): KSafe
+
+    fun createKSafe(fileName: String? = null): KSafe =
+        newKSafe(fileName).also { tracked += it }
+
+    @AfterTest
+    fun tearDown() {
+        tracked.forEach { runCatching { it.close() } }
+        tracked.clear()
+    }
 
     // ============ BASIC STRING OPERATIONS ============
 
@@ -341,6 +361,107 @@ abstract class KSafeTest {
 
             cancelAndIgnoreRemainingEvents()
         }
+    }
+
+    // ============ asWritableFlow / WritableKSafeFlow TESTS ============
+
+    /** Verifies that a WritableKSafeFlow returned from asWritableFlow emits writes made via set() (plain mode) */
+    @Test
+    fun testAsMutableFlowEmitsOnSetUnencrypted() = runTest {
+        val ksafe = createKSafe()
+        class Host(s: KSafe) {
+            val pref: WritableKSafeFlow<String> by s.asWritableFlow(
+                defaultValue = "default",
+                key = "test_writable_plain",
+                mode = KSafeWriteMode.Plain,
+            )
+        }
+        val host = Host(ksafe)
+
+        host.pref.test {
+            assertEquals("default", awaitItem())
+            host.pref.set("first")
+            assertEquals("first", awaitItem())
+            host.pref.set("second")
+            assertEquals("second", awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /** Verifies that the default mode of asWritableFlow is encrypted and round-trips correctly */
+    @Test
+    fun testAsMutableFlowEmitsOnSetEncryptedByDefault() = runTest {
+        val ksafe = createKSafe()
+        class Host(s: KSafe) {
+            // No explicit `mode` — must default to KSafeWriteMode.Encrypted()
+            val pref: WritableKSafeFlow<String> by s.asWritableFlow(
+                defaultValue = "default",
+                key = "test_writable_default_mode",
+            )
+        }
+        val host = Host(ksafe)
+
+        host.pref.test {
+            assertEquals("default", awaitItem())
+            host.pref.set("secret")
+            assertEquals("secret", awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+
+        // Direct read confirms persistence; getKeyInfo confirms it was written encrypted.
+        assertEquals("secret", ksafe.get("test_writable_default_mode", "fallback"))
+        val info = ksafe.getKeyInfo("test_writable_default_mode")
+        assertNotNull(info, "Expected metadata for written key")
+        assertNotNull(
+            info.protection,
+            "asWritableFlow without an explicit mode must persist encrypted (non-null protection tier)",
+        )
+    }
+
+    /** Verifies that external writes (via ksafe.put) propagate to a WritableKSafeFlow's collectors */
+    @Test
+    fun testAsMutableFlowReflectsExternalWrites() = runTest {
+        val ksafe = createKSafe()
+        val key = "test_writable_external"
+        class Host(s: KSafe) {
+            val pref: WritableKSafeFlow<String> by s.asWritableFlow(
+                defaultValue = "default",
+                key = key,
+                mode = KSafeWriteMode.Plain,
+            )
+        }
+        val host = Host(ksafe)
+
+        host.pref.test {
+            assertEquals("default", awaitItem())
+
+            // External writer (e.g. another screen, background sync) — collector must observe.
+            ksafe.put(key, "external", KSafeWriteMode.Plain)
+            assertEquals("external", awaitItem())
+
+            // Set via WritableKSafeFlow path interleaves correctly.
+            host.pref.set("local")
+            assertEquals("local", awaitItem())
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /** Verifies asWritableFlow uses the property name as key when none is given */
+    @Test
+    fun testAsMutableFlowUsesPropertyNameAsKey() = runTest {
+        val ksafe = createKSafe()
+        class Host(s: KSafe) {
+            val derived: WritableKSafeFlow<String> by s.asWritableFlow(
+                defaultValue = "default",
+                mode = KSafeWriteMode.Plain,
+            )
+        }
+        val host = Host(ksafe)
+
+        host.derived.set("named_by_property")
+        // Property name "derived" must be the persisted key.
+        assertEquals("named_by_property", ksafe.get("derived", "fallback"))
     }
 
     // ============ STATE FLOW API TESTS ============

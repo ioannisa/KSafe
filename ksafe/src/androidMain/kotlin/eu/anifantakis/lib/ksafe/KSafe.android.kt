@@ -16,6 +16,7 @@ import eu.anifantakis.lib.ksafe.internal.validateSecurityPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.io.encoding.Base64
@@ -161,9 +162,22 @@ private fun buildAndroidKSafe(
         context.preferencesDataStoreFile(baseFileName)
     }
 
-    val dataStore: DataStore<Preferences> = dataStoreCache.getOrPut(datastoreFile.absolutePath) {
+    // DataStore launches its own coroutines on the scope it's given; we
+    // hold one we control so close() can dispose it. The Android-only
+    // process-static `dataStoreCache` exists to dedupe instances per
+    // file path (DataStore refuses multiple active instances per file);
+    // entries used to stay forever, so each test left both the cache
+    // entry and its DataStore + scope pinned. We now evict the entry
+    // and cancel the scope from `onCancel` below — but only if the
+    // factory actually created a fresh entry on this call (otherwise
+    // we'd close another caller's still-active DataStore).
+    val datastorePath = datastoreFile.absolutePath
+    val storageScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    var ownsDataStore = false
+    val dataStore: DataStore<Preferences> = dataStoreCache.getOrPut(datastorePath) {
+        ownsDataStore = true
         PreferenceDataStoreFactory.create(
-            scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+            scope = storageScope,
             produceFile = { datastoreFile }
         )
     }
@@ -205,6 +219,12 @@ private fun buildAndroidKSafe(
             listOfNotNull(KEY_ALIAS_PREFIX, fileName, userKey).joinToString(".")
         },
         modeTransformer = ::promoteMode,
+        onCancel = {
+            if (ownsDataStore) {
+                dataStoreCache.remove(datastorePath)
+                storageScope.cancel()
+            }
+        },
     )
 
     return KSafe(

@@ -218,6 +218,22 @@ class ScreenB { val prefs = KSafe(fileName = "userdata") }  // DON'T DO THIS!
 - No spaces, dots, slashes, hyphens, or uppercase letters allowed
 - Examples: `"userdata"`, `"settings"`, `"data_v2"`, `"cache"`
 
+### Disposing an instance: `KSafe.close()`
+
+In the singleton-per-process pattern above you never need to call anything to dispose `KSafe` — the OS reclaims everything when the process exits. The optional `close()` method exists for the small set of cases where you actually re-create `KSafe` mid-process:
+
+- **Account or profile switching** that changes the `fileName` (you build a new instance for the new identity and abandon the old one).
+- **Long-running JVM services** that build a fresh instance per session, tenant, or request.
+- **Dev-time hot-reload** that rebuilds the DI graph and constructs new `KSafe`s on top of the previous ones.
+
+```kotlin
+val ksafe = KSafe(fileName = "session_$userId")
+// ... use it ...
+ksafe.close()  // cancels background coroutines, releases the DataStore scope and file handle
+```
+
+`close()` is idempotent. After calling it, the instance can no longer process reads or writes — discard the reference and build a new one if you need storage again. Calling `close()` on the typical app-lifetime singleton is harmless but achieves nothing the OS won't already do at process exit.
+
 ***
 
 ## Custom Storage Directory
