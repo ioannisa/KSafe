@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.time.ComparableTimeMark
@@ -221,7 +222,9 @@ internal class KSafeCore(
     private fun startBackgroundCollector() {
         collectorScope.launch {
             runCatching { migrateAccessPolicy() }
+                .onFailure { if (it is CancellationException) throw it }
             runCatching { cleanupOrphanedCiphertext() }
+                .onFailure { if (it is CancellationException) throw it }
             storage.snapshotFlow().collect { snapshot -> updateCache(snapshot) }
         }
     }
@@ -263,6 +266,7 @@ internal class KSafeCore(
                 val ciphertext = b64Decode(encryptedString)
                 engine.decryptSuspend(keyAlias(userKey), ciphertext)
             } catch (e: Throwable) {
+                if (e is CancellationException) throw e
                 val msg = e.message.orEmpty()
                 if (msg.contains("No encryption key found", true) ||
                     msg.contains("key not found", true)
@@ -338,7 +342,10 @@ internal class KSafeCore(
                     try {
                         val plain = engine.decryptSuspend(keyAlias(userKey), b64Decode(encryptedString))
                         memoryCache[cacheKey] = plain.decodeToString()
-                    } catch (_: Throwable) { /* leave out of cache */ }
+                    } catch (e: Throwable) {
+                        if (e is CancellationException) throw e
+                        /* leave out of cache */
+                    }
                 }
             } else {
                 memoryCache[cacheKey] = storedValue.toCacheValue()
@@ -398,7 +405,10 @@ internal class KSafeCore(
                     batch.add(next)
                 }
                 runCatching { processBatch(batch) }
-                    .onFailure { println("KSafe: processBatch failed, dropping ${batch.size} writes: ${it.message}") }
+                    .onFailure { e ->
+                        if (e is CancellationException) throw e
+                        println("KSafe: processBatch failed, dropping ${batch.size} writes: ${e.message}")
+                    }
                 batch.clear()
             }
         }
@@ -530,6 +540,7 @@ internal class KSafeCore(
                             if (rawString == NULL_SENTINEL) null
                             else jsonDecode(json, serializer, rawString)
                         } catch (e: Throwable) {
+                            if (e is CancellationException) throw e
                             if (isTransientDecryptFailure(e)) throw e
                             defaultValue
                         }
@@ -734,7 +745,12 @@ internal class KSafeCore(
                     val cached = plaintextCache[cacheKey]
                     if (cached != null && TimeSource.Monotonic.markNow() < cached.expiresAt) {
                         if (cached.value == NULL_SENTINEL) return null
-                        try { return jsonDecode(json, serializer, cached.value) } catch (_: Throwable) { /* fall through */ }
+                        try {
+                            return jsonDecode(json, serializer, cached.value)
+                        } catch (e: Throwable) {
+                            if (e is CancellationException) throw e
+                            /* fall through */
+                        }
                     }
                 }
 
@@ -753,6 +769,7 @@ internal class KSafeCore(
                         }
                     }
                 } catch (e: Throwable) {
+                    if (e is CancellationException) throw e
                     // Transient keystore failures (locked device, hardware busy) must
                     // propagate so callers can retry instead of getting silent defaults.
                     if (isTransientDecryptFailure(e)) throw e
@@ -766,7 +783,12 @@ internal class KSafeCore(
             if (jsonString == null) jsonString = cachedValue as? String
             if (jsonString == null) return defaultValue
             if (jsonString == NULL_SENTINEL) return null
-            try { jsonDecode(json, serializer, jsonString) } catch (_: Throwable) { defaultValue }
+            try {
+                jsonDecode(json, serializer, jsonString)
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                defaultValue
+            }
         } else {
             if (isNullSentinel(cachedValue)) return null
             convertStoredValue(cachedValue, defaultValue, serializer)
@@ -819,7 +841,12 @@ internal class KSafeCore(
                 // Complex `@Serializable` type — expect a JSON string.
                 if (storedValue !is String) return storedValue
                 if (storedValue == NULL_SENTINEL) return null
-                try { jsonDecode(json, serializer, storedValue) } catch (_: Throwable) { defaultValue }
+                try {
+                    jsonDecode(json, serializer, storedValue)
+                } catch (e: Throwable) {
+                    if (e is CancellationException) throw e
+                    defaultValue
+                }
             }
         }
     }
@@ -849,7 +876,10 @@ internal class KSafeCore(
             runBlockingOnPlatform {
                 if (!cacheInitialized.get()) updateCache(storage.snapshot())
             }
-        } catch (_: Throwable) { /* web: no blocking available */ }
+        } catch (e: Throwable) {
+            if (e is CancellationException) throw e
+            /* web: no blocking available */
+        }
     }
 
     suspend fun ensureCacheReadySuspend() {

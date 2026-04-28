@@ -23,8 +23,8 @@ import platform.Foundation.NSApplicationSupportDirectory
 import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSProcessInfo
-import platform.Foundation.NSURL
 import platform.Foundation.NSUserDomainMask
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.time.Duration
@@ -293,6 +293,7 @@ private fun buildIosKSafe(
                 seKeyTagPrefix = IosKeychainEncryption.SE_KEY_TAG_PREFIX,
             )
         }.onFailure { t ->
+            if (t is CancellationException) throw t
             println("KSafe: Keychain orphan sweep failed (ignored): ${t.message}")
         }
     }
