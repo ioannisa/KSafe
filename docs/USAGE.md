@@ -273,6 +273,87 @@ fun SettingsScreen(viewModel: SettingsViewModel) {
 }
 ```
 
+### `rememberKSafeState` — composable-body persistent state, no ViewModel required
+
+`mutableStateOf` is the right tool for persisted state on a **class field** (ViewModel, repository): the property delegate is created once when the class is constructed and lives for the class's lifetime. Used directly inside a `@Composable` function body it would re-create itself on every recomposition, so for that case use `rememberKSafeState`:
+
+```kotlin
+@Composable
+fun TabbedScreen(ksafe: KSafe) {
+    var currentlySelectedIndex by ksafe.rememberKSafeState(0)   // key auto-resolves to "currentlySelectedIndex"
+    var draftMessage by ksafe.rememberKSafeState("")            // key auto-resolves to "draftMessage"
+
+    // Both survive process death AND every recomposition cleanly.
+}
+```
+
+This is the KSafe analogue of `rememberSaveable { mutableStateOf(...) }`, with stronger guarantees: `rememberSaveable` survives configuration changes and (via the saveable state registry) process death for `Bundle`-friendly types on Android only — state is cleared on a cold app launch. `rememberKSafeState` survives **app restart**, on every supported target (Android, iOS, JVM, Web), with optional encryption.
+
+#### When the value naturally lives in the composable, not in a ViewModel
+
+The bottom-tab index of the demo app is a textbook fit. Before:
+
+```kotlin
+@Composable
+fun AppContent() {
+    var currentScreen by remember { mutableStateOf(Screen.Storage) }
+    // … bottom bar + screen dispatch …
+}
+```
+
+That state is wiped on every cold launch — the user never re-opens the app on the tab they were last viewing. The "correct" Android answer used to be: build a `MainViewModel`, expose `currentScreen`, inject it via `koinViewModel()`, save the value through KSafe inside the VM, observe a flow back into the composable. Five files of plumbing for a single integer.
+
+`rememberKSafeState` collapses that to one line:
+
+```kotlin
+@Composable
+fun AppContent(ksafe: KSafe) {
+    var currentScreen by ksafe.rememberKSafeState(Screen.Storage)
+    // … bottom bar + screen dispatch …
+}
+```
+
+The key auto-resolves to `"currentScreen"` from the property name, the value persists across app restarts, and there's no ViewModel to construct, inject, observe, or test. Reach for it whenever the state is naturally local to the composable — bottom-tab index, scroll position, expanded/collapsed sections, draft form input, last-selected sort order, "show advanced settings" toggles. State that *belongs in a ViewModel* (because it's domain data, shared across screens, or driven by business logic) still belongs in a ViewModel — `mutableStateOf` is still the right tool there.
+
+#### How it works
+
+Under the hood the factory returns a `KSafeComposeStateProvider<T>`. The `provideDelegate` operator on that provider is `@Composable`, which is what lets the property name fall through to the storage key when `by` is used — same mechanism as `mutableStateOf`, just composable-aware. The provider materialises a `KSafeComposeState<T>` (which is both a `MutableState<T>` and a `ReadWriteProperty`) wrapped in `remember(key)`, so the state survives recomposition and is disposed when the composition leaves. The optional self-heal coroutine (the WASM cold-start case where the cache is still warming up when first composition runs) and the optional `observeExternalChanges` collector are both launched inside a `LaunchedEffect(key, observeExternalChanges)`, so cancellation tracks the composition's lifetime — **no detached coroutines**, even when called at recomposition rate.
+
+```kotlin
+inline fun <reified T> KSafe.rememberKSafeState(
+    defaultValue: T,
+    key: String? = null,                                              // optional — defaults to property name
+    mode: KSafeWriteMode = KSafeWriteMode.Plain,                      // UI state usually doesn't need encryption
+    observeExternalChanges: Boolean = false,
+    policy: SnapshotMutationPolicy<T> = structuralEqualityPolicy(),
+): KSafeComposeStateProvider<T>
+```
+
+Defaults differ from `mutableStateOf` deliberately:
+- **`mode = KSafeWriteMode.Plain`** — the typical compose-body use case is UI ephemera (selected tab, scroll position, draft text). Pass `mode = KSafeWriteMode.Encrypted(...)` to opt in if the value is sensitive.
+- **`key` is optional** — when omitted, the storage key is inferred from the property name on the `var x by` declaration (same convention as `ksafe.mutableStateOf`). Pass an explicit `key` when you want to namespace (`key = "screen.draft"`) or share a key across multiple `var` declarations.
+
+When to reach for which:
+
+| Use case                       | API                                                                |
+| ------------------------------ | ------------------------------------------------------------------ |
+| ViewModel / class property     | `var x by ksafe.mutableStateOf(default)`                           |
+| Composable-body local state    | `var x by ksafe.rememberKSafeState(default)`                       |
+
+Cross-screen live sync still works the same way you'd expect — set `observeExternalChanges = true`:
+
+```kotlin
+@Composable
+fun DashboardScreen(ksafe: KSafe) {
+    var theme by ksafe.rememberKSafeState(
+        defaultValue = ThemeMode.LIGHT,
+        key = "theme",                           // explicit when sharing the key with other places
+        observeExternalChanges = true,           // see writes from other screens / VMs
+    )
+    // …
+}
+```
+
 ## Suspend API (non-blocking)
 
 ```Kotlin

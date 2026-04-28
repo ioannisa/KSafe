@@ -6,6 +6,11 @@ import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinAndroidTarget
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.android.kotlin.multiplatform.library)
+    // Compose compiler plugin — required so @Composable functions in this
+    // module (e.g. rememberKSafeState) get the Composer parameter injected
+    // and `remember`/`LaunchedEffect` codegen properly. Without it, the
+    // Kotlin compiler reports "couldn't find inline method ... remember".
+    alias(libs.plugins.kotlin.compose)
     // Add the maven publish plugin
     alias(libs.plugins.vanniktech.mavenPublish)
 }

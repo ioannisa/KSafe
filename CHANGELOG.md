@@ -2,11 +2,45 @@
 
 All notable changes to KSafe will be documented in this file.
 
-## [2.0.0] - 2026-04-27
+## [2.0.0] - 2026-04-28
 
-Cumulative delta over 2.0.0-RC1: two purely additive public APIs (`KSafe.close()` and `KSafe.asWritableFlow` returning a `WritableKSafeFlow<T>`). No breakage, no behavioural change for callers who do not opt in.
+Cumulative delta over 2.0.0-RC1: four purely additive public APIs — `KSafe.close()`, `KSafe.asWritableFlow` (returning a `WritableKSafeFlow<T>`), `KSafe.rememberKSafeState` (Compose-body persistent state), and the internal `observeFromStorage` helper that unifies the persistence-observation lifecycle. Plus a hardening pass on `KSafeCore` that rethrows `CancellationException` from every previously-broad `catch (Throwable)` so `close()` shuts down silently without spurious "failed" logs. No breakage, no behavioural change for callers who do not opt in.
 
 ### Added
+
+#### `:ksafe-compose` — `rememberKSafeState` composable
+
+New helper that brings the `rememberSaveable { mutableStateOf(...) }` ergonomics to KSafe — composable-body local state that **survives app restarts**, not just configuration changes. The factory itself is non-`@Composable`; it returns a `KSafeComposeStateProvider<T>` whose `provideDelegate` operator is `@Composable`, which is what lets the storage key fall through to the property name on the `var` declaration when no explicit key is passed (same auto-key convention as `ksafe.mutableStateOf`):
+
+```kotlin
+@Composable
+fun TabbedScreen(ksafe: KSafe) {
+    var currentlySelectedIndex by ksafe.rememberKSafeState(0)   // key = "currentlySelectedIndex"
+    var draftMessage by ksafe.rememberKSafeState("")            // key = "draftMessage"
+    var explicit by ksafe.rememberKSafeState("", key = "screen.draft")   // explicit when you want it
+
+    // All three survive process death, app reinstall (Android), and restart on every target.
+}
+```
+
+The use case the API is built around: **state that naturally lives in the composable, where routing through a ViewModel would be overkill.** Bottom-tab indexes, scroll positions, expanded/collapsed sections, draft form input, last-selected sort order, "show advanced settings" toggles — all of these typically end up in `remember { mutableStateOf(...) }` today and reset to the default on every cold launch, because building a `MainViewModel` + Koin wiring + `koinViewModel()` injection + flow observation is out of proportion with what the value actually does. `rememberKSafeState` collapses that whole pipeline to one line; the demo's `App.kt` switched its bottom-tab selection from `var currentScreen by remember { mutableStateOf(Screen.Storage) }` to `var currentScreen by ksafe.rememberKSafeState(Screen.Storage)` and got app-restart persistence for free, with no ViewModel introduced.
+
+State that genuinely *should* live in a ViewModel (because it's shared across screens, driven by business logic, or part of a domain model) still uses `ksafe.mutableStateOf` — the two APIs partition the space cleanly:
+
+| Use case                       | API                                                                |
+| ------------------------------ | ------------------------------------------------------------------ |
+| ViewModel / class property     | `var x by ksafe.mutableStateOf(default)` *(unchanged)*             |
+| Composable-body local state    | `var x by ksafe.rememberKSafeState(default)` *(new)*               |
+
+The materialised state is a real `MutableState<T>`, so `var x by …` triggers recomposition on writes. Reads come from the hot cache (synchronous); writes go through the existing batched/coalesced write path. The provider materialises the state inside `remember(key)`, so it survives recomposition and is disposed when the composition leaves. The self-heal coroutine and the optional `observeExternalChanges` collector both run inside a `LaunchedEffect(key, observeExternalChanges)`, so leaving the composition cancels them automatically. Changing `key` cancels the previous observation and re-launches with the new one. **No detached coroutines** — safe to call at recomposition rate.
+
+`mode` defaults to `KSafeWriteMode.Plain` (UI ephemera typically does not need encryption); pass `mode = KSafeWriteMode.Encrypted(...)` to opt in.
+
+The `:ksafe-compose` module now applies the Compose compiler plugin (`org.jetbrains.kotlin.plugin.compose`, bound to the project's Kotlin version) so that the `@Composable provideDelegate` codegen works. The published artifact's bytecode/klib is unchanged in shape; consumers do not need any new setup.
+
+#### Internal: `observeFromStorage` — single source of truth for state observation
+
+The previously-duplicated branch logic at `mutableStateOf`'s call site (live-collect when a `scope` was supplied; one-shot self-heal on a detached `Dispatchers.Default` scope otherwise) is now consolidated in a single `@PublishedApi internal suspend fun KSafeComposeState<T>.observeFromStorage(...)`. Both `mutableStateOf` and `rememberKSafeState` route through it. No public-API or behavioural change for `mutableStateOf` callers — the detached fallback is reached in exactly the same set of cases as before (no caller scope AND cache started cold).
 
 #### `KSafe.asWritableFlow` — observable + writable in one declaration
 
@@ -66,6 +100,24 @@ ksafe.close()  // releases scopes, file handle, cached state
 ```
 
 See [docs/SETUP.md](docs/SETUP.md) for the lifecycle scenarios in more detail.
+
+### Fixed
+
+#### `CancellationException` no longer swallowed across `KSafeCore` and `:ksafe-compose`
+
+Several `runCatching { … }` and broad `catch (Throwable)` blocks inside the library's coroutine-owning paths used to swallow `CancellationException` along with everything else. The structural shutdown still worked (the loops always exited at the next unprotected suspension point), but `cancel()`/`close()` mid-batch produced spurious `"KSafe: processBatch failed, dropping N writes: …"` log lines on every clean teardown, and tests using `kotlinx-coroutines-test` could see one extra batch run after `cancel()` (channels return buffered items without suspending, so the cancellation check was deferred until the next true suspend), occasionally surfacing as `UncaughtExceptionsBeforeTest` in the *next* test.
+
+Every `catch (Throwable)` inside a coroutine context now rethrows `CancellationException` first. Concretely:
+
+- **`KSafeCore.startWriteConsumer`** — the write coalescer's `runCatching { processBatch(batch) }` now rethrows cancellation. Clean shutdown is silent.
+- **`KSafeCore.startBackgroundCollector`** — both `runCatching { migrateAccessPolicy() }` and `runCatching { cleanupOrphanedCiphertext() }` now rethrow cancellation, so the collector terminates promptly instead of grinding through one more iteration on a cancelled scope.
+- **`KSafeCore.cleanupOrphanedCiphertext`** — the per-entry decrypt probe rethrows cancellation before applying its message-pattern heuristic, so a cancellation during the orphan sweep no longer looks like a missing-key signal and triggers spurious deletes.
+- **`KSafeCore.updateCache`** — the per-entry plaintext-policy decrypt rethrows cancellation rather than silently dropping the entry from the cache.
+- **`KSafeCore.getFlowRaw`** — the map-block decrypt path rethrows cancellation before falling back to `defaultValue`, so downstream `Flow` collectors don't receive a bogus default emission while the upstream is being cancelled.
+- **iOS `cleanupOrphanedKeychainEntriesSafe`** — the `runCatching` around the Keychain orphan sweep rethrows cancellation, so a cancellation during sweep no longer prints `"KSafe: Keychain orphan sweep failed (ignored): …"` on shutdown.
+- **`resolveFromCache`, `convertStoredValue`, `ensureCacheReadyBlocking`** — the synchronous JSON-decode and `runBlockingOnPlatform` catches were all defense-in-depth-hardened too. Today they live in non-suspending contexts so cancellation cannot reach them, but the rule "every `catch (Throwable)` rethrows `CancellationException` first" is now uniform across the file, so future refactors can't reopen a swallow vector by introducing a suspending call into one of these paths.
+
+`:ksafe-compose` was audited at the same time. The pre-existing `try { putDirect } catch (Exception)` in `mutableStateOf`'s saver lambda is non-suspending today (`putDirect` is fire-and-forget) and is left as-is, but the new `observeFromStorage` and `rememberKSafeState` paths are structured by construction — neither swallows cancellation.
 
 ---
 

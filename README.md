@@ -82,24 +82,31 @@ Every persistence shape you reach for, with the same guarantees behind each:
 // 1. Plain property delegate — no Compose, no Flow, no coroutines required
 var token by ksafe("")
 
-// 2. Compose MutableState — reactive UI, persisted, encrypted
+// 2. Compose MutableState (ViewModel / class field) — reactive UI, persisted, encrypted
 var username by ksafe.mutableStateOf("Guest")
 
-// 3. Read-only StateFlow — observe from anywhere, writes go through ksafe.put()
+// 3. Compose MutableState (inside a @Composable body) — rememberSaveable, but persists across app restarts
+//    No ViewModel required for trivial UI state like this. Storage key auto-resolves to the property name.
+@Composable
+fun TabbedScreen(ksafe: KSafe) {
+    var currentTab by ksafe.rememberKSafeState(Tab.Home)
+}
+
+// 4. Read-only StateFlow — observe from anywhere, writes go through ksafe.put()
 val user: StateFlow<User> by ksafe.asStateFlow(User(), viewModelScope)
 
-// 4. Read/write MutableStateFlow — the classic _state / state pattern, persisted
+// 5. Read/write MutableStateFlow — the classic _state / state pattern, persisted
 private val _state by ksafe.asMutableStateFlow(MoviesState(), viewModelScope)
 val state = _state.asStateFlow()
 
-// 5. Read/write Flow — observe + set() in one declaration, no scope needed
+// 6. Read/write Flow — observe + set() in one declaration, no scope needed
 val themeMode: WritableKSafeFlow<ThemeMode> by ksafe.asWritableFlow(ThemeMode.DEVICE)
 // themeMode.set(ThemeMode.NIGHT) persists; collectors see it on the next emission
 ```
 
-All five survive process death, are AES-256-GCM encrypted by default, and can be made plain with `mode = KSafeWriteMode.Plain`. **Zero boilerplate, on every target.**
+All six survive process death, are AES-256-GCM encrypted by default (except `rememberKSafeState`, which defaults to plain since it's typically UI ephemera — pass `mode = KSafeWriteMode.Encrypted(...)` to opt in), and can be made plain with `mode = KSafeWriteMode.Plain`. **Zero boilerplate, on every target.**
 
-> **DataStore without the coroutines tax.** The property delegate, `mutableStateOf`, and `getDirect`/`putDirect` are fully synchronous — **but never blocking**. Reads come from a hot in-memory cache; writes update the cache immediately and enqueue the encrypt-and-flush onto a background thread. Call sites return instantly. Use the `suspend` API (`get` / `put`) only when *you* want to.
+> **DataStore without the coroutines tax.** The property delegate, `mutableStateOf`, `rememberKSafeState`, and `getDirect`/`putDirect` are fully synchronous — **but never blocking**. Reads come from a hot in-memory cache; writes update the cache immediately and enqueue the encrypt-and-flush onto a background thread. Call sites return instantly. Use the `suspend` API (`get` / `put`) only when *you* want to.
 
 ### Prefer coroutines? `put` and `get` too.
 
@@ -221,9 +228,9 @@ Data is now AES-256-GCM encrypted — keys in Android Keystore, iOS Keychain, so
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:2.0.0-RC1")
-implementation("eu.anifantakis:ksafe-compose:2.0.0-RC1")     // ← Compose state (optional)
-implementation("eu.anifantakis:ksafe-biometrics:2.0.0-RC1")  // ← Biometric auth (optional)
+implementation("eu.anifantakis:ksafe:2.0.0-RC2")
+implementation("eu.anifantakis:ksafe-compose:2.0.0-RC2")     // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe-biometrics:2.0.0-RC2")  // ← Biometric auth (optional)
 ```
 
 > Skip `ksafe-compose` if you don't use Jetpack Compose or `mutableStateOf` persistence.
@@ -287,10 +294,13 @@ A handful of examples cover 95% of real-world use. Full reference (Compose `poli
 var counter by ksafe(0)
 counter++
 
-// 2. Compose state — reactive UI + persistence (requires ksafe-compose)
+// 2. Compose state on a ViewModel / class field — reactive UI + persistence (requires ksafe-compose)
 var username by ksafe.mutableStateOf("Guest")
 
-// 3. Reactive flows — read-only StateFlow, read/write MutableStateFlow, or read/write Flow without a scope
+// 3. Compose state inside a @Composable body — the rememberSaveable analogue, but persists across app restarts
+//    var currentTab by ksafe.rememberKSafeState(Tab.Home)   // key auto-resolves to "currentTab"; no ViewModel needed
+
+// 4. Reactive flows — read-only StateFlow, read/write MutableStateFlow, or read/write Flow without a scope
 val user: StateFlow<User> by ksafe.asStateFlow(User(), viewModelScope)         // read-only
 private val _state by ksafe.asMutableStateFlow(MoviesState(), viewModelScope)  // read/write, hot
 val state = _state.asStateFlow()
@@ -475,7 +485,7 @@ if (KSafeBiometrics.verifyBiometric("Authenticate to increment")) {
 
 Auth caching, scoped sessions, platform setup, complete examples: [docs/BIOMETRICS.md](docs/BIOMETRICS.md).
 
-> **Migrating from KSafe ≤1.x?** Biometric methods used to live on `KSafe` itself. In 2.0 they moved to a separate module. Add `implementation("eu.anifantakis:ksafe-biometrics:2.0.0-RC1")`, change `import eu.anifantakis.lib.ksafe.BiometricAuthorizationDuration` → `import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration`, replace `ksafe.verifyBiometric(...)` with `KSafeBiometrics.verifyBiometric(...)`. Method names and signatures are unchanged. No instance to construct, no DI wiring needed.
+> **Migrating from KSafe ≤1.x?** Biometric methods used to live on `KSafe` itself. In 2.0 they moved to a separate module. Add `implementation("eu.anifantakis:ksafe-biometrics:2.0.0-RC2")`, change `import eu.anifantakis.lib.ksafe.BiometricAuthorizationDuration` → `import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration`, replace `ksafe.verifyBiometric(...)` with `KSafeBiometrics.verifyBiometric(...)`. Method names and signatures are unchanged. No instance to construct, no DI wiring needed.
 
 ***
 

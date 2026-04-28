@@ -1,13 +1,17 @@
 package eu.anifantakis.lib.ksafe.compose
 
-import eu.anifantakis.lib.ksafe.KSafe
-import eu.anifantakis.lib.ksafe.KSafeWriteMode
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.SnapshotMutationPolicy
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.structuralEqualityPolicy
+import eu.anifantakis.lib.ksafe.KSafe
+import eu.anifantakis.lib.ksafe.KSafeWriteMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -85,6 +89,52 @@ class KSafeComposeState<T>(
 
     override fun component1(): T = value
     override fun component2(): (T) -> Unit = { value = it }
+}
+
+/**
+ * Default timeout for the cold-start self-heal one-shot observation.
+ *
+ * On platforms with async cache loading (WASM WebCrypto), `getDirect` may
+ * return the default before decryption completes. The self-heal observer
+ * waits up to this duration for `getFlow().first()` to deliver the persisted
+ * value, then calls [KSafeComposeState.updateFromStorage].
+ */
+@PublishedApi
+internal const val SELF_HEAL_TIMEOUT_MS: Long = 5_000L
+
+/**
+ * Single source of truth for the persistent-state observation lifecycle.
+ *
+ * Two modes — selected by [observeExternalChanges]:
+ *  - `true` → indefinite [Flow.collect], every emission is propagated via
+ *    [KSafeComposeState.updateFromFlow] (does not respect the user-write
+ *    guard, so external writes always reflect).
+ *  - `false` + [coldStart] → one-shot `flow.first()` with a [selfHealTimeoutMs]
+ *    deadline, propagated via [KSafeComposeState.updateFromStorage] (respects
+ *    the user-write guard so a pending self-heal cannot clobber a value the
+ *    user has since set).
+ *  - `false` + warm cache → returns immediately. No observation needed.
+ *
+ * Designed as a `suspend fun` so the caller picks the launching scope:
+ *  - `mutableStateOf` (property-delegate path) launches it on the user-supplied
+ *    `scope` when present, else on a detached fallback (preserves shipped behavior).
+ *  - `rememberKSafeState` runs it inside a `LaunchedEffect`, where the implicit
+ *    coroutine is owned by the composition. Leaving the composition cancels
+ *    the observation; changing `key` or `observeExternalChanges` cancels and
+ *    re-launches automatically.
+ */
+@PublishedApi
+internal suspend fun <T> KSafeComposeState<T>.observeFromStorage(
+    flow: Flow<T>,
+    coldStart: Boolean,
+    observeExternalChanges: Boolean,
+    selfHealTimeoutMs: Long = SELF_HEAL_TIMEOUT_MS,
+) {
+    when {
+        observeExternalChanges -> flow.collect { updateFromFlow(it) }
+        coldStart -> withTimeoutOrNull(selfHealTimeoutMs) { flow.first() }
+            ?.let { updateFromStorage(it) }
+    }
 }
 
 
@@ -194,25 +244,19 @@ inline fun <reified T> KSafe.mutableStateOf(
             policy = policy
         )
 
-        if (scope != null) {
-            // Continuous flow observation: the state automatically reflects
-            // external changes (e.g., from another screen or background writes).
-            scope.launch {
-                ksafe.getFlow<T>(actualKey, defaultValue)
-                    .collect { composeState.updateFromFlow(it) }
-            }
-        } else if (initialValue == defaultValue) {
-            // Self-heal: on platforms with async cache loading (WASM WebCrypto),
-            // getDirect may return the default before decryption completes.
-            // getFlow's first emission already carries the persisted (and, for
-            // encrypted entries, decrypted) value — take it and update.
-            // updateFromStorage is a no-op once the user has written, so a
-            // redundant idempotent set on platforms where the cache was already
-            // warm is harmless.
-            CoroutineScope(Dispatchers.Default).launch {
-                withTimeoutOrNull(5_000L) {
-                    ksafe.getFlow<T>(actualKey, defaultValue).first()
-                }?.let { composeState.updateFromStorage(it) }
+        val coldStart = (initialValue == defaultValue)
+        if (scope != null || coldStart) {
+            // (b): when the caller supplies `scope`, we honor it for both live
+            // observation and the cold-start self-heal. The detached fallback
+            // is reached only when no scope was provided AND the cache started
+            // cold — i.e. the same set of cases as before the refactor.
+            val healScope = scope ?: CoroutineScope(Dispatchers.Default)
+            healScope.launch {
+                composeState.observeFromStorage(
+                    flow = ksafe.getFlow<T>(actualKey, defaultValue),
+                    coldStart = coldStart,
+                    observeExternalChanges = (scope != null),
+                )
             }
         }
 
@@ -249,3 +293,157 @@ inline fun <reified T> KSafe.mutableStateOf(
 ): PropertyDelegateProvider<Any?, ReadWriteProperty<Any?, T>> =
     mutableStateOf(defaultValue, key, mode = if (encrypted) KSafeWriteMode.Encrypted() else KSafeWriteMode.Plain, policy = policy)
 
+// ── Composable-scoped state ─────────────────────────────────────────────────
+
+/**
+ * Composable-scoped persistent state — the [androidx.compose.runtime.saveable.rememberSaveable]
+ * analogue for KSafe.
+ *
+ * Returns a property-delegate provider that, when used with `by` inside a
+ * `@Composable` function body, materialises a [MutableState] backed by KSafe
+ * storage. The state survives recomposition via [remember] and is tied to the
+ * composition's lifecycle. Reads and writes complete synchronously through
+ * KSafe's hot cache; the underlying disk write is coalesced and batched.
+ *
+ * ## API shape
+ * The factory itself is **not** `@Composable` — it just builds a provider.
+ * The provider's `provideDelegate` IS `@Composable`, which is why this
+ * function must be used with `by` inside a composable body, and why the
+ * property name can be reflected as the storage key when [key] is omitted
+ * (mirroring [mutableStateOf]).
+ *
+ * ## Differences from the [mutableStateOf] property delegate
+ *  - **Composable-scoped lifetime.** Self-heal and (optional) live observation
+ *    run on the [LaunchedEffect] coroutine, so leaving the composition cancels
+ *    them automatically. No detached coroutines are spawned, which makes this
+ *    helper safe to call at recomposition rate.
+ *  - **Plain by default.** Compose state is typically UI ephemera (selected
+ *    tab, scroll position) where encryption is overkill. Pass
+ *    `mode = KSafeWriteMode.Encrypted(...)` to opt in.
+ *
+ * ## vs. `rememberSaveable`
+ *  - `rememberSaveable` survives configuration changes and (via the saveable
+ *    state registry) process death for [Bundle][android.os.Bundle]-friendly
+ *    types on Android. State is cleared on cold app launch.
+ *  - `rememberKSafeState` survives **app restarts**, on every supported target
+ *    (Android, iOS, JVM, Web), with optional encryption.
+ *
+ * ## Example
+ * ```kotlin
+ * @Composable
+ * fun TabbedScreen(ksafe: KSafe) {
+ *     // Auto-key — storage key resolves to the property name "currentTab".
+ *     var currentTab by ksafe.rememberKSafeState(Tab.Home)
+ *
+ *     // Explicit key — useful for namespaced or non-property-name keys.
+ *     var draft by ksafe.rememberKSafeState("", key = "screen.draft")
+ * }
+ * ```
+ *
+ * @param defaultValue Returned when the key is absent at first composition.
+ * @param key Storage key. Optional — when omitted the property name from the
+ *   `by` declaration is used (matching [mutableStateOf]).
+ * @param mode Write mode. Defaults to [KSafeWriteMode.Plain].
+ * @param observeExternalChanges When `true`, external writes to the key (from
+ *   another screen, ViewModel, or KSafe instance) propagate into this state.
+ *   When `false` (default), only a one-shot cold-start self-heal runs.
+ * @param policy Snapshot mutation policy. Affects both recomposition and
+ *   persistence — KSafe persists only when `!policy.equivalent(old, new)`.
+ */
+inline fun <reified T> KSafe.rememberKSafeState(
+    defaultValue: T,
+    key: String? = null,
+    mode: KSafeWriteMode = KSafeWriteMode.Plain,
+    observeExternalChanges: Boolean = false,
+    policy: SnapshotMutationPolicy<T> = structuralEqualityPolicy(),
+): KSafeComposeStateProvider<T> {
+    val ksafe = this
+    // Reified-T resolution happens here so callers don't need to pass the
+    // serializer. The provider captures lambdas that already know the type
+    // tag; the actual key is resolved inside `provideDelegate` once we have
+    // the property metadata.
+    return KSafeComposeStateProvider(
+        explicitKey = key,
+        defaultValue = defaultValue,
+        observeExternalChanges = observeExternalChanges,
+        policy = policy,
+        readInitial = { resolvedKey -> ksafe.getDirect<T>(resolvedKey, defaultValue) },
+        writeValue = { resolvedKey, newValue -> ksafe.putDirect<T>(resolvedKey, newValue, mode) },
+        flowProvider = { resolvedKey -> ksafe.getFlow<T>(resolvedKey, defaultValue) },
+    )
+}
+
+/**
+ * Provider returned by [rememberKSafeState]. The `provideDelegate` operator is
+ * `@Composable`, which is what lets the property name fall through to the
+ * storage key when `by` is used inside a composable body.
+ *
+ * The class is public so it can appear in the inline factory's return type,
+ * but the constructor is `@PublishedApi internal` — external code cannot
+ * construct this directly; only the inline `rememberKSafeState` factory can.
+ */
+class KSafeComposeStateProvider<T> @PublishedApi internal constructor(
+    private val explicitKey: String?,
+    private val defaultValue: T,
+    private val observeExternalChanges: Boolean,
+    private val policy: SnapshotMutationPolicy<T>,
+    private val readInitial: (resolvedKey: String) -> T,
+    private val writeValue: (resolvedKey: String, T) -> Unit,
+    private val flowProvider: (resolvedKey: String) -> Flow<T>,
+) {
+    @Composable
+    operator fun provideDelegate(
+        thisRef: Any?,
+        property: KProperty<*>,
+    ): KSafeComposeState<T> {
+        val key = explicitKey ?: property.name
+        return rememberKSafeStateImpl(
+            key = key,
+            defaultValue = defaultValue,
+            observeExternalChanges = observeExternalChanges,
+            policy = policy,
+            readInitial = { readInitial(key) },
+            writeValue = { writeValue(key, it) },
+            flowProvider = { flowProvider(key) },
+        )
+    }
+}
+
+@PublishedApi
+@Composable
+internal fun <T> rememberKSafeStateImpl(
+    key: String,
+    defaultValue: T,
+    observeExternalChanges: Boolean,
+    policy: SnapshotMutationPolicy<T>,
+    readInitial: () -> T,
+    writeValue: (T) -> Unit,
+    flowProvider: () -> Flow<T>,
+): KSafeComposeState<T> {
+    val state = remember(key) {
+        KSafeComposeState(
+            initialValue = readInitial(),
+            valueSaver = { newValue ->
+                try {
+                    writeValue(newValue)
+                } catch (e: Exception) {
+                    println("KSafe: Failed to save value for key '$key': ${e.message}")
+                }
+            },
+            policy = policy,
+        )
+    }
+
+    // The LaunchedEffect coroutine is owned by the composition: leaving the
+    // composition cancels it; changing `key` or `observeExternalChanges`
+    // cancels and re-launches.
+    LaunchedEffect(key, observeExternalChanges) {
+        state.observeFromStorage(
+            flow = flowProvider(),
+            coldStart = (state.value == defaultValue),
+            observeExternalChanges = observeExternalChanges,
+        )
+    }
+
+    return state
+}

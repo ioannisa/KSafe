@@ -61,3 +61,7 @@ vanniktech-mavenPublish = { id = "com.vanniktech.maven.publish", version = "0.36
 # Serialization
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }
+
+# Compose compiler plugin (Kotlin 2.0+ built-in). Bound to the Kotlin version
+# so the bytecode emitted by @Composable functions matches the consumer Kotlin.
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
