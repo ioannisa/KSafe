@@ -79,11 +79,10 @@ internal class AndroidKeystoreEncryption(
             throw IllegalStateException("KSafe: Cannot access Keystore key - device is locked.", e)
         }
 
-        val iv = cipher.iv
-        val ciphertext = cipher.doFinal(data)
-
-        // Return IV prepended to ciphertext
-        return iv + ciphertext
+        val output = ByteArray(GCM_IV_LENGTH + cipher.getOutputSize(data.size))
+        System.arraycopy(cipher.iv, 0, output, 0, GCM_IV_LENGTH)
+        cipher.doFinal(data, 0, data.size, output, GCM_IV_LENGTH)
+        return output
     }
 
     override fun decrypt(identifier: String, data: ByteArray): ByteArray {
@@ -103,11 +102,8 @@ internal class AndroidKeystoreEncryption(
         val secretKey = getExistingSecretKey(identifier)
         val cipher = Cipher.getInstance(TRANSFORMATION)
 
-        // Extract IV (first 12 bytes) and ciphertext
-        val iv = data.sliceArray(0 until GCM_IV_LENGTH)
-        val ciphertext = data.sliceArray(GCM_IV_LENGTH until data.size)
-
-        val spec = GCMParameterSpec(GCM_TAG_LENGTH, iv)
+        // Read IV and ciphertext directly from `data` via offset/length
+        val spec = GCMParameterSpec(GCM_TAG_LENGTH, data, 0, GCM_IV_LENGTH)
 
         try {
             cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)
@@ -115,7 +111,7 @@ internal class AndroidKeystoreEncryption(
             throw IllegalStateException("KSafe: Cannot access Keystore key - device is locked.", e)
         }
 
-        return cipher.doFinal(ciphertext)
+        return cipher.doFinal(data, GCM_IV_LENGTH, data.size - GCM_IV_LENGTH)
     }
 
     override fun deleteKey(identifier: String) {
@@ -127,11 +123,9 @@ internal class AndroidKeystoreEncryption(
             keyCache.remove(identifier)
 
             try {
-                if (keyStore.containsAlias(identifier)) {
-                    keyStore.deleteEntry(identifier)
-                }
+                keyStore.deleteEntry(identifier)
             } catch (_: Exception) {
-                // Silently ignore - key may not exist or keystore may be unavailable
+                // Silently ignore - keystore may be unavailable
             }
         }
     }
@@ -152,11 +146,9 @@ internal class AndroidKeystoreEncryption(
             // Double-check after acquiring lock
             keyCache[identifier]?.let { return it }
 
-            if (!keyStore.containsAlias(identifier)) {
-                throw IllegalStateException("KSafe: No encryption key found for identifier: $identifier")
-            }
-
-            val key = keyStore.getKey(identifier, null) as SecretKey
+            // `getKey` returns null for unknown aliases — single IPC
+            val key = (keyStore.getKey(identifier, null) as? SecretKey)
+                ?: throw IllegalStateException("KSafe: No encryption key found for identifier: $identifier")
             keyCache[identifier] = key
             return key
         }
@@ -240,11 +232,9 @@ internal class AndroidKeystoreEncryption(
             // Double-check after acquiring lock
             keyCache[identifier]?.let { return it }
 
-            val key = if (keyStore.containsAlias(identifier)) {
-                keyStore.getKey(identifier, null) as SecretKey
-            } else {
-                generateNewKey(identifier, hardwareIsolated, requireUnlockedDevice)
-            }
+            // `getKey` returns null when the alias is absent — one IPC call
+            val key = (keyStore.getKey(identifier, null) as? SecretKey)
+                ?: generateNewKey(identifier, hardwareIsolated, requireUnlockedDevice)
 
             // Cache the key for future use
             keyCache[identifier] = key

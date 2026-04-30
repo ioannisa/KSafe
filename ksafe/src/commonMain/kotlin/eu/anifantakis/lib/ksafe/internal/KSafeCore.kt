@@ -10,13 +10,18 @@ import eu.anifantakis.lib.ksafe.toProtection
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.KSerializer
@@ -152,6 +157,15 @@ internal class KSafeCore(
 
     private val writeCoalesceWindowMs = 16L   // ~1 frame at 60 fps
     private val maxBatchSize = 50
+
+    /**
+     * Upper bound on concurrent in-flight encrypt calls inside [processBatch].
+     * Hardware-keystore engines (Android/iOS) spend most of an encrypt on IPC to
+     * the keystore daemon, so overlapping a handful of requests yields a real
+     * pipeline win. The cap prevents flooding Binder / Keychain when batches are
+     * large and keeps software engines from over-subscribing the dispatcher.
+     */
+    private val maxParallelEncrypts = 8
 
     init {
         startWriteConsumer()
@@ -420,8 +434,12 @@ internal class KSafeCore(
      */
     @PublishedApi
     internal fun detectProtection(key: String): KSafeProtection? {
+        // 2.0 metadata is authoritative — including the "NONE" literal meaning
+        // explicitly unencrypted. Only fall through to the legacy heuristic when
+        // no 2.0 metadata exists at all (purely 1.x-written keys loaded from disk
+        // and never re-written through 2.0).
         val meta = protectionMap[key]
-        KeySafeMetadataManager.parseProtection(meta)?.let { return it }
+        if (meta != null) return KeySafeMetadataManager.parseProtection(meta)
         return if (memoryCache.containsKey(legacyEncryptedRawKey(key))) KSafeProtection.DEFAULT else null
     }
 
@@ -457,16 +475,35 @@ internal class KSafeCore(
         val aliasesToDelete = mutableListOf<String>()
         val encryptedCiphertext = mutableMapOf<String, ByteArray>()
 
-        // Encrypt in background before hitting the storage edit.
+        // Dedupe by userKey: when a caller issues multiple `put`s for the same
+        // key inside one coalesce window, only the latest write needs to be
+        // encrypted. The downstream loop still emits a StorageOp for every
+        // duplicate (so legacy-cleanup deletes still fire), and the storage
+        // backend resolves duplicates by last-applied-wins — which matches the
+        // previous serial-overwrite semantics.
+        val latestEncryptedByKey = LinkedHashMap<String, PendingWrite.Encrypted>()
         for (op in batch) {
-            if (op is PendingWrite.Encrypted) {
-                val ciphertext = engine.encryptSuspend(
-                    identifier = op.alias,
-                    data = op.jsonString.encodeToByteArray(),
-                    hardwareIsolated = op.protection == KSafeProtection.HARDWARE_ISOLATED,
-                    requireUnlockedDevice = op.requireUnlockedDevice,
-                )
-                encryptedCiphertext[op.userKey] = ciphertext
+            if (op is PendingWrite.Encrypted) latestEncryptedByKey[op.userKey] = op
+        }
+
+        // Encrypt the deduped set concurrently. Each entry has a distinct
+        // identifier, so the per-alias locks inside engines never contend, and
+        // the Keystore IPC pipelines instead of running serially.
+        if (latestEncryptedByKey.isNotEmpty()) {
+            val gate = Semaphore(maxParallelEncrypts)
+            coroutineScope {
+                latestEncryptedByKey.values.map { op ->
+                    async {
+                        gate.withPermit {
+                            op.userKey to engine.encryptSuspend(
+                                identifier = op.alias,
+                                data = op.jsonString.encodeToByteArray(),
+                                hardwareIsolated = op.protection == KSafeProtection.HARDWARE_ISOLATED,
+                                requireUnlockedDevice = op.requireUnlockedDevice,
+                            )
+                        }
+                    }
+                }.awaitAll().forEach { (k, ct) -> encryptedCiphertext[k] = ct }
             }
         }
 
