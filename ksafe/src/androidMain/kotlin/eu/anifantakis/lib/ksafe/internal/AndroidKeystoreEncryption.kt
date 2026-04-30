@@ -27,9 +27,15 @@ internal class AndroidKeystoreEncryption(
 ) : KSafeEncryption {
 
     companion object {
-        private const val ANDROID_KEYSTORE = "AndroidKeyStore"
+        private const val KEYSTORE_PROVIDER = "AndroidKeyStore"
         private const val GCM_TAG_LENGTH = 128
         private const val GCM_IV_LENGTH = 12
+
+        private const val KEY_ALGORITHM = KeyProperties.KEY_ALGORITHM_AES
+        private const val BLOCK_MODE =  KeyProperties.BLOCK_MODE_GCM
+        private const val ENCRYPTION_PADDING = KeyProperties.ENCRYPTION_PADDING_NONE
+        private const val TRANSFORMATION = "$KEY_ALGORITHM/$BLOCK_MODE/$ENCRYPTION_PADDING"
+        private val keyStore by lazy { KeyStore.getInstance(KEYSTORE_PROVIDER).apply { load(null) } }
     }
 
     /**
@@ -65,7 +71,7 @@ internal class AndroidKeystoreEncryption(
         requireUnlockedDevice: Boolean?
     ): ByteArray {
         val secretKey = getOrCreateSecretKey(identifier, hardwareIsolated, requireUnlockedDevice)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        val cipher = Cipher.getInstance(TRANSFORMATION)
 
         try {
             cipher.init(Cipher.ENCRYPT_MODE, secretKey)
@@ -95,7 +101,7 @@ internal class AndroidKeystoreEncryption(
     private fun decryptWithKey(identifier: String, data: ByteArray): ByteArray {
         // Key was created with its accessibility setting - just retrieve it
         val secretKey = getExistingSecretKey(identifier)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        val cipher = Cipher.getInstance(TRANSFORMATION)
 
         // Extract IV (first 12 bytes) and ciphertext
         val iv = data.sliceArray(0 until GCM_IV_LENGTH)
@@ -121,7 +127,6 @@ internal class AndroidKeystoreEncryption(
             keyCache.remove(identifier)
 
             try {
-                val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
                 if (keyStore.containsAlias(identifier)) {
                     keyStore.deleteEntry(identifier)
                 }
@@ -146,8 +151,6 @@ internal class AndroidKeystoreEncryption(
         synchronized(lockFor(identifier)) {
             // Double-check after acquiring lock
             keyCache[identifier]?.let { return it }
-
-            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
 
             if (!keyStore.containsAlias(identifier)) {
                 throw IllegalStateException("KSafe: No encryption key found for identifier: $identifier")
@@ -175,16 +178,16 @@ internal class AndroidKeystoreEncryption(
         requireUnlockedDevice: Boolean?
     ): SecretKey {
         val keyGenerator = KeyGenerator.getInstance(
-            KeyProperties.KEY_ALGORITHM_AES,
-            ANDROID_KEYSTORE
+            KEY_ALGORITHM,
+            KEYSTORE_PROVIDER
         )
 
         val builder = KeyGenParameterSpec.Builder(
             identifier,
             KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
         )
-            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setBlockModes(BLOCK_MODE)
+            .setEncryptionPaddings(ENCRYPTION_PADDING)
             .setKeySize(config.keySize)
 
         val resolvedRequireUnlockedDevice = requireUnlockedDevice ?: config.requireUnlockedDevice
@@ -236,8 +239,6 @@ internal class AndroidKeystoreEncryption(
         synchronized(lockFor(identifier)) {
             // Double-check after acquiring lock
             keyCache[identifier]?.let { return it }
-
-            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
 
             val key = if (keyStore.containsAlias(identifier)) {
                 keyStore.getKey(identifier, null) as SecretKey
