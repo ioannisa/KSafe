@@ -69,6 +69,8 @@ KSafe's defining performance trait is that synchronous reads (`getDirect`) hit a
 
 **Writes (`putDirect`):** updates the memory cache **immediately** so subsequent reads see the new value. The write itself is queued onto an unbounded `Channel<PendingWrite>` consumed by a single coalescer coroutine that batches operations within a 16 ms window before calling `storage.applyBatch(ops)`. This collapses bursty writes (e.g. a slider moving) into one DataStore transaction.
 
+**Inside the batch, encryption is parallelised.** `processBatch` deduplicates `PendingWrite.Encrypted` entries by user-key (so multiple writes to the same key in one window only encrypt the latest value), then runs the deduplicated encrypts concurrently inside a `coroutineScope { … }` with a `Semaphore(8)` cap. Hardware-keystore IPC pipelines instead of running serially — the bound prevents flooding Binder / Keychain on large batches but allows enough overlap to mask per-call IPC latency. The downstream `StorageOp` builder still iterates the original batch in order, preserving last-applied-wins semantics and legacy-cleanup deletes for duplicate keys. The visible effect: `ENCRYPTED` memory policy adds essentially no write overhead vs `PLAIN_TEXT` (was ~37% in 2.0.0; collapsed to single-digit percent thereafter).
+
 **Cold-start safety.** If `getDirect` is called before the background preload finishes, it falls back to a one-shot blocking read so the value is correct. After that, the cache is warm and all reads are instant.
 
 **Suspend variants exist** (`get`, `put`) for cases where the consumer wants to await the disk flush — payments, critical writes, or coroutine-context call sites that don't need the optimistic-write semantics.

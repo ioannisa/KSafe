@@ -4,446 +4,102 @@ All notable changes to KSafe will be documented in this file.
 
 ## [2.0.0] - 2026-04-29
 
-Version 2.0.0 brings major upgrades with one major refactor and the support for macOS and Kotlin JS, plus the separation of the Biometrics functionality into a separate and independent module.
-
-#### Features Split:
-* Addition of Kotlin JS: `2.0.0-RC1`
-* Biometrics on its own module: `2.0.0-RC1`'
-* Flows + Compose upgrades: See `2.0.0-RC2`
-* Addition of MacOS: `2.0.0` _(this release)_
-
-Other than the features found in `2.0.0-RC1` and `2.0.0-RC2`, the version `2.0.0` adds **native macOS** as a first-class target across all three modules. The work is structurally a refactor — no behaviour change for existing iOS or Android consumers — plus one critical destructive-data-loss fix on the Apple-platform startup path, one real bug fix on the macOS side, and a cluster of doc updates.
+Major release: KMP refactor + new platforms (macOS, Kotlin JS) + biometrics extracted into its own module. Cumulative of 2.0.0-RC1, 2.0.0-RC2, and the 2.0.0 release work below.
 
 ### Added
 
-#### Native macOS targets — `:ksafe`, `:ksafe-compose`, `:ksafe-biometrics`
-
-Every Apple-platform module now publishes `macosX64` + `macosArm64` artifacts alongside `iosX64`/`iosArm64`/`iosSimulatorArm64`. The encryption path is **the same code** as iOS — `Keychain Services` for symmetric key storage, `CryptoKit` for AES-256-GCM, `kSecAttrTokenIDSecureEnclave` for hardware-isolated keys when an SE is present (Apple Silicon and T2-equipped Macs). On Intel Macs without a T2 chip, SE key creation throws and the existing automatic-fallback in `getOrCreateKeychainKey` quietly downgrades to plain Keychain storage — same fallback that already handled iPhone 5/5C edge cases.
-
-DataStore now backs the on-disk store on macOS too (DataStore 1.2.x ships native macOS variants); the default storage location is `NSApplicationSupportDirectory`, which on macOS resolves to `~/Library/Application Support/<bundle-id>/` for sandboxed apps and `~/Library/Application Support/` for unsandboxed binaries.
-
-Source-set layout:
-
-```
-ksafe/src/
-├── commonMain/        ← unchanged
-├── androidMain/       ← unchanged
-├── appleMain/         ← was iosMain — now shared by iOS + macOS
-│   ├── KSafe.apple.kt                       (was KSafe.ios.kt)
-│   ├── internal/AppleKeychainEncryption.kt  (was IosKeychainEncryption.kt)
-│   ├── internal/SecurityChecker.apple.kt    (was SecurityChecker.ios.kt)
-│   ├── internal/KSafeConcurrent.apple.kt    (was KSafeConcurrent.ios.kt)
-│   ├── internal/KSafeSecureRandom.apple.kt  (was KSafeSecureRandom.ios.kt)
-│   └── internal/KeychainOrphanCleanup.kt    (unchanged location)
-├── iosTest/           ← unchanged — iOS-sandbox-specific tests stay here
-└── macosTest/         ← NEW — 73 macOS-specific tests
-```
-
-The default Kotlin Multiplatform hierarchy template (`applyDefaultHierarchyTemplate()`) wires `appleMain` as the parent of both `iosMain` and `macosMain`. No iOS-only code uses UIKit / `UIDevice` / `UIApplication` — all the iOS implementation was already pure Foundation + Security + CoreFoundation + CryptoKit, so the move to `appleMain` was mechanical.
-
-#### `SecurityChecker` — macOS short-circuit
-
-`SecurityChecker.isDeviceRooted()` previously checked for the presence of `/bin/sh`, `/usr/bin/ssh`, `/etc/apt`, and similar paths on the host. Every one of those exists on every Mac (Homebrew installs an `/etc/apt`-shaped tree, `/bin/sh` is part of the macOS base install). Without this fix the appleMain migration would have flipped every Mac into "rooted device" status, and any consumer using `KSafeSecurityPolicy.Strict` would have refused to operate.
-
-The check now early-returns `false` on macOS using `Platform.osFamily == OsFamily.MACOSX`, which compiles to a constant per-target. iOS behaviour is unchanged — the jailbreak heuristics still fire there. Callers wanting stronger guarantees on macOS hosts should plug in their own `KSafeSecurityPolicy`.
-
-#### `:ksafe` — `macosTest` source set with 73 tests
-
-New `ksafe/src/macosTest/` directory mirrors the value of `iosTest` for macOS hosts:
-
-| File | Tests | Coverage |
-|---|---|---|
-| `MacosTestPaths.kt` | — | Helper: unique temp dirs under `NSTemporaryDirectory()` so nothing leaks into `~/Library/Application Support/` on a dev's real Mac |
-| `MacosKSafeTest.kt` | 62 | Full common `KSafeTest` suite (CRUD, lifecycle, Flow, serialization, observability) running through the appleMain code path on a real macOS host |
-| `MacosSecurityCheckerTest.kt` | 4 | The macOS short-circuit above; sanity-checks that `/bin/sh` does exist and that `isDeviceRooted()` ignores it |
-| `MacosStorageLocationTest.kt` | 4 | `directory` override routing; missing-parent directory creation; legacy-migration safety; persistence across instance close/reopen |
-| `MacosEncryptionProofTest.kt` | 2 | Encrypted writes never land plaintext on disk; `KSafeWriteMode.Plain` does (negative control) |
-| `MacosNullFilenameTest.kt` | 1 | `KSafe(fileName = null)` produces a working store with the default basename |
-
-All hygiene: every test routes through a `NSTemporaryDirectory()` subdir and `FakeEncryption` (the existing common-test XOR engine) — no Keychain calls hit the dev's login keychain, no system password prompts trigger, no files leak into the user's home directory.
-
-iOS Simulator suite (`iosSimulatorArm64Test`) re-ran clean: 127 tests, 0 regressions.
+- **Native macOS targets** across all three modules (`:ksafe`, `:ksafe-compose`, `:ksafe-biometrics`). `macosX64` + `macosArm64` artifacts use the same Keychain + CryptoKit + Secure Enclave path as iOS via a shared `appleMain` source set; DataStore-backed on-disk store at `NSApplicationSupportDirectory`. Intel Macs without a T2 chip fall back to plain Keychain storage automatically.
+- **`SecurityChecker` macOS short-circuit.** `isDeviceRooted()` early-returns `false` on macOS; the iOS jailbreak heuristics (`/bin/sh`, `/etc/apt`, etc.) would have flagged every Mac as rooted otherwise.
+- **`macosTest` source set with 73 tests** mirroring `iosTest`: full common `KSafeTest` suite + macOS-specific coverage for storage location, security checker, encryption proof, and null-filename handling. All hygiene-isolated via `NSTemporaryDirectory()` + `FakeEncryption`.
 
 ### Fixed
 
-#### Apple-platform Secure Enclave key destruction during 1.x → 2.0 migration *(critical, latent in 2.0.0-RC1 and 2.0.0-RC2)*
-
-A startup-ordering bug in [`KSafeCore.startBackgroundCollector`][KSafeCore.kt] could permanently destroy Secure Enclave–wrapped data when an app upgraded **directly** from 1.8.x to 2.0.0. The destructive path:
-
-1. iOS factory in [`KSafe.apple.kt`][KSafe.apple.kt] resolves the new `NSApplicationSupportDirectory` path and detects the legacy file in `NSDocumentDirectory`. It calls `NSFileManager.moveItemAtPath` to relocate it.
-2. `KSafeCore` constructor immediately launches its background collector, which (pre-fix) called the platform's `migrateAccessPolicy` lambda *before* subscribing to `KSafePlatformStorage.snapshotFlow`.
-3. On Apple platforms `migrateAccessPolicy = cleanupOrphanedKeychainEntries`. That function reads `storage.snapshot()` to compute the live key set. If DataStore had not yet observed the just-moved file (a real-device timing race), the snapshot was empty.
-4. Empty snapshot ⇒ empty `validKeys` ⇒ every Keychain entry scoped to KSafe was treated as orphaned ⇒ `engine.deleteKeySuspend(...)` was called for each.
-5. `IosKeychainEncryption.deleteKey` *unconditionally* removes the plain key, the SE-wrapped generic-password entry, **and the Secure Enclave EC private key**. The SE never exports private keys, so once the EC private key is gone the wrapped AES key cannot be unwrapped — the ciphertext on disk is permanently undecryptable. Downgrading to 1.8.x doesn't recover the data either, because the path migration moved the file out of `NSDocumentDirectory` (where 1.8.x looks for it).
-
-Why it was hard to spot: the failure depended on real-device timing between `moveItemAtPath` and DataStore's first read. CI tests passed because there was no migration in the test environment. The 1.8.1 → 2.0.0-RC1 → 2.0.0-RC2 path also worked, because RC1's first launch happened to win the race more often, and once RC1 had loaded the file successfully the data was safe for any subsequent upgrade.
-
-**The fix** ([`KSafeCore.kt:223–262`][KSafeCore.kt]): `startBackgroundCollector` now subscribes to `snapshotFlow` first and only invokes `migrateAccessPolicy()` and `cleanupOrphanedCiphertext()` *after* the first emission has populated the cache. By then DataStore has confirmed its initial read, so the sweep sees the correct live key set.
-
-**Defence in depth** ([`KeychainOrphanCleanup.kt:106-147`][KeychainOrphanCleanup.kt]): the Keychain sweep now refuses to delete anything when the DataStore snapshot is empty AND the Keychain returned scoped entries. A populated Keychain alongside an empty DataStore is far more likely to mean "we have a partial view of storage" than "the user genuinely cleared everything but left Keychain residue", and the cost of the wrong call is irreversible. A log message points the user at `KSafe.clearAll()` if they actually intended a full wipe.
-
-**Regression coverage**: a new common-test [`KSafeCoreStartupOrderingTest`][KSafeCoreStartupOrderingTest.kt] constructs `KSafeCore` directly with a fake `KSafePlatformStorage` that records call order, then asserts that `migrateAccessPolicy` fires *after* the first `snapshotFlow` emission. The test runs on JVM, iOS Simulator and native macOS; if a future refactor flips the ordering back, this test fails with an explicit "REGRESSION:" message naming the bug.
-
-[KSafeCore.kt]: ksafe/src/commonMain/kotlin/eu/anifantakis/lib/ksafe/internal/KSafeCore.kt
-[KSafe.apple.kt]: ksafe/src/appleMain/kotlin/eu/anifantakis/lib/ksafe/KSafe.apple.kt
-[KeychainOrphanCleanup.kt]: ksafe/src/appleMain/kotlin/eu/anifantakis/lib/ksafe/internal/KeychainOrphanCleanup.kt
-[KSafeCoreStartupOrderingTest.kt]: ksafe/src/jvmTest/kotlin/eu/anifantakis/lib/ksafe/KSafeCoreStartupOrderingTest.kt
+- **Apple-platform Secure Enclave key destruction during 1.x → 2.0 migration** *(critical, latent in 2.0.0-RC1 and 2.0.0-RC2)*. A startup-ordering race could let `cleanupOrphanedKeychainEntries` run against an empty DataStore snapshot (between the `NSDocumentDirectory` → `NSApplicationSupportDirectory` file move and DataStore's first read) and treat every Keychain entry as orphaned, irreversibly destroying Secure Enclave EC private keys. Fix in `KSafeCore.startBackgroundCollector`: subscribe to `snapshotFlow` first and only invoke `migrateAccessPolicy()` after the first emission. Defence-in-depth in `KeychainOrphanCleanup`: refuse to delete when the DataStore snapshot is empty AND the Keychain returned scoped entries. New regression test [`KSafeCoreStartupOrderingTest`][KSafeCoreStartupOrderingTest.kt] pins both invariants.
 
 ### Changed
 
-#### `IosKeychainEncryption` → `AppleKeychainEncryption`
+- **`IosKeychainEncryption` → `AppleKeychainEncryption`** (and surrounding `Ios*` → `Apple*` renames) to reflect shared use by iOS + macOS. `@PublishedApi internal`, but explicit references in consumer code may need updating.
+- **macOS Keychain access prompt — doc-only.** Factory KDoc now flags that unsandboxed Mac apps get a system password prompt on first Keychain access; suppressed by signing with a Keychain access group entitlement.
 
-The internal Keychain-encryption class was renamed from `IosKeychainEncryption` to `AppleKeychainEncryption` to reflect that it now serves both iOS and macOS. The class is `@PublishedApi internal`, so it does not appear in any consumer source — but it is technically reachable from inline functions and could appear in stack traces or compiled bytecode of consumers using the test-engine constructor. If you have any code that names the class explicitly, rename the reference.
+### Performance
 
-The accompanying file moves use `git mv`, so blame and history are preserved.
-
-#### macOS Keychain access prompt — documentation only
-
-The factory KDoc on `KSafe(...)` now flags the macOS-specific behaviour: unsandboxed Mac apps that hit the Keychain for the first time get a system password prompt (*"…wants to use the 'login' keychain"*). To suppress that, sign your app with a Keychain access group entitlement. Pinning KSafe to a specific access group is on the roadmap; today it uses the default access group.
+- **Parallel encryption inside `KSafeCore.processBatch`.** Encrypted writes in a batch are now deduplicated by user-key and run concurrently inside a `coroutineScope { … }` with a `Semaphore(8)` cap. Hardware-keystore IPC pipelines instead of running serially; `ENCRYPTED` memory policy no longer pays a write-time penalty over `PLAIN_TEXT`.
+- **`KSafeCore.detectProtection` short-circuit.** Trusts 2.0 metadata authoritatively when present, skipping the legacy fallback for keys with a `protectionMap` entry. Saves one `String` allocation + one `ConcurrentHashMap.containsKey` per unencrypted read.
+- **`AndroidKeystoreEncryption` micro-optimisations.** Lazy companion-level `KeyStore` instance; zero-copy decrypt via offset-aware `GCMParameterSpec` + `Cipher.doFinal`; single-allocation encrypt buffer (writes IV+ciphertext into one `ByteArray`); collapsed `containsAlias`+`getKey` (and `containsAlias`+`deleteEntry`) into single IPC round-trips on the slow path; shared `TRANSFORMATION` constant composed from `KeyProperties` literals.
+- **Benchmark refresh.** Numbers in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) re-measured (median of 4 runs on a Galaxy S24).
 
 ### Validation
 
-- `:ksafe:macosArm64Test` — 118 tests pass (73 new macOS-specific + 45 common)
-- `:ksafe:iosSimulatorArm64Test` — 127 tests pass (no regression)
-- `:ksafe:linkDebugFrameworkMacosArm64`, `:ksafe-biometrics:linkDebugFrameworkMacosArm64`, `:ksafe-compose:compileKotlinMacosArm64` — all link cleanly
-- Tested end-to-end inside the [KSafeDemo](https://github.com/ioannisa/KSafeDemo) Compose Multiplatform app, which gained native macOS as a 6th target alongside Android, iOS, JVM/Desktop, wasmJs, and js — exercises the full appleMain code path through a real Compose UI
+- `:ksafe:macosArm64Test` — 118 tests (73 new + 45 common).
+- `:ksafe:iosSimulatorArm64Test` — 127 tests (no regression).
+- All instrumented Android tests pass on emulator + physical Galaxy S24: 64/64.
+- All `linkDebugFramework*` and cross-target compile tasks pass cleanly.
+- End-to-end exercised via the [KSafeDemo](https://github.com/ioannisa/KSafeDemo) Compose Multiplatform app on all six targets.
+
+[KSafeCoreStartupOrderingTest.kt]: ksafe/src/jvmTest/kotlin/eu/anifantakis/lib/ksafe/KSafeCoreStartupOrderingTest.kt
 
 ## [2.0.0-RC2] - 2026-04-28
 
-Cumulative delta over 2.0.0-RC1: four purely additive public APIs — `KSafe.close()`, `KSafe.asWritableFlow` (returning a `WritableKSafeFlow<T>`), `KSafe.rememberKSafeState` (Compose-body persistent state), and the internal `observeFromStorage` helper that unifies the persistence-observation lifecycle. Plus a hardening pass on `KSafeCore` that rethrows `CancellationException` from every previously-broad `catch (Throwable)` so `close()` shuts down silently without spurious "failed" logs. No breakage, no behavioural change for callers who do not opt in.
+Four additive public APIs — `KSafe.rememberKSafeState`, `KSafe.asWritableFlow`, `KSafe.close()`, and the internal `observeFromStorage` helper — plus a `CancellationException` hardening pass on `KSafeCore` and `:ksafe-compose`. No breakage, no behavioural change for callers who don't opt in.
 
 ### Added
 
-#### `:ksafe-compose` — `rememberKSafeState` composable
+- **`:ksafe-compose` — `rememberKSafeState` composable.** `rememberSaveable { mutableStateOf(…) }` ergonomics that *survive app restarts*, not just configuration changes. Uses the auto-key convention from `ksafe.mutableStateOf` (property name → storage key), defaults to `KSafeWriteMode.Plain`, no detached coroutines (observation lives inside `LaunchedEffect`). Targets the use case where state naturally lives in a composable and routing through a ViewModel would be overkill (bottom-tab index, scroll position, draft input, expanded/collapsed sections):
 
-New helper that brings the `rememberSaveable { mutableStateOf(...) }` ergonomics to KSafe — composable-body local state that **survives app restarts**, not just configuration changes. The factory itself is non-`@Composable`; it returns a `KSafeComposeStateProvider<T>` whose `provideDelegate` operator is `@Composable`, which is what lets the storage key fall through to the property name on the `var` declaration when no explicit key is passed (same auto-key convention as `ksafe.mutableStateOf`):
-
-```kotlin
-@Composable
-fun TabbedScreen(ksafe: KSafe) {
-    var currentlySelectedIndex by ksafe.rememberKSafeState(0)   // key = "currentlySelectedIndex"
-    var draftMessage by ksafe.rememberKSafeState("")            // key = "draftMessage"
-    var explicit by ksafe.rememberKSafeState("", key = "screen.draft")   // explicit when you want it
-
-    // All three survive process death, app reinstall (Android), and restart on every target.
-}
-```
-
-The use case the API is built around: **state that naturally lives in the composable, where routing through a ViewModel would be overkill.** Bottom-tab indexes, scroll positions, expanded/collapsed sections, draft form input, last-selected sort order, "show advanced settings" toggles — all of these typically end up in `remember { mutableStateOf(...) }` today and reset to the default on every cold launch, because building a `MainViewModel` + Koin wiring + `koinViewModel()` injection + flow observation is out of proportion with what the value actually does. `rememberKSafeState` collapses that whole pipeline to one line; the demo's `App.kt` switched its bottom-tab selection from `var currentScreen by remember { mutableStateOf(Screen.Storage) }` to `var currentScreen by ksafe.rememberKSafeState(Screen.Storage)` and got app-restart persistence for free, with no ViewModel introduced.
-
-State that genuinely *should* live in a ViewModel (because it's shared across screens, driven by business logic, or part of a domain model) still uses `ksafe.mutableStateOf` — the two APIs partition the space cleanly:
-
-| Use case                       | API                                                                |
-| ------------------------------ | ------------------------------------------------------------------ |
-| ViewModel / class property     | `var x by ksafe.mutableStateOf(default)` *(unchanged)*             |
-| Composable-body local state    | `var x by ksafe.rememberKSafeState(default)` *(new)*               |
-
-The materialised state is a real `MutableState<T>`, so `var x by …` triggers recomposition on writes. Reads come from the hot cache (synchronous); writes go through the existing batched/coalesced write path. The provider materialises the state inside `remember(key)`, so it survives recomposition and is disposed when the composition leaves. The self-heal coroutine and the optional `observeExternalChanges` collector both run inside a `LaunchedEffect(key, observeExternalChanges)`, so leaving the composition cancels them automatically. Changing `key` cancels the previous observation and re-launches with the new one. **No detached coroutines** — safe to call at recomposition rate.
-
-`mode` defaults to `KSafeWriteMode.Plain` (UI ephemera typically does not need encryption); pass `mode = KSafeWriteMode.Encrypted(...)` to opt in.
-
-The `:ksafe-compose` module now applies the Compose compiler plugin (`org.jetbrains.kotlin.plugin.compose`, bound to the project's Kotlin version) so that the `@Composable provideDelegate` codegen works. The published artifact's bytecode/klib is unchanged in shape; consumers do not need any new setup.
-
-#### Internal: `observeFromStorage` — single source of truth for state observation
-
-The previously-duplicated branch logic at `mutableStateOf`'s call site (live-collect when a `scope` was supplied; one-shot self-heal on a detached `Dispatchers.Default` scope otherwise) is now consolidated in a single `@PublishedApi internal suspend fun KSafeComposeState<T>.observeFromStorage(...)`. Both `mutableStateOf` and `rememberKSafeState` route through it. No public-API or behavioural change for `mutableStateOf` callers — the detached fallback is reached in exactly the same set of cases as before (no caller scope AND cache started cold).
-
-#### `KSafe.asWritableFlow` — observable + writable in one declaration
-
-New extension factory that returns a `WritableKSafeFlow<T>` — a cold `Flow<T>` you can also write to via `set(value)`. The flow side delegates to the underlying `KSafe.getFlow`, so collectors observe persisted changes from any writer (including external writes from other parts of the app); the write side calls `KSafe.putDirect` under the hood and respects the `KSafeWriteMode` you pass (defaults to `Encrypted()`, matching the property delegate `ksafe(...)` and `asMutableStateFlow`).
-
-The motivating case: previously, a repository that wanted to expose a single stored value as **both** an observable Flow and a writable handle had to declare two bindings to the same key —
-
-Let's say we have a flow that contains the device setting "day/night/device". Any number of observers might be observing it...
-
-Normally you'd have to declare two separate properties to cover the read and write sides:
-
-```kotlin
-val themeMode: Flow<ThemeMode> by ksafe.asFlow(ThemeMode.DEVICE, key = "themeMode")
-private var themeModeValue: ThemeMode by ksafe(ThemeMode.DEVICE, key = "themeMode")
-fun setThemeMode(mode: ThemeMode) { themeModeValue = mode }
-```
-
-— with the keys kept in sync manually. `asWritableFlow` collapses that into one declaration:
-
-```kotlin
-class SettingsRepository(ksafe: KSafe) {
-    val themeMode: WritableKSafeFlow<ThemeMode> by ksafe.asWritableFlow(ThemeMode.DEVICE)
-
-    fun setThemeMode(mode: ThemeMode) {
-        themeMode.set(mode)  // persists; collectors see it on next emission
-    }
-}
-```
-
-`WritableKSafeFlow<T> : Flow<T>` so any consumer that just needs to observe can take a `Flow<T>` parameter. The API is asymmetric on purpose: there is no synchronous getter, only collection through the flow. That keeps the contract identical on every platform — including web cold-start, where a synchronous read against an unwarmed cache would return the default rather than the persisted value.
-
-This sits alongside the existing flow-shape delegates with a clear division of labour:
-
-| API | Read | Write | Scope | Hot/Cold |
-|---|---|---|---|---|
-| `asFlow` | ✅ flow | — | none | cold |
-| `asStateFlow` | ✅ flow + `.value` | — | required | hot |
-| `asWritableFlow` *(new)* | ✅ flow | ✅ `set()` | none | cold |
-| `asMutableStateFlow` | ✅ flow + `.value` | ✅ `.value =` | required | hot |
-
-#### `KSafe.close()` — optional instance disposal
-
-New public method that releases the long-running coroutine infrastructure a `KSafe` instance owns. Calling it cancels the write-channel consumer, the snapshot collector, and — through a small refactor to how each platform factory constructs and owns the scope it hands to `PreferenceDataStoreFactory.create(...)` — the DataStore coroutine scope itself, including the file watcher, the write coordinator, and the cached-`Preferences` `MutableStateFlow`. On Android, `close()` additionally evicts the per-file entry from the process-static DataStore cache (only when this instance was the one that created the cache entry, so a `KSafe` sharing an existing entry does not pull state out from under another holder).
-
-Optional and almost always unnecessary. The dominant usage — one or a handful of `KSafe` singletons that live for the process lifetime — does not need it; the OS reclaims everything when the process exits, and pre-2.0 builds were operating under that implicit contract anyway. Call `close()` when you re-create `KSafe` mid-process:
-
-- **Account or profile switching** that changes the `fileName` and you want the previous instance fully released.
-- **Long-running JVM services** that construct a fresh instance per session, tenant, or request.
-- **Dev-time hot-reload** that rebuilds the DI graph and constructs new `KSafe`s on top of the previous ones.
-
-Without `close()` each abandoned instance pins its DataStore scope (and the file handle, cached `Preferences`, and `MutableStateFlow` it anchors) on `Dispatchers.IO`. Idempotent; after `close()` the instance can no longer process puts or reads — discard the reference and build a new one if you need storage again.
-
-```kotlin
-val ksafe = KSafe(fileName = "session_$userId")
-// ... use it ...
-ksafe.close()  // releases scopes, file handle, cached state
-```
-
-See [docs/SETUP.md](docs/SETUP.md) for the lifecycle scenarios in more detail.
+  ```kotlin
+  @Composable
+  fun TabbedScreen(ksafe: KSafe) {
+      var currentTab  by ksafe.rememberKSafeState(0)    // key = "currentTab"
+      var draft       by ksafe.rememberKSafeState("")   // key = "draft"
+      // both survive process death and app restart on every target
+  }
+  ```
+- **`KSafe.asWritableFlow`.** New extension that returns a `WritableKSafeFlow<T> : Flow<T>` with a `set(value)` writer. Collapses the previous "two-bindings-to-the-same-key" repository pattern into one declaration. Asymmetric by design — flow read only, no synchronous getter — to keep the contract identical across all targets including web cold-start.
+- **`KSafe.close()` — optional instance disposal.** Cancels the write-channel consumer, the snapshot collector, and the DataStore coroutine scope (file watcher, write coordinator, cached-`Preferences` `MutableStateFlow`). On Android, also evicts the per-file entry from the process-static DataStore cache when this instance owned it. Idempotent. Almost always unnecessary — the dominant singleton-per-process usage doesn't need it. Call when you re-create `KSafe` mid-process (account switching, long-running JVM services, dev-time hot-reload). See [docs/SETUP.md](docs/SETUP.md).
+- **Internal: `observeFromStorage`.** The previously-duplicated branch logic at `mutableStateOf`'s call site (live-collect when `scope` is supplied; one-shot self-heal on detached `Dispatchers.Default` otherwise) is consolidated into a single `@PublishedApi internal suspend fun`. Both `mutableStateOf` and `rememberKSafeState` route through it. No public-API or behavioural change for existing callers.
 
 ### Fixed
 
-#### `CancellationException` no longer swallowed across `KSafeCore` and `:ksafe-compose`
-
-Several `runCatching { … }` and broad `catch (Throwable)` blocks inside the library's coroutine-owning paths used to swallow `CancellationException` along with everything else. The structural shutdown still worked (the loops always exited at the next unprotected suspension point), but `cancel()`/`close()` mid-batch produced spurious `"KSafe: processBatch failed, dropping N writes: …"` log lines on every clean teardown, and tests using `kotlinx-coroutines-test` could see one extra batch run after `cancel()` (channels return buffered items without suspending, so the cancellation check was deferred until the next true suspend), occasionally surfacing as `UncaughtExceptionsBeforeTest` in the *next* test.
-
-Every `catch (Throwable)` inside a coroutine context now rethrows `CancellationException` first. Concretely:
-
-- **`KSafeCore.startWriteConsumer`** — the write coalescer's `runCatching { processBatch(batch) }` now rethrows cancellation. Clean shutdown is silent.
-- **`KSafeCore.startBackgroundCollector`** — both `runCatching { migrateAccessPolicy() }` and `runCatching { cleanupOrphanedCiphertext() }` now rethrow cancellation, so the collector terminates promptly instead of grinding through one more iteration on a cancelled scope.
-- **`KSafeCore.cleanupOrphanedCiphertext`** — the per-entry decrypt probe rethrows cancellation before applying its message-pattern heuristic, so a cancellation during the orphan sweep no longer looks like a missing-key signal and triggers spurious deletes.
-- **`KSafeCore.updateCache`** — the per-entry plaintext-policy decrypt rethrows cancellation rather than silently dropping the entry from the cache.
-- **`KSafeCore.getFlowRaw`** — the map-block decrypt path rethrows cancellation before falling back to `defaultValue`, so downstream `Flow` collectors don't receive a bogus default emission while the upstream is being cancelled.
-- **iOS `cleanupOrphanedKeychainEntriesSafe`** — the `runCatching` around the Keychain orphan sweep rethrows cancellation, so a cancellation during sweep no longer prints `"KSafe: Keychain orphan sweep failed (ignored): …"` on shutdown.
-- **`resolveFromCache`, `convertStoredValue`, `ensureCacheReadyBlocking`** — the synchronous JSON-decode and `runBlockingOnPlatform` catches were all defense-in-depth-hardened too. Today they live in non-suspending contexts so cancellation cannot reach them, but the rule "every `catch (Throwable)` rethrows `CancellationException` first" is now uniform across the file, so future refactors can't reopen a swallow vector by introducing a suspending call into one of these paths.
-
-`:ksafe-compose` was audited at the same time. The pre-existing `try { putDirect } catch (Exception)` in `mutableStateOf`'s saver lambda is non-suspending today (`putDirect` is fire-and-forget) and is left as-is, but the new `observeFromStorage` and `rememberKSafeState` paths are structured by construction — neither swallows cancellation.
+- **`CancellationException` no longer swallowed in `KSafeCore` and `:ksafe-compose`.** Every `runCatching { … }` and `catch (Throwable)` inside a coroutine context now rethrows `CancellationException` first. Eliminates spurious `"processBatch failed, dropping N writes: …"` log lines on clean teardown and the occasional one-extra-batch-after-cancel surfacing as `UncaughtExceptionsBeforeTest` in `kotlinx-coroutines-test`. Hardened sites: `startWriteConsumer`, `startBackgroundCollector`, `cleanupOrphanedCiphertext`, `updateCache`, `getFlowRaw`, iOS `cleanupOrphanedKeychainEntriesSafe`, plus defense-in-depth on `resolveFromCache` / `convertStoredValue` / `ensureCacheReadyBlocking`.
 
 ---
 
 ## [2.0.0-RC1] - 2026-04-26
 
-Major internal refactor; new standalone `:ksafe-biometrics` module; the Kotlin/JS (IR) target and shared web source sets that were staged under a never-shipped 1.9.0 tag.
+Major internal refactor (KSafeCore in commonMain, ~5,900 → ~740 lines of platform-shell code) + new standalone `:ksafe-biometrics` module + Kotlin/JS (IR) target with shared `webMain`/`webTest` source sets.
 
 ### Breaking changes
 
-#### Biometric authentication extracted into a standalone `:ksafe-biometrics` module ([#14](https://github.com/ioannisa/KSafe/issues/14))
-
-Resolves [issue #14](https://github.com/ioannisa/KSafe/issues/14) (thanks @Coding-Meet for the suggestion).
-
-`verifyBiometric`, `verifyBiometricDirect`, `clearBiometricAuth`, `BiometricAuthorizationDuration`, and the Android-side `BiometricHelper` no longer live on `KSafe`. They now belong to a new `KSafeBiometrics` static API published as a separate, optional artifact:
-
-```kotlin
-implementation("eu.anifantakis:ksafe-biometrics:2.0.0-RC1")
-```
-
-`:ksafe-biometrics` has zero dependency on `:ksafe` — apps that only need biometric verification can use it without pulling in the storage library. Apps that don't need biometrics at all no longer pay for the `androidx.biometric` / `androidx.fragment` transitive deps that `:ksafe` used to drag in.
-
-`KSafeBiometrics` is a **Kotlin `object`**, not an instantiable class. There is no DI wiring, no `Context` parameter, no `Application.onCreate` init. On Android the library auto-initializes via a `ContentProvider` declared in its merged manifest (the same pattern WorkManager / Firebase / AppCompat use); other platforms have no init at all. The call shape is identical on every target:
-
-```kotlin
-val ok = KSafeBiometrics.verifyBiometric("Authenticate")
-KSafeBiometrics.verifyBiometricDirect("Authenticate") { success -> }
-KSafeBiometrics.clearBiometricAuth()
-```
-
-The module targets the same six platforms as `:ksafe` and `:ksafe-compose` (Android, iOS x64/arm64/simArm64, JVM, JS-IR, WasmJS). Behavior is identical to the pre-2.0 implementation — Android uses `BiometricPrompt` (BIOMETRIC_STRONG + DEVICE_CREDENTIAL), iOS uses `LAContext` (Face ID / Touch ID), JVM/JS/WasmJS keep returning `true` so shared business logic in `commonMain` continues to compile and run unchanged.
-
-**Migration:**
-
-```kotlin
-// Before (1.x / pre-RC)
-import eu.anifantakis.lib.ksafe.BiometricAuthorizationDuration
-ksafe.verifyBiometricDirect(reason, BiometricAuthorizationDuration(60_000L)) { ok -> }
-
-// After (2.0) — static API, no instance, no DI
-// build.gradle.kts: + implementation("eu.anifantakis:ksafe-biometrics:2.0.0-RC1")
-import eu.anifantakis.lib.ksafe.biometrics.KSafeBiometrics
-import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration
-
-KSafeBiometrics.verifyBiometricDirect(reason, BiometricAuthorizationDuration(60_000L)) { ok -> }
-```
-
-Method names (`verifyBiometric` / `verifyBiometricDirect` / `clearBiometricAuth`) and signatures are preserved; only the receiver and import paths change. `BiometricHelper.confirmationRequired` and `BiometricHelper.promptTitle` continue to be configured the same way, just imported from the new package. Existing Koin / Hilt modules that registered `KSafe` for biometric injection can drop that wiring entirely — biometric methods are now called directly on `KSafeBiometrics`.
+- **Biometric authentication extracted into `:ksafe-biometrics`** ([#14](https://github.com/ioannisa/KSafe/issues/14), thanks @Coding-Meet). `verifyBiometric` / `verifyBiometricDirect` / `clearBiometricAuth` / `BiometricAuthorizationDuration` / `BiometricHelper` no longer live on `KSafe`; they belong to a new `KSafeBiometrics` static API published as a separate, optional artifact (`implementation("eu.anifantakis:ksafe-biometrics:2.0.0-RC1")`). `KSafeBiometrics` is a Kotlin `object` (no DI, no `Context`, no init); on Android the library auto-initializes via a `ContentProvider` (same pattern as WorkManager / Firebase). Method names and signatures are preserved; only the receiver and import paths change. Apps not using biometrics no longer pay for `androidx.biometric` / `androidx.fragment`.
 
 ### Added
 
-#### Custom storage directory ([#25](https://github.com/ioannisa/KSafe/pull/25) — thanks @DeStilleGast)
-
-`KSafe(...)` factories on JVM, Android, and iOS now accept an optional override for the directory where the underlying DataStore file lives.
-
-**JVM** — new `baseDir: File? = null` parameter:
-
-```kotlin
-val safe = KSafe(fileName = "settings", baseDir = File(System.getenv("XDG_DATA_HOME") ?: "${System.getProperty("user.home")}/.local/share/myapp"))
-```
-
-If null, the default `~/.eu_anifantakis_ksafe` is used. KSafe creates the directory if missing and applies POSIX `0700` permissions on POSIX file systems regardless of which path is used (originally the user-supplied path skipped the permission hardening — that's fixed). The same resolved path is now also used by `clearAll()`'s file-cleanup callback (originally it hardcoded the home dir, so `clearAll()` failed silently to delete the file when `baseDir` was set — that's also fixed).
-
-**Android** — new `baseDir: File? = null` parameter:
-
-```kotlin
-val safe = KSafe(context, fileName = "vault", baseDir = File(context.noBackupFilesDir, "ksafe"))
-```
-
-If null (the recommended default), KSafe uses Context's app-private path (`/data/data/<package>/files/datastore/...`). The Android sandbox enforces correct permissions on that path. Custom paths are useful for `noBackupFilesDir` or test isolation; do not point them at external storage for sensitive data. The DataStore cache key now reflects the actual file path so two `KSafe` instances pointing at different `baseDir`s get separate DataStores instead of conflicting.
-
-**iOS** — new `directory: String? = null` parameter (path string), plus a behavior change to the default location described under *Breaking changes* below.
-
-#### iOS default storage moved to `NSApplicationSupportDirectory` with automatic 1.x migration
-
-Pre-2.0 iOS stored the DataStore in `NSDocumentDirectory`. That's user-visible (exposed via iTunes File Sharing if `UIFileSharingEnabled` is set) and iCloud-syncable by default — both wrong defaults for KSafe's content. 2.0 moves the default to `NSApplicationSupportDirectory`, the Apple-recommended location for invisible app data.
-
-```kotlin
-// New default: ~/Library/Application Support/<bundle>/eu_anifantakis_ksafe_datastore.preferences_pb
-// Old default (pre-2.0): ~/Documents/eu_anifantakis_ksafe_datastore.preferences_pb
-val safe = KSafe(fileName = "vault")
-
-// Or pass a custom path
-val safe = KSafe(fileName = "vault", directory = "/some/path")
-```
-
-**Automatic migration for 1.x → 2.0 upgraders.** When the consumer doesn't pass an explicit `directory` and the new path is empty, KSafe checks for a legacy file at the old `NSDocumentDirectory` path on first launch and moves it. Idempotent (only runs while the new path is empty), best-effort (a failed move logs a warning and leaves the legacy file in place — the consumer can recover by passing `directory = "<old Documents path>"`). Apps bumping the dep from 1.x to 2.0 don't need any code changes to keep their data.
-
-**KSafe data on iOS is effectively device-local.** Encryption keys live in the Keychain with `…ThisDeviceOnly` accessibility (and Secure Enclave keys never leave the device for `HARDWARE_ISOLATED` writes), so even if the DataStore file is included in an iCloud Backup, its encrypted bytes are undecryptable on a restored device — the keys are not there. The library does **not** set `NSURLIsExcludedFromBackupKey` on the file because DataStore's atomic-write strategy (write-to-temp + rename) replaces the file's inode and would clobber the extended attribute on every flush. Reliable file-level backup-exclusion is therefore impossible without architectural gymnastics (a per-instance subdirectory layer with directory-level exclusion), and the security guarantee already comes from key locality. Apps that want device-portable preferences should use `UserDefaults`, which is the right tool for that semantics.
-
-#### Kotlin/JS (IR) target — browser support beyond WasmGC
-
-KSafe now publishes a dedicated Kotlin/JS (IR) artifact alongside the existing Kotlin/WASM target. Projects that build for the legacy JS toolchain — or that need to ship to browsers without WasmGC (anything older than Chrome 119 / Firefox 120 / Safari 18) — are no longer dead-ended.
-
-```kotlin
-kotlin {
-    js(IR) { browser() }
-
-    // existing
-    @OptIn(ExperimentalWasmDsl::class)
-    wasmJs { browser() }
-
-    sourceSets {
-        // no extra work — :ksafe and :ksafe-compose expose the JS variant automatically
-    }
-}
-```
-
-Behaviour is identical to the wasmJs target:
-- AES-256-GCM via WebCrypto through `cryptography-kotlin`.
-- Persistence to browser `localStorage` with the same key layout, so switching a project between the two targets reads the same data back.
-- Async-only crypto, `PLAIN_TEXT` internal memory policy, biometric calls return `true`, security checks are no-ops.
-
-The JS implementation is a thin `actual` over `kotlinx.browser.localStorage`, `kotlin.js.Date.now()`, and a direct `crypto.getRandomValues()` binding — no Base64 round-trip for random bytes, unlike the WASM actual.
-
-#### Shared `webMain` / `webTest` source sets
-
-The bulk of the previous `wasmJsMain` implementation — `KSafe`, the WebCrypto-backed encryption engine, the `SecurityChecker` no-ops — moved into an intermediate `webMain` source set shared between `jsMain` and `wasmJsMain`. Each target keeps only a small `WebInterop` actual file (`@JsFun` bindings for wasmJs; plain `external` + `kotlinx.browser` for js). The full `KSafeTest` suite now runs on **both** targets via a shared `webTest/WebKSafeTest.kt`.
-
-A new `WebInteropSmokeTest` runs on both targets and asserts the per-target actuals: `localStorage` round-trip, `localStorage` enumeration, `currentTimeMillisWeb()` plausibility, and `secureRandomBytes()` non-determinism. This guards against Long / Int / Float conversion regressions specific to either target.
-
-#### Cross-type migration tests (run on all four platforms)
-
-Added to `commonTest/KSafeTest.kt`, covering the scenarios where an app's storage type for a given key changes between releases:
-
-- `testCrossTypeIntToLongPlain` — `put(Int 42)` → `get(Long)` returns 42L (widening).
-- `testCrossTypeLongToIntPlainInRange` — `put(Long 42)` → `get(Int)` returns 42 (safe narrowing).
-- `testCrossTypeLongToIntPlainOutOfRange` — `put(Long.MAX_VALUE)` → `get(Int, -1)` returns -1 (refuses to silently truncate).
-- `testCrossTypeIntToLongEncrypted` / `testCrossTypeLongToIntEncrypted` — same three scenarios through the encrypted write path.
-- `testSequentialTypeMigrationIntThenLong` / `...Encrypted` — `put(Int)` then `put(bigLong)` on the same key; subsequent reads return the updated value with the correct type, and out-of-range reads fall back to default.
-
-These lock in the cross-type safety contract that was implicit in pre-refactor code.
-
-#### iOS Keychain orphan sweep strengthened
-
-`KSafe.ios.kt`'s startup Keychain sweep — which removes Keychain entries whose DataStore counterpart is gone (the reverse of Android's ciphertext orphan cleanup) — was refactored into a standalone `cleanupOrphanedKeychainEntries` function in `iosMain/internal/`. It now covers two item classes: generic-password items (both plain AES keys and SE-wrapped blobs) and `kSecClassKey` EC private keys (the SE-held ECIES keys used for `HARDWARE_ISOLATED` writes — the second pass catches SE keys that exist without a matching generic-password item, e.g. after a crash between SE-key creation and wrapped-AES-key storage).
-
-The function takes `KSafePlatformStorage` + `KSafeEncryption` + the fileName/prefix parameters as explicit arguments, making it unit-testable without a full `KSafe` instance.
+- **Custom storage directory** ([#25](https://github.com/ioannisa/KSafe/pull/25), thanks @DeStilleGast). `KSafe(...)` factories on JVM, Android, and iOS now accept an optional override for the DataStore directory (`baseDir: File?` on JVM/Android; `directory: String?` on iOS). JVM applies POSIX `0700` regardless of which path is used; Android's DataStore cache key now reflects the actual file path so distinct `baseDir`s don't collide.
+- **iOS default storage moved to `NSApplicationSupportDirectory`** with automatic 1.x migration. Pre-2.0 stored in `NSDocumentDirectory` (user-visible via iTunes File Sharing, iCloud-syncable by default) — both wrong defaults. New default is the Apple-recommended location for invisible app data. On first launch with no explicit `directory`, KSafe transparently moves a legacy file from the old path. Idempotent, best-effort. KSafe data on iOS is effectively device-local regardless: encryption keys live in the Keychain with `…ThisDeviceOnly` accessibility, so backed-up ciphertext is undecryptable on a restored device.
+- **Kotlin/JS (IR) target.** New artifact alongside the existing Kotlin/WASM target — covers browsers without WasmGC (anything older than Chrome 119 / Firefox 120 / Safari 18). Same AES-256-GCM via WebCrypto, same `localStorage` key layout (so switching between targets reads the same data back), same `PLAIN_TEXT`-only memory policy.
+- **Shared `webMain` / `webTest` source sets.** The bulk of the previous `wasmJsMain` implementation (`KSafe.web.kt`, `WebSoftwareEncryption.kt`, `SecurityChecker.web.kt`) moved to `webMain`, shared between `jsMain` and `wasmJsMain`. Each target keeps only a small `WebInterop` actual. Full `KSafeTest` suite + a new `WebInteropSmokeTest` now run on **both** targets.
+- **Cross-type migration tests** in `commonTest/KSafeTest.kt`: `Int`↔`Long` widening / safe narrowing / out-of-range fallback, both encrypted and plaintext, both fresh and sequential-write-then-read scenarios. Locks in the cross-type safety contract that was previously implicit.
+- **iOS Keychain orphan sweep strengthened.** Refactored into a standalone `cleanupOrphanedKeychainEntries` in `iosMain/internal/` that covers both generic-password items (plain AES keys + SE-wrapped blobs) and `kSecClassKey` EC private keys (catches partial `HARDWARE_ISOLATED` writes after a crash). Takes its dependencies as explicit arguments — unit-testable without a full `KSafe` instance.
 
 ### Changed
 
-#### Shared `KSafeCore` orchestrator in `commonMain`
-
-Everything that was previously duplicated across `KSafe.android.kt`, `KSafe.ios.kt`, `KSafe.jvm.kt`, and `KSafe.web.kt` — the hot cache, the per-frame write coalescer, the protection-metadata classifier, the orphan-ciphertext cleanup, the raw `get/put/delete/getFlow` plumbing — now lives in a single `KSafeCore` class in `commonMain`.
-
-| File | Before 2.0.0 | After 2.0.0 |
-|---|---:|---:|
-| `commonMain` (KSafe.kt + KSafeCore + storage interface + concurrency shims) | ~500 | ~1,500 |
-| `KSafe.jvm.kt` | 1,360 | 212 |
-| `KSafe.android.kt` | 1,584 | 176 |
-| `KSafe.ios.kt` | 1,938 | 225 |
-| `KSafe.web.kt` | 1,052 | 128 |
-| **Platform-shell total** | **5,934** | **741** |
-
-Bug fixes and feature additions now ship once instead of four times.
-
-#### New `KSafePlatformStorage` interface + shared `DataStoreStorage` adapter
-
-A new `KSafePlatformStorage` abstraction sits between `KSafeCore` and the persistent backend. Three of four platforms (Android, iOS, JVM) all use Jetpack DataStore Preferences, so a single `DataStoreStorage` adapter lives in a new `datastoreMain` intermediate source set shared by all three. Web keeps its own `LocalStorageStorage` adapter for `localStorage`. The split makes the two concerns — "where bytes live" and "how the cache/coalescing/metadata orchestration works" — independently testable and pluggable.
-
-#### `KSafeEncryption` gained `suspend` variants
-
-Added `encryptSuspend`, `decryptSuspend`, and `deleteKeySuspend` to `KSafeEncryption` with default bodies that delegate to the existing blocking methods. Android/iOS/JVM engines are untouched — their blocking implementations satisfy the new contract via the defaults. `WebSoftwareEncryption` overrides the suspend variants with real WebCrypto calls and continues to throw `UnsupportedOperationException` from the blocking paths (WebCrypto is async-only). `KSafeCore` calls the suspend variants from every coroutine-context code path, which is how web now rides the shared orchestrator.
-
-#### `KSafe` is now a regular common class — no more `expect/actual`
-
-`KSafe` is no longer an `expect class`. It is a regular `class` declared once in `commonMain`, with its public storage API (`getDirect`, `putDirect`, `get`, `put`, `getFlow`, plus the deprecated `encrypted: Boolean` overloads, plus `delete`, `deleteDirect`, `clearAll`, `getKeyInfo`) defined a single time in commonMain — including the inline reified bodies. There is no per-platform duplication of inline shims, and no `*Raw` trampoline layer on `KSafe`. Inline reified members forward straight to `core.getDirectRaw(...)` etc.; that is the only boundary between reified and non-reified code.
-
-Construction moves to per-platform top-level factory functions named `KSafe`, so the consumer call site is unchanged — `KSafe(context, ...)` on Android, `KSafe(...)` on iOS / JVM / web — Kotlin treats `KSafe(...)` as either a constructor or a top-level function with the same name, and resolves identically at the call site:
-
-```kotlin
-// commonMain
-class KSafe @PublishedApi internal constructor(
-    @PublishedApi internal val core: KSafeCore,
-    val deviceKeyStorages: Set<KSafeKeyStorage>,
-    @PublishedApi internal val onClearAllCleanup: suspend () -> Unit = {},
-) {
-    inline fun <reified T> getDirect(key: String, defaultValue: T): T { ... }
-    // ...all storage methods, ONCE
-}
-
-// androidMain — same call syntax as before
-fun KSafe(context: Context, fileName: String? = null, ...): KSafe = ...
-```
-
-Test secondary constructors (the pre-2.0 `internal constructor(..., testEngine: KSafeEncryption)`) are now `@PublishedApi internal fun KSafe(..., testEngine: KSafeEncryption): KSafe` overloads alongside the public factories. Tests that called `KSafe(context, fileName, ..., testEngine = engine)` work unchanged.
-
-The deprecated `useStrongBox` / `useSecureEnclave` flags on Android / iOS that promote default-protection encrypted writes to `HARDWARE_ISOLATED` are honored via a new optional `modeTransformer: (KSafeWriteMode) -> KSafeWriteMode = { it }` parameter on `KSafeCore`. Android/iOS pass `::promoteMode`; JVM/web rely on the identity default. Result: every per-platform shell shrinks to genuinely thin glue (engine wiring, key-storage tier resolution, the JVM `clearAll` file-cleanup callback). Compose / property-delegate / state-flow callers unchanged — they all reach `core` via `ksafe.core` exactly as before.
-
-Web's `awaitCacheReady()` and JVM's test-only `dataStore` / `engine` / `updateCache(prefs)` accessors are now platform-source-set extension functions/properties on `KSafe` (same package as `KSafe`, so tests need no new imports). Their behaviour is identical to the pre-2.0 members.
-
-#### Internal types moved to `eu.anifantakis.lib.ksafe.internal`
-
-`KSafeCore`, `KSafePlatformStorage`, `KSafeEncryption`, `KeySafeMetadataManager`, `SecurityChecker`, `KSafeSecureRandom`, and the per-platform engines (`AndroidKeystoreEncryption`, `IosKeychainEncryption`, `JvmSoftwareEncryption`, `WebSoftwareEncryption`) — plus every `expect/actual` shim — now live under the `.internal` subpackage. Public-facing types (`KSafe`, `KSafeConfig`, `KSafeProtection`, `KSafeWriteMode`, `KSafeKeyInfo`, `KSafeKeyStorage`, `KSafeSecurityPolicy`, `KSafeSecret`, `KSafeDelegate`, `BiometricAuthorizationDuration`, `KSafeMemoryPolicy`) stay at the root package. No consumer imports break.
-
-#### `wasmJsMain` is now minimal
-
-`KSafe.wasmJs.kt`, `WasmSoftwareEncryption.kt`, `SecurityChecker.wasmJs.kt`, and `LocalStorage.kt` no longer exist. Their contents live in `webMain` as `KSafe.web.kt`, `WebSoftwareEncryption.kt`, `SecurityChecker.web.kt`, and `WebInterop.kt` respectively. The only wasmJs-specific file is `WebInterop.wasmJs.kt` (which still uses `@JsFun` / `ExperimentalWasmJsInterop`) plus the existing `KSafeSecureRandom.wasmJs.kt`. No public API changes; no migration required.
+- **Shared `KSafeCore` orchestrator in `commonMain`.** The hot cache, write coalescer, protection-metadata classifier, orphan cleanup, and raw `get/put/delete/getFlow` plumbing — previously duplicated across all four platform shells — live in a single `KSafeCore` class. Per-platform shells dropped from ~5,900 to ~740 lines. Bug fixes and feature additions ship once.
+- **`KSafePlatformStorage` interface + shared `DataStoreStorage` adapter.** Android / iOS / JVM all use Jetpack DataStore Preferences, so a single adapter lives in a new `datastoreMain` intermediate source set. Web has its own `LocalStorageStorage`. Splits "where bytes live" from orchestration.
+- **`KSafeEncryption` gained suspend variants** (`encryptSuspend` / `decryptSuspend` / `deleteKeySuspend`) with default bodies delegating to blocking. Android / iOS / JVM engines untouched. `WebSoftwareEncryption` overrides the suspend variants with real WebCrypto calls (WebCrypto is async-only). `KSafeCore` calls the suspend path from every coroutine-context site.
+- **`KSafe` is now a regular common class** — no more `expect/actual`. Single declaration in `commonMain`, including all inline reified bodies. Construction moves to per-platform top-level `KSafe(...)` factory functions; consumer call site unchanged. The deprecated `useStrongBox` / `useSecureEnclave` flags route through a new `modeTransformer` parameter on `KSafeCore`.
+- **Internal types moved to `eu.anifantakis.lib.ksafe.internal`.** `KSafeCore`, `KSafePlatformStorage`, `KSafeEncryption`, `KeySafeMetadataManager`, `SecurityChecker`, `KSafeSecureRandom`, and per-platform engines now live under `.internal`. Public-facing types stay at the root package. No consumer imports break.
+- **`wasmJsMain` reduced to a minimal `WebInterop` actual.** Its previous content moved to `webMain`. No public API changes.
 
 ### Fixed
 
-#### Serializer-kind dispatch replaces runtime-class dispatch in `convertStoredValue`
-
-Two bugs shared a root cause — `convertStoredValue` dispatched on the runtime class of the `defaultValue` parameter (`when (defaultValue) { is Int -> …, is Long -> …, is Boolean -> … }`), which misbehaved in two distinct ways:
-
-- **Kotlin/JS: Float / Double reads collapsed into the Int branch.** `Float` and `Double` share a single runtime representation with `Int` on JS (`0f is Int` returns `true` because `0f` is stored as the integer `0`), so Float / Double reads routed into the Int branch and returned the default. Visible as `testPutAndGetUnencryptedFloat`, `testPutAndGetUnencryptedDouble`, and `testNegativeNumbers` failures on the js target.
-- **Nullable-typed reads with a `null` default lost stored primitives.** For `get<Int?>("counter", null)`, no `is X` branch matched (because `null` doesn't satisfy `is Int`), and the path fell through to returning `defaultValue` — `null` — regardless of whether a value was stored. Regression test: `JvmKSafeTest.testNullableIntGetReturnsStoredValue`.
-
-Dispatch now runs through `primitiveKindOrNull(serializer)`, a helper that reads the `PrimitiveKind` off the serializer's descriptor and preserves the declared type regardless of how the runtime represents the value or how the default is typed. One code path, uniform across every platform.
-
-#### Transient keystore decrypt errors now propagate on every platform
-
-Pre-refactor only Android's read path re-threw `"device is locked"` / `"Keystore"` errors instead of silently returning `defaultValue`; iOS and JVM swallowed the same errors. `KSafeCore.isTransientDecryptFailure` now runs on every platform so a locked device (or analogous iOS Keychain error) reliably surfaces to the caller for retry handling. JVM software encryption never produces such errors — the check is a no-op there.
+- **Serializer-kind dispatch in `convertStoredValue`.** Two bugs with the same root cause (runtime-class dispatch on `defaultValue`): (a) Kotlin/JS Float/Double reads collapsing into the Int branch because `0f is Int` returns `true` on JS; (b) nullable-typed reads with `null` default losing stored primitives because no `is X` branch matched. Dispatch now runs through `primitiveKindOrNull(serializer)`, reading `PrimitiveKind` off the serializer's descriptor.
+- **Transient keystore decrypt errors propagate on every platform.** Pre-refactor only Android re-threw `"device is locked"` / `"Keystore"` errors; iOS and JVM swallowed them. `KSafeCore.isTransientDecryptFailure` now runs uniformly so a locked device reliably surfaces to the caller for retry handling.
 
 ### Upgrade notes
 
-- **On-disk format is unchanged.** Existing 1.8.x data reads cleanly.
-- **Storage API is unchanged.** `import eu.anifantakis.lib.ksafe.KSafe` and friends still resolve; `ksafe.put(...)` / `ksafe.get(...)` / `by ksafe(0)` delegates continue to work.
-- **Biometric API moved.** See the **Breaking changes** section above for the migration to `:ksafe-biometrics`. If your project doesn't use biometric verification, no action needed.
-- **Recommended smoke-test on upgrade:** write a handful of values of each type in a pre-2.0 build, upgrade the library, and verify reads on first launch. The cross-type migration tests above give high confidence, but custom `KSerializer` or `@Contextual` users should validate their specific types once.
-- **Known follow-up:** `isStringSerializer` in `internal/KSafeSerializerUtil.kt` is now unused (superseded by `primitiveKindOrNull` dispatch). Kept for one release for anyone inlining against it; will be removed in 2.1.
+- **On-disk format and storage API are unchanged.** Existing 1.8.x data reads cleanly; `ksafe.put(...)` / `ksafe.get(...)` / `by ksafe(0)` delegates continue to work.
+- **Biometric API moved.** See breaking changes above for the migration to `:ksafe-biometrics`.
+- `isStringSerializer` in `internal/KSafeSerializerUtil.kt` is unused after the dispatch fix; kept for one release, will be removed in 2.1.
 
 ---
 

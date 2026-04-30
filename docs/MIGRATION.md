@@ -127,6 +127,8 @@ val theme = ksafe.getDirect("theme", "light")
 val flow = ksafe.getFlow("secret", "")
 ```
 
+**Performance cost of auto-detection.** Auto-detect is implemented as a `protectionMap[key]` lookup plus a small string switch on every read — roughly **3 µs per call** on the unencrypted-read fast path. In exchange, you can no longer accidentally read an encrypted value as plaintext (or vice versa), which was a real bug source in 1.x. At ~12 µs per read this is well below frame-budget thresholds for any plausible UI workload, and below human-perception thresholds outright. If you need to micro-optimise a read-heavy plain-only path, the corresponding `mutableStateOf` / Flow APIs cache the resolved protection alongside the value so the auto-detect cost is paid only at materialisation time.
+
 This eliminates the common mistake of mismatching protection levels between put and get calls.
 
 ### From v1.1.x to v1.2.0+

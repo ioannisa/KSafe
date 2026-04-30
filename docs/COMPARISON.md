@@ -16,7 +16,7 @@
 - You want property delegation (`by ksafe(x)`) for minimal boilerplate
 - You need integrated biometric authentication with smart caching
 - You're using Jetpack Compose and want reactive encrypted state
-- Performance is critical — KSafe is **14x faster** than KVault for encrypted reads, **34x faster** for writes
+- Performance is critical — KSafe is **~16× faster** than KVault for encrypted reads, **~40× faster** for writes
 
 **Browser support, specifically:** KSafe ships **two independent web artifacts** — a Kotlin/WASM build (requires WasmGC; Chrome 119+ / Firefox 120+ / Safari 18+) and a Kotlin/JS (IR) build for older browsers and pre-existing JS toolchains. Both use the same `localStorage` layout and AES-256-GCM via WebCrypto, so a project can switch between targets without losing data. Web is the only target where memory policy is forced to `PLAIN_TEXT` internally (WebCrypto is async-only, so the synchronous `getDirect` path can't decrypt on demand) — call `awaitCacheReady()` once at startup before the first encrypted read.
 
