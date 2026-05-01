@@ -2,7 +2,7 @@
 
 All notable changes to KSafe will be documented in this file.
 
-## [2.0.0] - 2026-04-29
+## [2.0.0] - 2026-05-01
 
 Major release: KMP refactor + new platforms (macOS, Kotlin JS) + biometrics extracted into its own module. Cumulative of 2.0.0-RC1, 2.0.0-RC2, and the 2.0.0 release work below.
 
@@ -24,6 +24,7 @@ Major release: KMP refactor + new platforms (macOS, Kotlin JS) + biometrics extr
 ### Performance
 
 - **Parallel encryption inside `KSafeCore.processBatch`.** Encrypted writes in a batch are now deduplicated by user-key and run concurrently inside a `coroutineScope { … }` with a `Semaphore(8)` cap. Hardware-keystore IPC pipelines instead of running serially; `ENCRYPTED` memory policy no longer pays a write-time penalty over `PLAIN_TEXT`.
+- **Parallel decryption at cold start.** `KSafeCore.updateCache` now defers `PLAIN_TEXT`-memory decrypts into a second pass and runs them concurrently via the same `coroutineScope` + `Semaphore(8)` pattern; `KSafeCore.cleanupOrphanedCiphertext` does the same for its per-key probe. Cold-start time on a 1500-key encrypted store drops from ~27 ms to under 1 ms — the orphan sweep no longer blocks the foreground while serially probing every Keystore alias.
 - **`KSafeCore.detectProtection` short-circuit.** Trusts 2.0 metadata authoritatively when present, skipping the legacy fallback for keys with a `protectionMap` entry. Saves one `String` allocation + one `ConcurrentHashMap.containsKey` per unencrypted read.
 - **`AndroidKeystoreEncryption` micro-optimisations.** Lazy companion-level `KeyStore` instance; zero-copy decrypt via offset-aware `GCMParameterSpec` + `Cipher.doFinal`; single-allocation encrypt buffer (writes IV+ciphertext into one `ByteArray`); collapsed `containsAlias`+`getKey` (and `containsAlias`+`deleteEntry`) into single IPC round-trips on the slow path; shared `TRANSFORMATION` constant composed from `KeyProperties` literals.
 - **Benchmark refresh.** Numbers in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) re-measured (median of 4 runs on a Galaxy S24).

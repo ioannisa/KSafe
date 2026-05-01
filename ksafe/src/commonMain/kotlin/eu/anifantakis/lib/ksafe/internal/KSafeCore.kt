@@ -302,36 +302,55 @@ internal class KSafeCore(
             }
         }
 
-        val orphanOps = mutableListOf<StorageOp>()
+        // Collect probe candidates first so the actual decrypt round-trips can run
+        // concurrently. Each probe is a Keystore IPC call and they don't contend on
+        // shared state — Semaphore caps in-flight count to avoid flooding Binder
+        // / Keychain on stores with thousands of keys.
+        data class Candidate(val rawKey: String, val userKey: String, val ciphertextB64: String)
 
-        for ((rawKey, value) in snapshot) {
+        val candidates = snapshot.mapNotNull { (rawKey, value) ->
             // Preserve legacy encrypted entries — they predate the canonical VALUE_PREFIX.
-            if (rawKey.startsWith(legacyEncryptedPrefix)) continue
-            if (!rawKey.startsWith(KeySafeMetadataManager.VALUE_PREFIX)) continue
-
+            if (rawKey.startsWith(legacyEncryptedPrefix)) return@mapNotNull null
+            if (!rawKey.startsWith(KeySafeMetadataManager.VALUE_PREFIX)) return@mapNotNull null
             val userKey = rawKey.removePrefix(KeySafeMetadataManager.VALUE_PREFIX)
-            val protection = protectionByKey[userKey] ?: continue
-            val encryptedString = (value as? StoredValue.Text)?.value ?: continue
-
-            try {
-                val ciphertext = b64Decode(encryptedString)
-                engine.decryptSuspend(keyAlias(userKey), ciphertext)
-            } catch (e: Throwable) {
-                if (e is CancellationException) throw e
-                val msg = e.message.orEmpty()
-                if (msg.contains("No encryption key found", true) ||
-                    msg.contains("key not found", true)
-                ) {
-                    orphanOps += StorageOp.Delete(rawKey)
-                    orphanOps += StorageOp.Delete(metaRawKey(userKey))
-                    orphanOps += StorageOp.Delete(legacyProtectionRawKey(userKey))
-                    memoryCache.remove(userKey)
-                    memoryCache.remove(legacyEncryptedRawKey(userKey))
-                }
-            }
+            if (userKey !in protectionByKey) return@mapNotNull null
+            val encryptedString = (value as? StoredValue.Text)?.value ?: return@mapNotNull null
+            Candidate(rawKey, userKey, encryptedString)
         }
 
-        if (orphanOps.isNotEmpty()) storage.applyBatch(orphanOps)
+        if (candidates.isEmpty()) return
+
+        val gate = Semaphore(maxParallelEncrypts)
+        val orphans = coroutineScope {
+            candidates.map { c ->
+                async {
+                    gate.withPermit {
+                        try {
+                            engine.decryptSuspend(keyAlias(c.userKey), b64Decode(c.ciphertextB64))
+                            null
+                        } catch (e: Throwable) {
+                            if (e is CancellationException) throw e
+                            val msg = e.message.orEmpty()
+                            if (msg.contains("No encryption key found", true) ||
+                                msg.contains("key not found", true)
+                            ) c else null
+                        }
+                    }
+                }
+            }.awaitAll().filterNotNull()
+        }
+
+        if (orphans.isEmpty()) return
+
+        val orphanOps = mutableListOf<StorageOp>()
+        for (c in orphans) {
+            orphanOps += StorageOp.Delete(c.rawKey)
+            orphanOps += StorageOp.Delete(metaRawKey(c.userKey))
+            orphanOps += StorageOp.Delete(legacyProtectionRawKey(c.userKey))
+            memoryCache.remove(c.userKey)
+            memoryCache.remove(legacyEncryptedRawKey(c.userKey))
+        }
+        storage.applyBatch(orphanOps)
     }
 
     /**
@@ -358,6 +377,13 @@ internal class KSafeCore(
             entries = metadataEntries,
             accept = { userKey -> !isDirtyForUserKey(userKey) }
         ).toMutableMap()
+
+        // First pass: classify, populate plain entries directly, stash ENCRYPTED-mode
+        // ciphertexts directly. Defer PLAIN_TEXT-memory decrypts to a second pass so
+        // they can run concurrently — each decrypt is a Keystore IPC round-trip and
+        // serialising them dominates cold-start time when the store has many keys.
+        data class PendingDecrypt(val userKey: String, val cacheKey: String, val ciphertextB64: String)
+        val pendingDecrypts = mutableListOf<PendingDecrypt>()
 
         for ((rawKey, storedValue) in snapshot) {
             val classified = KeySafeMetadataManager.classifyStorageEntry(
@@ -390,16 +416,31 @@ internal class KSafeCore(
                 ) {
                     memoryCache[cacheKey] = encryptedString
                 } else {
-                    try {
-                        val plain = engine.decryptSuspend(keyAlias(userKey), b64Decode(encryptedString))
-                        memoryCache[cacheKey] = plain.decodeToString()
-                    } catch (e: Throwable) {
-                        if (e is CancellationException) throw e
-                        /* leave out of cache */
-                    }
+                    pendingDecrypts += PendingDecrypt(userKey, cacheKey, encryptedString)
                 }
             } else {
                 memoryCache[cacheKey] = storedValue.toCacheValue()
+            }
+        }
+
+        // Second pass: decrypt PLAIN_TEXT-memory entries concurrently. Failed decrypts
+        // are silently dropped from the cache (existing behaviour); cancellation propagates.
+        if (pendingDecrypts.isNotEmpty()) {
+            val gate = Semaphore(maxParallelEncrypts)
+            coroutineScope {
+                pendingDecrypts.map { p ->
+                    async {
+                        gate.withPermit {
+                            try {
+                                val plain = engine.decryptSuspend(keyAlias(p.userKey), b64Decode(p.ciphertextB64))
+                                memoryCache[p.cacheKey] = plain.decodeToString()
+                            } catch (e: Throwable) {
+                                if (e is CancellationException) throw e
+                                /* leave out of cache */
+                            }
+                        }
+                    }
+                }.awaitAll()
             }
         }
 

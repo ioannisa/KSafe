@@ -76,16 +76,21 @@ How quickly each library is ready to serve reads after process restart, for a st
 
 | Library | Keys | Time |
 |---------|------|------|
-| **KSafe (PLAIN_TEXT)** | 3006 | **0.064 ms** |
-| SharedPreferences | 501 | 0.047 ms |
-| Multiplatform Settings | 501 | 0.107 ms |
-| MMKV | 501 | 0.130 ms |
-| DataStore | 501 | 0.709 ms |
-| **KSafe (ENCRYPTED)** | 1503 | **27.0 ms** |
-| EncryptedSharedPrefs | 501 | 154 ms |
-| KVault | 650 | 127 ms |
+| **KSafe (ENCRYPTED memory)** | 1503 (1500 encrypted + 3 plain) | **0.047 ms** |
+| SharedPreferences | 501 | 0.089 ms |
+| Multiplatform Settings | 501 | 0.154 ms |
+| MMKV | 501 | 0.168 ms |
+| **KSafe (PLAIN_TEXT memory)** | 3006 (1500 encrypted + 1506 plain) | **0.431 ms** |
+| DataStore | 501 | 0.552 ms |
+| KVault | 650 | 96 ms |
+| EncryptedSharedPrefs | 501 | 126 ms |
 
-> **Architectural note:** KSafe `PLAIN_TEXT` cold-start time measures time-to-init, not time-to-first-read — entries are loaded lazily on first access in PLAIN_TEXT mode, so the cost is amortized into subsequent reads. ENCRYPTED memory mode populates the ciphertext cache up front (1503 keys in 27 ms ≈ 18 µs/key) so reads can decrypt against it without an extra disk hop. Compare to EncryptedSharedPreferences (~110 µs/key) and KVault (~195 µs/key).
+> **Architectural note — the two memory modes have opposite cold-start strategies, both fast:**
+>
+> - **`ENCRYPTED` memory mode** stashes ciphertext into the cache without decrypting. Decryption happens at read time. Cold start does no Keystore work, so it completes in tens of microseconds regardless of how many encrypted keys are stored. This is the right choice for stores where most values are read sparingly.
+> - **`PLAIN_TEXT` memory mode** decrypts every encrypted entry up front so subsequent reads are pure in-memory lookups. The decryption work is parallelised through `coroutineScope` + `Semaphore(8)`, so 1500 hardware-backed AES-GCM decrypts complete in ~430 µs (~290 ns/key amortised — the Keystore IPC pipelines instead of stalling). This is the right choice for hot caches read on every frame.
+>
+> Both modes destroy `EncryptedSharedPreferences` (~110 µs/key, serial) and `KVault` (~195 µs/key, serial) — they don't pipeline their hardware-backed crypto.
 
 ### How KSafe Achieves This Performance
 
@@ -106,9 +111,10 @@ KSafe with Hot Cache:
 1. **ConcurrentHashMap cache** — O(1) per-key reads and writes
 2. **Write coalescing** — batches writes within a 16 ms window into a single DataStore edit
 3. **Parallel encryption inside the batch** — encrypts up to 8 entries concurrently per batch via `coroutineScope` + `Semaphore(8)`, so hardware-keystore IPC pipelines instead of stalling
-4. **Deferred encryption** — encryption work moved to background; the UI thread returns instantly from `putDirect`
-5. **SecretKey caching** — avoids repeated Android Keystore lookups
-6. **Auto-protection-detection** — readers don't have to remember whether a key is encrypted; the library figures it out from per-key metadata. Costs ~3 µs per read but eliminates a class of "wrote encrypted, read plain" bugs
+4. **Parallel decryption at cold start** — `PLAIN_TEXT` memory mode populates the cache by decrypting all stored entries through the same `coroutineScope` + `Semaphore(8)` pattern; the orphan-cleanup sweep that probes every encrypted entry on startup uses it too. Cold-start time on stores with thousands of encrypted keys drops from milliseconds-per-key to microseconds-per-key amortised.
+5. **Deferred encryption** — encryption work moved to background; the UI thread returns instantly from `putDirect`
+6. **SecretKey caching** — avoids repeated Android Keystore lookups
+7. **Auto-protection-detection** — readers don't have to remember whether a key is encrypted; the library figures it out from per-key metadata. Costs ~3 µs per read but eliminates a class of "wrote encrypted, read plain" bugs
 
 This means KSafe gives you DataStore's safety guarantees (atomic transactions, type-safe) with SharedPreferences-class read latency and faster writes than any other compared library.
 
