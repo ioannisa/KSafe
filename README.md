@@ -64,7 +64,7 @@ var counter by ksafe(0)
 counter++   // auto-encrypted (AES-256-GCM), auto-persisted, survives process death
 ```
 
-Read and write it like any normal Kotlin variable — no `suspend`, no `runBlocking`, no DataStore boilerplate, no explicit `encrypt`/`decrypt`. Reads hit a hot in-memory cache (~0.011ms); writes encrypt and flush in the background.
+Read and write it like any normal Kotlin variable — no `suspend`, no `runBlocking`, no DataStore boilerplate, no explicit `encrypt`/`decrypt`. Reads hit a hot in-memory cache (~0.006ms); writes encrypt and flush in the background.
 
 ### Don't need encryption? Same one-liner.
 
@@ -155,7 +155,7 @@ var tokens by ksafe(AuthTokens())
 install(Auth) {
   bearer {
     loadTokens {
-      // Reads atomic object from hot cache (~0.011ms). No disk. No suspend.
+      // Reads atomic object from hot cache (~0.006ms). No disk. No suspend.
       BearerTokens(tokens.accessToken, tokens.refreshToken)
     }
     refreshTokens {
@@ -439,12 +439,12 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 
 | API | Read | Write | Best For |
 |-----|------|-------|----------|
-| `getDirect`/`putDirect` | 0.011 ms | 0.010 ms | UI, bulk ops, high throughput |
-| `get`/`put` (suspend) | 0.29 ms | 54 ms | When you must guarantee persistence |
+| `getDirect`/`putDirect` | 0.006 ms | 0.008 ms | UI, hot cache, fire-and-forget |
+| `get`/`put` (suspend) | 0.016 ms | 0.94 ms | Must guarantee persistence; multiple concurrent callers |
 
-**vs competitors (encrypted):** ~18× faster reads than both KVault and EncryptedSharedPreferences, ~56× faster encrypted writes than KVault, ~9× faster encrypted writes than EncryptedSharedPreferences. Unencrypted writes are ~4× faster than SharedPreferences (0.010 ms vs 0.040 ms).
+**vs competitors (encrypted):** ~14× faster reads than both KVault and EncryptedSharedPreferences, ~79× faster encrypted writes than KVault, ~12× faster encrypted writes than EncryptedSharedPreferences. Unencrypted writes are **~2× faster than MMKV** and ~2.6× faster than SharedPreferences.
 
-> Measured on representative Android hardware (Galaxy S24 Ultra) at 1000 iterations per cell, after the device has reached steady-state thermal/JIT behavior. Real-world numbers depend on device, workload, and data size — see [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the methodology, full tables, cold-start numbers, and architecture notes.
+> Measured on representative Android hardware (Galaxy S24 Ultra). The suspend API benchmarks issue all iterations as concurrent coroutines (`GlobalScope.launch` + `joinAll`) — the natural usage pattern when multiple coroutines persist values in parallel. Real-world numbers depend on device, workload, and data size — see [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the methodology, full tables, cold-start numbers, and architecture notes.
 
 
 ## Compatibility

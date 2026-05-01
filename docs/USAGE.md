@@ -369,12 +369,12 @@ ksafe.putDirect("counter", 42)
 val n = ksafe.getDirect("counter", 0)
 ```
 
-> **Performance Note:** For bulk or concurrent operations, **always use the Direct API**. The Coroutine API waits for DataStore persistence on each call (~54 ms), while the Direct API returns immediately from the hot cache (~0.010 ms) — that's **>5000× faster** on writes.
+> **Performance Note:** Both APIs are competitive when used in their natural patterns. The Direct API is fire-and-forget (queue + return); use it when you don't need to know that the disk write committed. The Coroutine API awaits the disk commit; use it when persistence is a precondition for the next step (auth-token refresh, payment confirmation). When called from multiple concurrent coroutines (login flow saving 5 tokens, repository fan-out, etc.) the suspend API's coalescer batches the writes and individual call latency drops dramatically.
 
 | API | Read | Write | Best For |
 |-----|------|-------|----------|
-| `getDirect`/`putDirect` | 0.011 ms | 0.010 ms | UI, bulk ops, high throughput |
-| `get`/`put` (suspend) | 0.29 ms | 54 ms | When you must guarantee persistence |
+| `getDirect`/`putDirect` | 0.006 ms | 0.008 ms | UI thread, fire-and-forget, hot cache |
+| `get`/`put` (suspend) | 0.016 ms | 0.94 ms | Guaranteed persistence; multiple concurrent callers |
 
 ## Write Mode API (Per-Entry Unlock Policy)
 

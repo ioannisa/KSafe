@@ -7,6 +7,8 @@ import eu.anifantakis.lib.ksafe.KSafeMemoryPolicy
 import eu.anifantakis.lib.ksafe.KSafeProtection
 import eu.anifantakis.lib.ksafe.KSafeWriteMode
 import eu.anifantakis.lib.ksafe.toProtection
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -26,7 +28,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
-import kotlin.coroutines.cancellation.CancellationException
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.time.ComparableTimeMark
@@ -189,6 +190,14 @@ internal class KSafeCore(
         abstract val userKey: String
         abstract val rawCacheKey: String
 
+        /**
+         * Non-null when a caller is awaiting the disk commit (suspend `put` /
+         * `delete`). Null for fire-and-forget `putDirect` / `deleteDirect`.
+         * The consumer completes this after `applyBatch` succeeds, or
+         * completes it exceptionally when the batch fails.
+         */
+        abstract val completion: CompletableDeferred<Unit>?
+
         data class Plain(
             override val userKey: String,
             override val rawCacheKey: String,
@@ -198,6 +207,7 @@ internal class KSafeCore(
              * to JSON and arrive here as [String].
              */
             val value: Any,
+            override val completion: CompletableDeferred<Unit>? = null,
         ) : PendingWrite()
 
         data class Encrypted(
@@ -207,11 +217,13 @@ internal class KSafeCore(
             val alias: String,
             val protection: KSafeProtection,
             val requireUnlockedDevice: Boolean,
+            override val completion: CompletableDeferred<Unit>? = null,
         ) : PendingWrite()
 
         data class Delete(
             override val userKey: String,
             override val rawCacheKey: String,
+            override val completion: CompletableDeferred<Unit>? = null,
         ) : PendingWrite()
     }
 
@@ -509,14 +521,42 @@ internal class KSafeCore(
         writeScope.launch {
             val batch = mutableListOf<PendingWrite>()
             while (isActive) {
+                // Suspend until at least one write arrives.
                 batch.add(writeChannel.receive())
-                val windowStart = TimeSource.Monotonic.markNow()
+
+                // Phase 1 — greedy drain. Pull every write that's already sitting
+                // in the channel without waiting. This is what lets a burst of
+                // 1000 `putDirect` (or concurrent suspend `put`) calls coalesce
+                // into one `applyBatch` transaction instead of `maxBatchSize`-
+                // capped chunks: by the time the consumer reaches this point the
+                // channel may already hold hundreds of writes, and we take them
+                // all in O(1) per write.
                 while (batch.size < maxBatchSize) {
-                    val remaining = writeCoalesceWindowMs - windowStart.elapsedNow().inWholeMilliseconds
-                    if (remaining <= 0) break
-                    val next = withTimeoutOrNull(remaining) { writeChannel.receive() } ?: break
+                    val next = writeChannel.tryReceive().getOrNull() ?: break
                     batch.add(next)
                 }
+
+                // Phase 2 — optional 16 ms wait window. Only applies when the
+                // batch has no awaiters: the window exists to coalesce sparse
+                // fire-and-forget `putDirect` calls that arrive over the next
+                // frame. If even one caller is awaiting their commit (suspend
+                // `put` / `delete`), they want it ASAP, so we skip the window
+                // and process whatever we already have. This is what makes a
+                // single sequential `ksafe.put(...)` complete in ~one batch
+                // round-trip instead of `~window + round-trip`.
+                if (batch.size < maxBatchSize && batch.none { it.completion != null }) {
+                    val windowStart = TimeSource.Monotonic.markNow()
+                    while (batch.size < maxBatchSize) {
+                        val remaining = writeCoalesceWindowMs - windowStart.elapsedNow().inWholeMilliseconds
+                        if (remaining <= 0) break
+                        val next = withTimeoutOrNull(remaining) { writeChannel.receive() } ?: break
+                        batch.add(next)
+                        // Once a waiter arrives, exit the window early so they
+                        // don't sit unnecessarily.
+                        if (next.completion != null) break
+                    }
+                }
+
                 runCatching { processBatch(batch) }
                     .onFailure { e ->
                         if (e is CancellationException) throw e
@@ -530,6 +570,30 @@ internal class KSafeCore(
     private suspend fun processBatch(batch: List<PendingWrite>) {
         if (batch.isEmpty()) return
 
+        // Cache awaiters once — same set is used to complete or fail at the end.
+        val deferreds = batch.mapNotNull { it.completion }
+
+        var failure: Throwable? = null
+        try {
+            processBatchBody(batch)
+        } catch (e: Throwable) {
+            if (e is CancellationException) {
+                // Cancellation propagates to callers so they don't hang.
+                deferreds.forEach { it.cancel(e) }
+                throw e
+            }
+            failure = e
+        }
+
+        if (failure != null) {
+            deferreds.forEach { it.completeExceptionally(failure) }
+            throw failure  // surfaces to startWriteConsumer's runCatching for logging
+        } else {
+            deferreds.forEach { it.complete(Unit) }
+        }
+    }
+
+    private suspend fun processBatchBody(batch: List<PendingWrite>) {
         val aliasesToDelete = mutableListOf<String>()
         val encryptedCiphertext = mutableMapOf<String, ByteArray>()
 
@@ -751,61 +815,67 @@ internal class KSafeCore(
         requireUnlockedDevice: Boolean,
         serializer: KSerializer<*>,
     ) {
+        // Optimistic in-memory state (matches `putEncryptedDirect`): subsequent
+        // reads from any thread see the new value the instant this returns.
         val rawCacheKey = legacyEncryptedRawKey(key)
         dirtyKeys.add(rawCacheKey)
         protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(protection)
         hasAnyEncryptedKey.set(true)
 
-        val rawString = if (value == null) NULL_SENTINEL else jsonEncode(json, serializer, value)
-        val encryptedBytes = withContext(Dispatchers.Default) {
-            engine.encryptSuspend(
-                identifier = keyAlias(key),
-                data = rawString.encodeToByteArray(),
-                hardwareIsolated = protection == KSafeProtection.HARDWARE_ISOLATED,
-                requireUnlockedDevice = requireUnlockedDevice,
-            )
-        }
-        val encryptedString = b64Encode(encryptedBytes)
-
-        storage.applyBatch(listOf(
-            StorageOp.Put(valueRawKey(key), StoredValue.Text(encryptedString)),
-            StorageOp.Put(metaRawKey(key), StoredValue.Text(buildMetaJson(protection, requireUnlockedDevice))),
-            StorageOp.Delete(key),
-            StorageOp.Delete(legacyEncryptedRawKey(key)),
-            StorageOp.Delete(legacyProtectionRawKey(key)),
-        ))
-
-        val cacheValue = if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED ||
-            memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE
-        ) encryptedString else rawString
-        memoryCache[rawCacheKey] = cacheValue
-
+        val jsonString = if (value == null) NULL_SENTINEL else jsonEncode(json, serializer, value)
+        memoryCache[rawCacheKey] = jsonString
         if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
             plaintextCache[rawCacheKey] = CachedPlaintext(
-                rawString, TimeSource.Monotonic.markNow() + plaintextCacheTtl
+                jsonString, TimeSource.Monotonic.markNow() + plaintextCacheTtl
             )
         }
+
+        // Route through the same coalescing channel as `putDirect`, but await the
+        // batch's commit. Concurrent suspend `put` calls and concurrent `putDirect`
+        // calls land in the same batch and share a single `applyBatch` transaction.
+        val deferred = CompletableDeferred<Unit>()
+        writeChannel.send(
+            PendingWrite.Encrypted(
+                userKey = key,
+                rawCacheKey = rawCacheKey,
+                jsonString = jsonString,
+                alias = keyAlias(key),
+                protection = protection,
+                requireUnlockedDevice = requireUnlockedDevice,
+                completion = deferred,
+            )
+        )
+        deferred.await()
     }
 
     private suspend fun putPlainSuspend(key: String, value: Any?, serializer: KSerializer<*>) {
+        // Optimistic in-memory state (matches `putPlainDirect`).
         dirtyKeys.add(key)
         protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(null)
 
-        val storedValue: StoredValue = if (value == null) {
-            StoredValue.Text(NULL_SENTINEL)
-        } else when (value) {
-            is Boolean, is Int, is Long, is Float, is Double, is String -> primitiveToStoredValue(value)
-            else -> StoredValue.Text(jsonEncode(json, serializer, value))
+        val toCache: Any = if (value == null) NULL_SENTINEL
+        else when (value) {
+            is Boolean, is Int, is Long, is Float, is Double, is String -> value
+            else -> jsonEncode(json, serializer, value)
         }
-        storage.applyBatch(listOf(
-            StorageOp.Put(valueRawKey(key), storedValue),
-            StorageOp.Put(metaRawKey(key), StoredValue.Text(buildMetaJson(null))),
-            StorageOp.Delete(key),
-            StorageOp.Delete(legacyEncryptedRawKey(key)),
-            StorageOp.Delete(legacyProtectionRawKey(key)),
-        ))
+        memoryCache[key] = toCache
 
-        memoryCache[key] = if (value == null) NULL_SENTINEL else storedValue.toCacheValue()
+        val storedInBatch: Any = if (value == null) NULL_SENTINEL
+        else when (value) {
+            is Boolean, is Int, is Long, is Float, is Double, is String -> value
+            else -> jsonEncode(json, serializer, value)
+        }
+
+        val deferred = CompletableDeferred<Unit>()
+        writeChannel.send(
+            PendingWrite.Plain(
+                userKey = key,
+                rawCacheKey = key,
+                value = storedInBatch,
+                completion = deferred,
+            )
+        )
+        deferred.await()
     }
 
     fun deleteDirect(key: String) {
@@ -822,19 +892,27 @@ internal class KSafeCore(
     }
 
     suspend fun delete(key: String) {
-        storage.applyBatch(listOf(
-            StorageOp.Delete(valueRawKey(key)),
-            StorageOp.Delete(key),
-            StorageOp.Delete(metaRawKey(key)),
-            StorageOp.Delete(legacyEncryptedRawKey(key)),
-            StorageOp.Delete(legacyProtectionRawKey(key)),
-        ))
-        engine.deleteKeySuspend(keyAlias(key))
-        memoryCache.remove(key)
-        memoryCache.remove(legacyEncryptedRawKey(key))
-        plaintextCache.remove(key)
-        plaintextCache.remove(legacyEncryptedRawKey(key))
+        // Optimistic in-memory cleanup (matches `deleteDirect`).
+        val rawKey = key
+        val encKeyName = legacyEncryptedRawKey(key)
+        dirtyKeys.add(rawKey)
+        dirtyKeys.add(encKeyName)
+        memoryCache.remove(rawKey)
+        memoryCache.remove(encKeyName)
+        plaintextCache.remove(rawKey)
+        plaintextCache.remove(encKeyName)
         protectionMap.remove(key)
+
+        // Route through the coalescer so concurrent deletes + writes share batches.
+        val deferred = CompletableDeferred<Unit>()
+        writeChannel.send(
+            PendingWrite.Delete(
+                userKey = key,
+                rawCacheKey = rawKey,
+                completion = deferred,
+            )
+        )
+        deferred.await()
     }
 
     suspend fun clearAll() {
