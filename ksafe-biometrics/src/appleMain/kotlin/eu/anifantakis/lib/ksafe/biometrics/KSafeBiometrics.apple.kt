@@ -43,6 +43,7 @@ private fun updateBiometricSession(scope: String, timestamp: Long) {
 internal actual suspend fun platformVerifyBiometric(
     reason: String,
     authorizationDuration: BiometricAuthorizationDuration?,
+    allowDeviceCredentialFallback: Boolean,
 ): Boolean {
     if (authorizationDuration != null && authorizationDuration.duration > 0) {
         val scope = authorizationDuration.scope ?: ""
@@ -62,7 +63,7 @@ internal actual suspend fun platformVerifyBiometric(
 
     return suspendCancellableCoroutine { continuation ->
         CoroutineScope(Dispatchers.Main).launch {
-            runLAContextEvaluate(reason) { success ->
+            runLAContextEvaluate(reason, allowDeviceCredentialFallback) { success ->
                 if (success && authorizationDuration != null) {
                     updateBiometricSession(authorizationDuration.scope ?: "", currentTimeMillis())
                 }
@@ -75,6 +76,7 @@ internal actual suspend fun platformVerifyBiometric(
 internal actual fun platformVerifyBiometricDirect(
     reason: String,
     authorizationDuration: BiometricAuthorizationDuration?,
+    allowDeviceCredentialFallback: Boolean,
     onResult: (Boolean) -> Unit,
 ) {
     CoroutineScope(Dispatchers.Main).launch {
@@ -94,7 +96,7 @@ internal actual fun platformVerifyBiometricDirect(
             onResult(true)
             return@launch
         }
-        runLAContextEvaluate(reason) { success ->
+        runLAContextEvaluate(reason, allowDeviceCredentialFallback) { success ->
             if (success && authorizationDuration != null) {
                 updateBiometricSession(authorizationDuration.scope ?: "", currentTimeMillis())
             }
@@ -116,12 +118,17 @@ internal actual fun platformClearBiometricAuth(scope: String?) {
 }
 
 @OptIn(ExperimentalForeignApi::class, ExperimentalNativeApi::class)
-private fun runLAContextEvaluate(reason: String, onResult: (Boolean) -> Unit) {
+private fun runLAContextEvaluate(
+    reason: String,
+    allowDeviceCredentialFallback: Boolean,
+    onResult: (Boolean) -> Unit,
+) {
     val context = platform.LocalAuthentication.LAContext()
-    // macOS: use DeviceOwnerAuthentication so Touch ID, password, and Apple Watch all work.
-    // iOS: restrict to biometrics only (Face ID / Touch ID); password fallback is handled by
-    // the OS independently via LAPolicyDeviceOwnerAuthenticationWithBiometrics.
-    val policy = if (Platform.osFamily == OsFamily.MACOSX) {
+    // Choose policy based on platform defaults and the caller's credential-fallback preference.
+    // macOS default is DeviceOwnerAuthentication (Touch ID + password + Apple Watch) because
+    // many Macs have no Touch ID; biometrics-only is still available when the caller opts in.
+    // iOS default is biometrics-only; password fallback is opt-in.
+    val policy = if (allowDeviceCredentialFallback) {
         platform.LocalAuthentication.LAPolicyDeviceOwnerAuthentication
     } else {
         platform.LocalAuthentication.LAPolicyDeviceOwnerAuthenticationWithBiometrics

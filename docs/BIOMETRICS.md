@@ -29,13 +29,13 @@ On Android, the library auto-initializes via a `ContentProvider` declared in its
 
 ### 3 - Platform behaviour
 
-| Platform | What it does |
-|----------|--------------|
-| Android | Real `BiometricPrompt` — BIOMETRIC_STRONG + DEVICE_CREDENTIAL |
-| iOS device | Real `LAContext` — Face ID / Touch ID |
-| iOS simulator | Returns `true` (no biometric hardware) |
-| macOS | Real `LAContext` — Touch ID, login password, or Apple Watch unlock. Always produces a prompt regardless of hardware. |
-| JVM, JS, WasmJS | Returns `true` (no biometric hardware) — useful for shared business logic in KMP |
+| Platform | `allowDeviceCredentialFallback = true` (default) | `allowDeviceCredentialFallback = false` |
+|----------|--------------------------------------------------|----------------------------------------|
+| Android | `BiometricPrompt` — BIOMETRIC_STRONG + DEVICE_CREDENTIAL | `BiometricPrompt` — BIOMETRIC_STRONG only (Cancel button shown) |
+| iOS device | `LAContext` — Face ID / Touch ID + password | `LAContext` — Face ID / Touch ID only |
+| iOS simulator | Returns `true` (no biometric hardware) | Returns `true` |
+| macOS | `LAContext` — Touch ID, password, or Apple Watch | `LAContext` — Touch ID only (fails gracefully on Macs without Touch ID) |
+| JVM, JS, WasmJS | Returns `true` | Returns `true` |
 
 ## Two APIs
 

@@ -272,17 +272,23 @@ object BiometricHelper {
     }
 
     /**
-     * Authenticate the user with biometrics/device credential.
+     * Authenticate the user with biometrics, optionally allowing device credential fallback.
      *
      * This suspends until authentication succeeds or fails.
      * If no Activity is immediately available, waits up to [activityWaitTimeoutMs] for one.
      * Must NOT be called from the Main thread (will deadlock).
      *
      * @param subtitle The subtitle to display in the prompt.
+     * @param allowDeviceCredentialFallback When `true`, accepts PIN/password/pattern as a
+     *        fallback (`BIOMETRIC_STRONG | DEVICE_CREDENTIAL`). When `false`, restricts to
+     *        biometrics only (`BIOMETRIC_STRONG`); a Cancel button is shown instead.
      * @throws BiometricActivityNotFoundException if no FragmentActivity becomes available within timeout
      * @throws BiometricAuthException if authentication fails or is cancelled
      */
-    suspend fun authenticate(subtitle: String = promptSubtitle) {
+    suspend fun authenticate(
+        subtitle: String = promptSubtitle,
+        allowDeviceCredentialFallback: Boolean = true,
+    ) {
         val fragmentActivity = waitForFragmentActivity()
 
         if (fragmentActivity == null) {
@@ -302,14 +308,17 @@ object BiometricHelper {
             }
         }
 
-        // Now show the biometric prompt
-        showBiometricPrompt(fragmentActivity, subtitle)
+        showBiometricPrompt(fragmentActivity, subtitle, allowDeviceCredentialFallback)
     }
 
     /**
      * Shows the BiometricPrompt on the given activity.
      */
-    private suspend fun showBiometricPrompt(activity: FragmentActivity, subtitle: String): Unit = suspendCancellableCoroutine { continuation ->
+    private suspend fun showBiometricPrompt(
+        activity: FragmentActivity,
+        subtitle: String,
+        allowDeviceCredentialFallback: Boolean,
+    ): Unit = suspendCancellableCoroutine { continuation ->
         // BiometricPrompt must be created and shown on the main thread
         activity.runOnUiThread {
             try {
@@ -340,15 +349,27 @@ object BiometricHelper {
                     }
                 )
 
-                val promptInfo = BiometricPrompt.PromptInfo.Builder()
-                    .setTitle(promptTitle)
-                    .setSubtitle(subtitle)
-                    .setConfirmationRequired(confirmationRequired)
-                    .setAllowedAuthenticators(
-                        BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                        BiometricManager.Authenticators.DEVICE_CREDENTIAL
-                    )
-                    .build()
+                // DEVICE_CREDENTIAL cannot coexist with a negative button; biometrics-only
+                // mode must supply one so the user can dismiss the prompt.
+                val promptInfo = if (allowDeviceCredentialFallback) {
+                    BiometricPrompt.PromptInfo.Builder()
+                        .setTitle(promptTitle)
+                        .setSubtitle(subtitle)
+                        .setConfirmationRequired(confirmationRequired)
+                        .setAllowedAuthenticators(
+                            BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                            BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                        )
+                        .build()
+                } else {
+                    BiometricPrompt.PromptInfo.Builder()
+                        .setTitle(promptTitle)
+                        .setSubtitle(subtitle)
+                        .setConfirmationRequired(confirmationRequired)
+                        .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+                        .setNegativeButtonText("Cancel")
+                        .build()
+                }
 
                 biometricPrompt.authenticate(promptInfo)
 

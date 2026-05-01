@@ -32,6 +32,7 @@ private fun updateBiometricSession(scope: String, timestamp: Long) {
 internal actual suspend fun platformVerifyBiometric(
     reason: String,
     authorizationDuration: BiometricAuthorizationDuration?,
+    allowDeviceCredentialFallback: Boolean,
 ): Boolean {
     if (authorizationDuration != null && authorizationDuration.duration > 0) {
         val scope = authorizationDuration.scope ?: ""
@@ -43,7 +44,7 @@ internal actual suspend fun platformVerifyBiometric(
     }
 
     return try {
-        BiometricHelper.authenticate(reason)
+        BiometricHelper.authenticate(reason, allowDeviceCredentialFallback)
         if (authorizationDuration != null) {
             updateBiometricSession(authorizationDuration.scope ?: "", System.currentTimeMillis())
         }
@@ -63,10 +64,11 @@ internal actual suspend fun platformVerifyBiometric(
 internal actual fun platformVerifyBiometricDirect(
     reason: String,
     authorizationDuration: BiometricAuthorizationDuration?,
+    allowDeviceCredentialFallback: Boolean,
     onResult: (Boolean) -> Unit,
 ) {
     CoroutineScope(Dispatchers.Default + SupervisorJob()).launch {
-        onResult(platformVerifyBiometric(reason, authorizationDuration))
+        onResult(platformVerifyBiometric(reason, authorizationDuration, allowDeviceCredentialFallback))
     }
 }
 

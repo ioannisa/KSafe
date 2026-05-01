@@ -11,11 +11,13 @@ package eu.anifantakis.lib.ksafe.biometrics
 internal actual suspend fun platformVerifyBiometric(
     reason: String,
     authorizationDuration: BiometricAuthorizationDuration?,
+    allowDeviceCredentialFallback: Boolean,
 ): Boolean = true
 
 internal actual fun platformVerifyBiometricDirect(
     reason: String,
     authorizationDuration: BiometricAuthorizationDuration?,
+    allowDeviceCredentialFallback: Boolean,
     onResult: (Boolean) -> Unit,
 ) { onResult(true) }
 

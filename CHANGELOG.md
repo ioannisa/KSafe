@@ -11,6 +11,15 @@ Major release: KMP refactor + new platforms (macOS, Kotlin JS) + biometrics extr
 - **Native macOS targets** across all three modules (`:ksafe`, `:ksafe-compose`, `:ksafe-biometrics`). `macosX64` + `macosArm64` artifacts use the same Keychain + CryptoKit + Secure Enclave path as iOS via a shared `appleMain` source set; DataStore-backed on-disk store at `NSApplicationSupportDirectory`. Intel Macs without a T2 chip fall back to plain Keychain storage automatically.
 - **`SecurityChecker` macOS short-circuit.** `isDeviceRooted()` early-returns `false` on macOS; the iOS jailbreak heuristics (`/bin/sh`, `/etc/apt`, etc.) would have flagged every Mac as rooted otherwise.
 - **`macosTest` source set with 73 tests** mirroring `iosTest`: full common `KSafeTest` suite + macOS-specific coverage for storage location, security checker, encryption proof, and null-filename handling. All hygiene-isolated via `NSTemporaryDirectory()` + `FakeEncryption`.
+- **`allowDeviceCredentialFallback` parameter on `verifyBiometric` / `verifyBiometricDirect`.** New optional `Boolean` parameter (default `true`). When `false`, restricts authentication to biometrics only — no PIN/password/pattern fallback is offered. Android uses `BIOMETRIC_STRONG` without `DEVICE_CREDENTIAL` and auto-adds a Cancel button (required by `BiometricPrompt`); Apple platforms switch to `LAPolicyDeviceOwnerAuthenticationWithBiometrics`; JVM/JS/WasmJS ignore it.
+
+  ```kotlin
+  // Biometrics only — no PIN/password fallback
+  val ok = KSafeBiometrics.verifyBiometric(
+      reason = "Confirm payment",
+      allowDeviceCredentialFallback = false
+  )
+  ```
 
 ### Fixed
 

@@ -52,10 +52,10 @@ object KSafeBiometrics {
      * // Always prompt
      * val ok = KSafeBiometrics.verifyBiometric("Authenticate to delete account")
      *
-     * // Cache for 60s globally
+     * // Biometrics only — no PIN/password/pattern fallback
      * val ok = KSafeBiometrics.verifyBiometric(
      *     reason = "Authenticate",
-     *     authorizationDuration = BiometricAuthorizationDuration(60_000L)
+     *     allowDeviceCredentialFallback = false
      * )
      *
      * // Cache for 60s scoped to settings screen
@@ -68,12 +68,18 @@ object KSafeBiometrics {
      * @param reason The reason shown to the user for the biometric prompt.
      * @param authorizationDuration Optional duration configuration for caching successful
      *        authentication. If `null` (default), authentication is required every time.
+     * @param allowDeviceCredentialFallback When `true` (default), the prompt accepts device
+     *        credentials (PIN / password / pattern on Android; login password or Apple Watch
+     *        on macOS) as a fallback if biometrics fail or are not enrolled. Set to `false`
+     *        to restrict to biometrics only — the prompt will not offer a password fallback.
+     *        On JVM, JS, and WasmJS this parameter is ignored.
      * @return `true` if authentication succeeded, `false` if it failed or was cancelled.
      */
     suspend fun verifyBiometric(
         reason: String = "Authenticate to continue",
-        authorizationDuration: BiometricAuthorizationDuration? = null
-    ): Boolean = platformVerifyBiometric(reason, authorizationDuration)
+        authorizationDuration: BiometricAuthorizationDuration? = null,
+        allowDeviceCredentialFallback: Boolean = true,
+    ): Boolean = platformVerifyBiometric(reason, authorizationDuration, allowDeviceCredentialFallback)
 
     /**
      * Non-blocking variant of [verifyBiometric].
@@ -84,22 +90,25 @@ object KSafeBiometrics {
      *     if (success) { /* … */ }
      * }
      *
+     * // Biometrics only — no PIN/password/pattern fallback
      * KSafeBiometrics.verifyBiometricDirect(
-     *     reason = "Authenticate to save",
-     *     authorizationDuration = BiometricAuthorizationDuration(60_000L)
+     *     reason = "Authenticate",
+     *     allowDeviceCredentialFallback = false
      * ) { success -> /* ... */ }
      * ```
      *
      * @param reason The reason shown to the user for the biometric prompt.
      * @param authorizationDuration Optional duration configuration for caching successful
      *        authentication. If `null` (default), authentication is required every time.
+     * @param allowDeviceCredentialFallback See [verifyBiometric] for full description.
      * @param onResult Callback with `true` on success, `false` on failure or cancellation.
      */
     fun verifyBiometricDirect(
         reason: String = "Authenticate to continue",
         authorizationDuration: BiometricAuthorizationDuration? = null,
-        onResult: (Boolean) -> Unit
-    ) = platformVerifyBiometricDirect(reason, authorizationDuration, onResult)
+        allowDeviceCredentialFallback: Boolean = true,
+        onResult: (Boolean) -> Unit,
+    ) = platformVerifyBiometricDirect(reason, authorizationDuration, allowDeviceCredentialFallback, onResult)
 
     /**
      * Clears cached biometric authorization for a specific scope or all scopes.
@@ -120,11 +129,13 @@ object KSafeBiometrics {
 internal expect suspend fun platformVerifyBiometric(
     reason: String,
     authorizationDuration: BiometricAuthorizationDuration?,
+    allowDeviceCredentialFallback: Boolean,
 ): Boolean
 
 internal expect fun platformVerifyBiometricDirect(
     reason: String,
     authorizationDuration: BiometricAuthorizationDuration?,
+    allowDeviceCredentialFallback: Boolean,
     onResult: (Boolean) -> Unit,
 )
 
