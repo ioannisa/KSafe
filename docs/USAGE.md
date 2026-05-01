@@ -369,12 +369,12 @@ ksafe.putDirect("counter", 42)
 val n = ksafe.getDirect("counter", 0)
 ```
 
-> **Performance Note:** For bulk or concurrent operations, **always use the Direct API**. The Coroutine API waits for DataStore persistence on each call (~27 ms), while the Direct API returns immediately from the hot cache (~0.016 ms) — that's **>1500× faster** on writes.
+> **Performance Note:** For bulk or concurrent operations, **always use the Direct API**. The Coroutine API waits for DataStore persistence on each call (~54 ms), while the Direct API returns immediately from the hot cache (~0.010 ms) — that's **>5000× faster** on writes.
 
 | API | Read | Write | Best For |
 |-----|------|-------|----------|
-| `getDirect`/`putDirect` | 0.012 ms | 0.016 ms | UI, bulk ops, high throughput |
-| `get`/`put` (suspend) | 0.87 ms | 27 ms | When you must guarantee persistence |
+| `getDirect`/`putDirect` | 0.011 ms | 0.010 ms | UI, bulk ops, high throughput |
+| `get`/`put` (suspend) | 0.29 ms | 54 ms | When you must guarantee persistence |
 
 ## Write Mode API (Per-Entry Unlock Policy)
 

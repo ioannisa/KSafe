@@ -64,7 +64,7 @@ var counter by ksafe(0)
 counter++   // auto-encrypted (AES-256-GCM), auto-persisted, survives process death
 ```
 
-Read and write it like any normal Kotlin variable — no `suspend`, no `runBlocking`, no DataStore boilerplate, no explicit `encrypt`/`decrypt`. Reads hit a hot in-memory cache (~0.012ms); writes encrypt and flush in the background.
+Read and write it like any normal Kotlin variable — no `suspend`, no `runBlocking`, no DataStore boilerplate, no explicit `encrypt`/`decrypt`. Reads hit a hot in-memory cache (~0.011ms); writes encrypt and flush in the background.
 
 ### Don't need encryption? Same one-liner.
 
@@ -155,7 +155,7 @@ var tokens by ksafe(AuthTokens())
 install(Auth) {
   bearer {
     loadTokens {
-      // Reads atomic object from hot cache (~0.012ms). No disk. No suspend.
+      // Reads atomic object from hot cache (~0.011ms). No disk. No suspend.
       BearerTokens(tokens.accessToken, tokens.refreshToken)
     }
     refreshTokens {
@@ -439,12 +439,12 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 
 | API | Read | Write | Best For |
 |-----|------|-------|----------|
-| `getDirect`/`putDirect` | 0.012 ms | 0.016 ms | UI, bulk ops, high throughput |
-| `get`/`put` (suspend) | 0.87 ms | 27 ms | When you must guarantee persistence |
+| `getDirect`/`putDirect` | 0.011 ms | 0.010 ms | UI, bulk ops, high throughput |
+| `get`/`put` (suspend) | 0.29 ms | 54 ms | When you must guarantee persistence |
 
-**vs competitors (encrypted):** ~16× faster reads than KVault, ~19× faster than EncryptedSharedPreferences, ~40× faster encrypted writes than KVault. Unencrypted writes are competitive with SharedPreferences (0.016 ms vs 0.030 ms).
+**vs competitors (encrypted):** ~18× faster reads than both KVault and EncryptedSharedPreferences, ~56× faster encrypted writes than KVault, ~9× faster encrypted writes than EncryptedSharedPreferences. Unencrypted writes are ~4× faster than SharedPreferences (0.010 ms vs 0.040 ms).
 
-> Measured on representative Android hardware (Galaxy S24 Ultra), median across 4 full benchmark runs to filter out µs-scale variance. Real-world numbers depend on device, workload, and data size — see [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the methodology, full tables, cold-start numbers, and architecture notes.
+> Measured on representative Android hardware (Galaxy S24 Ultra) at 1000 iterations per cell, after the device has reached steady-state thermal/JIT behavior. Real-world numbers depend on device, workload, and data size — see [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the methodology, full tables, cold-start numbers, and architecture notes.
 
 
 ## Compatibility

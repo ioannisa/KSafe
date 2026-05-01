@@ -140,6 +140,17 @@ internal class KSafeCore(
     internal val cacheInitialized = KSafeAtomicFlag(false)
 
     /**
+     * Tracks whether this instance has ever observed an encrypted entry — set on the first
+     * encrypted write and on cache load if any encrypted entry is found on disk. Lets the
+     * read fast path skip [detectProtection]'s map lookups entirely when the store contains
+     * only plaintext values, which is the common case for apps using KSafe purely as a
+     * settings cache. Monotonic: once true, never reset (the cost of a stuck-true flag is
+     * one extra map lookup per read, identical to pre-flag behaviour).
+     */
+    @PublishedApi
+    internal val hasAnyEncryptedKey = KSafeAtomicFlag(false)
+
+    /**
      * Raw cache keys currently being written. Includes both canonical
      * (`__ksafe_value_foo`) and legacy encrypted (`encrypted_foo`) forms so
      * the background collector never stomps on an optimistic update.
@@ -156,7 +167,7 @@ internal class KSafeCore(
     private val writeChannel = Channel<PendingWrite>(Channel.UNLIMITED)
 
     private val writeCoalesceWindowMs = 16L   // ~1 frame at 60 fps
-    private val maxBatchSize = 50
+    private val maxBatchSize = 200
 
     /**
      * Upper bound on concurrent in-flight encrypt calls inside [processBatch].
@@ -410,6 +421,7 @@ internal class KSafeCore(
             validCacheKeys.add(cacheKey)
 
             if (explicitEncrypted) {
+                hasAnyEncryptedKey.set(true)
                 val encryptedString = (storedValue as? StoredValue.Text)?.value ?: continue
                 if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED ||
                     memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE
@@ -475,6 +487,11 @@ internal class KSafeCore(
      */
     @PublishedApi
     internal fun detectProtection(key: String): KSafeProtection? {
+        // Fast path: if this instance has never seen an encrypted entry (neither written
+        // nor loaded from disk), the value is definitely plaintext — skip the map lookups
+        // entirely. Single atomic-flag read replaces two `ConcurrentHashMap` operations.
+        if (!hasAnyEncryptedKey.get()) return null
+
         // 2.0 metadata is authoritative — including the "NONE" literal meaning
         // explicitly unencrypted. Only fall through to the legacy heuristic when
         // no 2.0 metadata exists at all (purely 1.x-written keys loaded from disk
@@ -678,6 +695,7 @@ internal class KSafeCore(
             val jsonString = if (value == null) NULL_SENTINEL else jsonEncode(json, serializer, value)
             memoryCache[rawCacheKey] = jsonString
             protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(protection)
+            hasAnyEncryptedKey.set(true)
 
             if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
                 plaintextCache[rawCacheKey] = CachedPlaintext(
@@ -736,6 +754,7 @@ internal class KSafeCore(
         val rawCacheKey = legacyEncryptedRawKey(key)
         dirtyKeys.add(rawCacheKey)
         protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(protection)
+        hasAnyEncryptedKey.set(true)
 
         val rawString = if (value == null) NULL_SENTINEL else jsonEncode(json, serializer, value)
         val encryptedBytes = withContext(Dispatchers.Default) {
