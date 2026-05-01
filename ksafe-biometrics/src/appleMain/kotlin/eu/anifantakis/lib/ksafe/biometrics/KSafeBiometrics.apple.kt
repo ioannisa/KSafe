@@ -8,16 +8,18 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.CoreFoundation.CFAbsoluteTimeGetCurrent
 import platform.Foundation.NSProcessInfo
 import kotlin.concurrent.AtomicReference
+import kotlin.experimental.ExperimentalNativeApi
+import kotlin.native.OsFamily
+import kotlin.native.Platform
 
 /**
  * Apple-platform implementation of [KSafeBiometrics] platform helpers.
  *
- * Real `LAContext` — Face ID / Touch ID on iOS, Touch ID / Apple Watch on macOS.
- * Returns `true` on the iOS Simulator (no biometric hardware available). On
- * macOS, `LAContext.evaluatePolicy` will itself surface a
- * `LAErrorBiometryNotAvailable` if the host has no Touch ID / Watch unlock —
- * we do not pre-detect that, callers receive `false` like any other
- * authentication failure.
+ * iOS: Face ID / Touch ID via `LAPolicyDeviceOwnerAuthenticationWithBiometrics`.
+ * Returns `true` on the iOS Simulator (no biometric hardware available).
+ *
+ * macOS: `LAPolicyDeviceOwnerAuthentication` — Touch ID, password, or Apple Watch
+ * unlock. Always produces a prompt; no hardware pre-detection needed.
  */
 
 private val biometricAuthSessions = AtomicReference<Map<String, Long>>(emptyMap())
@@ -59,11 +61,13 @@ internal actual suspend fun platformVerifyBiometric(
     }
 
     return suspendCancellableCoroutine { continuation ->
-        runLAContextEvaluate(reason) { success ->
-            if (success && authorizationDuration != null) {
-                updateBiometricSession(authorizationDuration.scope ?: "", currentTimeMillis())
+        CoroutineScope(Dispatchers.Main).launch {
+            runLAContextEvaluate(reason) { success ->
+                if (success && authorizationDuration != null) {
+                    updateBiometricSession(authorizationDuration.scope ?: "", currentTimeMillis())
+                }
+                continuation.resumeWith(Result.success(success))
             }
-            continuation.resumeWith(Result.success(success))
         }
     }
 }
@@ -111,10 +115,17 @@ internal actual fun platformClearBiometricAuth(scope: String?) {
     }
 }
 
-@OptIn(ExperimentalForeignApi::class)
+@OptIn(ExperimentalForeignApi::class, ExperimentalNativeApi::class)
 private fun runLAContextEvaluate(reason: String, onResult: (Boolean) -> Unit) {
     val context = platform.LocalAuthentication.LAContext()
-    val policy = platform.LocalAuthentication.LAPolicyDeviceOwnerAuthenticationWithBiometrics
+    // macOS: use DeviceOwnerAuthentication so Touch ID, password, and Apple Watch all work.
+    // iOS: restrict to biometrics only (Face ID / Touch ID); password fallback is handled by
+    // the OS independently via LAPolicyDeviceOwnerAuthenticationWithBiometrics.
+    val policy = if (Platform.osFamily == OsFamily.MACOSX) {
+        platform.LocalAuthentication.LAPolicyDeviceOwnerAuthentication
+    } else {
+        platform.LocalAuthentication.LAPolicyDeviceOwnerAuthenticationWithBiometrics
+    }
     context.evaluatePolicy(policy, localizedReason = reason) { success, _ ->
         CoroutineScope(Dispatchers.Main).launch { onResult(success) }
     }

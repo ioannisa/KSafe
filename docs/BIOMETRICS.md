@@ -1,6 +1,6 @@
 # Biometric Authentication
 
-The `:ksafe-biometrics` module provides a **standalone biometric authentication helper** for Android and iOS. It is a general-purpose utility that can protect **any action** in your app — KSafe persistence, API calls, navigation, in-app purchases, anything you want gated behind Face ID / Touch ID / Fingerprint.
+The `:ksafe-biometrics` module provides a **standalone biometric authentication helper** for Android, iOS, and macOS. It is a general-purpose utility that can protect **any action** in your app — KSafe persistence, API calls, navigation, in-app purchases, anything you want gated behind Face ID / Touch ID / Fingerprint.
 
 The module is **independent of `:ksafe`** — you can use it on its own (no storage library required), or alongside KSafe.
 
@@ -10,7 +10,7 @@ The module is **independent of `:ksafe`** — you can use it on its own (no stor
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe-biometrics:2.0.0-RC1")
+implementation("eu.anifantakis:ksafe-biometrics:2.0.0")
 ```
 
 That's it — no transitive dependency on `:ksafe`. Apps that don't need biometrics simply don't add this artifact.
@@ -34,6 +34,7 @@ On Android, the library auto-initializes via a `ContentProvider` declared in its
 | Android | Real `BiometricPrompt` — BIOMETRIC_STRONG + DEVICE_CREDENTIAL |
 | iOS device | Real `LAContext` — Face ID / Touch ID |
 | iOS simulator | Returns `true` (no biometric hardware) |
+| macOS | Real `LAContext` — Touch ID, login password, or Apple Watch unlock. Always produces a prompt regardless of hardware. |
 | JVM, JS, WasmJS | Returns `true` (no biometric hardware) — useful for shared business logic in KMP |
 
 ## Two APIs
@@ -188,6 +189,20 @@ BiometricHelper.confirmationRequired = true   // false to allow passive face-unl
 
 **Note:** On the iOS Simulator, biometric verification always returns `true` since there's no biometric hardware.
 
+### macOS
+
+No manifest entries or special entitlements are required for basic Touch ID / password authentication via `LocalAuthentication`.
+
+**Sandboxed apps** — if your app is distributed through the Mac App Store (sandboxed), add the `com.apple.security.device.biometrics` entitlement to your entitlements file to enable Touch ID:
+```xml
+<key>com.apple.security.device.biometrics</key>
+<true/>
+```
+
+**Unsandboxed apps** — Touch ID and password authentication work without any entitlement. On first Keychain access (when `:ksafe` is also used), macOS may show a system password prompt; suppress it by signing the app with a Keychain access group entitlement.
+
+**Fallback behaviour** — `LAPolicyDeviceOwnerAuthentication` is used on macOS, so the system automatically falls back to the macOS login password on machines without Touch ID (Mac mini, Intel MacBooks without T2, etc.). This means `verifyBiometric` always produces a real prompt and never silently returns `false` due to missing hardware.
+
 ## Complete Example
 
 ```kotlin
@@ -282,7 +297,7 @@ In 2.0 it moved to its own module ([issue #14](https://github.com/ioannisa/KSafe
 
 ```kotlin
 // After (2.0)
-// build.gradle.kts: + implementation("eu.anifantakis:ksafe-biometrics:2.0.0-RC1")
+// build.gradle.kts: + implementation("eu.anifantakis:ksafe-biometrics:2.0.0")  // or latest
 import eu.anifantakis.lib.ksafe.biometrics.KSafeBiometrics
 import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration
 
@@ -298,5 +313,6 @@ Method names and signatures are preserved — only the receiver and import paths
 - Two APIs: callback-based (`verifyBiometricDirect`) and suspend (`verifyBiometric`)
 - Optional duration caching with `BiometricAuthorizationDuration`
 - Scoped authorization for fine-grained control over cache invalidation
-- Works on Android (BiometricPrompt) and iOS (LocalAuthentication); JVM / JS / WasmJS return `true` so shared KMP business logic compiles unchanged
+- Works on Android (BiometricPrompt), iOS (LAContext — Face ID / Touch ID), and macOS (LAContext — Touch ID, password, or Apple Watch); JVM / JS / WasmJS return `true` so shared KMP business logic compiles unchanged
 - On Android, requires `AppCompatActivity`. Auto-init via ContentProvider — no `Application` changes needed.
+- On macOS, uses `LAPolicyDeviceOwnerAuthentication` so a real prompt is always shown even on Macs without Touch ID.

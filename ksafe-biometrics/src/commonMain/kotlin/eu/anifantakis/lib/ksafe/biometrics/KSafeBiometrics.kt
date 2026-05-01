@@ -30,6 +30,9 @@ package eu.anifantakis.lib.ksafe.biometrics
  *   Requires a `FragmentActivity` / `AppCompatActivity` to be visible.
  * - **iOS:** real Face ID / Touch ID via `LAContext`. Returns `true` on the simulator
  *   (no biometric hardware available).
+ * - **macOS:** Touch ID, password, or Apple Watch unlock via `LAContext`
+ *   (`LAPolicyDeviceOwnerAuthentication`). Always shows a prompt — falls back to the
+ *   macOS login password on machines without Touch ID.
  * - **JVM, JS, WasmJS:** no biometric hardware. All calls return `true` so shared
  *   business logic in `commonMain` can call into this module without branching.
  *   If you need a hard refusal on these platforms, gate the call in your own code.
