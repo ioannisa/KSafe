@@ -103,4 +103,74 @@ class KSafeBiometricsJvmTest {
         assertNotNull(ref1)
         assertTrue(ref1 === ref2, "KSafeBiometrics must be a Kotlin object singleton")
     }
+
+    // ── allowDeviceCredentialFallback ──────────────────────────────────────
+
+    /** `allowDeviceCredentialFallback = false` still returns `true` on JVM (no-op). */
+    @Test
+    fun verifyBiometric_biometricsOnly_returnsTrueOnJvm() = runBlocking {
+        val ok = KSafeBiometrics.verifyBiometric(
+            reason = "Authenticate",
+            allowDeviceCredentialFallback = false,
+        )
+        assertTrue(ok, "verifyBiometric with allowDeviceCredentialFallback=false must return true on JVM")
+    }
+
+    /** `allowDeviceCredentialFallback = true` (explicit) still returns `true` on JVM. */
+    @Test
+    fun verifyBiometric_credentialFallbackExplicitTrue_returnsTrueOnJvm() = runBlocking {
+        val ok = KSafeBiometrics.verifyBiometric(
+            reason = "Authenticate",
+            allowDeviceCredentialFallback = true,
+        )
+        assertTrue(ok)
+    }
+
+    /** `allowDeviceCredentialFallback` combined with `authorizationDuration` — no throws, returns `true`. */
+    @Test
+    fun verifyBiometric_biometricsOnly_withAuthorizationDuration_returnsTrueOnJvm() = runBlocking {
+        val ok = KSafeBiometrics.verifyBiometric(
+            reason = "Authenticate",
+            authorizationDuration = BiometricAuthorizationDuration(60_000L, scope = "test"),
+            allowDeviceCredentialFallback = false,
+        )
+        assertTrue(ok)
+    }
+
+    /** Direct variant: `allowDeviceCredentialFallback = false` calls back with `true` on JVM. */
+    @Test
+    fun verifyBiometricDirect_biometricsOnly_callsOnResultWithTrueOnJvm() {
+        val result = AtomicBoolean(false)
+        val latch = CountDownLatch(1)
+
+        KSafeBiometrics.verifyBiometricDirect(
+            reason = "Authenticate",
+            allowDeviceCredentialFallback = false,
+        ) { ok ->
+            result.set(ok)
+            latch.countDown()
+        }
+
+        assertTrue(latch.await(2, TimeUnit.SECONDS))
+        assertTrue(result.get(), "Callback must receive true on JVM even with allowDeviceCredentialFallback=false")
+    }
+
+    /** Direct variant: `allowDeviceCredentialFallback` + `authorizationDuration` — no throws, callback fires. */
+    @Test
+    fun verifyBiometricDirect_biometricsOnly_withAuthorizationDuration_callsOnResultOnJvm() {
+        val result = AtomicBoolean(false)
+        val latch = CountDownLatch(1)
+
+        KSafeBiometrics.verifyBiometricDirect(
+            reason = "Authenticate",
+            authorizationDuration = BiometricAuthorizationDuration(60_000L, scope = "test"),
+            allowDeviceCredentialFallback = false,
+        ) { ok ->
+            result.set(ok)
+            latch.countDown()
+        }
+
+        assertTrue(latch.await(2, TimeUnit.SECONDS))
+        assertTrue(result.get())
+    }
 }
