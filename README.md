@@ -155,7 +155,7 @@ var tokens by ksafe(AuthTokens())
 install(Auth) {
   bearer {
     loadTokens {
-      // Reads atomic object from hot cache (~0.006ms). No disk. No suspend.
+      // Reads atomic object from hot cache (~0.009ms). No disk. No suspend.
       BearerTokens(tokens.accessToken, tokens.refreshToken)
     }
     refreshTokens {
@@ -439,10 +439,10 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 
 | API | Read | Write | Best For |
 |-----|------|-------|----------|
-| `getDirect`/`putDirect` | 0.006 ms | 0.008 ms | UI, hot cache, fire-and-forget |
-| `get`/`put` (suspend) | 0.016 ms | 0.94 ms | Must guarantee persistence; multiple concurrent callers |
+| `getDirect`/`putDirect` | 0.009 ms | 0.008 ms | UI, hot cache, fire-and-forget |
+| `get`/`put` (suspend) | 0.026 ms | 0.95 ms | Must guarantee persistence; multiple concurrent callers |
 
-**vs competitors (encrypted):** ~14× faster reads than both KVault and EncryptedSharedPreferences, ~79× faster encrypted writes than KVault, ~12× faster encrypted writes than EncryptedSharedPreferences. Unencrypted writes are **~2× faster than MMKV** and ~2.6× faster than SharedPreferences.
+**vs competitors (encrypted):** ~17× faster reads than both KVault and EncryptedSharedPreferences, ~53× faster encrypted writes than KVault, ~8× faster encrypted writes than EncryptedSharedPreferences. Unencrypted writes are **~2× faster than MMKV** and ~2.4× faster than SharedPreferences.
 
 > Measured on representative Android hardware (Galaxy S24 Ultra). The suspend API benchmarks issue all iterations as concurrent coroutines (`GlobalScope.launch` + `joinAll`) — the natural usage pattern when multiple coroutines persist values in parallel. Real-world numbers depend on device, workload, and data size — see [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the methodology, full tables, cold-start numbers, and architecture notes.
 
