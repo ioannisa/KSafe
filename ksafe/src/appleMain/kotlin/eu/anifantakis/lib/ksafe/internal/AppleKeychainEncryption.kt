@@ -126,6 +126,21 @@ internal class AppleKeychainEncryption(
 
     private val keySizeBytes: Int = config.keySize / 8
 
+    /**
+     * In-process cache of unwrapped raw AES key bytes, keyed by the user-facing
+     * `keyId`. Without this every `encrypt`/`decrypt` triggers a fresh
+     * `SecItemCopyMatching` IPC into `securityd` (and, for SE-wrapped keys, an
+     * additional `SecKeyCreateDecryptedData` ECIES round-trip). Keychain bytes
+     * for a given alias are immutable for the alias's lifetime, so a simple
+     * `KSafeConcurrentMap` cache is sound: invalidated only via [deleteKey],
+     * never via accessibility updates (which preserve the bytes). The cache is
+     * not persisted — process restart re-populates lazily on first use.
+     *
+     * Brings the Apple engine in line with the per-alias `SecretKey` handle
+     * caches the Android and JVM engines already had — Apple was the outlier.
+     */
+    private val keyBytesCache = KSafeConcurrentMap<ByteArray>()
+
     // ================================================================
     // Helper layer. Every Keychain operation in this file used to open
     // its own `CFDictionaryCreateMutable` block, manually set the same
@@ -267,6 +282,7 @@ internal class AppleKeychainEncryption(
         deleteFromKeychain(seWrappedAccount(identifier))
         deleteSecureEnclaveKey(seTag(identifier))
         deleteFromKeychain(identifier)
+        keyBytesCache.remove(identifier)
     }
 
     // ================================================================
@@ -418,21 +434,30 @@ internal class AppleKeychainEncryption(
      * Retrieves an existing encryption key for decryption. Tries the SE-wrapped
      * account first, falls back to the plain account. Throws if neither exists —
      * decrypt has no "create on miss" semantics.
+     *
+     * Hits the in-process [keyBytesCache] before any Keychain IPC; the cache
+     * holds the unwrapped raw AES key, so SE-wrapped keys also avoid the
+     * `SecKeyCreateDecryptedData` ECIES round-trip on cache hit.
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     internal fun getExistingKeychainKey(keyId: String): ByteArray {
+        keyBytesCache[keyId]?.let { return it }
+
         val wrappedBytes = getExistingKeychainKeyRaw(seWrappedAccount(keyId))
-        if (wrappedBytes != null) {
+        val bytes = if (wrappedBytes != null) {
             val sePrivateKey = getSecureEnclaveKey(seTag(keyId))
                 ?: throw IllegalStateException("KSafe: SE key missing for wrapped AES key: $keyId")
             try {
-                return unwrapAesKey(sePrivateKey, wrappedBytes)
+                unwrapAesKey(sePrivateKey, wrappedBytes)
             } finally {
                 CFRelease(sePrivateKey)
             }
+        } else {
+            getExistingKeychainKeyRaw(keyId)
+                ?: throw IllegalStateException("KSafe: No encryption key found for identifier: $keyId")
         }
-        return getExistingKeychainKeyRaw(keyId)
-            ?: throw IllegalStateException("KSafe: No encryption key found for identifier: $keyId")
+        keyBytesCache[keyId] = bytes
+        return bytes
     }
 
     /**
@@ -440,6 +465,10 @@ internal class AppleKeychainEncryption(
      * [hardwareIsolated] is true the key is protected by an SE EC key pair (ECIES
      * wrap); transient failures propagate, genuine SE-unavailable errors fall back
      * to plain storage.
+     *
+     * Cache-first: a populated [keyBytesCache] entry short-circuits the entire
+     * SE/plain decision tree. The cached bytes are populated by the first
+     * lookup-or-create and remain valid until [deleteKey].
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     internal fun getOrCreateKeychainKey(
@@ -447,8 +476,10 @@ internal class AppleKeychainEncryption(
         hardwareIsolated: Boolean = false,
         requireUnlockedDevice: Boolean? = null,
     ): ByteArray {
-        if (hardwareIsolated) {
-            return try {
+        keyBytesCache[keyId]?.let { return it }
+
+        val bytes = if (hardwareIsolated) {
+            try {
                 getOrCreateKeychainKeyWithSE(keyId, requireUnlockedDevice)
             } catch (e: IllegalStateException) {
                 val msg = e.message ?: ""
@@ -459,8 +490,11 @@ internal class AppleKeychainEncryption(
                 // SE genuinely unavailable (simulator, old device, no entitlements)
                 getOrCreateKeychainKeyPlain(keyId, requireUnlockedDevice)
             }
+        } else {
+            getOrCreateKeychainKeyPlain(keyId, requireUnlockedDevice)
         }
-        return getOrCreateKeychainKeyPlain(keyId, requireUnlockedDevice)
+        keyBytesCache[keyId] = bytes
+        return bytes
     }
 
     /**
