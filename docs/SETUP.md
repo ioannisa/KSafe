@@ -15,16 +15,15 @@ expect val platformModule: Module
 // Android
 // ──────────────────────────────────────────────
 actual val platformModule = module {
-    // Fast, unencrypted — for everyday preferences
+    // Fast, plain writes — for everyday preferences
     single(named("prefs")) {
         KSafe(
             context = androidApplication(),
-            fileName = "prefs",
-            memoryPolicy = KSafeMemoryPolicy.PLAIN_TEXT
+            fileName = "prefs"
         )
     }
 
-    // Encrypted — for secrets (tokens, passwords, PII)
+    // Encrypted writes — for secrets (tokens, passwords, PII)
     single(named("vault")) {
         KSafe(
             context = androidApplication(),
@@ -34,20 +33,15 @@ actual val platformModule = module {
 }
 
 // ──────────────────────────────────────────────
-// iOS
+// iOS / macOS
 // ──────────────────────────────────────────────
 actual val platformModule = module {
     single(named("prefs")) {
-        KSafe(
-            fileName = "prefs",
-            memoryPolicy = KSafeMemoryPolicy.PLAIN_TEXT
-        )
+        KSafe(fileName = "prefs")
     }
 
     single(named("vault")) {
-        KSafe(
-            fileName = "vault"
-        )
+        KSafe(fileName = "vault")
     }
 }
 
@@ -56,10 +50,7 @@ actual val platformModule = module {
 // ──────────────────────────────────────────────
 actual val platformModule = module {
     single(named("prefs")) {
-        KSafe(
-            fileName = "prefs",
-            memoryPolicy = KSafeMemoryPolicy.PLAIN_TEXT
-        )
+        KSafe(fileName = "prefs")
     }
 
     single(named("vault")) {
@@ -72,10 +63,7 @@ actual val platformModule = module {
 // ──────────────────────────────────────────────
 actual val platformModule = module {
     single(named("prefs")) {
-        KSafe(
-            fileName = "prefs",
-            memoryPolicy = KSafeMemoryPolicy.PLAIN_TEXT
-        )
+        KSafe(fileName = "prefs")
     }
 
     single(named("vault")) {

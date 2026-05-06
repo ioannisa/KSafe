@@ -77,15 +77,16 @@ KSafe's defining performance trait is that synchronous reads (`getDirect`) hit a
 
 **Cold-start safety.** If `getDirect` is called before the background preload finishes, it falls back to a one-shot blocking read so the value is correct. After that, the cache is warm and all reads are instant.
 
-### Three memory policies
+### Four memory policies
 
 What lives in the cache changes by policy:
 
 | Policy | Cache contents | Read cost | Trade-off |
 |---|---|---|---|
-| `PLAIN_TEXT` | Decrypted plaintext (forever) | O(1) lookup | Fastest, but sensitive data sits in RAM |
-| `ENCRYPTED` (default) | Base64 ciphertext only | AES-GCM decrypt every read | Nothing plaintext in RAM; slower per read |
-| `ENCRYPTED_WITH_TIMED_CACHE` | Ciphertext + a TTL-bounded plaintext side cache | First read decrypts, subsequent reads within the TTL are O(1) | Compose / SwiftUI re-render scenarios where the same key is read many times |
+| `LAZY_PLAIN_TEXT` (default) | Base64 ciphertext at rest; plaintext appears in the side cache after first read of each key and stays | First read decrypts, subsequent reads O(1) forever | Cheapest cold start *and* fastest steady-state reads; same RAM exposure as `PLAIN_TEXT` for keys you've actually read |
+| `PLAIN_TEXT` (discouraged) | Decrypted plaintext (forever, eagerly populated at cold start) | O(1) lookup | Cold start pays $O(n)$ Keystore round-trips up front; can push first-read latency into ANR territory on Android with thousands of encrypted keys |
+| `ENCRYPTED` | Base64 ciphertext only | AES-GCM decrypt every read | Nothing plaintext in RAM at rest; slower per read |
+| `ENCRYPTED_WITH_TIMED_CACHE` | Ciphertext + a TTL-bounded plaintext side cache | First read decrypts, subsequent reads within the TTL are O(1) | Compose / SwiftUI re-render scenarios where the same encrypted value is read many times per frame and you want plaintext evicted after a window |
 
 Web is forced to `PLAIN_TEXT` regardless of what the consumer requests — WebCrypto is async-only, and the synchronous `getDirect` path can't decrypt on demand. The cache must hold pre-decrypted values.
 
@@ -103,7 +104,7 @@ The fix is **dirty-key tracking**. Every key with an in-flight write is added to
 
 **Cold-start fallback for sync reads.** A `getDirect` call that races the preload (the cache hasn't received its first snapshot yet) blocks once on `runBlockingOnPlatform { ensureCacheReadySuspend() }`, then proceeds with the now-warm cache. After cache warm-up, all reads are O(1) memory lookups. On Web the blocking path throws; the catch falls through to returning the caller's `defaultValue`, since browsers can't block the main thread.
 
-**Parallel decrypt during preload (`PLAIN_TEXT` memory mode).** When the cache is populated from disk and the memory policy is `PLAIN_TEXT`, every encrypted entry needs to be decrypted before it lands in the cache. The classification pass over the snapshot stays sequential (it mutates `validCacheKeys` and `protectionByKey`), but the actual `engine.decryptSuspend(...)` calls are deferred into a `pendingDecrypts` list and then flushed concurrently inside a `coroutineScope { … }` with a `Semaphore(8)` cap. Each decrypt is mostly waiting on Keystore IPC; the bounded fan-out lets up to eight round-trips overlap without flooding Binder. A 1500-key encrypted store cold-starts in roughly 35 ms in `PLAIN_TEXT` mode (1500 Keystore round-trips, parallelised eight at a time, ~23 µs per key amortised) instead of the 15+ seconds that serial decryption required in v1.x. `ENCRYPTED` mode skips the decryption pass entirely — it stashes ciphertext into the cache and defers decryption to read time — so its cold start is ~0.06 ms regardless of how many encrypted keys are stored; only the orphan-cleanup probe runs, and that too is parallelised.
+**Parallel decrypt during preload (`PLAIN_TEXT` memory mode only).** When the cache is populated from disk and the memory policy is `PLAIN_TEXT`, every encrypted entry needs to be decrypted before it lands in the cache. The classification pass over the snapshot stays sequential (it mutates `validCacheKeys` and `protectionByKey`), but the actual `engine.decryptSuspend(...)` calls are deferred into a `pendingDecrypts` list and then flushed concurrently inside a `coroutineScope { … }` with a `Semaphore(8)` cap. Each decrypt is mostly waiting on Keystore IPC; the bounded fan-out lets up to eight round-trips overlap without flooding Binder. A 1500-key encrypted store cold-starts in roughly 35 ms in `PLAIN_TEXT` mode (1500 Keystore round-trips, parallelised eight at a time, ~23 µs per key amortised) instead of the 15+ seconds that serial decryption required in v1.x. **The new default `LAZY_PLAIN_TEXT` skips this pass entirely** — it stashes ciphertext into the cache exactly like `ENCRYPTED` and defers each decrypt to the first read of that key, so its cold start is ~0.06 ms regardless of how many encrypted keys are stored (only the orphan-cleanup probe runs, and that too is parallelised). `ENCRYPTED` and `ENCRYPTED_WITH_TIMED_CACHE` likewise skip the bulk decrypt at cold start. The bulk-decrypt pass is therefore only paid by callers who explicitly opt in to the (now discouraged) `PLAIN_TEXT` policy or by the Web target where it's forced.
 
 ## The two-interface decomposition
 

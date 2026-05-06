@@ -285,10 +285,24 @@ class KSafe @PublishedApi internal constructor(
  */
 enum class KSafeMemoryPolicy {
     /**
-     * **High Performance (Default).**
-     * Data is decrypted once upon loading and stored as plain text in RAM.
-     * Reads are instant ($O(1)$ memory lookup).
-     * Use this for UI state, settings, and general data.
+     * **Discouraged — worst cold-start performance.**
+     * Every encrypted entry is decrypted at cold-start load time and stored as plain text in RAM.
+     * Reads in steady state are instant ($O(1)$ memory lookup), but cold start pays for every
+     * encrypted entry up front: $O(n)$ Keystore round-trips (parallelised in batches of 8 but
+     * still serial-IPC bound). On large encrypted stores under poor Keystore conditions this
+     * can push first-read latency into ANR territory on Android.
+     *
+     * **Why this is no longer the default:** [LAZY_PLAIN_TEXT] gives identical steady-state
+     * read performance with cheap cold-start — decryption is deferred until each key is
+     * actually read, then cached permanently. Apps that touch every key still pay the same
+     * total cost; apps that read a subset pay only for what they use.
+     *
+     * Plaintext also sits in RAM for the full process lifetime (same as [LAZY_PLAIN_TEXT]
+     * after first read), so the security profile is unchanged.
+     *
+     * Prefer [LAZY_PLAIN_TEXT] (the default) unless you have a specific reason to force
+     * eager decryption — e.g. you want to surface decrypt failures synchronously at startup
+     * rather than at first read.
      */
     PLAIN_TEXT,
 
@@ -316,7 +330,29 @@ enum class KSafeMemoryPolicy {
      *
      * Configure the TTL via the `plaintextCacheTtl` constructor parameter (default: 5 seconds).
      */
-    ENCRYPTED_WITH_TIMED_CACHE
+    ENCRYPTED_WITH_TIMED_CACHE,
+
+    /**
+     * **Lazy High Performance (Default).**
+     * Cold start is cheap — encrypted entries stay as Base64 ciphertext in the primary cache,
+     * exactly like [ENCRYPTED]. The first read of each key decrypts on demand and stores the
+     * plaintext in a secondary cache permanently. Every subsequent read for that key is an
+     * $O(1)$ memory lookup — same performance as [PLAIN_TEXT].
+     *
+     * **Trade-offs:**
+     *  - Cold start: as fast as [ENCRYPTED] (no bulk decryption).
+     *  - First read of each key: pays a single decrypt round-trip (~1–3 ms).
+     *  - Subsequent reads: as fast as [PLAIN_TEXT].
+     *  - Memory: each key, once read, holds both ciphertext and plaintext (~2× the cost of
+     *    pure [PLAIN_TEXT] in steady state).
+     *
+     * Spreads the decryption cost across actual read access instead of paying it up front,
+     * so apps that only read a handful of keys never pay for the rest.
+     *
+     * **Use case:** general-purpose default. Best balance of cold-start latency and
+     * steady-state read performance for the common case.
+     */
+    LAZY_PLAIN_TEXT
 }
 
 /**

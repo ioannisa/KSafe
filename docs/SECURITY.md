@@ -226,14 +226,14 @@ KSafe provides enterprise-grade encrypted persistence using DataStore Preference
 
 **What KSafe does NOT protect against:**
 - ❌ Sophisticated root-hiding tools (e.g., Magisk Hide) — detection can be bypassed
-- ❌ Memory dump attacks while app is running (mitigated by `ENCRYPTED` or `ENCRYPTED_WITH_TIMED_CACHE` memory policy)
+- ❌ Memory dump attacks while app is running (mitigated by `ENCRYPTED` or `ENCRYPTED_WITH_TIMED_CACHE` memory policy — the default `LAZY_PLAIN_TEXT` and the eager `PLAIN_TEXT` both leave plaintext in RAM after first read)
 - ❌ Device owner with physical access and device unlock credentials
 - ❌ Compromised OS or hardware
 
 **Recommendations:**
 - Use `KSafeSecurityPolicy.Strict` for high-security apps (Banking, Medical, Enterprise)
-- Use `KSafeMemoryPolicy.ENCRYPTED` for highly sensitive data (tokens, passwords)
-- Use `KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE` for encrypted data accessed frequently during UI rendering (Compose recomposition, SwiftUI re-render)
+- Use `KSafeMemoryPolicy.ENCRYPTED` for highly sensitive data (tokens, passwords) — the default `LAZY_PLAIN_TEXT` keeps plaintext in RAM permanently for any key that's been read at least once
+- Use `KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE` for encrypted data accessed frequently during UI rendering (Compose recomposition, SwiftUI re-render) where you want plaintext evicted after a window
 - Combine with biometric verification for critical operations
 - Never store master secrets client-side; prefer server-derived tokens
 - Consider certificate pinning for API communications

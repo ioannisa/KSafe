@@ -73,7 +73,7 @@ private fun isSimulator(): Boolean =
  *   underscores). If null, the default datastore name is used.
  * @param lazyLoad Defer cache preload until first access.
  * @param memoryPolicy How decrypted values live in RAM (default
- *   [KSafeMemoryPolicy.ENCRYPTED]).
+ *   [KSafeMemoryPolicy.LAZY_PLAIN_TEXT]).
  * @param config Cryptographic + JSON configuration.
  * @param securityPolicy Runtime security checks (jailbreak / debugger / etc.).
  *   On macOS the jailbreak check short-circuits to `false` — the iOS path
@@ -120,7 +120,7 @@ private fun isSimulator(): Boolean =
 fun KSafe(
     fileName: String? = null,
     lazyLoad: Boolean = false,
-    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.LAZY_PLAIN_TEXT,
     config: KSafeConfig = KSafeConfig(),
     securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
     plaintextCacheTtl: Duration = 5.seconds,
@@ -142,7 +142,7 @@ fun KSafe(
 internal fun KSafe(
     fileName: String? = null,
     lazyLoad: Boolean = false,
-    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.LAZY_PLAIN_TEXT,
     config: KSafeConfig = KSafeConfig(),
     securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
     plaintextCacheTtl: Duration = 5.seconds,

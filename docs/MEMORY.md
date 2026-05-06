@@ -5,20 +5,39 @@ Control the trade-off between performance and security for data in RAM:
 ```Kotlin
 val ksafe = KSafe(
     fileName = "secrets",
-    memoryPolicy = KSafeMemoryPolicy.ENCRYPTED // Default
+    memoryPolicy = KSafeMemoryPolicy.LAZY_PLAIN_TEXT // Default
 )
 ```
 
 | Policy | Best For | RAM Contents | Read Cost | Security |
 |--------|----------|-------------|-----------|----------|
-| `PLAIN_TEXT` | User settings, themes | Plaintext (forever) | O(1) lookup | Low — all data exposed in memory |
-| `ENCRYPTED` (Default) | Tokens, passwords | Ciphertext only | AES-GCM decrypt every read | High — nothing plaintext in RAM |
-| `ENCRYPTED_WITH_TIMED_CACHE` | Compose/SwiftUI screens | Ciphertext + short-lived plaintext | First read decrypts, then O(1) for TTL | Medium — plaintext only for recently-accessed keys, only for seconds |
+| `LAZY_PLAIN_TEXT` (Default) | General-purpose: settings, tokens, app state | Ciphertext at rest; plaintext appears after first read of each key and stays | First read decrypts, then O(1) forever | Low (after first read) — same exposure as `PLAIN_TEXT` for keys you've actually touched |
+| `PLAIN_TEXT` (discouraged) | Apps that want decrypt failures surfaced synchronously at startup | Plaintext (forever, eagerly decrypted at cold start) | O(1) lookup | Low — all data exposed in memory; cold start pays $O(n)$ Keystore round-trips up front |
+| `ENCRYPTED` | Tokens, passwords, financial data | Ciphertext only | AES-GCM decrypt every read | High — nothing plaintext in RAM |
+| `ENCRYPTED_WITH_TIMED_CACHE` | Compose/SwiftUI screens accessing the same encrypted value many times per frame | Ciphertext + short-lived plaintext (TTL) | First read of a window decrypts, then O(1) for TTL | Medium — plaintext only for recently-accessed keys, only for seconds |
 
-All three policies encrypt data on disk. The difference is how data is handled in memory:
-- **PLAIN_TEXT:** Maximum performance — decrypts once on load, stores plain values forever
-- **ENCRYPTED:** Maximum security — stores ciphertext in RAM, decrypts on-demand every read
-- **ENCRYPTED_WITH_TIMED_CACHE:** Best balance — stores ciphertext in RAM, but caches decrypted values for a configurable TTL
+All four policies encrypt data on disk. The difference is how data is handled in memory:
+- **LAZY_PLAIN_TEXT:** Best general-purpose default. Cold start as cheap as `ENCRYPTED` (no bulk decrypts). First read of each key decrypts on demand and caches the plaintext permanently. Subsequent reads as fast as `PLAIN_TEXT`.
+- **PLAIN_TEXT:** Discouraged. Eagerly decrypts every encrypted entry at cold start, which can push first-read latency into ANR territory on Android with thousands of encrypted keys. Only useful when you want decrypt failures surfaced synchronously at startup rather than at first read.
+- **ENCRYPTED:** Maximum security — stores ciphertext in RAM, decrypts on every read. Nothing plaintext sits in RAM at rest.
+- **ENCRYPTED_WITH_TIMED_CACHE:** Like `LAZY_PLAIN_TEXT` but with a TTL — plaintext is evicted after a configurable duration. Use when you need plaintext briefly for UI bursts but don't want it to live in RAM permanently.
+
+### LAZY_PLAIN_TEXT — The Default
+
+Cold start treats encrypted entries exactly like `ENCRYPTED`: each one stays as Base64 ciphertext in the primary cache. No bulk decryption runs at startup. The first time you read a key, KSafe decrypts it once, stores the plaintext in the secondary plaintext cache, and returns it. Every subsequent read for that key hits the plaintext cache directly — no Keystore round-trip, no decryption — and is identical in speed to `PLAIN_TEXT`.
+
+The decryption cost is therefore **paid per key, on first access, never repeated**. Apps that read every key after construction pay roughly the same total cost as `PLAIN_TEXT`, just spread over time. Apps that only touch a subset of keys pay only for the keys they read. There is no eager up-front cost.
+
+The in-RAM exposure is the same as `PLAIN_TEXT` *for keys you've actually read at least once*: the plaintext stays cached until process exit (or `clearAll()`). Keys you never read keep their plaintext entirely off-RAM. If you need ciphertext-at-rest semantics for sensitive values, opt into `ENCRYPTED` or `ENCRYPTED_WITH_TIMED_CACHE` for those instances explicitly.
+
+```kotlin
+val ksafe = KSafe(fileName = "general")  // LAZY_PLAIN_TEXT by default
+
+ksafe.getDirect("user_name", "anon")     // first read: 1 decrypt, plaintext cached
+ksafe.getDirect("user_name", "anon")     // every read after: pure memory lookup
+ksafe.getDirect("seldom_used", "")       // first read of a different key: 1 decrypt
+// Keys you never read are never decrypted — never enter RAM as plaintext.
+```
 
 ### ENCRYPTED_WITH_TIMED_CACHE — The Balanced Policy
 
@@ -60,7 +79,7 @@ KSafe(
     context: Context,
     fileName: String? = null,
     lazyLoad: Boolean = false,
-    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.LAZY_PLAIN_TEXT,
     config: KSafeConfig = KSafeConfig(),
     securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
     plaintextCacheTtl: Duration = 5.seconds,  // only used with ENCRYPTED_WITH_TIMED_CACHE
@@ -72,18 +91,18 @@ KSafe(
 KSafe(
     fileName: String? = null,
     lazyLoad: Boolean = false,
-    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.LAZY_PLAIN_TEXT,
     config: KSafeConfig = KSafeConfig(),
     securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
     plaintextCacheTtl: Duration = 5.seconds,
     baseDir: File? = null                     // override the default DataStore directory (default: ~/.eu_anifantakis_ksafe)
 )
 
-// iOS
+// iOS / macOS (shared appleMain factory)
 KSafe(
     fileName: String? = null,
     lazyLoad: Boolean = false,
-    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.LAZY_PLAIN_TEXT,
     config: KSafeConfig = KSafeConfig(),
     securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
     plaintextCacheTtl: Duration = 5.seconds,

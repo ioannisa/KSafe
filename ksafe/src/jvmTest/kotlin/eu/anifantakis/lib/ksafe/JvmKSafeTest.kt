@@ -328,6 +328,11 @@ class JvmKSafeTest : KSafeTest() {
 
         val ksafe = KSafe(
             fileName = generateUniqueFileName(),
+            // ENCRYPTED policy — this test exercises decrypt-on-every-read so a mid-session
+            // engine fail flips reads to defaults. The default LAZY_PLAIN_TEXT policy would
+            // cache the plaintext after the first successful decrypt and shield later reads
+            // from the engine fail, defeating the test.
+            memoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
             testEngine = engine
         )
         delay(300) // Let background collector + cleanup complete (no orphans yet)
@@ -382,7 +387,11 @@ class JvmKSafeTest : KSafeTest() {
         }
 
         val fileName2 = generateUniqueFileName()
-        val ksafe2setup = KSafe(fileName = fileName2, testEngine = engine2)
+        val ksafe2setup = KSafe(
+            fileName = fileName2,
+            memoryPolicy = KSafeMemoryPolicy.ENCRYPTED, // see note above
+            testEngine = engine2
+        )
         delay(300)
 
         ksafe2setup.put("cleanup_target", "will_be_orphaned")

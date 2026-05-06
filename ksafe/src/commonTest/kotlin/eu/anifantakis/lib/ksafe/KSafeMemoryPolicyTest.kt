@@ -11,11 +11,11 @@ class KSafeMemoryPolicyTest {
 
     // ============ ENUM VALUES ============
 
-    /** Verifies enum has exactly 3 values: PLAIN_TEXT, ENCRYPTED, and ENCRYPTED_WITH_TIMED_CACHE */
+    /** Verifies enum has exactly 4 values: PLAIN_TEXT, ENCRYPTED, ENCRYPTED_WITH_TIMED_CACHE, LAZY_PLAIN_TEXT */
     @Test
     fun memoryPolicy_hasCorrectNumberOfValues() {
         val values = KSafeMemoryPolicy.entries
-        assertEquals(3, values.size, "KSafeMemoryPolicy should have exactly 3 values")
+        assertEquals(4, values.size, "KSafeMemoryPolicy should have exactly 4 values")
     }
 
     /** Verifies PLAIN_TEXT value exists in enum */
@@ -39,15 +39,23 @@ class KSafeMemoryPolicyTest {
         assertTrue(values.contains(KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE))
     }
 
+    /** Verifies LAZY_PLAIN_TEXT value exists in enum */
+    @Test
+    fun memoryPolicy_containsLazyPlainText() {
+        val values = KSafeMemoryPolicy.entries
+        assertTrue(values.contains(KSafeMemoryPolicy.LAZY_PLAIN_TEXT))
+    }
+
     // ============ ORDINAL ORDER ============
 
-    /** Verifies ordinal values: PLAIN_TEXT=0, ENCRYPTED=1, ENCRYPTED_WITH_TIMED_CACHE=2 */
+    /** Verifies ordinal values: PLAIN_TEXT=0, ENCRYPTED=1, ENCRYPTED_WITH_TIMED_CACHE=2, LAZY_PLAIN_TEXT=3 */
     @Test
     fun memoryPolicy_ordinalOrder() {
         // Verify the order as defined in the enum
         assertEquals(0, KSafeMemoryPolicy.PLAIN_TEXT.ordinal)
         assertEquals(1, KSafeMemoryPolicy.ENCRYPTED.ordinal)
         assertEquals(2, KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE.ordinal)
+        assertEquals(3, KSafeMemoryPolicy.LAZY_PLAIN_TEXT.ordinal)
     }
 
     // ============ NAME VALUES ============
@@ -68,6 +76,12 @@ class KSafeMemoryPolicyTest {
     @Test
     fun memoryPolicy_encryptedWithTimedCache_name() {
         assertEquals("ENCRYPTED_WITH_TIMED_CACHE", KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE.name)
+    }
+
+    /** Verifies LAZY_PLAIN_TEXT.name returns "LAZY_PLAIN_TEXT" */
+    @Test
+    fun memoryPolicy_lazyPlainText_name() {
+        assertEquals("LAZY_PLAIN_TEXT", KSafeMemoryPolicy.LAZY_PLAIN_TEXT.name)
     }
 
     // ============ VALUE OF ============
@@ -93,6 +107,13 @@ class KSafeMemoryPolicyTest {
         assertEquals(KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE, policy)
     }
 
+    /** Verifies valueOf("LAZY_PLAIN_TEXT") returns correct enum value */
+    @Test
+    fun memoryPolicy_valueOf_lazyPlainText() {
+        val policy = KSafeMemoryPolicy.valueOf("LAZY_PLAIN_TEXT")
+        assertEquals(KSafeMemoryPolicy.LAZY_PLAIN_TEXT, policy)
+    }
+
     // ============ USE CASES ============
 
     /** Verifies when expression covers all enum values exhaustively */
@@ -103,6 +124,7 @@ class KSafeMemoryPolicyTest {
                 KSafeMemoryPolicy.PLAIN_TEXT -> "Plain text in memory for performance"
                 KSafeMemoryPolicy.ENCRYPTED -> "Encrypted in memory for security"
                 KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE -> "Encrypted with short-lived plaintext cache"
+                KSafeMemoryPolicy.LAZY_PLAIN_TEXT -> "Encrypted at rest, lazily decrypted into a permanent plaintext side cache"
             }
             assertTrue(description.isNotEmpty())
         }
@@ -115,8 +137,12 @@ class KSafeMemoryPolicyTest {
         assertEquals(KSafeMemoryPolicy.PLAIN_TEXT, KSafeMemoryPolicy.PLAIN_TEXT)
         assertEquals(KSafeMemoryPolicy.ENCRYPTED, KSafeMemoryPolicy.ENCRYPTED)
         assertEquals(KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE, KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE)
+        assertEquals(KSafeMemoryPolicy.LAZY_PLAIN_TEXT, KSafeMemoryPolicy.LAZY_PLAIN_TEXT)
         assertTrue(KSafeMemoryPolicy.PLAIN_TEXT != KSafeMemoryPolicy.ENCRYPTED)
         assertTrue(KSafeMemoryPolicy.ENCRYPTED != KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE)
         assertTrue(KSafeMemoryPolicy.PLAIN_TEXT != KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE)
+        assertTrue(KSafeMemoryPolicy.LAZY_PLAIN_TEXT != KSafeMemoryPolicy.PLAIN_TEXT)
+        assertTrue(KSafeMemoryPolicy.LAZY_PLAIN_TEXT != KSafeMemoryPolicy.ENCRYPTED)
+        assertTrue(KSafeMemoryPolicy.LAZY_PLAIN_TEXT != KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE)
     }
 }

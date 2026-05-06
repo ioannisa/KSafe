@@ -50,7 +50,7 @@ private val fileNameRegex = Regex("[a-z][a-z0-9_]*")
  *   process. If null, the default datastore name is used.
  * @param lazyLoad Defer cache preload until first access.
  * @param memoryPolicy How decrypted values live in RAM (default
- *   [KSafeMemoryPolicy.ENCRYPTED]).
+ *   [KSafeMemoryPolicy.LAZY_PLAIN_TEXT]).
  * @param config Cryptographic + JSON configuration.
  * @param securityPolicy Runtime security checks (root / debugger / etc.).
  * @param plaintextCacheTtl TTL for the
@@ -66,7 +66,7 @@ private val fileNameRegex = Regex("[a-z][a-z0-9_]*")
 fun KSafe(
     fileName: String? = null,
     lazyLoad: Boolean = false,
-    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.LAZY_PLAIN_TEXT,
     config: KSafeConfig = KSafeConfig(),
     securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
     plaintextCacheTtl: Duration = 5.seconds,
@@ -90,7 +90,7 @@ fun KSafe(
 internal fun KSafe(
     fileName: String? = null,
     lazyLoad: Boolean = false,
-    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+    memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.LAZY_PLAIN_TEXT,
     config: KSafeConfig = KSafeConfig(),
     securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
     plaintextCacheTtl: Duration = 5.seconds,

@@ -404,7 +404,7 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 | **Nullable support** | :x: No | :x: No | :white_check_mark: Primitives (`*OrNull` getters) | :white_check_mark: Primitives | :white_check_mark: Primitives + objects + delegates * |
 | **Complex types** | :x: Manual | :x: Manual/Proto | :x: Manual | :x: Manual | :white_check_mark: Auto-serialization |
 | **Biometric auth** | :x: Manual | :x: Manual | :x: Manual | :x: Manual | :white_check_mark: Built-in |
-| **Memory policy** | N/A | N/A | N/A | N/A | :white_check_mark: 3 policies (PLAIN_TEXT / ENCRYPTED / TIMED_CACHE) |
+| **Memory policy** | N/A | N/A | N/A | N/A | :white_check_mark: 4 policies (LAZY_PLAIN_TEXT / PLAIN_TEXT / ENCRYPTED / TIMED_CACHE) |
 | **Hot cache** | :white_check_mark: Synchronized `HashMap` | :x: No (Flow only) | :white_check_mark: Platform-native cache | :x: No | :white_check_mark: `ConcurrentHashMap` + optimistic writes |
 | **Write batching** | :x: No | :x: No | :x: No | :x: No | :white_check_mark: 16ms coalescing |
 
@@ -527,15 +527,16 @@ Trade off performance vs. security for data in RAM:
 ```Kotlin
 val ksafe = KSafe(
     fileName = "secrets",
-    memoryPolicy = KSafeMemoryPolicy.ENCRYPTED // Default
+    memoryPolicy = KSafeMemoryPolicy.LAZY_PLAIN_TEXT // Default
 )
 ```
 
 | Policy | Best For | RAM Contents | Read Cost | Security |
 |--------|----------|-------------|-----------|----------|
-| `PLAIN_TEXT` | User settings, themes | Plaintext (forever) | O(1) lookup | Low — all data exposed in memory |
-| `ENCRYPTED` (Default) | Tokens, passwords | Ciphertext only | AES-GCM decrypt every read | High — nothing plaintext in RAM |
-| `ENCRYPTED_WITH_TIMED_CACHE` | Compose/SwiftUI screens | Ciphertext + short-lived plaintext | First read decrypts, then O(1) for TTL | Medium — plaintext only for recently-accessed keys, only for seconds |
+| `LAZY_PLAIN_TEXT` (Default) | General-purpose: settings, tokens, app state | Ciphertext at rest; plaintext appears after first read of each key and stays | First read decrypts, then O(1) forever | Low (after first read) — same exposure as `PLAIN_TEXT` for keys you've actually touched |
+| `PLAIN_TEXT` (discouraged) | Apps that want decrypt failures surfaced synchronously at startup | Plaintext (forever, eagerly decrypted at cold start) | O(1) lookup | Low — all data exposed in memory; cold start pays $O(n)$ Keystore round-trips up front |
+| `ENCRYPTED` | Tokens, passwords, financial data | Ciphertext only | AES-GCM decrypt every read | High — nothing plaintext in RAM |
+| `ENCRYPTED_WITH_TIMED_CACHE` | Compose/SwiftUI screens accessing the same encrypted value many times per frame | Ciphertext + short-lived plaintext (TTL) | First read of a window decrypts, then O(1) for TTL | Medium — plaintext only for recently-accessed keys, only for seconds |
 
 Timed cache details, constructor params, lock-state policies, multi-instance lock policies: [docs/MEMORY.md](docs/MEMORY.md).
 

@@ -137,6 +137,46 @@ internal class KSafeCore(
     @PublishedApi
     internal val plaintextCache = KSafeConcurrentMap<CachedPlaintext>()
 
+    /**
+     * `true` for any policy whose primary [memoryCache] holds Base64 ciphertext at rest:
+     * [KSafeMemoryPolicy.ENCRYPTED], [KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE], and
+     * [KSafeMemoryPolicy.LAZY_PLAIN_TEXT]. Cold-start skips bulk decryption and the post-batch
+     * CAS swap rewrites optimistic plaintext to ciphertext.
+     */
+    private val cacheHoldsCiphertext: Boolean =
+        memoryPolicy == KSafeMemoryPolicy.ENCRYPTED ||
+            memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE ||
+            memoryPolicy == KSafeMemoryPolicy.LAZY_PLAIN_TEXT
+
+    /**
+     * `true` for policies that maintain the secondary [plaintextCache]:
+     * [KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE] (TTL-bounded) and
+     * [KSafeMemoryPolicy.LAZY_PLAIN_TEXT] (permanent — no expiry check).
+     */
+    private val usesPlaintextSideCache: Boolean =
+        memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE ||
+            memoryPolicy == KSafeMemoryPolicy.LAZY_PLAIN_TEXT
+
+    /**
+     * Returns `true` if a plaintext-side-cache entry is still considered fresh.
+     * Under [KSafeMemoryPolicy.LAZY_PLAIN_TEXT] entries never expire — the side cache is
+     * a permanent lazily-populated plaintext store. Under
+     * [KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE] the configured TTL is honored.
+     */
+    private fun plaintextStillValid(cached: CachedPlaintext): Boolean =
+        memoryPolicy == KSafeMemoryPolicy.LAZY_PLAIN_TEXT ||
+            TimeSource.Monotonic.markNow() < cached.expiresAt
+
+    /**
+     * Computes the [ComparableTimeMark] to stamp on a fresh plaintext-side-cache entry.
+     * The value is unused by [plaintextStillValid] under [KSafeMemoryPolicy.LAZY_PLAIN_TEXT]
+     * (which always returns `true`), so any sane value works there — we use "now" so the
+     * arithmetic stays platform-safe across all KMP targets.
+     */
+    private fun plaintextExpiry(): ComparableTimeMark =
+        if (memoryPolicy == KSafeMemoryPolicy.LAZY_PLAIN_TEXT) TimeSource.Monotonic.markNow()
+        else TimeSource.Monotonic.markNow() + plaintextCacheTtl
+
     @PublishedApi
     internal val cacheInitialized = KSafeAtomicFlag(false)
 
@@ -435,9 +475,7 @@ internal class KSafeCore(
             if (explicitEncrypted) {
                 hasAnyEncryptedKey.set(true)
                 val encryptedString = (storedValue as? StoredValue.Text)?.value ?: continue
-                if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED ||
-                    memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE
-                ) {
+                if (cacheHoldsCiphertext) {
                     memoryCache[cacheKey] = encryptedString
                 } else {
                     pendingDecrypts += PendingDecrypt(userKey, cacheKey, encryptedString)
@@ -675,11 +713,12 @@ internal class KSafeCore(
 
         for (alias in aliasesToDelete) engine.deleteKeySuspend(alias)
 
-        // For ENCRYPTED memory policy: swap plaintext → ciphertext in cache.
+        // For ciphertext-at-rest policies: swap plaintext → ciphertext in cache.
         // CAS guard prevents overwriting a newer `putDirect` issued mid-batch.
-        if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED ||
-            memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE
-        ) {
+        // The plaintextCache (populated optimistically by the put path) keeps the
+        // plaintext available for fast reads under ENCRYPTED_WITH_TIMED_CACHE and
+        // LAZY_PLAIN_TEXT.
+        if (cacheHoldsCiphertext) {
             for (op in batch) {
                 if (op is PendingWrite.Encrypted) {
                     val base64 = b64Encode(encryptedCiphertext[op.userKey]!!)
@@ -761,10 +800,8 @@ internal class KSafeCore(
             protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(protection)
             hasAnyEncryptedKey.set(true)
 
-            if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
-                plaintextCache[rawCacheKey] = CachedPlaintext(
-                    jsonString, TimeSource.Monotonic.markNow() + plaintextCacheTtl
-                )
+            if (usesPlaintextSideCache) {
+                plaintextCache[rawCacheKey] = CachedPlaintext(jsonString, plaintextExpiry())
             }
 
             writeChannel.trySend(
@@ -824,10 +861,8 @@ internal class KSafeCore(
 
         val jsonString = if (value == null) NULL_SENTINEL else jsonEncode(json, serializer, value)
         memoryCache[rawCacheKey] = jsonString
-        if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
-            plaintextCache[rawCacheKey] = CachedPlaintext(
-                jsonString, TimeSource.Monotonic.markNow() + plaintextCacheTtl
-            )
+        if (usesPlaintextSideCache) {
+            plaintextCache[rawCacheKey] = CachedPlaintext(jsonString, plaintextExpiry())
         }
 
         // Route through the same coalescing channel as `putDirect`, but await the
@@ -950,12 +985,10 @@ internal class KSafeCore(
             var deserialized: Any? = null
             var success = false
 
-            if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED ||
-                memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE
-            ) {
-                if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
+            if (cacheHoldsCiphertext) {
+                if (usesPlaintextSideCache) {
                     val cached = plaintextCache[cacheKey]
-                    if (cached != null && TimeSource.Monotonic.markNow() < cached.expiresAt) {
+                    if (cached != null && plaintextStillValid(cached)) {
                         if (cached.value == NULL_SENTINEL) return null
                         try {
                             return jsonDecode(json, serializer, cached.value)
@@ -974,10 +1007,8 @@ internal class KSafeCore(
                         deserialized = if (candidate == NULL_SENTINEL) null
                         else jsonDecode(json, serializer, candidate)
                         success = true
-                        if (memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE) {
-                            plaintextCache[cacheKey] = CachedPlaintext(
-                                candidate, TimeSource.Monotonic.markNow() + plaintextCacheTtl
-                            )
+                        if (usesPlaintextSideCache) {
+                            plaintextCache[cacheKey] = CachedPlaintext(candidate, plaintextExpiry())
                         }
                     }
                 } catch (e: Throwable) {

@@ -2,6 +2,8 @@
 
 Here are benchmark results comparing KSafe against popular Android persistence libraries.
 
+> **2.0 default change:** the default memory policy was changed from `ENCRYPTED` (in earlier 2.x betas) to **`LAZY_PLAIN_TEXT`** for the 2.0 release. The numbers below were measured under the older default and remain accurate as a per-policy reference: `LAZY_PLAIN_TEXT` matches the `PLAIN_TEXT`-memory steady-state read numbers after first access (it caches plaintext permanently in the side cache on first read), and matches the `ENCRYPTED` cold-start numbers (it does no bulk decryption at startup). The first read of each key under `LAZY_PLAIN_TEXT` pays one decrypt — comparable to a single `ENCRYPTED`-memory read.
+
 ### Benchmark Environment
 
 - **Device:** Samsung Galaxy S24 Ultra (physical device, not emulator)
@@ -40,7 +42,7 @@ Here are benchmark results comparing KSafe against popular Android persistence l
 | KSafe (ENCRYPTED memory, Delegated) | 5.53 ms | |
 | KSafe (ENCRYPTED memory, Direct) | 10.62 ms | |
 
-> **Note on ENCRYPTED memory policy:** The ENCRYPTED memory policy keeps ciphertext in RAM and performs real AES-GCM decryption through the Android Keystore on every read (~3-10 ms depending on API style). This is the cost of hardware-backed cryptography. For most use cases, use `PLAIN_TEXT` (decrypts once at init) or `ENCRYPTED_WITH_TIMED_CACHE` (decrypts once per TTL window).
+> **Note on ENCRYPTED memory policy:** The ENCRYPTED memory policy keeps ciphertext in RAM and performs real AES-GCM decryption through the Android Keystore on every read (~3-10 ms depending on API style). This is the cost of hardware-backed cryptography. For most use cases, use the default `LAZY_PLAIN_TEXT` (first read decrypts, subsequent reads are O(1) memory lookups — same steady-state cost as `PLAIN_TEXT` without the eager cold-start penalty), or `ENCRYPTED_WITH_TIMED_CACHE` (decrypts once per TTL window when you want plaintext evicted after a short period).
 
 #### Encrypted Write Operations
 
