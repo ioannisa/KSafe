@@ -21,6 +21,13 @@ internal fun decodeBase64Web(encoded: String): ByteArray = Base64.decode(encoded
 private val fileNameRegex = Regex("[a-z][a-z0-9_]*")
 
 /**
+ * Sentinel for the per-datastore master key created by the v2 envelope. Web
+ * has no "device locked" concept so the locked-vs-unlocked split collapses to
+ * a single alias.
+ */
+private const val MASTER_KEY_DEFAULT: String = "__ksafe_master__"
+
+/**
  * Web (wasmJs + js) factory for [KSafe]. Resolves to the same call syntax as
  * the pre-2.0 `KSafe(...)` constructor.
  *
@@ -108,6 +115,7 @@ private fun buildWebKSafe(
         resolveKeyStorage = { _, _ -> KSafeKeyStorage.SOFTWARE },
         lazyLoad = lazyLoad,
         keyAlias = { userKey -> fileName?.let { "$it:$userKey" } ?: userKey },
+        masterAlias = { _ -> fileName?.let { "$it:$MASTER_KEY_DEFAULT" } ?: MASTER_KEY_DEFAULT },
     )
 
     return KSafe(

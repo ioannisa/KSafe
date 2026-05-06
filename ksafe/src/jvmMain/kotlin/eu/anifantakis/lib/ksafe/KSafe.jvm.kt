@@ -36,6 +36,15 @@ internal fun decodeBase64(encoded: String): ByteArray = Base64.decode(encoded)
 private val fileNameRegex = Regex("[a-z][a-z0-9_]*")
 
 /**
+ * Sentinel for the per-datastore master key created by the v2 envelope. JVM
+ * has no "device locked" concept so the locked-vs-unlocked split collapses
+ * to a single alias — both `requireUnlockedDevice = true` and `false` route
+ * here. Reserved by the leading-`__` / trailing-`__` convention used
+ * everywhere else in KSafe.
+ */
+private const val MASTER_KEY_DEFAULT: String = "__ksafe_master__"
+
+/**
  * JVM factory for [KSafe]. Resolves to the same call syntax as the pre-2.0
  * `KSafe(...)` constructor — Kotlin treats top-level `KSafe(...)` and a
  * primary constructor identically at the call site.
@@ -162,6 +171,7 @@ private fun buildJvmKSafe(
         resolveKeyStorage = { _, _ -> KSafeKeyStorage.SOFTWARE },
         lazyLoad = lazyLoad,
         keyAlias = { userKey -> fileName?.let { "$it:$userKey" } ?: userKey },
+        masterAlias = { _ -> fileName?.let { "$it:$MASTER_KEY_DEFAULT" } ?: MASTER_KEY_DEFAULT },
         onCancel = { storageScope.cancel() },
     )
 

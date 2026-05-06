@@ -31,6 +31,29 @@ internal object KeySafeMetadataManager {
     @PublishedApi
     internal const val ACCESS_POLICY_UNLOCKED = "unlocked"
 
+    /**
+     * Envelope version stored in the metadata `v` field.
+     *
+     * - **v1** (legacy): the entry's ciphertext was encrypted with a per-entry
+     *   key whose alias is derived from the user key. Reads must use that
+     *   per-entry alias.
+     * - **v2**: the entry was written by the master-key path. For
+     *   [KSafeProtection.DEFAULT] entries, ciphertext was encrypted with the
+     *   datastore's master key (the locked or unlocked variant, chosen by the
+     *   `u` field). For [KSafeProtection.HARDWARE_ISOLATED] entries, the per-
+     *   entry alias is still used (the v2 marker is along for the ride —
+     *   HARDWARE_ISOLATED never goes through the master key).
+     *
+     * No on-disk migration: existing v1 entries stay v1 until they're
+     * overwritten through the v2 write path.
+     */
+    @PublishedApi
+    internal const val ENVELOPE_VERSION_V1 = 1
+    @PublishedApi
+    internal const val ENVELOPE_VERSION_V2 = 2
+    @PublishedApi
+    internal const val ENVELOPE_VERSION_LATEST = ENVELOPE_VERSION_V2
+
     @PublishedApi
     internal fun legacyEncryptedRawKey(key: String): String = "$LEGACY_ENCRYPTED_PREFIX$key"
 
@@ -229,14 +252,19 @@ internal object KeySafeMetadataManager {
 
     /**
      * Builds compact metadata JSON payload.
+     *
+     * @param envelopeVersion The envelope version to write. Defaults to
+     *   [ENVELOPE_VERSION_LATEST] (v2). Test or migration code may pass
+     *   [ENVELOPE_VERSION_V1] explicitly to fabricate legacy entries.
      */
     @PublishedApi
     internal fun buildMetadataJson(
         protection: KSafeProtection?,
-        accessPolicy: String?
+        accessPolicy: String?,
+        envelopeVersion: Int = ENVELOPE_VERSION_LATEST,
     ): String {
         val payload = buildJsonObject {
-            put("v", 1)
+            put("v", envelopeVersion)
             put(
                 "p",
                 when (protection) {
@@ -248,6 +276,42 @@ internal object KeySafeMetadataManager {
             if (!accessPolicy.isNullOrEmpty()) put("u", accessPolicy)
         }
         return payload.toString()
+    }
+
+    /**
+     * Reads the envelope version from raw metadata.
+     *
+     * Returns [ENVELOPE_VERSION_V1] for:
+     * - null input (no metadata persisted, e.g. legacy entries),
+     * - the legacy literal forms ("DEFAULT" / "HARDWARE_ISOLATED" / "NONE"),
+     * - any JSON without a `v` field, or
+     * - parse failure.
+     *
+     * Otherwise returns the integer in `v`.
+     */
+    @PublishedApi
+    internal fun parseEnvelopeVersion(raw: String?): Int {
+        if (raw == null) return ENVELOPE_VERSION_V1
+        when (raw) {
+            "NONE", "DEFAULT", "HARDWARE_ISOLATED" -> return ENVELOPE_VERSION_V1
+        }
+        return try {
+            KSafeJson.codec.parseToJsonElement(raw)
+                .jsonObject["v"]?.jsonPrimitive?.content?.toIntOrNull()
+                ?: ENVELOPE_VERSION_V1
+        } catch (_: Exception) {
+            ENVELOPE_VERSION_V1
+        }
+    }
+
+    /**
+     * True if the entry's metadata records an "unlocked" access policy
+     * (the `u` field is `"unlocked"`). False otherwise — including for legacy
+     * metadata that has no `u` field, or any parse failure.
+     */
+    @PublishedApi
+    internal fun parseRequireUnlockedDevice(raw: String?): Boolean {
+        return parseAccessPolicy(raw) == ACCESS_POLICY_UNLOCKED
     }
 
     @PublishedApi

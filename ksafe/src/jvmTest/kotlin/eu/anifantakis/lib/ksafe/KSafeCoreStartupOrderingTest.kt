@@ -74,6 +74,7 @@ class KSafeCoreStartupOrderingTest {
                 migrateFired.complete(Unit)
             },
             keyAlias = { it },
+            masterAlias = { reqUnlocked -> if (reqUnlocked) "__test_master_locked__" else "__test_master__" },
         )
 
         // KSafeCore's collector runs on Dispatchers.Default (real

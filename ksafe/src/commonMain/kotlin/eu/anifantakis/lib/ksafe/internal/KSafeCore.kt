@@ -87,6 +87,20 @@ internal class KSafeCore(
      */
     @PublishedApi internal val keyAlias: (userKey: String) -> String,
     /**
+     * Builds the master Keystore/Keychain alias for the current datastore.
+     * Two aliases per datastore — one for relaxed accessibility
+     * (`requireUnlockedDevice = false`) and one for strict
+     * (`requireUnlockedDevice = true`). These hold AES keys shared across all
+     * v2 [KSafeProtection.DEFAULT] entries; HARDWARE_ISOLATED entries always
+     * use per-entry keys built via [keyAlias].
+     *
+     * Platform shells derive the master alias from the datastore filename
+     * using the same scheme as [keyAlias], substituting a reserved sentinel
+     * for the user-key part. JVM collapses both variants to a single alias
+     * (no lock concept on JVM, so the second key would be unused).
+     */
+    @PublishedApi internal val masterAlias: (requireUnlockedDevice: Boolean) -> String,
+    /**
      * Prefix used to recognise legacy-format encrypted entries on disk.
      * Default is `"encrypted_"`. iOS overrides this to `"${fileName}_"` when
      * a non-null filename was set, because pre-1.8 iOS builds wrote encrypted
@@ -130,6 +144,21 @@ internal class KSafeCore(
     /** Protection literal per user key ("NONE", "DEFAULT", "HARDWARE_ISOLATED"). */
     @PublishedApi
     internal val protectionMap = KSafeConcurrentMap<String>()
+
+    /**
+     * Per-encrypted-key envelope info. Tracks the envelope version (v1 or v2)
+     * and the per-entry `requireUnlockedDevice` recorded in metadata. The
+     * combination tells the read path which alias to decrypt under: v2 +
+     * `protection == DEFAULT` routes to the master alias picked by
+     * `requireUnlockedDevice`; otherwise the per-entry alias is used.
+     *
+     * Plain entries are never present in this map.
+     */
+    @PublishedApi
+    internal data class EncMeta(val envelopeVersion: Int, val requireUnlockedDevice: Boolean)
+
+    @PublishedApi
+    internal val encMetaMap = KSafeConcurrentMap<EncMeta>()
 
     @PublishedApi
     internal class CachedPlaintext(val value: String, val expiresAt: ComparableTimeMark)
@@ -222,6 +251,43 @@ internal class KSafeCore(
     init {
         startWriteConsumer()
         if (!lazyLoad) startBackgroundCollector()
+        prewarmMasterKeys()
+    }
+
+    /**
+     * Eagerly creates and caches both master keys (relaxed + strict) for this
+     * datastore. Runs on the write scope so it doesn't block construction:
+     * the worst case if the user issues a v2-DEFAULT write before this finishes
+     * is one extra Keystore IPC inside the engine's `getOrCreateSecretKey`
+     * lock — same outcome as the lazy-create path.
+     *
+     * The probe is a single `encryptSuspend(masterAlias, emptyBytes)` per
+     * variant: it triggers `getOrCreateSecretKey` (creating the alias if
+     * missing) and primes the engine's in-process key cache. The ciphertext
+     * is discarded.
+     *
+     * Failures are swallowed — typical reasons are a locked device on first
+     * launch (the strict variant requires unlock) or Keychain interaction-
+     * not-allowed. Either way the lazy-create path will retry on first real
+     * write.
+     */
+    private fun prewarmMasterKeys() {
+        writeScope.launch {
+            val probe = ByteArray(0)
+            for (requireUnlocked in listOf(false, true)) {
+                try {
+                    engine.encryptSuspend(
+                        identifier = masterAlias(requireUnlocked),
+                        data = probe,
+                        hardwareIsolated = false,
+                        requireUnlockedDevice = requireUnlocked,
+                    )
+                } catch (e: Throwable) {
+                    if (e is CancellationException) throw e
+                    /* swallow — lazy path will retry on first real write */
+                }
+            }
+        }
     }
 
     // ---- pending-write sealed hierarchy ----
@@ -254,7 +320,6 @@ internal class KSafeCore(
             override val userKey: String,
             override val rawCacheKey: String,
             val jsonString: String,
-            val alias: String,
             val protection: KSafeProtection,
             val requireUnlockedDevice: Boolean,
             override val completion: CompletableDeferred<Unit>? = null,
@@ -292,6 +357,45 @@ internal class KSafeCore(
     @PublishedApi
     internal fun defaultEncryptedMode(): KSafeWriteMode =
         KSafeWriteMode.Encrypted(requireUnlockedDevice = config.requireUnlockedDevice)
+
+    /**
+     * Picks the encryption alias for a *write*. v2 envelope routes
+     * [KSafeProtection.DEFAULT] through the master alias chosen by
+     * [requireUnlockedDevice]; [KSafeProtection.HARDWARE_ISOLATED] always
+     * uses the per-entry alias (the v2 marker is irrelevant for that branch).
+     */
+    @PublishedApi
+    internal fun aliasForWrite(
+        userKey: String,
+        protection: KSafeProtection,
+        requireUnlockedDevice: Boolean,
+    ): String {
+        if (protection == KSafeProtection.DEFAULT) return masterAlias(requireUnlockedDevice)
+        return keyAlias(userKey)
+    }
+
+    /**
+     * Picks the decryption alias for a *read*. Looks up the entry's recorded
+     * envelope version + unlock policy in [encMetaMap]; v2 + DEFAULT routes
+     * to the master alias (chosen by the entry's recorded
+     * `requireUnlockedDevice`); v1, plain, or HARDWARE_ISOLATED reads use
+     * the per-entry alias.
+     *
+     * For entries that have no [encMetaMap] entry yet (e.g. legacy on-disk
+     * data loaded before [updateCache] has populated it for that key), this
+     * defaults to the v1 per-entry alias — the safe choice, since v1 was the
+     * only on-disk envelope before this change.
+     */
+    @PublishedApi
+    internal fun aliasForRead(userKey: String, protection: KSafeProtection?): String {
+        val em = encMetaMap[userKey]
+        if (em != null && em.envelopeVersion >= KeySafeMetadataManager.ENVELOPE_VERSION_V2 &&
+            protection == KSafeProtection.DEFAULT
+        ) {
+            return masterAlias(em.requireUnlockedDevice)
+        }
+        return keyAlias(userKey)
+    }
 
     // ============================================================
     // Background collector — mirrors DataStore snapshotFlow into cache
@@ -369,16 +473,21 @@ internal class KSafeCore(
         // concurrently. Each probe is a Keystore IPC call and they don't contend on
         // shared state — Semaphore caps in-flight count to avoid flooding Binder
         // / Keychain on stores with thousands of keys.
-        data class Candidate(val rawKey: String, val userKey: String, val ciphertextB64: String)
+        data class Candidate(
+            val rawKey: String,
+            val userKey: String,
+            val ciphertextB64: String,
+            val protection: KSafeProtection,
+        )
 
         val candidates = snapshot.mapNotNull { (rawKey, value) ->
             // Preserve legacy encrypted entries — they predate the canonical VALUE_PREFIX.
             if (rawKey.startsWith(legacyEncryptedPrefix)) return@mapNotNull null
             if (!rawKey.startsWith(KeySafeMetadataManager.VALUE_PREFIX)) return@mapNotNull null
             val userKey = rawKey.removePrefix(KeySafeMetadataManager.VALUE_PREFIX)
-            if (userKey !in protectionByKey) return@mapNotNull null
+            val protection = protectionByKey[userKey] ?: return@mapNotNull null
             val encryptedString = (value as? StoredValue.Text)?.value ?: return@mapNotNull null
-            Candidate(rawKey, userKey, encryptedString)
+            Candidate(rawKey, userKey, encryptedString, protection)
         }
 
         if (candidates.isEmpty()) return
@@ -389,7 +498,7 @@ internal class KSafeCore(
                 async {
                     gate.withPermit {
                         try {
-                            engine.decryptSuspend(keyAlias(c.userKey), b64Decode(c.ciphertextB64))
+                            engine.decryptSuspend(aliasForRead(c.userKey, c.protection), b64Decode(c.ciphertextB64))
                             null
                         } catch (e: Throwable) {
                             if (e is CancellationException) throw e
@@ -441,11 +550,30 @@ internal class KSafeCore(
             accept = { userKey -> !isDirtyForUserKey(userKey) }
         ).toMutableMap()
 
+        // Populate encMetaMap from on-disk metadata BEFORE the second-pass
+        // decrypt — `aliasForRead` consults it to choose between the master
+        // alias (v2 + DEFAULT) and the per-entry alias (v1 / HARDWARE_ISOLATED).
+        // Legacy entries with no metadata or with literal-form metadata parse
+        // as v1, which routes through the per-entry alias unchanged.
+        for ((userKey, rawMeta) in protectionByKey) {
+            if (isDirtyForUserKey(userKey)) continue
+            // Skip plain entries — encMetaMap only tracks encrypted ones.
+            if (KeySafeMetadataManager.parseProtection(rawMeta) == null) continue
+            val env = KeySafeMetadataManager.parseEnvelopeVersion(rawMeta)
+            val unlocked = KeySafeMetadataManager.parseRequireUnlockedDevice(rawMeta)
+            encMetaMap[userKey] = EncMeta(envelopeVersion = env, requireUnlockedDevice = unlocked)
+        }
+
         // First pass: classify, populate plain entries directly, stash ENCRYPTED-mode
         // ciphertexts directly. Defer PLAIN_TEXT-memory decrypts to a second pass so
         // they can run concurrently — each decrypt is a Keystore IPC round-trip and
         // serialising them dominates cold-start time when the store has many keys.
-        data class PendingDecrypt(val userKey: String, val cacheKey: String, val ciphertextB64: String)
+        data class PendingDecrypt(
+            val userKey: String,
+            val cacheKey: String,
+            val ciphertextB64: String,
+            val protection: KSafeProtection,
+        )
         val pendingDecrypts = mutableListOf<PendingDecrypt>()
 
         for ((rawKey, storedValue) in snapshot) {
@@ -478,7 +606,9 @@ internal class KSafeCore(
                 if (cacheHoldsCiphertext) {
                     memoryCache[cacheKey] = encryptedString
                 } else {
-                    pendingDecrypts += PendingDecrypt(userKey, cacheKey, encryptedString)
+                    val protection = KeySafeMetadataManager.parseProtection(protectionByKey[userKey])
+                        ?: KSafeProtection.DEFAULT
+                    pendingDecrypts += PendingDecrypt(userKey, cacheKey, encryptedString, protection)
                 }
             } else {
                 memoryCache[cacheKey] = storedValue.toCacheValue()
@@ -494,7 +624,8 @@ internal class KSafeCore(
                     async {
                         gate.withPermit {
                             try {
-                                val plain = engine.decryptSuspend(keyAlias(p.userKey), b64Decode(p.ciphertextB64))
+                                val alias = aliasForRead(p.userKey, p.protection)
+                                val plain = engine.decryptSuspend(alias, b64Decode(p.ciphertextB64))
                                 memoryCache[p.cacheKey] = plain.decodeToString()
                             } catch (e: Throwable) {
                                 if (e is CancellationException) throw e
@@ -524,6 +655,15 @@ internal class KSafeCore(
         for (userKey in protectionMap.snapshot().keys) {
             if (!protectionByKey.containsKey(userKey) && !isDirtyForUserKey(userKey)) {
                 protectionMap.remove(userKey)
+            }
+        }
+
+        // Sync encMetaMap: drop entries that no longer have on-disk metadata
+        // (and aren't dirty). Adds/updates already happened in the pre-pass
+        // before the second-pass decrypt.
+        for (userKey in encMetaMap.snapshot().keys) {
+            if (!protectionByKey.containsKey(userKey) && !isDirtyForUserKey(userKey)) {
+                encMetaMap.remove(userKey)
             }
         }
 
@@ -646,17 +786,22 @@ internal class KSafeCore(
             if (op is PendingWrite.Encrypted) latestEncryptedByKey[op.userKey] = op
         }
 
-        // Encrypt the deduped set concurrently. Each entry has a distinct
-        // identifier, so the per-alias locks inside engines never contend, and
-        // the Keystore IPC pipelines instead of running serially.
+        // Encrypt the deduped set concurrently. v2 envelope routes DEFAULT
+        // entries through the datastore's master alias (one of two — locked or
+        // unlocked — chosen by `requireUnlockedDevice`); HARDWARE_ISOLATED
+        // entries keep their per-entry alias. The per-alias locks inside
+        // engines never contend across distinct identifiers, so DEFAULT writes
+        // serialise on the master alias's lock (cheap, in-process) while
+        // HARDWARE_ISOLATED encrypts pipeline freely.
         if (latestEncryptedByKey.isNotEmpty()) {
             val gate = Semaphore(maxParallelEncrypts)
             coroutineScope {
                 latestEncryptedByKey.values.map { op ->
                     async {
                         gate.withPermit {
+                            val alias = aliasForWrite(op.userKey, op.protection, op.requireUnlockedDevice)
                             op.userKey to engine.encryptSuspend(
-                                identifier = op.alias,
+                                identifier = alias,
                                 data = op.jsonString.encodeToByteArray(),
                                 hardwareIsolated = op.protection == KSafeProtection.HARDWARE_ISOLATED,
                                 requireUnlockedDevice = op.requireUnlockedDevice,
@@ -770,7 +915,20 @@ internal class KSafeCore(
                         ?: (snapshot[legacyEncryptedRawKey(key)] as? StoredValue.Text)?.value
                     if (enc != null) {
                         try {
-                            val plainBytes = engine.decryptSuspend(keyAlias(key), b64Decode(enc))
+                            // Snapshot-based read: derive the alias from the meta we
+                            // just parsed, not from encMetaMap (which may lag behind
+                            // a freshly arrived snapshot). v2 + DEFAULT routes to the
+                            // master alias; everything else uses the per-entry alias.
+                            val envVersion = KeySafeMetadataManager.parseEnvelopeVersion(metaRaw)
+                            val requireUnlocked = KeySafeMetadataManager.parseRequireUnlockedDevice(metaRaw)
+                            val alias = if (envVersion >= KeySafeMetadataManager.ENVELOPE_VERSION_V2 &&
+                                protection == KSafeProtection.DEFAULT
+                            ) {
+                                masterAlias(requireUnlocked)
+                            } else {
+                                keyAlias(key)
+                            }
+                            val plainBytes = engine.decryptSuspend(alias, b64Decode(enc))
                             val rawString = plainBytes.decodeToString()
                             if (rawString == NULL_SENTINEL) null
                             else jsonDecode(json, serializer, rawString)
@@ -798,6 +956,10 @@ internal class KSafeCore(
             val jsonString = if (value == null) NULL_SENTINEL else jsonEncode(json, serializer, value)
             memoryCache[rawCacheKey] = jsonString
             protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(protection)
+            encMetaMap[key] = EncMeta(
+                envelopeVersion = KeySafeMetadataManager.ENVELOPE_VERSION_LATEST,
+                requireUnlockedDevice = requireUnlockedDevice,
+            )
             hasAnyEncryptedKey.set(true)
 
             if (usesPlaintextSideCache) {
@@ -809,7 +971,6 @@ internal class KSafeCore(
                     userKey = key,
                     rawCacheKey = rawCacheKey,
                     jsonString = jsonString,
-                    alias = keyAlias(key),
                     protection = protection,
                     requireUnlockedDevice = requireUnlockedDevice,
                 )
@@ -825,6 +986,7 @@ internal class KSafeCore(
             }
             memoryCache[rawCacheKey] = toCache
             protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(null)
+            encMetaMap.remove(key)
 
             val storedInBatch: Any = if (value == null) NULL_SENTINEL
             else when (value) {
@@ -857,6 +1019,10 @@ internal class KSafeCore(
         val rawCacheKey = legacyEncryptedRawKey(key)
         dirtyKeys.add(rawCacheKey)
         protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(protection)
+        encMetaMap[key] = EncMeta(
+            envelopeVersion = KeySafeMetadataManager.ENVELOPE_VERSION_LATEST,
+            requireUnlockedDevice = requireUnlockedDevice,
+        )
         hasAnyEncryptedKey.set(true)
 
         val jsonString = if (value == null) NULL_SENTINEL else jsonEncode(json, serializer, value)
@@ -874,7 +1040,6 @@ internal class KSafeCore(
                 userKey = key,
                 rawCacheKey = rawCacheKey,
                 jsonString = jsonString,
-                alias = keyAlias(key),
                 protection = protection,
                 requireUnlockedDevice = requireUnlockedDevice,
                 completion = deferred,
@@ -887,6 +1052,7 @@ internal class KSafeCore(
         // Optimistic in-memory state (matches `putPlainDirect`).
         dirtyKeys.add(key)
         protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(null)
+        encMetaMap.remove(key)
 
         val toCache: Any = if (value == null) NULL_SENTINEL
         else when (value) {
@@ -923,6 +1089,7 @@ internal class KSafeCore(
         plaintextCache.remove(rawKey)
         plaintextCache.remove(encKeyName)
         protectionMap.remove(key)
+        encMetaMap.remove(key)
         writeChannel.trySend(PendingWrite.Delete(userKey = key, rawCacheKey = rawKey))
     }
 
@@ -937,6 +1104,7 @@ internal class KSafeCore(
         plaintextCache.remove(rawKey)
         plaintextCache.remove(encKeyName)
         protectionMap.remove(key)
+        encMetaMap.remove(key)
 
         // Route through the coalescer so concurrent deletes + writes share batches.
         val deferred = CompletableDeferred<Unit>()
@@ -955,6 +1123,14 @@ internal class KSafeCore(
         memoryCache.clear()
         plaintextCache.clear()
         protectionMap.clear()
+        encMetaMap.clear()
+        // Drop both master keys so the next datastore use starts from scratch.
+        // Per-entry HARDWARE_ISOLATED keys are best-effort cleaned up by the
+        // orphan sweep on next startup; they aren't tracked here.
+        for (reqUnlocked in listOf(false, true)) {
+            runCatching { engine.deleteKeySuspend(masterAlias(reqUnlocked)) }
+                .onFailure { if (it is CancellationException) throw it }
+        }
     }
 
     fun getKeyInfo(key: String): KSafeKeyInfo? {
@@ -1002,7 +1178,7 @@ internal class KSafeCore(
                 try {
                     val encryptedString = cachedValue as? String
                     if (encryptedString != null) {
-                        val plainBytes = engine.decrypt(keyAlias(key), b64Decode(encryptedString))
+                        val plainBytes = engine.decrypt(aliasForRead(key, protection), b64Decode(encryptedString))
                         val candidate = plainBytes.decodeToString()
                         deserialized = if (candidate == NULL_SENTINEL) null
                         else jsonDecode(json, serializer, candidate)

@@ -44,6 +44,14 @@ private const val SERVICE_NAME = "eu.anifantakis.ksafe"
 @PublishedApi
 internal const val KEY_PREFIX = "eu.anifantakis.ksafe"
 
+/**
+ * Sentinel user-key segments for the per-datastore master keys created by the
+ * v2 envelope. Reserved by the leading-`__` / trailing-`__` convention used
+ * everywhere else in KSafe — collisions with real user keys are impossible.
+ */
+private const val MASTER_KEY_DEFAULT: String = "__ksafe_master__"
+private const val MASTER_KEY_LOCKED: String = "__ksafe_master_locked__"
+
 @OptIn(ExperimentalForeignApi::class)
 private fun isSimulator(): Boolean =
     NSProcessInfo.processInfo.environment["SIMULATOR_UDID"] != null
@@ -267,6 +275,11 @@ private fun buildAppleKSafe(
     fun iosKeyAlias(userKey: String): String =
         listOfNotNull(KEY_PREFIX, fileName, userKey).joinToString(".")
 
+    fun iosMasterAlias(requireUnlockedDevice: Boolean): String {
+        val sentinel = if (requireUnlockedDevice) MASTER_KEY_LOCKED else MASTER_KEY_DEFAULT
+        return listOfNotNull(KEY_PREFIX, fileName, sentinel).joinToString(".")
+    }
+
     fun iosLegacyEncryptedKey(userKey: String): String =
         fileName?.let { "${it}_$userKey" } ?: KeySafeMetadataManager.legacyEncryptedRawKey(userKey)
 
@@ -323,6 +336,7 @@ private fun buildAppleKSafe(
         migrateAccessPolicy = { cleanupOrphanedKeychainEntriesSafe() },
         lazyLoad = lazyLoad,
         keyAlias = ::iosKeyAlias,
+        masterAlias = ::iosMasterAlias,
         legacyEncryptedPrefix = iosLegacyEncryptedPrefix(),
         legacyEncryptedKeyFor = ::iosLegacyEncryptedKey,
         modeTransformer = ::promoteMode,

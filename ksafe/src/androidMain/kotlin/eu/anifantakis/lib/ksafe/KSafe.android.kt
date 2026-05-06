@@ -36,6 +36,14 @@ private val fileNameRegex = Regex("[a-z][a-z0-9_]*")
 
 const val KEY_ALIAS_PREFIX: String = "eu.anifantakis.ksafe"
 
+/**
+ * Sentinel user-key segments for the per-datastore master keys created by the
+ * v2 envelope. Reserved by the leading-`__` / trailing-`__` convention used
+ * everywhere else in KSafe — collisions with real user keys are impossible.
+ */
+private const val MASTER_KEY_DEFAULT: String = "__ksafe_master__"
+private const val MASTER_KEY_LOCKED: String = "__ksafe_master_locked__"
+
 private val dataStoreCache = ConcurrentHashMap<String, DataStore<Preferences>>()
 
 /**
@@ -217,6 +225,10 @@ private fun buildAndroidKSafe(
         lazyLoad = lazyLoad,
         keyAlias = { userKey ->
             listOfNotNull(KEY_ALIAS_PREFIX, fileName, userKey).joinToString(".")
+        },
+        masterAlias = { requireUnlockedDevice ->
+            val sentinel = if (requireUnlockedDevice) MASTER_KEY_LOCKED else MASTER_KEY_DEFAULT
+            listOfNotNull(KEY_ALIAS_PREFIX, fileName, sentinel).joinToString(".")
         },
         modeTransformer = ::promoteMode,
         onCancel = {
