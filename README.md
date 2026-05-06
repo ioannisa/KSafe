@@ -64,7 +64,7 @@ var counter by ksafe(0)
 counter++   // auto-encrypted (AES-256-GCM), auto-persisted, survives process death
 ```
 
-Read and write it like any normal Kotlin variable — no `suspend`, no `runBlocking`, no DataStore boilerplate, no explicit `encrypt`/`decrypt`. Reads hit a hot in-memory cache (~0.006ms); writes encrypt and flush in the background.
+Read and write it like any normal Kotlin variable — no `suspend`, no `runBlocking`, no DataStore boilerplate, no explicit `encrypt`/`decrypt`. Reads hit a hot in-memory cache (~0.002ms); writes encrypt and flush in the background.
 
 ### Don't need encryption? Same one-liner.
 
@@ -155,13 +155,13 @@ var tokens by ksafe(AuthTokens())
 install(Auth) {
   bearer {
     loadTokens {
-      // Reads atomic object from hot cache (~0.009ms). No disk. No suspend.
+      // Reads atomic object from hot cache (~0.002ms). No disk. No suspend.
       BearerTokens(tokens.accessToken, tokens.refreshToken)
     }
     refreshTokens {
       val newInfo = api.refreshAuth(tokens.refreshToken)
 
-      // Atomic update: encrypts & persists as JSON in background (~13μs)
+      // Atomic update: encrypts & persists as JSON in background (~11μs under v2 master-key)
       tokens = AuthTokens(newInfo.accessToken, newInfo.refreshToken)
 
       BearerTokens(tokens.accessToken, tokens.refreshToken)
@@ -439,12 +439,12 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 
 | API | Read | Write | Best For |
 |-----|------|-------|----------|
-| `getDirect`/`putDirect` | 0.009 ms | 0.008 ms | UI, hot cache, fire-and-forget |
-| `get`/`put` (suspend) | 0.026 ms | 0.95 ms | Must guarantee persistence; multiple concurrent callers |
+| `getDirect`/`putDirect` | 0.002 ms | 0.004 ms | UI, hot cache, fire-and-forget |
+| `get`/`put` (suspend) | 0.021 ms | 0.62 ms | Must guarantee persistence; multiple concurrent callers |
 
-**vs competitors (encrypted):** ~17× faster reads than both KVault and EncryptedSharedPreferences, ~53× faster encrypted writes than KVault, ~8× faster encrypted writes than EncryptedSharedPreferences. Unencrypted writes are **~2× faster than MMKV** and ~2.4× faster than SharedPreferences.
+**vs competitors (encrypted):** ~21× faster reads than KVault and ~24× faster than EncryptedSharedPreferences; ~127× faster encrypted writes than KVault and ~14× faster than EncryptedSharedPreferences. Unencrypted writes are **~3× faster than MMKV** and ~3× faster than SharedPreferences.
 
-> Measured on representative Android hardware (Galaxy S24 Ultra). The suspend API benchmarks issue all iterations as concurrent coroutines (`GlobalScope.launch` + `joinAll`) — the natural usage pattern when multiple coroutines persist values in parallel. Real-world numbers depend on device, workload, and data size — see [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the methodology, full tables, cold-start numbers, and architecture notes.
+> Numbers reflect the **v2 envelope** introduced in 2.0 (per-datastore master AES key cached in-process, eliminating per-entry Keystore IPC for non-isolated encrypted ops). Measured on an AOSP Emulator (API 37) running on a MacBook Pro with the 18-core M5 Pro chip. Suspend API benchmarks issue all iterations as concurrent coroutines (`GlobalScope.launch` + `joinAll`) — the natural usage pattern when multiple coroutines persist values in parallel. Real-world numbers depend on device, workload, and data size — see [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the methodology, full tables, cold-start numbers, and architecture notes.
 
 
 ## Compatibility
