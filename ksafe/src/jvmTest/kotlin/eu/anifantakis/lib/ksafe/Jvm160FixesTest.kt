@@ -4,10 +4,10 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.test.runTest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Tests for the three fixes claimed in the v1.6.0 CHANGELOG:
@@ -268,31 +268,37 @@ class Jvm160FixesTest {
      * value (not DEFAULT from a stale/deleted key).
      */
     @Test
-    fun testDeleteKeyRaceWithConcurrentEncryption() = runTest {
+    fun testDeleteKeyRaceWithConcurrentEncryption() = runTest(timeout = 90.seconds) {
         val ksafe = KSafe(generateUniqueFileName())
         delay(200)
 
-        val running = AtomicBoolean(true)
         val writeReadMismatches = AtomicInteger(0)
         val exceptions = AtomicInteger(0)
 
-        // Writer/reader threads: continuously put + get on the same key
+        // Bounded test: each worker performs a fixed number of put/get cycles
+        // interleaved with the deleter's bounded delete cycles. Both arms have
+        // explicit yield() so neither monopolizes Dispatchers.Default.
+        //
+        // putDirect/getDirect are SYNCHRONOUS (non-suspending), so without
+        // yield() the worker tightly holds its OS thread for the full
+        // put+get sequence. With 5 such workers on a constrained pool, the
+        // deleter — which suspends via delay(50) and needs a free thread to
+        // resume — would be starved indefinitely (deadlock).
+        val workerIterations = 200
         val workers = (0 until 5).map { w ->
             launch(Dispatchers.Default) {
-                var seq = 0
-                while (running.get()) {
+                repeat(workerIterations) { i ->
                     try {
-                        val value = "worker${w}_seq${seq++}"
+                        val value = "worker${w}_seq$i"
                         ksafe.putDirect("contested_key", value)
                         val read = ksafe.getDirect("contested_key", "DEFAULT")
                         // After our write, read might get our value or a newer one
-                        // from another thread, but should never get DEFAULT
-                        // (unless a delete just happened, which is expected)
-                        // We don't count mismatches when delete is racing — instead
-                        // we verify no exceptions occur
+                        // from another thread, but should never throw an exception
+                        // (default value is expected when delete is racing).
                     } catch (e: Exception) {
                         exceptions.incrementAndGet()
                     }
+                    yield()
                 }
             }
         }
@@ -307,7 +313,6 @@ class Jvm160FixesTest {
                     exceptions.incrementAndGet()
                 }
             }
-            running.set(false)
         }
 
         deleter.join()

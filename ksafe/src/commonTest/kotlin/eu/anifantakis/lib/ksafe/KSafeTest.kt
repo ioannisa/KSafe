@@ -477,8 +477,13 @@ abstract class KSafeTest {
         val stateFlow = ksafe.getStateFlow(key, defaultValue, scope = sharingScope)
         assertEquals(defaultValue, stateFlow.value)
 
-        ksafe.put(key, "updated", KSafeWriteMode.Plain)
+        // Subscribe BEFORE writing so the put's resulting emission is observed
+        // deterministically. Putting before subscribing races against StateFlow's
+        // replay-of-current-value semantics — the new subscriber may see either
+        // "default" or "updated" depending on whether the write propagated first.
         stateFlow.test {
+            assertEquals(defaultValue, awaitItem())
+            ksafe.put(key, "updated", KSafeWriteMode.Plain)
             assertEquals("updated", awaitItem())
             cancelAndIgnoreRemainingEvents()
         }
@@ -496,8 +501,9 @@ abstract class KSafeTest {
         val stateFlow = ksafe.getStateFlow(key, defaultValue, scope = sharingScope)
         assertEquals(defaultValue, stateFlow.value)
 
-        ksafe.put(key, "secret")
         stateFlow.test {
+            assertEquals(defaultValue, awaitItem())
+            ksafe.put(key, "secret")
             assertEquals("secret", awaitItem())
             cancelAndIgnoreRemainingEvents()
         }

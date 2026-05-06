@@ -4,7 +4,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
-    alias(libs.plugins.androidLibrary)
+    alias(libs.plugins.android.kotlin.multiplatform.library)
     alias(libs.plugins.vanniktech.mavenPublish)
 
     alias(libs.plugins.kotlin.serialization)
@@ -14,11 +14,24 @@ group = "eu.anifantakis"
 version = "2.0.0"
 
 kotlin {
-    androidTarget {
-        publishLibraryVariants("release")
+    android {
+        namespace = "eu.anifantakis"
+        compileSdk = libs.versions.android.compileSdk.get().toInt()
+        minSdk = libs.versions.android.minSdk.get().toInt()
+
         @OptIn(ExperimentalKotlinGradlePluginApi::class)
         compilerOptions {
             jvmTarget.set(JvmTarget.JVM_11)
+        }
+
+        withHostTestBuilder {
+        }
+
+        withDeviceTestBuilder {
+            sourceSetTreeName = "test"
+        }.configure {
+            instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+            instrumentationRunnerArguments["clearPackageData"] = "true"
         }
     }
     listOf(
@@ -136,7 +149,7 @@ kotlin {
             implementation(libs.turbine)
         }
 
-        val androidInstrumentedTest by getting {
+        getByName("androidDeviceTest") {
             dependencies {
                 implementation(libs.androidx.runner)
                 implementation(libs.androidx.core)
@@ -159,30 +172,8 @@ kotlin {
     }
 }
 
-android {
-    namespace = "eu.anifantakis"
-    compileSdk = libs.versions.android.compileSdk.get().toInt()
-    defaultConfig {
-        minSdk = libs.versions.android.minSdk.get().toInt()
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        testInstrumentationRunnerArguments["clearPackageData"] = "true"
-    }
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
-    }
-
-    testOptions {
-        unitTests {
-            isIncludeAndroidResources = true
-        }
-        execution = "ANDROIDX_TEST_ORCHESTRATOR"
-        animationsDisabled = true
-    }
-
-    dependencies {
-        androidTestUtil(libs.androidx.orchestrator)
-    }
+dependencies {
+    "androidTestUtil"(libs.androidx.orchestrator)
 }
 
 mavenPublishing {
@@ -229,6 +220,13 @@ tasks.withType<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest
 }
 
 tasks.named<Test>("jvmTest") {
+    // Stress tests in JvmKSafeTest each launch tens of thousands of concurrent
+    // putDirect operations whose state (memoryCache + dirtyKeys + DataStore write
+    // queue) accumulates faster than the test class's tearDown + GC can drain it.
+    // Forking a fresh JVM per test class bounds the live set to a single class
+    // and keeps the suite well under any reasonable heap.
+    maxHeapSize = "2g"
+    forkEvery = 1
     doFirst {
         val ksafeDir = File(System.getProperty("user.home"), ".eu_anifantakis_ksafe")
         if (ksafeDir.exists()) {

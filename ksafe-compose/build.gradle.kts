@@ -20,7 +20,7 @@ group = "eu.anifantakis"
 version = "2.0.0"
 
 kotlin {
-    androidLibrary {
+    android {
         namespace = "eu.anifantakis.lib.ksafe.compose"
         compileSdk = 36
         minSdk = 24
