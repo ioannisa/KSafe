@@ -1,5 +1,6 @@
 package eu.anifantakis.lib.ksafe
 
+import androidx.compose.runtime.Stable
 import eu.anifantakis.lib.ksafe.internal.KSafeCore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
@@ -42,6 +43,17 @@ import kotlinx.serialization.serializer
  * (`KSafeBiometrics`) and is fully independent of storage operations. Add the
  * dependency only if you need it.
  */
+/**
+ * `@Stable` tells the Compose compiler that a `KSafe` instance's behavior is
+ * predictable based on instance identity — equal references mean equivalent
+ * observable behavior, and the instance does not mutate in ways that would
+ * invalidate cached recompositions. This lets composables that accept a
+ * `KSafe` parameter (or store one in their environment) skip recomposition
+ * when the same instance is passed again. The annotation has BINARY retention
+ * and zero runtime cost; non-Compose consumers (Ktor servers, CLI tools)
+ * never load it.
+ */
+@Stable
 @Suppress("unused")
 class KSafe @PublishedApi internal constructor(
     /**

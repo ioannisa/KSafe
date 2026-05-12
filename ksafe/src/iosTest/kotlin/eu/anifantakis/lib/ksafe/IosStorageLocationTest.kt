@@ -155,6 +155,64 @@ class IosStorageLocationTest {
     }
 
     /**
+     * 1.x → 2.0 auto-migration regression: writes encrypted data to a file
+     * pinned at the legacy `NSDocumentDirectory` path (using FakeEncryption +
+     * an explicit `directory` override to mimic the 1.x layout), then opens a
+     * default-`directory = null` KSafe with the same `fileName`. The factory
+     * should move the legacy file to `NSApplicationSupportDirectory` and the
+     * data should still be readable.
+     *
+     * Mirrors the demo app's `customJsonKSafe` instance scenario:
+     *     `KSafe(fileName = "appledata_customjson", config = KSafeConfig(json = ...))`
+     * upgraded from 1.8.1 → 2.0.0.
+     */
+    @Test
+    fun legacyDocumentsFile_dataIsReadableAfterMigration() = runTest {
+        val name = uniqueFileName("iosmigdata")
+        val baseFileName = "eu_anifantakis_ksafe_datastore_$name"
+        val legacyPath = "${documentsDirPath()}/$baseFileName.preferences_pb"
+        val newPath = "${applicationSupportDirPath()}/$baseFileName.preferences_pb"
+
+        deleteFileIfExists(legacyPath)
+        deleteFileIfExists(newPath)
+
+        try {
+            // Phase 1 — simulate "1.x install" by writing a real DataStore
+            // Preferences file at NSDocumentDirectory through KSafe itself.
+            // FakeEncryption is deterministic across instances (the alias is
+            // the only input), so the second-instance read can decrypt what
+            // the first instance wrote.
+            val v1Like = KSafe(
+                fileName = name,
+                directory = documentsDirPath(),
+                testEngine = FakeEncryption(),
+            )
+            v1Like.put("plain_key", "plain_value")
+            v1Like.put("encrypted_key", "encrypted_value", KSafeWriteMode.Encrypted())
+            v1Like.close()
+
+            assertTrue(fileExists(legacyPath), "Setup: legacy file should exist after writing")
+            assertFalse(fileExists(newPath), "Setup: new path should be empty before migration")
+
+            // Phase 2 — default `directory = null` should auto-migrate the
+            // file from NSDocumentDirectory to NSApplicationSupportDirectory.
+            val migrated = KSafe(fileName = name, testEngine = FakeEncryption())
+            try {
+                assertFalse(fileExists(legacyPath), "Legacy file should have moved")
+                assertTrue(fileExists(newPath), "File should now live at NSApplicationSupportDirectory")
+
+                assertEquals("plain_value", migrated.get("plain_key", "DEFAULT"))
+                assertEquals("encrypted_value", migrated.get("encrypted_key", "DEFAULT"))
+            } finally {
+                migrated.close()
+            }
+        } finally {
+            deleteFileIfExists(legacyPath)
+            deleteFileIfExists(newPath)
+        }
+    }
+
+    /**
      * Migration should NOT run when the consumer explicitly passes a `directory`,
      * even if a legacy file happens to exist in NSDocumentDirectory.
      */

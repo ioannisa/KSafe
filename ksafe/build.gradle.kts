@@ -83,6 +83,14 @@ kotlin {
 
                 implementation(libs.cryptography.core)
                 implementation(libs.cryptography.provider.base)
+
+                // compileOnly — used solely for the @Stable marker on the KSafe class so
+                // Compose consumers (via :ksafe-compose) get accurate stability inference
+                // and skip recompositions when passing a KSafe instance as a Composable
+                // parameter. @Stable has BINARY retention and no runtime effect, so
+                // non-Compose consumers (Ktor servers, CLI tools, plain JVM) do NOT
+                // need compose-runtime on their classpath at runtime.
+                compileOnly(libs.runtime)
             }
         }
 
