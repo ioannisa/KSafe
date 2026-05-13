@@ -7,7 +7,7 @@
 [![Maven Central](https://img.shields.io/maven-central/v/eu.anifantakis/ksafe.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/eu.anifantakis/ksafe)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-![image](https://github.com/user-attachments/assets/4cfb7633-e109-41ae-975a-f034f0720485)
+![image](https://github.com/user-attachments/assets/c947d77b-e0cc-4792-a6d8-70af57b2e59d)
 
 ## Demo Application
 KSafe in action across multiple scenarios: [Demo CMP App Using KSafe](https://github.com/ioannisa/KSafeDemo).
