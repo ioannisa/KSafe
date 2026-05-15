@@ -125,6 +125,13 @@ kotlin {
             dependsOn(datastoreMain)
             dependencies {
                 implementation(libs.androidx.datastore.preferences)
+                // JVM-only OS secret-store interop. `api` is intentional: the
+                // public diagnostic surface (which vault is active) never leaks
+                // JNA types, but consumers that subclass/replace the engine may
+                // touch it, and keeping it on the compile classpath of desktop
+                // apps is harmless. Switch to implementation() if footprint matters.
+                implementation(libs.jna)
+                implementation(libs.jna.platform)
             }
         }
 
@@ -227,6 +234,13 @@ tasks.withType<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest
     environment("KSAFE_TEST_MODE", "sequential")
 }
 
+// Set by the keyvault integration CI jobs (Linux/Windows/macOS). When present,
+// the jvmTest suite does NOT force the software fallback, so the real OS secret
+// store (DPAPI / Keychain / Secret Service) is exercised and
+// JvmKeyVaultIntegrationTest activates. Read via the providers API so the
+// configuration cache stays valid.
+val keyVaultItEnv = providers.environmentVariable("KSAFE_KEYVAULT_IT")
+
 tasks.named<Test>("jvmTest") {
     // Stress tests in JvmKSafeTest each launch tens of thousands of concurrent
     // putDirect operations whose state (memoryCache + dirtyKeys + DataStore write
@@ -235,6 +249,13 @@ tasks.named<Test>("jvmTest") {
     // and keeps the suite well under any reasonable heap.
     maxHeapSize = "2g"
     forkEvery = 1
+    // Keep the JVM test suite off the real OS Keychain/keyring by default:
+    // avoids interactive Keychain-access prompts on macOS dev machines and
+    // keyring pollution. The keyvault integration CI jobs set
+    // KSAFE_KEYVAULT_IT to skip this and run against the real store.
+    if (keyVaultItEnv.orNull.isNullOrBlank()) {
+        systemProperty("ksafe.jvm.keyVault", "software")
+    }
     doFirst {
         val ksafeDir = File(System.getProperty("user.home"), ".eu_anifantakis_ksafe")
         if (ksafeDir.exists()) {

@@ -1,0 +1,173 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Baseline: multiplatform compile + the full JVM unit suite. KSAFE_KEYVAULT_IT
+  # is unset here, so the JVM suite runs against the software fallback (no real
+  # Keychain/keyring access — see ksafe/build.gradle.kts).
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build + JVM unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Compile all :ksafe targets
+        run: ./gradlew :ksafe:compileKotlinJvm :ksafe:compileKotlinJs :ksafe:compileKotlinWasmJs :ksafe:compileKotlinMetadata --stacktrace
+      - name: JVM unit tests (software fallback)
+        run: ./gradlew :ksafe:jvmTest --stacktrace
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jvm-unit-test-report
+          path: ksafe/build/reports/tests/jvmTest
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Web: real WebCrypto + IndexedDB path under headless Chrome
+  # (Kotlin/JS + Kotlin/WASM). Exercises WebKeyStoreIntegrationTest.
+  # ---------------------------------------------------------------------------
+  web:
+    name: Web browser tests (js + wasmJs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install Chrome
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v1
+      - name: Browser tests
+        env:
+          CHROME_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
+        run: ./gradlew :ksafe:jsBrowserTest :ksafe:wasmJsBrowserTest --stacktrace
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-test-report
+          path: ksafe/build/reports/tests
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Linux Secret Service (libsecret) — real gnome-keyring under a dbus session.
+  # ---------------------------------------------------------------------------
+  keyvault-linux:
+    name: Key vault IT — Linux Secret Service
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      KSAFE_KEYVAULT_IT: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install gnome-keyring + libsecret
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnome-keyring libsecret-1-0 libsecret-tools dbus-x11
+      - name: Key vault integration test (libsecret)
+        run: |
+          dbus-run-session -- bash -c "
+            echo -n '' | gnome-keyring-daemon --unlock --components=secrets &&
+            ./gradlew :ksafe:jvmTest --tests 'eu.anifantakis.lib.ksafe.JvmKeyVaultIntegrationTest' \
+              --no-daemon --no-configuration-cache --stacktrace
+          "
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: keyvault-linux-report
+          path: ksafe/build/reports/tests/jvmTest
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Windows DPAPI — available for the runner user out of the box.
+  # ---------------------------------------------------------------------------
+  keyvault-windows:
+    name: Key vault IT — Windows DPAPI
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      KSAFE_KEYVAULT_IT: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Key vault integration test (DPAPI)
+        run: ./gradlew :ksafe:jvmTest --tests 'eu.anifantakis.lib.ksafe.JvmKeyVaultIntegrationTest' --no-daemon --no-configuration-cache --stacktrace
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: keyvault-windows-report
+          path: ksafe/build/reports/tests/jvmTest
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # macOS Keychain — a dedicated, unlocked keychain (not the login keychain) so
+  # there are no GUI access prompts and no developer-keychain pollution.
+  # ---------------------------------------------------------------------------
+  keyvault-macos:
+    name: Key vault IT — macOS Keychain
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      KSAFE_KEYVAULT_IT: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Create + unlock a dedicated keychain
+        run: |
+          security create-keychain -p "" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          # No auto-lock (timeout / sleep) for the duration of the job.
+          security set-keychain-settings build.keychain
+      - name: Key vault integration test (Keychain)
+        run: ./gradlew :ksafe:jvmTest --tests 'eu.anifantakis.lib.ksafe.JvmKeyVaultIntegrationTest' --no-daemon --no-configuration-cache --stacktrace
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: keyvault-macos-report
+          path: ksafe/build/reports/tests/jvmTest
+          if-no-files-found: ignore

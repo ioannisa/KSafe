@@ -224,7 +224,7 @@ KSafeBiometrics.verifyBiometricDirect("Confirm payment") { success ->
 }
 ```
 
-Data is now AES-256-GCM encrypted — keys in Android Keystore, Apple Keychain (iOS / macOS), software-backed on JVM, WebCrypto on the browser targets (Kotlin/WASM and Kotlin/JS).
+Data is now AES-256-GCM encrypted — keys in Android Keystore, Apple Keychain (iOS / macOS), the OS secret store on JVM (Windows DPAPI / macOS Keychain / Linux Secret Service, with a software fallback), and a non-extractable WebCrypto key in IndexedDB on the browser targets (Kotlin/WASM and Kotlin/JS).
 
 ***
 
@@ -455,9 +455,9 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 | **Android** | API 24 (Android 7.0) | Hardware-backed Keystore on supported devices |
 | **iOS** | iOS 13+ | Keychain-backed symmetric keys (protected by device passcode); Secure Enclave on real devices |
 | **macOS (native)** | macOS 11+ (`macosArm64`, `macosX64`) | Same Keychain + CryptoKit path as iOS; Secure Enclave on Apple Silicon and T2-equipped Macs |
-| **JVM/Desktop** | JDK 11+ | Software-backed encryption — runs on macOS, Windows, Linux |
-| **Kotlin/WASM (Browser)** | Browsers with WasmGC (Chrome 119+, Firefox 120+, Safari 18+) | WebCrypto API + localStorage |
-| **Kotlin/JS (Browser)** | Any modern browser | WebCrypto API + localStorage — use this for older browsers or pre-existing JS builds |
+| **JVM/Desktop** | JDK 11+ | Key in OS secret store — Windows DPAPI / macOS Keychain / Linux Secret Service (libsecret); software fallback + warning when none is available |
+| **Kotlin/WASM (Browser)** | Browsers with WasmGC (Chrome 119+, Firefox 120+, Safari 18+) | WebCrypto API; non-extractable key in IndexedDB, values in localStorage |
+| **Kotlin/JS (Browser)** | Any modern browser | WebCrypto API; non-extractable key in IndexedDB, values in localStorage — use this for older browsers or pre-existing JS builds |
 
 | Dependency | Tested Version |
 |------------|----------------|

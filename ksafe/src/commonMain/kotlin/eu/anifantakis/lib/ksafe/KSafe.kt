@@ -17,8 +17,14 @@ import kotlinx.serialization.serializer
  *
  * **Security:**
  * - **Android:** Uses AES-256-GCM with keys stored in the hardware-backed Android Keystore.
- * - **iOS:** Uses AES-256-GCM with symmetric keys stored as Keychain generic-password items (protected by device passcode).
- * - **JVM:** Uses AES-256-GCM with software-backed keys, relying on OS file permissions (0700).
+ * - **iOS / macOS (native):** Uses AES-256-GCM with symmetric keys stored as Keychain generic-password items (protected by device passcode).
+ * - **JVM:** Uses AES-256-GCM with the key protected by the host OS secret store —
+ *   Windows DPAPI, macOS Keychain, or Linux Secret Service (libsecret). When no
+ *   secret store is available it falls back to a key Base64-encoded in the
+ *   DataStore file (legacy behaviour) and logs a one-time warning.
+ * - **Web (Kotlin/JS + Kotlin/WASM):** Uses AES-256-GCM via WebCrypto with a
+ *   **non-extractable** `CryptoKey` persisted in IndexedDB — the raw key bytes
+ *   are never exposed to JS.
  *
  * **Architecture:**
  * KSafe uses a "Hot Cache" architecture.

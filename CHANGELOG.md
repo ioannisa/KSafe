@@ -2,6 +2,32 @@
 
 All notable changes to KSafe will be documented in this file.
 
+## [Unreleased]
+
+### Security
+
+- **JVM keys now live in the OS secret store.** The AES key is protected by
+  **Windows DPAPI**, the **macOS Keychain**, or the **Linux Secret Service
+  (libsecret)** via JNA, instead of being Base64-encoded next to the data in
+  the DataStore file. When no secret store is reachable (headless Linux with no
+  keyring, JNA link failure, …) KSafe falls back to the legacy in-file scheme
+  and logs a one-time security warning. Keys written by KSafe ≤ 2.0 are
+  **migrated on first read**: copied into the OS store, then removed from the
+  DataStore file. Opt out with `-Dksafe.jvm.keyVault=software` (or env
+  `KSAFE_JVM_KEY_VAULT=software`).
+- **Web keys are now non-extractable.** The browser engine generates an
+  `extractable = false` AES-GCM `CryptoKey` and persists the live key object in
+  **IndexedDB**, instead of exporting the raw key and Base64-ing it into
+  `localStorage`. The raw key bytes are no longer recoverable by XSS,
+  extensions, or profile reads. A legacy `localStorage` key is imported as a
+  non-extractable key on first access and the `localStorage` entry is deleted;
+  previously encrypted data keeps decrypting.
+
+### Added
+
+- **JNA dependency on the JVM target** (`net.java.dev.jna` + `jna-platform`)
+  for the OS secret-store integration above. JVM/Desktop consumers only.
+
 ## [2.0.0] - 2026-05-13
 
 Major release: KMP refactor, new macOS and Kotlin/JS targets, biometrics extracted into its own module, and significant performance work on encrypted reads/writes.

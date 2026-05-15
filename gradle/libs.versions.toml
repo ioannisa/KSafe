@@ -13,6 +13,7 @@ junit = "1.3.0"
 runtime = "1.10.3"
 
 cryptography = "0.6.0"
+jna = "5.18.1"
 turbine = "1.2.1"
 robolectric = "4.16.1"
 biometric = "1.1.0"
@@ -38,6 +39,11 @@ cryptography-provider-jdk = { module = "dev.whyoleg.cryptography:cryptography-pr
 cryptography-provider-cryptokit = { module = "dev.whyoleg.cryptography:cryptography-provider-cryptokit", version.ref = "cryptography" }
 cryptography-provider-webcrypto = { module = "dev.whyoleg.cryptography:cryptography-provider-webcrypto", version.ref = "cryptography" }
 #cryptography-provider-optimal = { module = "dev.whyoleg.cryptography:cryptography-provider-optimal", version.ref = "cryptography" }
+
+# JNA — JVM-only native interop for OS secret stores
+# (Windows DPAPI / macOS Keychain / Linux libsecret Secret Service)
+jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
+jna-platform = { module = "net.java.dev.jna:jna-platform", version.ref = "jna" }
 
 # DataStore Preferences
 androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastorePreferences" }

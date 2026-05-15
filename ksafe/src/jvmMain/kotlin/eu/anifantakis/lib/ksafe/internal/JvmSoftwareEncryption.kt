@@ -2,51 +2,63 @@ package eu.anifantakis.lib.ksafe.internal
 
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.stringPreferencesKey
 import eu.anifantakis.lib.ksafe.KSafeConfig
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
+import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVault
+import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVaultProvider
 import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
-import kotlin.io.encoding.Base64
-import kotlin.io.encoding.ExperimentalEncodingApi
 
 /**
- * JVM implementation of [KSafeEncryption] using software-backed encryption.
+ * JVM implementation of [KSafeEncryption] using software AES-256-GCM
+ * (`javax.crypto`) for the payload, with the **AES key itself protected by an
+ * OS secret store** via [JvmKeyVault]:
  *
- * Unlike Android/iOS, JVM lacks a standard hardware keystore. This implementation:
- * - Uses AES-256-GCM encryption via `javax.crypto`
- * - Stores keys in DataStore alongside encrypted data
- * - Relies on OS file permissions (0700 on POSIX systems) for key protection
+ * - Windows → DPAPI (key wrapped with the user's login credentials)
+ * - macOS → login Keychain (SE-gated on Apple Silicon / T2)
+ * - Linux → Secret Service / libsecret (login keyring)
  *
- * **Security Note:** This provides encryption at rest but keys are stored in software.
- * For higher security on JVM, consider using a Hardware Security Module (HSM) or
- * a cloud-based key management service.
+ * When no OS store is reachable (headless Linux without a keyring, JNA link
+ * failure, …) [JvmKeyVaultProvider] transparently falls back to the legacy
+ * Base64-in-DataStore scheme and logs a one-time security warning. Existing
+ * keys written by KSafe ≤ 2.0 are **migrated on first read**: copied into the
+ * OS store, then removed from the DataStore file.
  *
- * @property config Configuration for key generation (key size)
- * @property dataStore DataStore instance for key persistence
+ * The crypto (AES-256-GCM, random 12-byte IV, IV‖ciphertext layout) is
+ * unchanged, so data encrypted by previous versions still decrypts after the
+ * key migrates.
+ *
+ * @property config Key-generation configuration (key size).
+ * @property dataStore DataStore used by the legacy/fallback vault and the
+ *   Windows DPAPI vault (for the wrapped — and therefore safe-at-rest — blob).
  */
 @PublishedApi
 internal class JvmSoftwareEncryption(
     private val config: KSafeConfig = KSafeConfig(),
-    private val dataStore: DataStore<Preferences>
+    dataStore: DataStore<Preferences>,
+    /** Test seam: inject a vault provider and bypass OS detection. */
+    vaultProvider: JvmKeyVaultProvider? = null,
 ) : KSafeEncryption {
 
     companion object {
         private const val GCM_TAG_LENGTH = 128
         private const val GCM_IV_LENGTH = 12
-        private const val KEY_PREFIX = "ksafe_key_"
     }
 
-    /** In-memory cache to avoid repeated DataStore reads + key deserialization. */
+    private val vaults: JvmKeyVaultProvider =
+        vaultProvider ?: JvmKeyVaultProvider(dataStore)
+
+    /** Active vault name — exposed for tests/diagnostics, not public API. */
+    @PublishedApi
+    internal val keyVaultName: String get() = vaults.active.name
+
+    /** In-memory cache to avoid repeated vault round-trips. */
     private val keyCache = ConcurrentHashMap<String, SecretKey>()
 
-    /** Per-alias lock objects — avoids `intern()` pool pressure with dynamic key sets. */
+    /** Per-alias lock — avoids `intern()` pool pressure with dynamic key sets. */
     private val locks = ConcurrentHashMap<String, Any>()
     private fun lockFor(alias: String): Any = locks.computeIfAbsent(alias) { Any() }
 
@@ -56,30 +68,26 @@ internal class JvmSoftwareEncryption(
         hardwareIsolated: Boolean,
         requireUnlockedDevice: Boolean?
     ): ByteArray {
-        val secretKey = runBlocking { getOrCreateSecretKey(identifier) }
+        val secretKey = getOrCreateSecretKey(identifier)
 
-        // Generate random IV
         val iv = secureRandomBytes(GCM_IV_LENGTH)
 
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        val spec = GCMParameterSpec(GCM_TAG_LENGTH, iv)
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey, spec)
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey, GCMParameterSpec(GCM_TAG_LENGTH, iv))
         val ciphertext = cipher.doFinal(data)
 
-        // Return IV prepended to ciphertext
+        // IV prepended to ciphertext.
         return iv + ciphertext
     }
 
     override fun decrypt(identifier: String, data: ByteArray): ByteArray {
-        val secretKey = runBlocking { getOrCreateSecretKey(identifier) }
+        val secretKey = getOrCreateSecretKey(identifier)
 
-        // Extract IV (first 12 bytes) and ciphertext
         val iv = data.copyOfRange(0, GCM_IV_LENGTH)
         val ciphertext = data.copyOfRange(GCM_IV_LENGTH, data.size)
 
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        val spec = GCMParameterSpec(GCM_TAG_LENGTH, iv)
-        cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)
+        cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(GCM_TAG_LENGTH, iv))
 
         return cipher.doFinal(ciphertext)
     }
@@ -87,56 +95,52 @@ internal class JvmSoftwareEncryption(
     override fun deleteKey(identifier: String) {
         synchronized(lockFor(identifier)) {
             keyCache.remove(identifier)
-            runBlocking {
-                val keyPref = stringPreferencesKey("$KEY_PREFIX$identifier")
-                dataStore.edit { prefs ->
-                    prefs.remove(keyPref)
-                }
+            // Remove from both the active store and the legacy store so a
+            // re-create after delete cannot resurrect a migrated old key.
+            runCatching { vaults.active.delete(identifier) }
+            if (vaults.active !== vaults.legacy) {
+                runCatching { vaults.legacy.delete(identifier) }
             }
         }
     }
 
     /**
-     * Gets an existing key from DataStore or creates a new one if it doesn't exist.
+     * Returns the AES key for [alias], in priority order:
+     * 1. in-memory cache,
+     * 2. the active OS-backed vault,
+     * 3. migration: a legacy Base64 key in the DataStore file — copied into
+     *    the active vault and then deleted from the file,
+     * 4. freshly generated and stored in the active vault.
      *
-     * Uses [ConcurrentHashMap] for in-memory caching and a per-alias lock to prevent
-     * concurrent key generation from overwriting a just-created key.
-     * The same lock is held by [deleteKey] to prevent cache repopulation races.
-     *
-     * @param alias The key identifier
-     * @return The secret key for encryption/decryption
+     * Per-alias `synchronized` prevents two concurrent creates from racing
+     * (and is also held by [deleteKey] to block cache-repopulation races).
      */
-    @OptIn(ExperimentalEncodingApi::class)
-    private suspend fun getOrCreateSecretKey(alias: String): SecretKey {
-        // Fast path: return cached key
+    private fun getOrCreateSecretKey(alias: String): SecretKey {
         keyCache[alias]?.let { return it }
 
-        // Slow path: load or generate (synchronized to prevent duplicate generation)
         return synchronized(lockFor(alias)) {
-            // Double-check after acquiring lock
             keyCache[alias]?.let { return it }
 
-            val keyPref = stringPreferencesKey("$KEY_PREFIX$alias")
-            val preferences = runBlocking { dataStore.data.first() }
-            val existing = preferences[keyPref]
+            val active = vaults.active
+            var keyBytes: ByteArray? = active.get(alias)
 
-            val key = if (existing != null) {
-                val keyBytes = Base64.decode(existing)
+            // Migrate legacy plaintext key into the OS-backed vault, once.
+            if (keyBytes == null && active !== vaults.legacy) {
+                vaults.legacy.get(alias)?.let { legacyBytes ->
+                    active.put(alias, legacyBytes)
+                    runCatching { vaults.legacy.delete(alias) }
+                    keyBytes = legacyBytes
+                }
+            }
+
+            val key: SecretKey = if (keyBytes != null) {
                 SecretKeySpec(keyBytes, "AES")
             } else {
-                // Generate new key with configured size
                 val keyGen = KeyGenerator.getInstance("AES")
                 keyGen.init(config.keySize)
-                val secretKey = keyGen.generateKey()
-
-                // Store in DataStore
-                val encoded = Base64.encode(secretKey.encoded)
-                runBlocking {
-                    dataStore.edit { prefs ->
-                        prefs[keyPref] = encoded
-                    }
-                }
-                secretKey
+                val generated = keyGen.generateKey()
+                active.put(alias, generated.encoded)
+                generated
             }
 
             keyCache[alias] = key
