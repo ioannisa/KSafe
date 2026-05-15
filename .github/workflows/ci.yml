@@ -114,7 +114,7 @@ jobs:
             # Resolve the DEFAULT collection explicitly (creates the alias if
             # needed; no prompt now that login is unlocked). Fail loudly if it
             # is still the ephemeral session collection.
-            python3 -c "import secretstorage,sys; b=secretstorage.dbus_init(); c=secretstorage.get_default_collection(b); p=c.collection_path; print('default collection:', p, 'locked=', c.is_locked()); sys.exit(1 if p.endswith('/session') else 0)"
+            python3 -c "import secretstorage,sys; b=secretstorage.dbus_init(); c=secretstorage.get_default_collection(b); p=c.collection_path; print(\"default collection\", p, \"locked\", c.is_locked()); sys.exit(1 if p.endswith(\"/session\") else 0)"
             ./gradlew :ksafe:jvmTest --tests "eu.anifantakis.lib.ksafe.JvmKeyVaultIntegrationTest" --no-daemon --no-configuration-cache --stacktrace
           '
       - name: Upload test report
