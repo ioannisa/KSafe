@@ -100,21 +100,16 @@ jobs:
         run: |
           dbus-run-session -- bash -lc '
             set -e
-            # Start the Secret Service component first.
-            gnome-keyring-daemon --start --daemonize --components=secrets >/dev/null 2>&1 || true
-            # Create + unlock the "login" keyring via the control protocol with a
-            # NON-empty password. gnome-keyring aliases a freshly-created login
-            # keyring as the "default" collection; an empty password leaves it in
-            # a state where that aliasing never happens (the earlier failure:
-            # get_any_collection only ever found the ephemeral session
-            # collection, so NULL-collection stores still hit the absent
-            # SystemPrompter).
-            echo -n "ci" | gnome-keyring-daemon --unlock --components=secrets
+            # --login CREATES the login keyring (then unlocks it and aliases it
+            # as the default collection). --unlock only unlocks a pre-existing
+            # one, which is why earlier attempts failed: there was no
+            # collection/login object, so default-collection resolution tried
+            # to CreateCollection and hit the absent headless prompter.
+            eval "$(echo -n \"\" | gnome-keyring-daemon --daemonize --login)"
+            eval "$(echo -n \"\" | gnome-keyring-daemon --start --components=secrets)"
             sleep 2
-            # Resolve the DEFAULT collection explicitly (creates the alias if
-            # needed; no prompt now that login is unlocked). Fail loudly if it
-            # is still the ephemeral session collection.
-            python3 -c "import secretstorage,sys; b=secretstorage.dbus_init(); c=secretstorage.get_default_collection(b); p=c.collection_path; print(\"default collection\", p, \"locked\", c.is_locked()); sys.exit(1 if p.endswith(\"/session\") else 0)"
+            # Sanity: default collection now resolves without a prompt.
+            python3 -c "import secretstorage; b=secretstorage.dbus_init(); c=secretstorage.get_default_collection(b); print(\"default collection\", c.collection_path, \"locked\", c.is_locked())"
             ./gradlew :ksafe:jvmTest --tests "eu.anifantakis.lib.ksafe.JvmKeyVaultIntegrationTest" --no-daemon --no-configuration-cache --stacktrace
           '
       - name: Upload test report
