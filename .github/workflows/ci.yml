@@ -65,7 +65,8 @@ jobs:
       - name: Browser tests
         env:
           CHROME_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
-        run: ./gradlew :ksafe:jsBrowserTest :ksafe:wasmJsBrowserTest --stacktrace
+        # --continue so a js failure still runs/report wasmJs (and vice versa).
+        run: ./gradlew :ksafe:jsBrowserTest :ksafe:wasmJsBrowserTest --continue --stacktrace
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4
@@ -93,14 +94,22 @@ jobs:
       - name: Install gnome-keyring + libsecret
         run: |
           sudo apt-get update
-          sudo apt-get install -y gnome-keyring libsecret-1-0 libsecret-tools dbus-x11
+          sudo apt-get install -y gnome-keyring libsecret-1-0 libsecret-tools dbus-x11 python3-secretstorage
       - name: Key vault integration test (libsecret)
+        shell: bash
         run: |
-          dbus-run-session -- bash -c "
-            echo -n '' | gnome-keyring-daemon --unlock --components=secrets &&
-            ./gradlew :ksafe:jvmTest --tests 'eu.anifantakis.lib.ksafe.JvmKeyVaultIntegrationTest' \
-              --no-daemon --no-configuration-cache --stacktrace
-          "
+          dbus-run-session -- bash -lc '
+            set -e
+            # Unlock/create the login keyring with an empty password, headless.
+            printf "" | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1 || true
+            printf "" | gnome-keyring-daemon --start  --components=secrets >/dev/null 2>&1 || true
+            sleep 2
+            # Deterministically ensure an UNLOCKED default Secret Service
+            # collection exists, so libsecret never needs the (absent on a
+            # headless runner) org.gnome.keyring.SystemPrompter.
+            python3 -c "import secretstorage; b=secretstorage.dbus_init(); c=secretstorage.get_any_collection(b); (c.unlock() if c.is_locked() else None); print(\"Secret Service collection ready:\", c.collection_path)"
+            ./gradlew :ksafe:jvmTest --tests "eu.anifantakis.lib.ksafe.JvmKeyVaultIntegrationTest" --no-daemon --no-configuration-cache --stacktrace
+          '
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4

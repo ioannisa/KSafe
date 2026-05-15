@@ -6,16 +6,20 @@ import kotlin.js.Promise
 /**
  * Kotlin/JS actuals for [webKeyEnsure] et al.
  *
- * The whole WebCrypto + IndexedDB helper is defined once as a JS singleton on
- * `globalThis.__ksafeWK` (created lazily on first call) and driven through a
- * single dispatcher. The JS body is intentionally kept byte-identical to the
- * wasmJs `@JsFun` variant.
+ * The WebCrypto + IndexedDB helper is defined entirely in a self-contained JS
+ * IIFE that **returns a dispatcher function**; Kotlin then invokes that
+ * function with normal arguments. Crucially, the `js(...)` string references no
+ * Kotlin identifiers — referencing function parameters from inside `js(...)`
+ * is unreliable under the Kotlin/JS IR compiler (it renames them, which
+ * surfaced as a runtime `ReferenceError`). The JS body is kept behaviourally
+ * identical to the wasmJs `@JsFun` variant.
  */
-private fun ksafeWkDispatch(op: String, a: String, b: String?): Promise<Any?> = js(
+private val dispatch: (String, String, String?) -> Promise<Any?> = js(
     """
-    (function(op, a, b) {
-      var G = (typeof globalThis !== 'undefined') ? globalThis : self;
-      if (!G.__ksafeWK) {
+    (function() {
+      var impl = null;
+      function init() {
+        var G = (typeof globalThis !== 'undefined') ? globalThis : self;
         var DBN = 'ksafe-keys', STORE = 'keys';
         var open = function() { return new Promise(function(res, rej) {
           var rq = G.indexedDB.open(DBN, 1);
@@ -67,40 +71,41 @@ private fun ksafeWkDispatch(op: String, a: String, b: String?): Promise<Any?> = 
           var all = b2u(dataB64); var iv = all.slice(0, 12); var ct = all.slice(12);
           return subtle.decrypt({ name: 'AES-GCM', iv: iv }, k, ct).then(function(ptBuf) { return u2b(ptBuf); });
         }); };
-        var del = function(name) { mem['delete'](name); return idbDel(name).then(function() { return null; }); };
-        G.__ksafeWK = { ensure: ensure, enc: enc, dec: dec, del: del };
+        var del = function(name) { mem.delete(name); return idbDel(name).then(function() { return null; }); };
+        return { ensure: ensure, enc: enc, dec: dec, del: del };
       }
-      var wk = G.__ksafeWK;
-      if (op === 'ensure') return wk.ensure(a, b);
-      if (op === 'enc') return wk.enc(a, b);
-      if (op === 'dec') return wk.dec(a, b);
-      if (op === 'delnw') return wk.del(a).catch(function() { return null; });
-      return wk.del(a);
-    })(op, a, b)
+      return function(op, a, b) {
+        if (!impl) impl = init();
+        if (op === 'ensure') return impl.ensure(a, b);
+        if (op === 'enc') return impl.enc(a, b);
+        if (op === 'dec') return impl.dec(a, b);
+        if (op === 'delnw') return impl.del(a).catch(function() { return null; });
+        return impl.del(a);
+      };
+    })()
     """
 )
 
 @PublishedApi
 internal actual suspend fun webKeyEnsure(idbName: String, legacyRawKeyB64: String?) {
-    ksafeWkDispatch("ensure", idbName, legacyRawKeyB64).await()
+    dispatch("ensure", idbName, legacyRawKeyB64).await()
 }
 
 @PublishedApi
 internal actual suspend fun webKeyEncrypt(idbName: String, plaintextB64: String): String =
-    ksafeWkDispatch("enc", idbName, plaintextB64).await() as String
+    dispatch("enc", idbName, plaintextB64).await() as String
 
 @PublishedApi
 internal actual suspend fun webKeyDecrypt(idbName: String, ivAndCipherB64: String): String =
-    ksafeWkDispatch("dec", idbName, ivAndCipherB64).await() as String
+    dispatch("dec", idbName, ivAndCipherB64).await() as String
 
 @PublishedApi
 internal actual suspend fun webKeyDelete(idbName: String) {
-    ksafeWkDispatch("del", idbName, null).await()
+    dispatch("del", idbName, null).await()
 }
 
 @PublishedApi
 internal actual fun webKeyDeleteNoWait(idbName: String) {
-    // Fire-and-forget: 'delnw' swallows rejection JS-side, so dropping the
-    // returned Promise here cannot surface an unhandled rejection.
-    ksafeWkDispatch("delnw", idbName, null)
+    // 'delnw' swallows rejection JS-side; dropping the Promise is safe.
+    dispatch("delnw", idbName, null)
 }
