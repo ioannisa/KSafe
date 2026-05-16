@@ -4,6 +4,9 @@ on:
   push:
     branches: [ main, "2.1.0" ]
   pull_request:
+  workflow_dispatch:        # manual: full legacy suite on demand
+  schedule:
+    - cron: '0 3 * * *'     # nightly: full legacy suite
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -49,18 +52,20 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
-  # Full legacy :ksafe:jvmTest suite. NON-BLOCKING (continue-on-error): it
-  # contains pre-existing stress tests (tens of thousands of concurrent ops,
-  # forkEvery=1) that complete in ~10s on a multi-core dev machine but
-  # livelock on a 2-vCPU GitHub runner. Kept visible/advisory with a short
-  # timeout until that legacy hang is root-caused; it must not gate the
-  # feature jobs.
+  # Full legacy :ksafe:jvmTest suite. Does NOT run on push/PR — it contains
+  # pre-existing stress tests (tens of thousands of concurrent ops,
+  # forkEvery=1) that finish in ~10s on a multi-core dev machine but livelock
+  # on a 2-vCPU GitHub runner. Runs only nightly / on manual dispatch, with
+  # per-test "started" logging (-PksafeTestLog) so the job log pinpoints the
+  # exact test that hangs (the last STARTED with no PASSED/FAILED). Failing
+  # here is expected until that legacy hang is root-caused; it never gates
+  # push/PR runs.
   # ---------------------------------------------------------------------------
   jvm-full-suite:
-    name: Full JVM suite (advisory, non-blocking)
+    name: Full JVM suite (nightly/manual diagnostic)
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    continue-on-error: true
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -68,8 +73,8 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
-      - name: Full JVM unit suite (software fallback)
-        run: ./gradlew :ksafe:jvmTest --stacktrace
+      - name: Full JVM unit suite (software fallback, per-test logging)
+        run: ./gradlew :ksafe:jvmTest -PksafeTestLog --stacktrace
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4

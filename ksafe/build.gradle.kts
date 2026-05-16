@@ -241,6 +241,12 @@ tasks.withType<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest
 // configuration cache stays valid.
 val keyVaultItEnv = providers.environmentVariable("KSAFE_KEYVAULT_IT")
 
+// `-PksafeTestLog` (used by the nightly/manual full-suite CI job) logs each
+// test as it starts, so a hung run's log shows the exact test that never
+// completed (last STARTED with no PASSED/FAILED). Off by default to keep
+// local output quiet. providers API => configuration-cache safe.
+val ksafeTestLog = providers.gradleProperty("ksafeTestLog")
+
 tasks.named<Test>("jvmTest") {
     // Stress tests in JvmKSafeTest each launch tens of thousands of concurrent
     // putDirect operations whose state (memoryCache + dirtyKeys + DataStore write
@@ -255,6 +261,12 @@ tasks.named<Test>("jvmTest") {
     // KSAFE_KEYVAULT_IT to skip this and run against the real store.
     if (keyVaultItEnv.orNull.isNullOrBlank()) {
         systemProperty("ksafe.jvm.keyVault", "software")
+    }
+    if (ksafeTestLog.isPresent) {
+        testLogging {
+            events("started", "passed", "skipped", "failed")
+            showStandardStreams = false
+        }
     }
     doFirst {
         val ksafeDir = File(System.getProperty("user.home"), ".eu_anifantakis_ksafe")
