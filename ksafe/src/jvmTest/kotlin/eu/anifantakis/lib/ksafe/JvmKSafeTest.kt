@@ -14,6 +14,7 @@ import kotlin.test.assertTrue
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertNotNull
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * JVM-specific test implementation.
@@ -464,7 +465,12 @@ class JvmKSafeTest : KSafeTest() {
      * returned the default once.
      */
     @Test
-    fun testEncryptedPutGetNeverReturnsDefault() = runTest {
+    fun testEncryptedPutGetNeverReturnsDefault() = runTest(timeout = 90.seconds) {
+        // 175+ real encrypted writes plus 5 readers continuously decrypting:
+        // on a 2-vCPU CI runner this legitimately needs more than runTest's
+        // default 60s wall-clock budget. The deadlock that used to hang this
+        // test is fixed (cooperative yield below); the jvm-full-suite job's
+        // 20-min timeout still backstops any genuine hang.
         val ksafe = createKSafe()
         val defaultsReturned = AtomicInteger(0)
         val errors = AtomicInteger(0)
