@@ -70,8 +70,12 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
+      # -PksafeTestLog kept ON: scaling the stress magnitude alone did NOT
+      # stop the 2-vCPU hang, so a specific test deadlocks (not a throughput
+      # drain). The per-test "STARTED/PASSED" events make the job log name the
+      # culprit (last STARTED with no result) on timeout.
       - name: Full JVM unit suite (software fallback, scaled stress)
-        run: ./gradlew :ksafe:jvmTest -PksafeStressScale=0.05 --stacktrace
+        run: ./gradlew :ksafe:jvmTest -PksafeStressScale=0.05 -PksafeTestLog --stacktrace
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4
