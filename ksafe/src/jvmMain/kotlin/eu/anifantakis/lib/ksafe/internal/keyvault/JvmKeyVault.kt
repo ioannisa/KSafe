@@ -81,6 +81,15 @@ internal class DataStorePrefStore(
         val pref = stringPreferencesKey("$prefix$alias")
         runBlocking { dataStore.edit { it.remove(pref) } }
     }
+
+    /** Every alias currently stored under [prefix] (for the eager sweep). */
+    fun listAliases(): List<String> =
+        runBlocking { dataStore.data.first() }.asMap().keys
+            .asSequence()
+            .map { it.name }
+            .filter { it.startsWith(prefix) }
+            .map { it.removePrefix(prefix) }
+            .toList()
 }
 
 /**
@@ -113,6 +122,9 @@ internal class DataStoreKeyVault(
     }
 
     override fun delete(alias: String) = store.remove(alias)
+
+    /** Aliases still stored under the legacy `ksafe_key_` prefix. */
+    fun legacyAliases(): List<String> = store.listAliases()
 
     companion object {
         const val KEY_PREFIX = "ksafe_key_"

@@ -442,6 +442,14 @@ internal class KSafeCore(
                         .onFailure { if (it is CancellationException) throw it }
                     runCatching { cleanupOrphanedCiphertext() }
                         .onFailure { if (it is CancellationException) throw it }
+                    // Eager one-time sweep of pre-2.1 key material out of the
+                    // weak location (JVM DataStore file / web localStorage)
+                    // into the secure store. Best-effort, idempotent, no-op
+                    // where there's no safer destination. Lazy per-key
+                    // migration still handles correctness; this just shrinks
+                    // the cold-key exposure window to one session.
+                    runCatching { engine.migrateLegacyKeysSuspend() }
+                        .onFailure { if (it is CancellationException) throw it }
                 }
             }
         }

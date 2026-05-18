@@ -88,4 +88,47 @@ class WebKeyStoreIntegrationTest {
         engineB.deleteKeySuspend(alias)
         localStorageRemove(legacyLsKey(prefix, alias))
     }
+
+    @Test
+    fun eagerSweep_importsEveryLegacyLocalStorageKey_andScrubs() = runTest {
+        val prefix = uniquePrefix()
+        val payloads = mapOf(
+            "tokA" to "secret-A",
+            "tokB" to "secret-B",
+            "cfgC" to "secret-C",
+        )
+
+        // Seed several KSafe <= 2.0 raw localStorage keys (extractable Base64).
+        payloads.keys.forEachIndexed { i, alias ->
+            localStorageSet(legacyLsKey(prefix, alias), Base64.encode(ByteArray(32) { (it + i).toByte() }))
+        }
+
+        val engineA = WebSoftwareEncryption(storagePrefix = prefix)
+        // Eager sweep — WITHOUT touching any individual key first.
+        engineA.migrateLegacyKeysSuspend()
+
+        // Every legacy raw key must be gone from localStorage…
+        payloads.keys.forEach { alias ->
+            assertNull(
+                localStorageGet(legacyLsKey(prefix, alias)),
+                "$alias raw key must be scrubbed from localStorage by the eager sweep",
+            )
+        }
+
+        // …and each key now usable from a FRESH instance (i.e. it was imported
+        // as a non-extractable CryptoKey into IndexedDB), round-tripping data.
+        val engineB = WebSoftwareEncryption(storagePrefix = prefix)
+        payloads.forEach { (alias, msg) ->
+            val ct = engineB.encryptSuspend(alias, msg.encodeToByteArray())
+            assertEquals(msg, engineB.decryptSuspend(alias, ct).decodeToString())
+        }
+
+        // Idempotent.
+        engineB.migrateLegacyKeysSuspend()
+
+        payloads.keys.forEach { alias ->
+            engineB.deleteKeySuspend(alias)
+            localStorageRemove(legacyLsKey(prefix, alias))
+        }
+    }
 }

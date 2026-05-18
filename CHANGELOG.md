@@ -15,15 +15,19 @@ All notable changes to KSafe will be documented in this file.
   **migrated on first read**: copied into the OS store, then removed from the
   DataStore file **only after the OS store is read back and byte-verified**
   (a buggy or again-unavailable keyring that silently no-ops cannot destroy
-  the only copy). Opt out with `-Dksafe.jvm.keyVault=software` (or env
-  `KSAFE_JVM_KEY_VAULT=software`).
+  the only copy). Migration is **hybrid**: lazy per-key on first read *plus*
+  a one-time best-effort background sweep (no-op under the software fallback)
+  so a key that's never read again doesn't linger in the file. Opt out with
+  `-Dksafe.jvm.keyVault=software` (or env `KSAFE_JVM_KEY_VAULT=software`).
 - **Web keys are now non-extractable.** The browser engine generates an
   `extractable = false` AES-GCM `CryptoKey` and persists the live key object in
   **IndexedDB**, instead of exporting the raw key and Base64-ing it into
   `localStorage`. The raw key bytes are no longer recoverable by XSS,
   extensions, or profile reads. A legacy `localStorage` key is imported as a
   non-extractable key on first access and the `localStorage` entry is deleted;
-  previously encrypted data keeps decrypting.
+  previously encrypted data keeps decrypting. Like JVM, this runs both lazily
+  per-key and via a one-time background sweep so old raw keys don't linger in
+  `localStorage`.
 
 ### Added
 

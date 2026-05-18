@@ -122,4 +122,21 @@ internal interface KSafeEncryption {
         decrypt(identifier, data)
 
     suspend fun deleteKeySuspend(identifier: String) = deleteKey(identifier)
+
+    /**
+     * One-time, best-effort **eager** sweep of legacy (pre-2.1) key material
+     * out of the weak storage location into the engine's secure store.
+     *
+     * Lazy per-key migration ([getOrCreateSecretKey]-style, on first
+     * read/write) already guarantees correctness, but a key that is never
+     * read again would keep its plaintext sitting in the compromisable
+     * location indefinitely. `KSafeCore` calls this once from the
+     * first-snapshot background pass (off the construction/UI path) so the
+     * exposure window for cold keys shrinks to a single post-upgrade session.
+     *
+     * Must be: idempotent, non-throwing for individual entries, and a no-op
+     * when there is no safer destination (JVM software-fallback / opt-out).
+     * Default: no-op (Android/Apple have no weak legacy key location).
+     */
+    suspend fun migrateLegacyKeysSuspend() { /* no-op by default */ }
 }

@@ -11,6 +11,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.test.AfterTest
@@ -165,6 +166,53 @@ class JvmKeyVaultMigrationTest {
                 DataStoreKeyVault(dataStore).get(alias),
                 "fallback must keep the legacy key in place (no OS store to move it to)",
             )
+        } finally {
+            System.clearProperty("ksafe.jvm.keyVault")
+        }
+    }
+
+    // ── Eager one-time sweep (hybrid) ────────────────────────────────────────
+
+    @Test
+    fun eagerSweep_migratesEveryLegacyKey_withoutReadingThem() {
+        val legacy = DataStoreKeyVault(dataStore)
+        val seeded = mapOf(
+            "user:a" to ByteArray(32) { 1 },
+            "user:b" to ByteArray(32) { 2 },
+            "settings:c" to ByteArray(32) { 3 },
+        )
+        seeded.forEach { (k, v) -> legacy.put(k, v) }
+
+        val fake = FakeOsVault()
+        val engine = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = fake),
+        )
+
+        // Sweep WITHOUT any prior encrypt/decrypt — proves it's eager, not lazy.
+        runBlocking { engine.migrateLegacyKeysSuspend() }
+
+        seeded.forEach { (k, v) ->
+            assertContentEquals(v, fake.store[k], "$k must be eagerly migrated into the OS vault")
+            assertNull(legacy.get(k), "$k legacy DataStore entry must be scrubbed")
+        }
+        // Idempotent: a second sweep is a clean no-op.
+        runBlocking { engine.migrateLegacyKeysSuspend() }
+        assertEquals(seeded.size, fake.store.size)
+    }
+
+    @Test
+    fun eagerSweep_isNoOp_whenNoOsStore() {
+        val legacy = DataStoreKeyVault(dataStore)
+        legacy.put("k", ByteArray(32) { 9 })
+
+        System.setProperty("ksafe.jvm.keyVault", "software")
+        try {
+            val provider = JvmKeyVaultProvider(dataStore) // active === legacy
+            val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+            runBlocking { engine.migrateLegacyKeysSuspend() }
+            // No safer destination → legacy key left untouched (no data loss).
+            assertNotNull(legacy.get("k"), "fallback sweep must not move/delete the legacy key")
         } finally {
             System.clearProperty("ksafe.jvm.keyVault")
         }

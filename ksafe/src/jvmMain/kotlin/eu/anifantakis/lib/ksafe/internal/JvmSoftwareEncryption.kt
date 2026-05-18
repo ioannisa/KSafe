@@ -5,6 +5,8 @@ import androidx.datastore.preferences.core.Preferences
 import eu.anifantakis.lib.ksafe.KSafeConfig
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVault
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVaultProvider
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -125,25 +127,10 @@ internal class JvmSoftwareEncryption(
             var keyBytes: ByteArray? = active.get(alias)
 
             // Migrate a legacy plaintext key into the OS-backed vault, once.
+            // (Lazy path — also keeps the bytes usable for THIS session even
+            // if the OS write can't be finalised; never blocks a read.)
             if (keyBytes == null && active !== vaults.legacy) {
-                vaults.legacy.get(alias)?.let { legacyBytes ->
-                    // Always usable for THIS session, even if migration can't
-                    // be finalized — never block a read on the OS store.
-                    keyBytes = legacyBytes
-                    runCatching {
-                        active.put(alias, legacyBytes)
-                        // Only scrub the legacy plaintext copy once the OS
-                        // store has *verifiably* persisted the key. A buggy or
-                        // again-unavailable keyring can silently no-op put();
-                        // deleting legacy then would destroy the only copy
-                        // (data loss on next launch). Re-read and byte-compare
-                        // before deleting; otherwise leave legacy in place so
-                        // a later run retries the migration.
-                        if (active.get(alias)?.contentEquals(legacyBytes) == true) {
-                            vaults.legacy.delete(alias)
-                        }
-                    }
-                }
+                keyBytes = migrateLegacyLocked(alias)
             }
 
             val key: SecretKey = if (keyBytes != null) {
@@ -158,6 +145,53 @@ internal class JvmSoftwareEncryption(
 
             keyCache[alias] = key
             key
+        }
+    }
+
+    /**
+     * Hardened legacy → OS-vault migration for a single alias.
+     * **Caller must hold `lockFor(alias)`.**
+     *
+     * Copies the legacy DataStore key into the active OS vault, then removes
+     * it from the file **only after re-reading and byte-verifying** the OS
+     * store actually persisted it — a buggy/again-unavailable keyring that
+     * silently no-ops `put()` must not destroy the only copy. Returns the
+     * legacy key bytes if one existed (so the lazy path can still use it for
+     * the current session even when the OS write couldn't be finalised),
+     * else null.
+     */
+    private fun migrateLegacyLocked(alias: String): ByteArray? {
+        val legacyBytes = vaults.legacy.get(alias) ?: return null
+        runCatching {
+            vaults.active.put(alias, legacyBytes)
+            if (vaults.active.get(alias)?.contentEquals(legacyBytes) == true) {
+                vaults.legacy.delete(alias)
+            }
+        }
+        return legacyBytes
+    }
+
+    /**
+     * Eager one-time sweep: move **every** remaining legacy `ksafe_key_*`
+     * entry out of the DataStore file into the OS secret store, so a key
+     * that is never read again doesn't keep its plaintext sitting in the
+     * compromisable file indefinitely. Best-effort and per-alias isolated
+     * (one bad entry can't stop the sweep), idempotent, and a **no-op when
+     * there is no safer destination** (software fallback / opt-out). Runs on
+     * IO so the (blocking, JNA/DataStore) per-key work doesn't tie up the
+     * caller's coroutine dispatcher.
+     */
+    override suspend fun migrateLegacyKeysSuspend() {
+        val active = vaults.active
+        if (active === vaults.legacy || !active.isOsBacked) return
+        withContext(Dispatchers.IO) {
+            for (alias in vaults.legacy.legacyAliases()) {
+                runCatching {
+                    synchronized(lockFor(alias)) {
+                        if (vaults.legacy.get(alias) != null) migrateLegacyLocked(alias)
+                    }
+                }
+            }
         }
     }
 }

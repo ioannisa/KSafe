@@ -110,4 +110,27 @@ internal class WebSoftwareEncryption(
         webKeyDelete(name)
         ensured.remove(identifier)
     }
+
+    /**
+     * Eager one-time sweep: for every remaining legacy raw key still sitting
+     * in `localStorage` under `"<storagePrefix>ksafe_key_<alias>"`, import it
+     * as a non-extractable `CryptoKey` into IndexedDB and delete the
+     * `localStorage` entry — so a key that is never read again doesn't keep
+     * its extractable plaintext exposed to XSS/extensions indefinitely.
+     *
+     * Reuses [ensureKey] per alias: it already does the import-then-scrub
+     * atomically (localStorage entry removed only after the IndexedDB persist
+     * succeeds) and is idempotent via the `ensured` set + mutex. Best-effort
+     * and per-alias isolated.
+     */
+    override suspend fun migrateLegacyKeysSuspend() {
+        val legacyPrefix = "$storagePrefix$KEY_PREFIX"
+        val aliases = buildList {
+            for (i in 0 until localStorageLength()) {
+                val full = localStorageKey(i) ?: continue
+                if (full.startsWith(legacyPrefix)) add(full.removePrefix(legacyPrefix))
+            }
+        }
+        for (alias in aliases) runCatching { ensureKey(alias) }
+    }
 }
