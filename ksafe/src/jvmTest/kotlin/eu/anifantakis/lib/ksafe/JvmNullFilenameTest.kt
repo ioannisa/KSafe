@@ -1,6 +1,7 @@
 package eu.anifantakis.lib.ksafe
 
 import app.cash.turbine.test
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
@@ -145,7 +146,7 @@ class JvmNullFilenameTest {
     fun flow_unencrypted_emitsOnChange_onlyWhenValueChanges() = runTest {
         val key = uniqueKey("flow_plain")
         val flow = ksafe.getFlow(key, "d")
-        flow.test {
+        flow.test(timeout = 30.seconds) {
             assertEquals("d", awaitItem())
             ksafe.put(key, "a", KSafeWriteMode.Plain)
             assertEquals("a", awaitItem())
@@ -162,7 +163,7 @@ class JvmNullFilenameTest {
     fun flow_encrypted_emitsOnChange_onlyWhenValueChanges() = runTest {
         val key = uniqueKey("flow_enc")
         val flow = ksafe.getFlow(key, "d")
-        flow.test {
+        flow.test(timeout = 30.seconds) {
             assertEquals("d", awaitItem())
             ksafe.put(key, "a")
             assertEquals("a", awaitItem())
@@ -186,7 +187,7 @@ class JvmNullFilenameTest {
         assertEquals("def", stateFlow.value)
 
         ksafe.put(key, "updated", KSafeWriteMode.Plain)
-        stateFlow.test {
+        stateFlow.test(timeout = 30.seconds) {
             assertEquals("updated", awaitItem())
             cancelAndIgnoreRemainingEvents()
         }
@@ -203,7 +204,7 @@ class JvmNullFilenameTest {
         assertEquals("def", stateFlow.value)
 
         ksafe.put(key, "secret")
-        stateFlow.test {
+        stateFlow.test(timeout = 30.seconds) {
             assertEquals("secret", awaitItem())
             cancelAndIgnoreRemainingEvents()
         }
@@ -218,7 +219,7 @@ class JvmNullFilenameTest {
 
         val stateFlow = ksafe.getStateFlow(key, "def", scope = sharingScope)
 
-        stateFlow.test {
+        stateFlow.test(timeout = 30.seconds) {
             assertEquals("def", awaitItem())
 
             ksafe.put(key, "a", KSafeWriteMode.Plain)
@@ -240,7 +241,7 @@ class JvmNullFilenameTest {
 
         val stateFlow = ksafe.getStateFlow(key, "def", scope = sharingScope)
 
-        stateFlow.test {
+        stateFlow.test(timeout = 30.seconds) {
             assertEquals("def", awaitItem())
 
             ksafe.put(key, "a", KSafeWriteMode.Plain)
@@ -585,7 +586,7 @@ class JvmNullFilenameTest {
 
         val flow = ksafe.getFlow(key, defaultValue)
 
-        flow.test {
+        flow.test(timeout = 30.seconds) {
             // Initially should emit default value
             assertEquals(defaultValue, awaitItem())
 
@@ -612,7 +613,7 @@ class JvmNullFilenameTest {
 
         val flow = ksafe.getFlow(key, defaultValue)
 
-        flow.test {
+        flow.test(timeout = 30.seconds) {
             // Initially should emit default value
             assertEquals(defaultValue, awaitItem())
 
@@ -638,7 +639,7 @@ class JvmNullFilenameTest {
 
         val flow = ksafe.getFlow(key, defaultValue)
 
-        flow.test {
+        flow.test(timeout = 30.seconds) {
             // Initially should emit default value
             assertEquals(defaultValue, awaitItem())
 

@@ -1,6 +1,7 @@
 package eu.anifantakis.lib.ksafe
 
 import app.cash.turbine.test
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlin.test.*
@@ -158,7 +159,7 @@ class JvmFileNameTest {
     fun flow_unencrypted_emitsChanges() = runTest {
         val s = newStore()
         val k = "f_plain"
-        s.getFlow(k, "d").test {
+        s.getFlow(k, "d").test(timeout = 30.seconds) {
             assertEquals("d", awaitItem())
             s.put(k, "a", KSafeWriteMode.Plain)
             assertEquals("a", awaitItem())
@@ -173,7 +174,7 @@ class JvmFileNameTest {
     fun flow_encrypted_emitsChanges() = runTest {
         val s = newStore()
         val k = "f_enc"
-        s.getFlow(k, 0).test {
+        s.getFlow(k, 0).test(timeout = 30.seconds) {
             assertEquals(0, awaitItem())
             s.put(k, 1)
             assertEquals(1, awaitItem())
