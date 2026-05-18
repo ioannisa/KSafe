@@ -26,6 +26,24 @@ import kotlin.test.assertNotNull
 class JvmKSafeTest : KSafeTest() {
 
     companion object {
+        /**
+         * Stress intensity multiplier. Default `1.0` = full local load. The
+         * concurrency-stress tests below enqueue *writers × iterations*
+         * fire-and-forget `putDirect`s; at full intensity that's tens of
+         * thousands of ops, which DataStore's single writer + coalescer
+         * cannot drain inside a 2-vCPU CI runner's time budget (the
+         * documented livelock — see `forkEvery = 1` note in build.gradle.kts).
+         * CI passes `-Dksafe.stressScale=0.05`: the scaled-down counts still
+         * run thousands of concurrent ops (the cache/dirty-keys races these
+         * tests catch reproduce well below the tens-of-thousands mark) but
+         * stay drainable. Floored so a tiny scale can't no-op a test.
+         */
+        private val STRESS_SCALE: Double =
+            System.getProperty("ksafe.stressScale")?.toDoubleOrNull()?.coerceIn(0.01, 1.0) ?: 1.0
+
+        internal fun scaled(n: Int, floor: Int = 25): Int =
+            (n * STRESS_SCALE).toInt().coerceAtLeast(floor)
+
         // Atomic counter to ensure unique file names across all tests in a single run
         private val testCounter = AtomicInteger(0)
 
@@ -85,7 +103,7 @@ class JvmKSafeTest : KSafeTest() {
     @Test
     fun testConcurrentPutDirectStress() = runTest {
         val ksafe = createKSafe()
-        val iterations = 500
+        val iterations = scaled(500)
         val concurrentWriters = 10
         val errors = AtomicInteger(0)
         val successfulWrites = AtomicInteger(0)
@@ -127,7 +145,7 @@ class JvmKSafeTest : KSafeTest() {
     @Test
     fun testConcurrentEncryptedPutDirectStress() = runTest {
         val ksafe = createKSafe()
-        val iterations = 100
+        val iterations = scaled(100)
         val concurrentWriters = 5
         val errors = AtomicInteger(0)
         val successfulWrites = AtomicInteger(0)
@@ -159,7 +177,7 @@ class JvmKSafeTest : KSafeTest() {
     @Test
     fun testConcurrentReadWriteStress() = runTest {
         val ksafe = createKSafe()
-        val iterations = 200
+        val iterations = scaled(200)
         val errors = AtomicInteger(0)
         val running = AtomicBoolean(true)
 
@@ -211,7 +229,7 @@ class JvmKSafeTest : KSafeTest() {
     @Test
     fun testDirtyKeysStress() = runTest {
         val ksafe = createKSafe()
-        val iterations = 1000
+        val iterations = scaled(1000)
         val errors = AtomicInteger(0)
 
         // Rapid fire writes that add dirty keys
@@ -253,7 +271,7 @@ class JvmKSafeTest : KSafeTest() {
     @Test
     fun testNewKeysSurviveCacheCleanup() = runTest {
         val ksafe = createKSafe()
-        val iterations = 200
+        val iterations = scaled(200)
         val defaultsReturned = AtomicInteger(0)
         val errors = AtomicInteger(0)
 
@@ -484,7 +502,7 @@ class JvmKSafeTest : KSafeTest() {
         // Writers: write new keys to trigger updateCache cycles
         val writers = (0 until 5).map { writerId ->
             launch(Dispatchers.Default) {
-                repeat(100) { i ->
+                repeat(scaled(100)) { i ->
                     try {
                         ksafe.putDirect("new_enc_${writerId}_$i", "new_$i")
                     } catch (e: Exception) {

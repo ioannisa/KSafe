@@ -7,8 +7,6 @@ import platform.Foundation.NSApplicationSupportDirectory
 import platform.Foundation.NSData
 import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.NSFileManager
-import platform.Foundation.NSFileSize
-import platform.Foundation.NSNumber
 import platform.Foundation.NSString
 import platform.Foundation.NSThread
 import platform.Foundation.NSUTF8StringEncoding
@@ -76,40 +74,6 @@ class IosStorageLocationTest {
         @OptIn(ExperimentalForeignApi::class)
         private fun fileExists(path: String): Boolean =
             NSFileManager.defaultManager.fileExistsAtPath(path)
-
-        @OptIn(ExperimentalForeignApi::class)
-        private fun fileSize(path: String): Long {
-            val attrs = NSFileManager.defaultManager.attributesOfItemAtPath(path, error = null)
-            return (attrs?.get(NSFileSize) as? NSNumber)?.longLongValue ?: -1L
-        }
-
-        /**
-         * Deterministically wait until [path] is a fully-written, stable file.
-         *
-         * `KSafe.close()` only cancels the storage scope — it does NOT flush
-         * DataStore — and the suspend `put`'s durability is timing-sensitive
-         * on the loaded CI iOS simulator. Reopening / migrating a
-         * still-being-written `.preferences_pb` throws DataStore
-         * `CorruptionException` (the pre-existing flake). This polls the real
-         * on-disk size (a condition, NOT a fixed sleep) until it is non-zero
-         * and unchanged across consecutive samples. Uses `NSThread` real sleep
-         * because `runTest`'s virtual clock would skip a kotlinx `delay`.
-         */
-        @OptIn(ExperimentalForeignApi::class)
-        fun awaitFileSettled(path: String) {
-            var last = -1L
-            var stable = 0
-            repeat(200) {                       // ~10s ceiling (200 × 50ms)
-                val sz = fileSize(path)
-                if (sz > 0L && sz == last) {
-                    if (++stable >= 3) return   // 3 consecutive equal, non-zero
-                } else {
-                    stable = 0
-                }
-                last = sz
-                NSThread.sleepForTimeInterval(0.05)
-            }
-        }
 
         @OptIn(ExperimentalForeignApi::class)
         private fun deleteFileIfExists(path: String) {
@@ -228,12 +192,39 @@ class IosStorageLocationTest {
             v1Like.put("encrypted_key", "encrypted_value", KSafeWriteMode.Encrypted())
             v1Like.close()
 
-            // Barrier: the simulated "1.x install" must be durably on disk
-            // before the "next launch" migration reopens it. close() doesn't
-            // flush DataStore; reopening a half-written file throws
-            // CorruptionException (the pre-existing CI flake). Wait on the
-            // real file size settling rather than racing it.
-            awaitFileSettled(legacyPath)
+            // Barrier: the simulated "1.x install" must be *durably and
+            // validly* on disk before the "next launch" migration reopens it.
+            // close() does NOT flush DataStore and the suspend put's
+            // durability is timing-sensitive on the loaded CI iOS sim — a
+            // write aborted by close() leaves a permanently-corrupt file, so a
+            // size-stability check is the wrong invariant ("stably corrupt").
+            // Poll the *semantic* invariant instead: a throwaway reader PINNED
+            // to the legacy dir (directory != null ⇒ no migration) must read
+            // both values back. NSThread real-sleep because runTest's virtual
+            // clock skips kotlinx delay.
+            var durable = false
+            var attempt = 0
+            while (!durable && attempt < 80) {            // ~8s ceiling
+                attempt++
+                val probe = KSafe(
+                    fileName = name,
+                    directory = documentsDirPath(),
+                    testEngine = FakeEncryption(),
+                )
+                durable = try {
+                    probe.get("plain_key", "∅") == "plain_value" &&
+                        probe.get("encrypted_key", "∅") == "encrypted_value"
+                } catch (t: Throwable) {
+                    false   // CorruptionException etc. → not durable yet
+                } finally {
+                    runCatching { probe.close() }
+                }
+                if (!durable) NSThread.sleepForTimeInterval(0.1)
+            }
+            assertTrue(
+                durable,
+                "1.x DataStore file never became readable after close() — write-durability race",
+            )
 
             assertTrue(fileExists(legacyPath), "Setup: legacy file should exist after writing")
             assertFalse(fileExists(newPath), "Setup: new path should be empty before migration")

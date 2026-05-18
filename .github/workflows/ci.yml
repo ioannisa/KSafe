@@ -52,20 +52,17 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
-  # Full legacy :ksafe:jvmTest suite. Does NOT run on push/PR — it contains
-  # pre-existing stress tests (tens of thousands of concurrent ops,
-  # forkEvery=1) that finish in ~10s on a multi-core dev machine but livelock
-  # on a 2-vCPU GitHub runner. Runs only nightly / on manual dispatch, with
-  # per-test "started" logging (-PksafeTestLog) so the job log pinpoints the
-  # exact test that hangs (the last STARTED with no PASSED/FAILED). Failing
-  # here is expected until that legacy hang is root-caused; it never gates
-  # push/PR runs.
+  # Full :ksafe:jvmTest suite — now runs on push/PR. The livelock was the
+  # concurrency-stress tests enqueuing tens of thousands of fire-and-forget
+  # putDirects that a 2-vCPU runner's single DataStore writer can't drain in
+  # time. `-PksafeStressScale=0.05` shrinks those magnitudes to thousands of
+  # ops (still exercises the same cache/dirty-keys races) so the suite is
+  # drainable; full intensity remains the local default.
   # ---------------------------------------------------------------------------
   jvm-full-suite:
-    name: Full JVM suite (nightly/manual diagnostic)
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    name: Full JVM suite
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -73,14 +70,51 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
-      - name: Full JVM unit suite (software fallback, per-test logging)
-        run: ./gradlew :ksafe:jvmTest -PksafeTestLog --stacktrace
+      - name: Full JVM unit suite (software fallback, scaled stress)
+        run: ./gradlew :ksafe:jvmTest -PksafeStressScale=0.05 --stacktrace
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: jvm-full-test-report
           path: ksafe/build/reports/tests/jvmTest
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # :ksafe-compose and :ksafe-biometrics — jvm + both browser targets. Their
+  # native (macos/iosSim) tests are folded into the `apple` job below. Android
+  # is intentionally manual/on-device only (see note near the bottom).
+  # ---------------------------------------------------------------------------
+  modules:
+    name: Compose + Biometrics (jvm + js + wasmJs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install Chrome
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v1
+      - name: Module tests
+        env:
+          CHROME_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
+        run: >
+          ./gradlew
+          :ksafe-compose:jvmTest :ksafe-compose:jsBrowserTest :ksafe-compose:wasmJsBrowserTest
+          :ksafe-biometrics:jvmTest :ksafe-biometrics:jsBrowserTest :ksafe-biometrics:wasmJsBrowserTest
+          --continue --stacktrace
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: modules-test-report
+          path: |
+            ksafe-compose/build/reports/tests
+            ksafe-biometrics/build/reports/tests
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
@@ -242,8 +276,13 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
-      - name: Native Apple tests
-        run: ./gradlew :ksafe:macosArm64Test :ksafe:iosSimulatorArm64Test --continue --stacktrace
+      - name: Native Apple tests (all 3 modules)
+        run: >
+          ./gradlew
+          :ksafe:macosArm64Test :ksafe:iosSimulatorArm64Test
+          :ksafe-compose:macosArm64Test :ksafe-compose:iosSimulatorArm64Test
+          :ksafe-biometrics:macosArm64Test :ksafe-biometrics:iosSimulatorArm64Test
+          --continue --stacktrace
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4

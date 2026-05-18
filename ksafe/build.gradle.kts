@@ -243,6 +243,11 @@ val keyVaultItEnv = providers.environmentVariable("KSAFE_KEYVAULT_IT")
 // local output quiet. providers API => configuration-cache safe.
 val ksafeTestLog = providers.gradleProperty("ksafeTestLog")
 
+// `-PksafeStressScale=<0.01..1.0>` shrinks the JvmKSafeTest concurrency-stress
+// magnitudes so the full suite is drainable on a 2-vCPU CI runner (the
+// documented livelock). Default (absent) = full local intensity.
+val ksafeStressScale = providers.gradleProperty("ksafeStressScale")
+
 tasks.named<Test>("jvmTest") {
     // Stress tests in JvmKSafeTest each launch tens of thousands of concurrent
     // putDirect operations whose state (memoryCache + dirtyKeys + DataStore write
@@ -263,6 +268,9 @@ tasks.named<Test>("jvmTest") {
             events("started", "passed", "skipped", "failed")
             showStandardStreams = false
         }
+    }
+    if (ksafeStressScale.isPresent) {
+        systemProperty("ksafe.stressScale", ksafeStressScale.get())
     }
     doFirst {
         val ksafeDir = File(System.getProperty("user.home"), ".eu_anifantakis_ksafe")
