@@ -380,7 +380,7 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 
 ## Why use KSafe?
 
-* **Hardware-backed security** — AES-256-GCM, keys in Android Keystore / Apple Keychain (iOS + macOS) / JVM software / WebCrypto. Per-property control via `KSafeWriteMode` + `KSafeEncryptedProtection` tiers
+* **Hardware-backed security** — AES-256-GCM, keys in Android Keystore / Apple Keychain (iOS + macOS) / JVM OS secret store (Windows DPAPI · macOS Keychain · Linux libsecret, software fallback) / non-extractable WebCrypto key in IndexedDB. Per-property control via `KSafeWriteMode` + `KSafeEncryptedProtection` tiers
 * **Biometric auth** — Face ID, Touch ID, Fingerprint, with auth caching
 * **Root & jailbreak detection** — configurable WARN/BLOCK actions
 * **Clean reinstalls** — automatic cleanup on fresh install

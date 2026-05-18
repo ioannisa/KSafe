@@ -195,14 +195,14 @@ KSafe provides enterprise-grade encrypted persistence using DataStore Preference
 |----------|--------|-------------|----------|
 | **Android** | AES-256-GCM | Android Keystore — TEE by default, StrongBox opt-in | Keys non-exportable, app-bound, auto-deleted on uninstall |
 | **iOS** | AES-256-GCM via CryptoKit | iOS Keychain Services — Secure Enclave opt-in | Protected by device passcode/biometrics, not in backups |
-| **JVM/Desktop** | AES-256-GCM via javax.crypto | Software-backed in `~/.eu_anifantakis_ksafe/` | Relies on OS file permissions (0700 on POSIX) |
-| **Kotlin/WASM (Browser)** | AES-256-GCM via WebCrypto | `localStorage` (Base64-encoded) | Scoped per origin, ~5-10 MB limit. Requires WasmGC (Chrome 119+ / Firefox 120+ / Safari 18+) |
-| **Kotlin/JS (Browser)** | AES-256-GCM via WebCrypto | `localStorage` (Base64-encoded) | Scoped per origin, ~5-10 MB limit. Same format as wasmJs — data can be read by either target |
+| **JVM/Desktop** | AES-256-GCM via javax.crypto | OS secret store — Windows DPAPI / macOS Keychain / Linux Secret Service (libsecret); software fallback in `~/.eu_anifantakis_ksafe/` | Key bound to the OS user login; legacy ≤2.0 keys migrate on first read. Fallback (no keyring) relies on OS file permissions (0700 POSIX) + a one-time warning |
+| **Kotlin/WASM (Browser)** | AES-256-GCM via WebCrypto | Non-extractable `CryptoKey` in **IndexedDB**; values in `localStorage` | Raw key bytes never exposed to JS. Scoped per origin, ~5-10 MB limit. Requires WasmGC (Chrome 119+ / Firefox 120+ / Safari 18+) |
+| **Kotlin/JS (Browser)** | AES-256-GCM via WebCrypto | Non-extractable `CryptoKey` in **IndexedDB**; values in `localStorage` | Raw key bytes never exposed to JS. Scoped per origin. Same origin/IndexedDB as wasmJs — data readable by either target; legacy ≤2.0 localStorage keys migrate on first access |
 
 ### Encryption Flow
 
 1. **Serialize value → plaintext bytes** using kotlinx.serialization
-2. **Load (or generate) a random 256-bit AES key** from Keystore/Keychain (unique per preference key)
+2. **Load (or generate) a random 256-bit AES key** from the platform key store — Android Keystore / Apple Keychain / JVM OS secret store (DPAPI·Keychain·libsecret) / non-extractable WebCrypto `CryptoKey` in IndexedDB (unique per preference key)
 3. **Encrypt with AES-GCM** (nonce + auth-tag included)
 4. **Persist value** in DataStore/localStorage under `__ksafe_value_<key>`
    (encrypted writes store Base64 ciphertext, plaintext writes keep native type where supported)
@@ -293,7 +293,7 @@ The `KSafeKeyStorage` enum has three levels with natural ordinal ordering:
 
 | Level | Meaning | Platforms |
 |-------|---------|-----------|
-| `SOFTWARE` | Software-only (file system / localStorage) | JVM, Kotlin/WASM, Kotlin/JS |
+| `SOFTWARE` | No TEE/SE isolation. JVM: key in the OS secret store (DPAPI/Keychain/libsecret) with a file fallback. Web: non-extractable WebCrypto `CryptoKey` in IndexedDB | JVM, Kotlin/WASM, Kotlin/JS |
 | `HARDWARE_BACKED` | On-chip hardware (TEE / Keychain) | Android, iOS |
 | `HARDWARE_ISOLATED` | Dedicated security chip (StrongBox / Secure Enclave) | Android (if available), iOS (real devices) |
 
@@ -389,12 +389,14 @@ Migration is lazy and safe:
 
 #### JVM/Desktop
 * AES-256-GCM encryption via standard javax.crypto
-* Keys stored in user home directory with restricted permissions
+* The AES key is held by the host **OS secret store** — Windows DPAPI, macOS Keychain, or Linux Secret Service (libsecret) — via the `JvmKeyVault` abstraction (JNA). The key is bound to the OS user login
+* When no secret store is reachable (e.g. headless Linux with no keyring), it falls back to a key Base64-encoded in the DataStore file under `~/.eu_anifantakis_ksafe/` (POSIX `0700`) and logs a one-time security warning
+* Keys written by KSafe ≤ 2.0 are migrated into the OS store on first read (scrubbed only after read-back verification). Opt out with `-Dksafe.jvm.keyVault=software`
 * Suitable for desktop applications and server-side use
 
 #### Web (Kotlin/WASM + Kotlin/JS)
-* AES-256-GCM encryption via WebCrypto API on both browser targets
-* Keys and data stored in browser `localStorage` (Base64-encoded) using the same key layout, so data written from one target reads back from the other
+* AES-256-GCM encryption via WebCrypto **SubtleCrypto** on both browser targets
+* The AES key is a **non-extractable `CryptoKey`** (`extractable = false`) whose live key object is persisted in **IndexedDB** — the raw key bytes are never exposed to JS. Values are stored in `localStorage`. Both targets share the same origin/IndexedDB, so data written from one reads back from the other; a legacy ≤2.0 `localStorage` key is imported as non-extractable and the `localStorage` entry deleted on first access
 * Scoped per origin (~5-10 MB storage limit)
 * Memory policy always `PLAIN_TEXT` internally (WebCrypto is async-only)
 * Kotlin/WASM requires WasmGC (Chrome 119+, Firefox 120+, Safari 18+); Kotlin/JS runs on any modern browser
@@ -441,8 +443,8 @@ On startup, KSafe probes each encrypted DataStore entry by attempting decryption
 
 * **iOS:** Keychain access may require device to be unlocked depending on `requireUnlockedDevice` setting (default: accessible after first unlock)
 * **Android:** Some devices may not have hardware-backed keystore; `setUnlockedDeviceRequired` requires API 28+
-* **JVM:** No hardware security module; relies on file system permissions
-* **Web (wasmJs + js):** No hardware security; relies on browser `localStorage` which can be cleared by the user. Security checks (root, debugger, emulator) are no-ops on both targets
+* **JVM:** No TEE/HSM. The key is held by the OS secret store (DPAPI / macOS Keychain / libsecret), bound to the OS user login; the no-keyring fallback relies on OS file permissions (0700). A key migrated into the OS store becomes unrecoverable if that store is later lost (different OS account, keyring/keychain reset) — inherent to OS-bound storage
+* **Web (wasmJs + js):** No hardware security. The AES key is a non-extractable WebCrypto `CryptoKey` in IndexedDB (not exportable by JS); values are in `localStorage`. Both IndexedDB and `localStorage` can be cleared by the user. Security checks (root, debugger, emulator) are no-ops on both targets
 * **All Platforms:** Encrypted data is lost if encryption keys are deleted (by design for security)
 
 ***

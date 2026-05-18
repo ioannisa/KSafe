@@ -135,7 +135,7 @@ You will see:
 
 - `ksafe_<fileName>___ksafe_value_<key>` → Base64 ciphertext for encrypted writes, raw string for plain writes.
 - `ksafe_<fileName>___ksafe_meta_<key>__` → JSON metadata.
-- `ksafe_<fileName>_ksafe_key_<alias>` → the raw AES key, Base64. **This is the browser's storage-tier limitation: WebCrypto keys are software-held in the same `localStorage` origin** — the ciphertext and its key live side by side. Treat WASM/JS persistence as confidentiality-against-other-origins and accidental-log-exposure, not against an attacker with DOM access. See the `Kotlin/WASM` and `Kotlin/JS` rows in [docs/SECURITY.md](SECURITY.md).
+- **No AES key appears in `localStorage`.** As of 2.1.0 the key is a **non-extractable** WebCrypto `CryptoKey` (`extractable = false`) persisted in **IndexedDB** (database `ksafe-keys`) — the raw key bytes are never exposed to JS and cannot be exfiltrated even with DOM/console access. A legacy ≤2.0 `ksafe_<fileName>_ksafe_key_<alias>` (raw Base64 key) may still be present in `localStorage` from an old install, but it is imported as a non-extractable key into IndexedDB and **deleted from `localStorage`** on first access. Net: ciphertext and its key no longer live side by side; an attacker with DOM access can *use* the key via SubtleCrypto but cannot read it out. See the `Kotlin/WASM` and `Kotlin/JS` rows in [docs/SECURITY.md](SECURITY.md).
 
 ---
 
@@ -146,6 +146,7 @@ You will see:
   - `ksafe/src/iosTest/.../IosKeychainEncryptionLeakTest.kt` (real Keychain allocations + autorelease pool behavior)
   - Manual runs through the `iosTestApp` sample with real device entitlements
   - The `WebInteropSmokeTest` (exercises real `crypto.getRandomValues()` on both web targets)
+  - `ksafe/src/webTest/.../WebKeyStoreIntegrationTest.kt` — real WebCrypto **SubtleCrypto** + a non-extractable `CryptoKey` in IndexedDB, cross-instance reload, and the legacy `localStorage` → IndexedDB migration, run on both `jsBrowserTest` and `wasmJsBrowserTest`
 - They do not assert on ciphertext *quality* (the production engines use AES-256-GCM from `javax.crypto` / Android Keystore / CryptoKit / WebCrypto — four widely-audited implementations). The proof is specifically about *plumbing*: "does KSafe route your write through the encryption engine, or did a refactor silently bypass it?"
 
 The combination of the plumbing tests here, the engine-specific tests, and the manual inspection commands is what gives the end-to-end guarantee.

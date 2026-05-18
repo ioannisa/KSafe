@@ -232,8 +232,8 @@ By default KSafe picks a platform-appropriate location for its DataStore file:
 |----------|-----------------|
 | **Android** | `/data/data/<package>/files/datastore/eu_anifantakis_ksafe_datastore[_<fileName>].preferences_pb` (the app sandbox — recommended) |
 | **iOS** | `<NSApplicationSupportDirectory>/eu_anifantakis_ksafe_datastore[_<fileName>].preferences_pb`. Encryption keys are device-local (`…ThisDeviceOnly` Keychain accessibility), so backed-up ciphertext is undecryptable on a restored device — effectively device-local in practice. See migration guide for details. |
-| **JVM/Desktop** | `~/.eu_anifantakis_ksafe/eu_anifantakis_ksafe_datastore[_<fileName>].preferences_pb`, with POSIX `0700` permissions |
-| **Web** | `localStorage`, prefixed `ksafe_<fileName>_` (no directory concept) |
+| **JVM/Desktop** | `~/.eu_anifantakis_ksafe/eu_anifantakis_ksafe_datastore[_<fileName>].preferences_pb`, with POSIX `0700` permissions. The encryption *key* lives in the OS secret store (Windows DPAPI / macOS Keychain / Linux libsecret), not in this file — only the no-keyring fallback keeps the key here. |
+| **Web** | `localStorage`, prefixed `ksafe_<fileName>_` (no directory concept). The encryption *key* is a non-extractable WebCrypto `CryptoKey` in IndexedDB (DB `ksafe-keys`), not in `localStorage`. |
 
 Most apps should stick with the default. But on JVM, Android, and iOS you can pass a custom path when you need to control where data lives — for example to align with `$XDG_DATA_HOME` on Linux, store inside `noBackupFilesDir` on Android, or place data in your app's own working directory.
 

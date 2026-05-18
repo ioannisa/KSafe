@@ -1,5 +1,14 @@
 # Migration Guide
 
+### From v2.0 to v2.1
+
+**No breaking changes, no code changes.** 2.1 changes *where the AES key lives* on two targets; the on-disk value format, the public API, and the AES-256-GCM scheme are unchanged, so previously written data still decrypts.
+
+- **JVM/Desktop:** the key moves from Base64-in-the-DataStore-file to the host **OS secret store** — Windows DPAPI, macOS Keychain, or Linux Secret Service (libsecret). On the first read of each key after upgrading, KSafe copies the legacy key into the OS store and removes it from the file — **only after reading it back and byte-verifying** the OS store persisted it. If no OS store is reachable (e.g. headless Linux with no keyring) it transparently keeps using the legacy file scheme and logs a one-time warning. Opt out entirely with `-Dksafe.jvm.keyVault=software` (or env `KSAFE_JVM_KEY_VAULT=software`).
+- **Web (Kotlin/JS + Kotlin/WASM):** the key moves from a raw Base64 value in `localStorage` to a **non-extractable `CryptoKey` in IndexedDB**. A legacy `localStorage` key is imported as non-extractable and the `localStorage` entry deleted on first access.
+
+The migration is **automatic and idempotent** — bump the dependency, ship, done. One inherent caveat to be aware of: once a JVM key is migrated into an OS secret store it is bound to that OS user/login; if that store is later lost (different OS account, keychain/keyring reset, machine move without it) the data becomes unrecoverable — this is the trade-off of OS-bound key storage and only matters for portability scenarios. JVM consumers also gain a new transitive dependency on JNA (`net.java.dev.jna` + `jna-platform`), JVM-target-only.
+
 ### From v1.x to v2.0
 
 The 2.0 release is largely a non-breaking architectural refactor (single `KSafeCore` orchestrator, thin platform shells, on-disk format preserved). The **one consumer-visible breaking change** is that biometric authentication has moved into a separate, optional module.

@@ -79,6 +79,11 @@ ksafe/src/
 │   ├── KSafe.jvm.kt                    (top-level `fun KSafe(...)` factory + test extensions)
 │   └── internal/
 │       ├── JvmSoftwareEncryption.kt
+│       ├── keyvault/                   (OS secret-store abstraction — JNA)
+│       │   ├── JvmKeyVault.kt          (iface + DataStoreKeyVault + provider)
+│       │   ├── WindowsDpapiKeyVault.kt
+│       │   ├── MacosKeychainKeyVault.kt
+│       │   └── LinuxSecretServiceKeyVault.kt
 │       ├── KSafeConcurrent.jvm.kt
 │       ├── KSafeSecureRandom.jvm.kt
 │       └── SecurityChecker.jvm.kt
@@ -88,16 +93,19 @@ ksafe/src/
 │   └── internal/
 │       ├── LocalStorageStorage.kt
 │       ├── WebSoftwareEncryption.kt
-│       ├── WebInterop.kt               (expect)
+│       ├── WebKeyStore.kt              (expect — SubtleCrypto + IndexedDB)
+│       ├── WebInterop.kt               (expect — localStorage)
 │       ├── KSafeConcurrent.web.kt
 │       └── SecurityChecker.web.kt
 │
 ├── jsMain/…/internal/
 │   ├── KSafeSecureRandom.js.kt
+│   ├── WebKeyStore.js.kt
 │   └── WebInterop.js.kt
 │
 └── wasmJsMain/…/internal/
     ├── KSafeSecureRandom.wasmJs.kt
+    ├── WebKeyStore.wasmJs.kt
     └── WebInterop.wasmJs.kt
 ```
 
@@ -501,11 +509,23 @@ Standalone suspend function `cleanupOrphanedKeychainEntries(storage, engine, ser
 
 ### `internal/JvmSoftwareEncryption.kt` — the engine
 
-Implements `KSafeEncryption` via `javax.crypto` (`Cipher.getInstance("AES/GCM/NoPadding")`). Notable specifics:
+Implements `KSafeEncryption` via `javax.crypto` (`Cipher.getInstance("AES/GCM/NoPadding")`) for the payload. Notable specifics:
 
-- AES keys stored as Base64 strings in the *same* DataStore as the encrypted data, under `"ksafe_key_<alias>"` entries. The DataStore file's `0700` perm is the perimeter.
-- In-memory key cache (`ConcurrentHashMap<String, SecretKey>`) avoids repeated Base64 decode + key import on every call.
-- A per-alias mutex (via `ConcurrentHashMap<String, Any>` for lock objects) prevents concurrent first-time key generation under the same alias from racing.
+- The AES key is **not** kept in the DataStore — it's delegated to a `JvmKeyVault` (see `internal/keyvault/` below): an OS secret store per host (Windows DPAPI, macOS Keychain, Linux libsecret). Only the legacy/fallback path keeps a Base64 key in the DataStore (`"ksafe_key_<alias>"`, file `0700`), used when no OS store is reachable + a one-time warning.
+- **Migration:** on first read for an alias, a key still in the legacy DataStore location is copied into the active OS vault and the file entry removed — but only after the OS vault is read back and byte-verified, so a buggy/again-unavailable keyring can't destroy the only copy.
+- In-memory key cache (`ConcurrentHashMap<String, SecretKey>`) avoids repeated vault round-trips.
+- A per-alias mutex (via `ConcurrentHashMap<String, Any>` for lock objects) prevents concurrent first-time key generation/migration under the same alias from racing; the same lock guards `deleteKey` so a delete can't race a cache repopulate.
+
+### `internal/keyvault/` — the JVM OS secret-store abstraction
+
+`JvmKeyVault` (get/put/delete + `name`/`isOsBacked`) with `JvmKeyVaultProvider` selecting one per host and self-testing it (canary round-trip) before use:
+
+- `WindowsDpapiKeyVault` — `CryptProtectData`/`CryptUnprotectData` via jna-platform `Crypt32Util`; the wrapped blob is persisted Base64 in DataStore under `ksafe_dpapi_`.
+- `MacosKeychainKeyVault` — `SecKeychainAddGenericPassword`/`Find`/`Delete` via JNA to `Security.framework` (login keychain generic-password items).
+- `LinuxSecretServiceKeyVault` — `secret_password_store/lookup/clear_sync` via JNA to libsecret (login keyring).
+- `DataStoreKeyVault` — the legacy Base64-in-DataStore scheme; also the migration source and last-resort fallback.
+
+Selection is overridable with `-Dksafe.jvm.keyVault=software` (or env `KSAFE_JVM_KEY_VAULT=software`) — used by the test suite and consumers who don't want OS-store integration. JNA (`net.java.dev.jna` + `jna-platform`) is a **JVM-target-only** dependency.
 
 ### `internal/KSafeConcurrent.jvm.kt` / `internal/KSafeSecureRandom.jvm.kt` / `internal/SecurityChecker.jvm.kt`
 
@@ -535,7 +555,11 @@ Implements `KSafePlatformStorage` on top of localStorage.
 
 ### `internal/WebSoftwareEncryption.kt` — the engine
 
-Implements `KSafeEncryption` via `cryptography-kotlin`'s WebCrypto provider. Overrides only the suspend variants; the blocking `encrypt` / `decrypt` throw `UnsupportedOperationException` with a message pointing at the suspend versions. Keys are Base64 AES-key bytes stored in localStorage under `"<storagePrefix>ksafe_key_<alias>"`.
+Implements `KSafeEncryption` via the WebCrypto **SubtleCrypto** API called directly (no longer via `cryptography-kotlin`). Overrides only the suspend variants; the blocking `encrypt` / `decrypt` throw `UnsupportedOperationException` pointing at the suspend versions. The AES-GCM key is generated/imported **non-extractable** (`extractable = false`) and its live `CryptoKey` object is persisted in **IndexedDB** (DB `ksafe-keys`) — raw key bytes never reach JS. A legacy `"<storagePrefix>ksafe_key_<alias>"` raw key in `localStorage` (KSafe ≤ 2.0) is imported as non-extractable into IndexedDB and the `localStorage` entry deleted on first access; the AES-GCM framing matches the old default so prior ciphertext still decrypts.
+
+### `internal/WebKeyStore.kt` — expect/actual for WebCrypto + IndexedDB
+
+`expect` surface (`webKeyEnsure` / `webKeyEncrypt` / `webKeyDecrypt` / `webKeyDelete` / `webKeyDeleteNoWait`) driving SubtleCrypto + IndexedDB. The whole helper is one self-contained JS dispatcher per target: on `jsMain` via a `js("…")` IIFE that **returns** the dispatcher function (Kotlin invokes it — referencing Kotlin params from inside `js(...)` is unreliable under the JS IR compiler and silently broke an earlier attempt); on `wasmJsMain` via an `@JsFun` arrow with a byte-identical body. Payloads cross the boundary as Base64 strings; Promises are bridged to `suspend` via `kotlinx.coroutines.await`.
 
 ### `internal/WebInterop.kt` — expect/actual for localStorage
 

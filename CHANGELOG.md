@@ -2,7 +2,7 @@
 
 All notable changes to KSafe will be documented in this file.
 
-## [Unreleased]
+## 2.1.0
 
 ### Security
 
@@ -13,7 +13,9 @@ All notable changes to KSafe will be documented in this file.
   keyring, JNA link failure, …) KSafe falls back to the legacy in-file scheme
   and logs a one-time security warning. Keys written by KSafe ≤ 2.0 are
   **migrated on first read**: copied into the OS store, then removed from the
-  DataStore file. Opt out with `-Dksafe.jvm.keyVault=software` (or env
+  DataStore file **only after the OS store is read back and byte-verified**
+  (a buggy or again-unavailable keyring that silently no-ops cannot destroy
+  the only copy). Opt out with `-Dksafe.jvm.keyVault=software` (or env
   `KSAFE_JVM_KEY_VAULT=software`).
 - **Web keys are now non-extractable.** The browser engine generates an
   `extractable = false` AES-GCM `CryptoKey` and persists the live key object in
