@@ -124,12 +124,25 @@ internal class JvmSoftwareEncryption(
             val active = vaults.active
             var keyBytes: ByteArray? = active.get(alias)
 
-            // Migrate legacy plaintext key into the OS-backed vault, once.
+            // Migrate a legacy plaintext key into the OS-backed vault, once.
             if (keyBytes == null && active !== vaults.legacy) {
                 vaults.legacy.get(alias)?.let { legacyBytes ->
-                    active.put(alias, legacyBytes)
-                    runCatching { vaults.legacy.delete(alias) }
+                    // Always usable for THIS session, even if migration can't
+                    // be finalized — never block a read on the OS store.
                     keyBytes = legacyBytes
+                    runCatching {
+                        active.put(alias, legacyBytes)
+                        // Only scrub the legacy plaintext copy once the OS
+                        // store has *verifiably* persisted the key. A buggy or
+                        // again-unavailable keyring can silently no-op put();
+                        // deleting legacy then would destroy the only copy
+                        // (data loss on next launch). Re-read and byte-compare
+                        // before deleting; otherwise leave legacy in place so
+                        // a later run retries the migration.
+                        if (active.get(alias)?.contentEquals(legacyBytes) == true) {
+                            vaults.legacy.delete(alias)
+                        }
+                    }
                 }
             }
 

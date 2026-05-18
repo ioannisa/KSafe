@@ -105,4 +105,68 @@ class JvmKeyVaultMigrationTest {
             System.clearProperty("ksafe.jvm.keyVault")
         }
     }
+
+    // ── 2.0.0 → 2.1.0 data-survival ──────────────────────────────────────────
+    // The thing users actually care about: data encrypted by 2.0.0 (AES key in
+    // the DataStore file) must still decrypt after upgrading to 2.1.0, both
+    // when an OS vault is available (key migrates) and when it is not
+    // (transparent fallback).
+
+    @Test
+    fun ciphertextWrittenUnder2_0_0_stillDecryptsAfter2_1_0_keyMigration() {
+        val alias = "user:token"
+        val payload = "balance=4242;iban=GR16".toByteArray()
+
+        // 2.0.0: software vault == legacy DataStore key location (ksafe_key_*).
+        val v200 = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = DataStoreKeyVault(dataStore)),
+        )
+        val ciphertextAtRest = v200.encrypt(alias, payload)
+        val key200 = DataStoreKeyVault(dataStore).get(alias)
+        assertNotNull(key200, "2.0.0 must persist the AES key in the DataStore file")
+
+        // 2.1.0 upgrade: a fresh engine (new process) with an OS-backed vault
+        // decrypts the SAME at-rest ciphertext written by 2.0.0.
+        val osVault = FakeOsVault()
+        val v210 = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = osVault),
+        )
+        assertContentEquals(
+            payload, v210.decrypt(alias, ciphertextAtRest),
+            "2.0.0 ciphertext must still decrypt after the 2.1.0 upgrade",
+        )
+        assertContentEquals(key200, osVault.store[alias], "key migrated byte-for-byte into the OS vault")
+        assertNull(DataStoreKeyVault(dataStore).get(alias), "plaintext key scrubbed from DataStore post-migration")
+    }
+
+    @Test
+    fun ciphertextWrittenUnder2_0_0_stillDecryptsWhenNoOsStoreAvailable() {
+        val alias = "settings:theme"
+        val payload = "dark".toByteArray()
+
+        val v200 = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = DataStoreKeyVault(dataStore)),
+        )
+        val ciphertextAtRest = v200.encrypt(alias, payload)
+
+        // 2.1.0 on a host with NO OS secret store → provider falls back to the
+        // legacy DataStore vault; old data must still read and the key must NOT
+        // be deleted (nothing to migrate to).
+        System.setProperty("ksafe.jvm.keyVault", "software")
+        try {
+            val provider = JvmKeyVaultProvider(dataStore)
+            assertEquals(provider.legacy, provider.active, "no OS store ⇒ legacy vault active")
+            val v210 = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+            assertContentEquals(payload, v210.decrypt(alias, ciphertextAtRest))
+            assertNotNull(
+                DataStoreKeyVault(dataStore).get(alias),
+                "fallback must keep the legacy key in place (no OS store to move it to)",
+            )
+        } finally {
+            System.clearProperty("ksafe.jvm.keyVault")
+        }
+    }
 }
