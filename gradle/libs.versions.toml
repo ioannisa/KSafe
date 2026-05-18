@@ -32,13 +32,12 @@ androidx-core = { group = "androidx.test", name = "core", version.ref = "core" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junit" }
 robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
 
-# Cryptography
+# Cryptography — Apple (Kotlin/Native) only. Android & JVM use javax.crypto,
+# Web (2.1.0) uses WebCrypto SubtleCrypto directly. Do not add a provider for
+# those targets: they have a native primitive and do not reference this library.
 cryptography-core = { module = "dev.whyoleg.cryptography:cryptography-core", version.ref = "cryptography" }
 cryptography-provider-base = { module = "dev.whyoleg.cryptography:cryptography-provider-base", version.ref = "cryptography" }
-cryptography-provider-jdk = { module = "dev.whyoleg.cryptography:cryptography-provider-jdk", version.ref = "cryptography" }
 cryptography-provider-cryptokit = { module = "dev.whyoleg.cryptography:cryptography-provider-cryptokit", version.ref = "cryptography" }
-cryptography-provider-webcrypto = { module = "dev.whyoleg.cryptography:cryptography-provider-webcrypto", version.ref = "cryptography" }
-#cryptography-provider-optimal = { module = "dev.whyoleg.cryptography:cryptography-provider-optimal", version.ref = "cryptography" }
 
 # JNA — JVM-only native interop for OS secret stores
 # (Windows DPAPI / macOS Keychain / Linux libsecret Secret Service)

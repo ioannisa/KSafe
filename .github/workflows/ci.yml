@@ -101,11 +101,13 @@ jobs:
       - name: Install Chrome
         id: setup-chrome
         uses: browser-actions/setup-chrome@v1
-      - name: Browser tests
+      - name: Browser tests + Kotlin/JS truncation guard
         env:
           CHROME_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
-        # --continue so a js failure still runs/report wasmJs (and vice versa).
-        run: ./gradlew :ksafe:jsBrowserTest :ksafe:wasmJsBrowserTest --continue --stacktrace
+        # verifyWebTestParity dependsOn jsBrowserTest + wasmJsBrowserTest and
+        # fails if Kotlin/JS silently registered fewer tests than wasmJs.
+        # --continue so both browser suites run/report before the guard checks.
+        run: ./gradlew :ksafe:verifyWebTestParity --continue --stacktrace
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4

@@ -11,7 +11,7 @@ plugins {
 }
 
 group = "eu.anifantakis"
-version = "2.0.0"
+version = "2.1.0"
 
 kotlin {
     android {
@@ -81,9 +81,6 @@ kotlin {
                 api(libs.kotlinx.serialization.json)
                 implementation(libs.kotlinx.coroutines.core)
 
-                implementation(libs.cryptography.core)
-                implementation(libs.cryptography.provider.base)
-
                 // compileOnly — used solely for the @Stable marker on the KSafe class so
                 // Compose consumers (via :ksafe-compose) get accurate stability inference
                 // and skip recompositions when passing a KSafe instance as a Composable
@@ -108,7 +105,6 @@ kotlin {
             dependsOn(datastoreMain)
             dependencies {
                 implementation(libs.androidx.datastore.preferences)
-                implementation(libs.cryptography.provider.jdk)
             }
         }
         // appleMain is shared by iosX64/iosArm64/iosSimulatorArm64 + macosX64/macosArm64.
@@ -116,6 +112,8 @@ kotlin {
         appleMain {
             dependsOn(datastoreMain)
             dependencies {
+                implementation(libs.cryptography.core)
+                implementation(libs.cryptography.provider.base)
                 implementation(libs.cryptography.provider.cryptokit)
             }
         }
@@ -142,10 +140,8 @@ kotlin {
         }
 
         // Dependencies shared by wasmJs + js targets.
+        @Suppress("UNUSED_VARIABLE")
         val webMain by getting {
-            dependencies {
-                implementation(libs.cryptography.provider.webcrypto)
-            }
         }
 
         val webTest by getting {
@@ -274,6 +270,60 @@ tasks.named<Test>("jvmTest") {
             ksafeDir.deleteRecursively()
             println("Cleaned up KSafe test data directory: $ksafeDir")
         }
+    }
+}
+
+// ============================================================================
+// Kotlin/JS test-truncation guard.
+//
+// The legacy Kotlin/JS kotlin-test runner silently stops registering the
+// trailing @Test methods of an oversized test class (observed: KSafeTest
+// truncated at ~62) — methods are compiled into the bundle but never run,
+// with NO failure/skip/error signal. wasmJs/JVM/Native run the full set from
+// identical `webTest` source. This task fails the build if any shared web
+// test class ran fewer tests on jsBrowserTest than on wasmJsBrowserTest, so a
+// future silent JS drop is loud instead of invisible.
+// ============================================================================
+val verifyWebTestParity by tasks.registering {
+    group = "verification"
+    description = "Fails if Kotlin/JS registered fewer tests than wasmJs (truncation guard)."
+    dependsOn("jsBrowserTest", "wasmJsBrowserTest")
+
+    val jsDir = layout.buildDirectory.dir("test-results/jsBrowserTest")
+    val wasmDir = layout.buildDirectory.dir("test-results/wasmJsBrowserTest")
+
+    doLast {
+        fun counts(dir: File): Map<String, Int> {
+            require(dir.isDirectory) { "Missing test-results dir: $dir (did the browser tests run?)" }
+            val suite = Regex("<testsuite[^>]*\\btests=\"(\\d+)\"")
+            return (dir.listFiles { f -> f.name.startsWith("TEST-") && f.extension == "xml" } ?: emptyArray())
+                .associate { f ->
+                    val cls = "eu.anifantakis" + f.name.substringAfter("eu.anifantakis").removeSuffix(".xml")
+                    cls to (suite.find(f.readText())?.groupValues?.get(1)?.toInt() ?: 0)
+                }
+        }
+
+        val js = counts(jsDir.get().asFile)
+        val wasm = counts(wasmDir.get().asFile)
+        val dropped = wasm.mapNotNull { (cls, w) ->
+            val j = js[cls] ?: 0
+            if (j < w) "  $cls: js=$j wasmJs=$w (Kotlin/JS dropped ${w - j})" else null
+        }
+
+        if (dropped.isNotEmpty()) {
+            throw GradleException(
+                "Kotlin/JS test truncation detected — these shared webTest classes ran " +
+                    "FEWER tests on Kotlin/JS than wasmJs (identical source):\n" +
+                    dropped.joinToString("\n") +
+                    "\n\nKotlin/JS silently stops registering trailing @Tests of oversized " +
+                    "classes. Split the offending class into smaller focused classes " +
+                    "(see KSafeNullableDefaultTest)."
+            )
+        }
+        logger.lifecycle(
+            "Web test parity OK: js total=${js.values.sum()} == wasmJs total=" +
+                "${wasm.values.sum()} across ${wasm.size} shared classes."
+        )
     }
 }
 
