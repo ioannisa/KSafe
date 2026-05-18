@@ -151,7 +151,7 @@ jobs:
             sleep 2
             # Sanity: default collection now resolves without a prompt.
             python3 -c "import secretstorage; b=secretstorage.dbus_init(); c=secretstorage.get_default_collection(b); print(\"default collection\", c.collection_path, \"locked\", c.is_locked())"
-            ./gradlew :ksafe:jvmTest --tests "eu.anifantakis.lib.ksafe.JvmKeyVaultIntegrationTest" --no-daemon --no-configuration-cache --stacktrace
+            ./gradlew :ksafe:jvmTest --tests "eu.anifantakis.lib.ksafe.JvmKeyVaultIntegrationTest" --tests "eu.anifantakis.lib.ksafe.Jvm200To210FixtureTest" --tests "eu.anifantakis.lib.ksafe.JvmKeyVaultMigrationTest" --no-daemon --no-configuration-cache --stacktrace
           '
       - name: Upload test report
         if: always()
@@ -181,7 +181,7 @@ jobs:
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
       - name: Key vault integration test (DPAPI)
-        run: ./gradlew :ksafe:jvmTest --tests 'eu.anifantakis.lib.ksafe.JvmKeyVaultIntegrationTest' --no-daemon --no-configuration-cache --stacktrace
+        run: ./gradlew :ksafe:jvmTest --tests 'eu.anifantakis.lib.ksafe.JvmKeyVaultIntegrationTest' --tests 'eu.anifantakis.lib.ksafe.Jvm200To210FixtureTest' --tests 'eu.anifantakis.lib.ksafe.JvmKeyVaultMigrationTest' --no-daemon --no-configuration-cache --stacktrace
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4
@@ -215,11 +215,79 @@ jobs:
           # No auto-lock (timeout / sleep) for the duration of the job.
           security set-keychain-settings build.keychain
       - name: Key vault integration test (Keychain)
-        run: ./gradlew :ksafe:jvmTest --tests 'eu.anifantakis.lib.ksafe.JvmKeyVaultIntegrationTest' --no-daemon --no-configuration-cache --stacktrace
+        run: ./gradlew :ksafe:jvmTest --tests 'eu.anifantakis.lib.ksafe.JvmKeyVaultIntegrationTest' --tests 'eu.anifantakis.lib.ksafe.Jvm200To210FixtureTest' --tests 'eu.anifantakis.lib.ksafe.JvmKeyVaultMigrationTest' --no-daemon --no-configuration-cache --stacktrace
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: keyvault-macos-report
           path: ksafe/build/reports/tests/jvmTest
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Apple native (Kotlin/Native): macosArm64 + iosSimulatorArm64. Covers the
+  # CryptoKit/appleMain path and the full common suite incl. the #31
+  # regression. (Real iOS-device & real-Keychain coverage needs a signed app
+  # bundle / device farm — not possible on hosted CI; the simulator + native
+  # macOS runner is the standard proxy.)
+  # ---------------------------------------------------------------------------
+  apple:
+    name: Apple native (macosArm64 + iosSimulatorArm64)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Native Apple tests
+        run: ./gradlew :ksafe:macosArm64Test :ksafe:iosSimulatorArm64Test --continue --stacktrace
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-native-report
+          path: ksafe/build/reports/tests
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Android instrumented — REAL Android Keystore on an emulator. This is the
+  # one path no host/JVM test can cover (Keystore only exists on a device).
+  # Runs the shared KSafeTest suite + AndroidKSafeNullableDefaultTest (#31)
+  # against the real hardware-backed Keystore.
+  # ---------------------------------------------------------------------------
+  android-emulator:
+    name: Android instrumented (real Keystore, emulator)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Enable KVM (hardware acceleration)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Android instrumented tests (connectedAndroidDeviceTest)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: ./gradlew :ksafe:connectedAndroidDeviceTest --stacktrace
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-instrumented-report
+          path: ksafe/build/reports/androidTests
           if-no-files-found: ignore
