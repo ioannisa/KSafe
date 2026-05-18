@@ -495,6 +495,13 @@ class JvmKSafeTest : KSafeTest() {
                             errors.incrementAndGet()
                         }
                     }
+                    // getDirect never suspends, so this is a CPU-bound spin.
+                    // Without a cooperative yield, 5 readers monopolise the
+                    // Dispatchers.Default pool (≈#cores threads) and starve
+                    // the writers on a ≤2-vCPU runner — writers.joinAll()
+                    // never returns, `running` never flips, the readers spin
+                    // forever (the CI livelock). yield() releases the thread.
+                    yield()
                 }
             }
         }
@@ -508,6 +515,7 @@ class JvmKSafeTest : KSafeTest() {
                     } catch (e: Exception) {
                         errors.incrementAndGet()
                     }
+                    yield() // cooperative — putDirect doesn't suspend either
                 }
             }
         }
