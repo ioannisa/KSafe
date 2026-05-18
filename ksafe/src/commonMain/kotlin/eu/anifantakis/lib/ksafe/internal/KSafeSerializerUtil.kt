@@ -24,11 +24,15 @@ internal fun isStringSerializer(serializer: KSerializer<*>): Boolean {
  */
 @PublishedApi
 internal fun primitiveKindOrNull(serializer: KSerializer<*>): PrimitiveKind? {
-    var desc = serializer.descriptor
-    if (desc.isNullable && desc.elementsCount > 0) {
-        desc = desc.getElementDescriptor(0)
-    }
-    return desc.kind as? PrimitiveKind
+    // kotlinx-serialization's `.nullable` descriptor delegates `kind` (and
+    // `elementsCount`) to the wrapped type, so `T?` reports the same kind as
+    // `T`: `Int?` -> INT, `@Serializable class Foo?` -> CLASS. We must NOT
+    // descend via getElementDescriptor(0) on a nullable wrapper — for a
+    // nullable @Serializable class that would walk into the class's first
+    // *field* and misreport e.g. a class with a leading String field as
+    // PrimitiveKind.STRING, causing the stored JSON to be returned verbatim
+    // (ClassCastException: String cannot be cast to <Type>). See issue #31.
+    return serializer.descriptor.kind as? PrimitiveKind
 }
 
 /**

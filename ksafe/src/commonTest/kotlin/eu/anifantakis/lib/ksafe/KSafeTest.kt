@@ -1,6 +1,7 @@
 package eu.anifantakis.lib.ksafe
 
 import app.cash.turbine.test
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
@@ -302,7 +303,7 @@ abstract class KSafeTest {
 
         val flow = ksafe.getFlow(key, defaultValue)
 
-        flow.test {
+        flow.test(timeout = 10.seconds) {
             assertEquals(defaultValue, awaitItem())
 
             ksafe.put(key, value1, KSafeWriteMode.Plain)
@@ -349,7 +350,7 @@ abstract class KSafeTest {
 
         val flow = ksafe.getFlow(key, defaultValue)
 
-        flow.test {
+        flow.test(timeout = 10.seconds) {
             assertEquals(defaultValue, awaitItem())
 
             ksafe.put(key, value, KSafeWriteMode.Plain)
@@ -378,7 +379,7 @@ abstract class KSafeTest {
         }
         val host = Host(ksafe)
 
-        host.pref.test {
+        host.pref.test(timeout = 10.seconds) {
             assertEquals("default", awaitItem())
             host.pref.set("first")
             assertEquals("first", awaitItem())
@@ -401,7 +402,7 @@ abstract class KSafeTest {
         }
         val host = Host(ksafe)
 
-        host.pref.test {
+        host.pref.test(timeout = 10.seconds) {
             assertEquals("default", awaitItem())
             host.pref.set("secret")
             assertEquals("secret", awaitItem())
@@ -432,7 +433,7 @@ abstract class KSafeTest {
         }
         val host = Host(ksafe)
 
-        host.pref.test {
+        host.pref.test(timeout = 10.seconds) {
             assertEquals("default", awaitItem())
 
             // External writer (e.g. another screen, background sync) — collector must observe.
@@ -481,7 +482,7 @@ abstract class KSafeTest {
         // deterministically. Putting before subscribing races against StateFlow's
         // replay-of-current-value semantics — the new subscriber may see either
         // "default" or "updated" depending on whether the write propagated first.
-        stateFlow.test {
+        stateFlow.test(timeout = 10.seconds) {
             assertEquals(defaultValue, awaitItem())
             ksafe.put(key, "updated", KSafeWriteMode.Plain)
             assertEquals("updated", awaitItem())
@@ -501,7 +502,7 @@ abstract class KSafeTest {
         val stateFlow = ksafe.getStateFlow(key, defaultValue, scope = sharingScope)
         assertEquals(defaultValue, stateFlow.value)
 
-        stateFlow.test {
+        stateFlow.test(timeout = 10.seconds) {
             assertEquals(defaultValue, awaitItem())
             ksafe.put(key, "secret")
             assertEquals("secret", awaitItem())
@@ -520,7 +521,7 @@ abstract class KSafeTest {
 
         val stateFlow = ksafe.getStateFlow(key, defaultValue, scope = sharingScope)
 
-        stateFlow.test {
+        stateFlow.test(timeout = 10.seconds) {
             assertEquals(defaultValue, awaitItem())
 
             ksafe.put(key, "value1", KSafeWriteMode.Plain)
@@ -1123,4 +1124,11 @@ abstract class KSafeTest {
         // Auto-detection finds the encrypted value and decrypts it
         assertEquals(p, ksafe.get(k, Person(0, "")))
     }
+
+    // NOTE: the issue #31 regression lives in the dedicated *small*
+    // `KSafeNullableDefaultTest` class, NOT here. Appending it to this
+    // oversized class made Kotlin/JS silently drop it (the legacy kotlin-test
+    // JS runner truncates this class's trailing @Tests). Keep new regressions
+    // in small focused classes so every target — including Kotlin/JS — runs
+    // them.
 }

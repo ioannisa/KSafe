@@ -28,6 +28,19 @@ All notable changes to KSafe will be documented in this file.
 - **JNA dependency on the JVM target** (`net.java.dev.jna` + `jna-platform`)
   for the OS secret-store integration above. JVM/Desktop consumers only.
 
+### Fixed
+
+- **`get`/`getFlow` with a nullable default now deserialize `@Serializable`
+  classes correctly** ([#31](https://github.com/ioannisa/KSafe/issues/31),
+  thanks @DestBro). Calling `get(key, null as MyType?)` /
+  `getFlow(key, null as MyType?)` on a `@Serializable` class whose first
+  property is a primitive (e.g. a leading `String`) threw
+  `ClassCastException: java.lang.String cannot be cast to MyType` — a
+  regression introduced in 2.0.0. `primitiveKindOrNull` was descending into
+  the class's first field for a nullable serializer and misclassifying the
+  type as a `String`, so the raw stored JSON was returned instead of being
+  decoded. A non-null default (`get(key, MyType())`) was unaffected.
+
 ## [2.0.0] - 2026-05-13
 
 Major release: KMP refactor, new macOS and Kotlin/JS targets, biometrics extracted into its own module, and significant performance work on encrypted reads/writes.
