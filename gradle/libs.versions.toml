@@ -18,6 +18,8 @@ turbine = "1.2.1"
 robolectric = "4.16.1"
 biometric = "1.1.0"
 
+gradleTestRetry = "1.6.4"
+
 [libraries]
 androidx-orchestrator = { module = "androidx.test:orchestrator", version.ref = "orchestrator" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
@@ -70,3 +72,5 @@ android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.
 # Compose compiler plugin (Kotlin 2.0+ built-in). Bound to the Kotlin version
 # so the bytecode emitted by @Composable functions matches the consumer Kotlin.
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+
+gradle-test-retry = { id = "org.gradle.test-retry", version.ref = "gradleTestRetry" }

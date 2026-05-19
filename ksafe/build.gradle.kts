@@ -13,7 +13,7 @@ plugins {
     // -sensitive tests that flake on a shared, variable-speed 2-vCPU runner
     // (same commit: 2m21s vs 4m17s). Retry distinguishes runner-variance
     // flakes (pass on retry) from real regressions (fail every attempt).
-    id("org.gradle.test-retry") version "1.6.2"
+    alias(libs.plugins.gradle.test.retry)
 }
 
 group = "eu.anifantakis"
