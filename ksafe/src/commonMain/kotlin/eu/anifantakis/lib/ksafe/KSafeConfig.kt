@@ -72,12 +72,30 @@ import kotlinx.serialization.json.Json
  *           previously stored non-primitive values unreadable.
  *
  *           Defaults to [KSafeDefaults.json] (`Json { ignoreUnknownKeys = true }`).
+ * @property appNamespace Optional application identifier that isolates this
+ *           app's encryption keys from other apps on **JVM/Desktop and Web**.
+ *
+ *           Android and iOS keystores are already per-app (OS-sandboxed), so
+ *           this has no effect there. But the desktop OS secret store
+ *           (macOS Keychain / Linux Secret Service) is **per-OS-user, shared
+ *           by every process**, and Web IndexedDB/localStorage is shared
+ *           within a browser origin — so two different apps (or two KSafe
+ *           setups) that use the same `fileName` would otherwise collide on
+ *           the same key. Set this to a stable, app-unique string (e.g. your
+ *           reverse-DNS app id) to namespace the key-store destination.
+ *
+ *           If `null`, JVM best-effort-derives a stable id from the app's
+ *           main class (override with `-Dksafe.appNamespace=` / env
+ *           `KSAFE_APP_NAMESPACE`); Web falls back to its origin isolation.
+ *           Only the key-store **destination** is namespaced — legacy
+ *           KSafe ≤ 2.0 keys still migrate unchanged.
  */
 data class KSafeConfig(
     val keySize: Int = 256,
     val androidAuthValiditySeconds: Int = 30,
     val requireUnlockedDevice: Boolean = false,
-    val json: Json = KSafeDefaults.json
+    val json: Json = KSafeDefaults.json,
+    val appNamespace: String? = null
 ) {
     init {
         require(keySize == 128 || keySize == 256) {

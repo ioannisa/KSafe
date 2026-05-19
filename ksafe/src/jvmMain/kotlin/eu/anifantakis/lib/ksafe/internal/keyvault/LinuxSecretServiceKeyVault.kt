@@ -28,16 +28,28 @@ import kotlin.io.encoding.ExperimentalEncodingApi
  * Binary key bytes are Base64-encoded before storage because the libsecret
  * password APIs take NUL-terminated C strings.
  */
-internal class LinuxSecretServiceKeyVault : JvmKeyVault {
+internal class LinuxSecretServiceKeyVault(
+    /**
+     * App-isolation namespace folded into the libsecret lookup attribute
+     * value (`<ns>/<alias>`). The Secret Service collection is per-OS-user
+     * and shared by every process, so different desktop apps must not collide
+     * on the same alias. Blank = the historical un-namespaced value. This is
+     * the destination identity, not the frozen legacy migration source.
+     */
+    private val appNamespace: String = "",
+) : JvmKeyVault {
 
     override val name: String = "Linux Secret Service (libsecret, login keyring)"
     override val isOsBacked: Boolean = true
+
+    private fun nsAlias(alias: String): String =
+        if (appNamespace.isBlank()) alias else "$appNamespace/$alias"
 
     @OptIn(ExperimentalEncodingApi::class)
     override fun get(alias: String): ByteArray? {
         val ptr: Pointer? = SECRET.secret_password_lookup_sync(
             schema(), null, null,
-            ATTR_ALIAS, alias, null,
+            ATTR_ALIAS, nsAlias(alias), null,
         )
         ptr ?: return null
         return try {
@@ -56,7 +68,7 @@ internal class LinuxSecretServiceKeyVault : JvmKeyVault {
             "KSafe encryption key ($alias)",
             Base64.encode(keyBytes),
             null, null,
-            ATTR_ALIAS, alias, null,
+            ATTR_ALIAS, nsAlias(alias), null,
         )
         if (ok == 0) {
             throw RuntimeException("KSafe Linux Secret Service: secret_password_store_sync failed")
@@ -66,7 +78,7 @@ internal class LinuxSecretServiceKeyVault : JvmKeyVault {
     override fun delete(alias: String) {
         // Best-effort; ignore result (FALSE simply means "nothing to clear").
         runCatching {
-            SECRET.secret_password_clear_sync(schema(), null, null, ATTR_ALIAS, alias, null)
+            SECRET.secret_password_clear_sync(schema(), null, null, ATTR_ALIAS, nsAlias(alias), null)
         }
     }
 

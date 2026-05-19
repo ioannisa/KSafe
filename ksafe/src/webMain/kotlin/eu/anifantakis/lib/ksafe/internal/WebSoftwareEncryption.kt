@@ -31,7 +31,7 @@ import kotlin.io.encoding.ExperimentalEncodingApi
  */
 @PublishedApi
 internal class WebSoftwareEncryption(
-    @Suppress("unused") private val config: KSafeConfig = KSafeConfig(),
+    private val config: KSafeConfig = KSafeConfig(),
     private val storagePrefix: String = "",
 ) : KSafeEncryption {
 
@@ -39,8 +39,26 @@ internal class WebSoftwareEncryption(
         private const val KEY_PREFIX = "ksafe_key_"
     }
 
-    /** Logical key name; reused verbatim as the IndexedDB record key. */
-    private fun idbName(alias: String): String = "$storagePrefix$KEY_PREFIX$alias"
+    /**
+     * Optional app-isolation prefix for the IndexedDB **destination** record.
+     * The browser already isolates IndexedDB/localStorage by origin, so this
+     * is defense-in-depth for multiple independent KSafe setups in one origin
+     * and parity with the JVM namespace. Derived from
+     * `KSafeConfig.appNamespace`; blank ⇒ no prefix (unchanged behaviour).
+     */
+    private val appNsPrefix: String =
+        config.appNamespace?.trim()?.takeIf { it.isNotEmpty() }
+            ?.replace(Regex("[^A-Za-z0-9._-]"), "_")?.take(120)
+            ?.let { "$it:" } ?: ""
+
+    /**
+     * Frozen KSafe ≤ 2.0 `localStorage` key — the migration source. Must NOT
+     * be namespaced or legacy data stops migrating.
+     */
+    private fun legacyKey(alias: String): String = "$storagePrefix$KEY_PREFIX$alias"
+
+    /** IndexedDB record key (the namespaced destination). */
+    private fun idbName(alias: String): String = "$appNsPrefix$storagePrefix$KEY_PREFIX$alias"
 
     /** Aliases whose key+migration has been resolved this session. */
     private val ensured = HashSet<String>()
@@ -54,12 +72,13 @@ internal class WebSoftwareEncryption(
         if (alias in ensured) return
         ensureMutex.withLock {
             if (alias in ensured) return
-            val name = idbName(alias)
-            val legacy = localStorageGet(name) // legacy raw key (Base64) or null
-            webKeyEnsure(name, legacy)
+            // Read the legacy key from the FROZEN (un-namespaced) localStorage
+            // location; import it into the namespaced IndexedDB destination.
+            val legacy = localStorageGet(legacyKey(alias)) // Base64 or null
+            webKeyEnsure(idbName(alias), legacy)
             if (legacy != null) {
                 // Raw key now lives only as a non-extractable CryptoKey in IDB.
-                localStorageRemove(name)
+                localStorageRemove(legacyKey(alias))
             }
             ensured.add(alias)
         }
@@ -96,18 +115,16 @@ internal class WebSoftwareEncryption(
     }
 
     override fun deleteKey(identifier: String) {
-        val name = idbName(identifier)
-        // Remove any leftover legacy localStorage entry synchronously…
-        localStorageRemove(name)
-        // …and fire-and-forget the IndexedDB removal (no blocking IDB API).
-        webKeyDeleteNoWait(name)
+        // Remove any leftover legacy localStorage entry (frozen key)…
+        localStorageRemove(legacyKey(identifier))
+        // …and fire-and-forget the IndexedDB removal (namespaced destination).
+        webKeyDeleteNoWait(idbName(identifier))
         ensured.remove(identifier)
     }
 
     override suspend fun deleteKeySuspend(identifier: String) {
-        val name = idbName(identifier)
-        localStorageRemove(name)
-        webKeyDelete(name)
+        localStorageRemove(legacyKey(identifier))
+        webKeyDelete(idbName(identifier))
         ensured.remove(identifier)
     }
 

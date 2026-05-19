@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.Preferences
 import eu.anifantakis.lib.ksafe.KSafeConfig
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVault
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVaultProvider
+import eu.anifantakis.lib.ksafe.internal.keyvault.resolveJvmAppNamespace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
@@ -51,7 +52,10 @@ internal class JvmSoftwareEncryption(
     }
 
     private val vaults: JvmKeyVaultProvider =
-        vaultProvider ?: JvmKeyVaultProvider(dataStore)
+        vaultProvider ?: JvmKeyVaultProvider(
+            dataStore,
+            resolveJvmAppNamespace(config.appNamespace),
+        )
 
     /** Active vault name — exposed for tests/diagnostics, not public API. */
     @PublishedApi

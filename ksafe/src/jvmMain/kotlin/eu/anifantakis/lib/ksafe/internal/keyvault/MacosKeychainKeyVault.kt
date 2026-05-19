@@ -25,12 +25,23 @@ import com.sun.jna.ptr.PointerByReference
  * Either way this is a large improvement over a plaintext key file: the blob
  * is not readable from disk without the user's login session.
  */
-internal class MacosKeychainKeyVault : JvmKeyVault {
+internal class MacosKeychainKeyVault(
+    /**
+     * App-isolation namespace. The login Keychain is per-OS-user and shared
+     * by every process, so the generic-password **service** is namespaced
+     * (`eu.anifantakis.ksafe.<ns>`) to keep different desktop apps' keys
+     * apart. Blank = the historical un-namespaced service. The account stays
+     * the bare alias, so the legacy DataStore migration source is unaffected.
+     */
+    appNamespace: String = "",
+) : JvmKeyVault {
 
     override val name: String = "macOS Keychain (Security.framework, login keychain)"
     override val isOsBacked: Boolean = true
 
-    private val service = SERVICE_NAME.toByteArray(Charsets.UTF_8)
+    private val service =
+        (if (appNamespace.isBlank()) SERVICE_NAME else "$SERVICE_NAME.$appNamespace")
+            .toByteArray(Charsets.UTF_8)
 
     override fun get(alias: String): ByteArray? {
         val account = alias.toByteArray(Charsets.UTF_8)

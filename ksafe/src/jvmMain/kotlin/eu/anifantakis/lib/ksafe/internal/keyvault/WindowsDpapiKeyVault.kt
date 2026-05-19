@@ -27,9 +27,20 @@ import kotlin.io.encoding.ExperimentalEncodingApi
  */
 internal class WindowsDpapiKeyVault(
     dataStore: DataStore<Preferences>,
+    /**
+     * App-isolation namespace folded into the wrapped-blob key prefix
+     * (`ksafe_dpapi_<ns>_`) so different apps sharing a DataStore directory
+     * don't collide. Blank = the historical un-namespaced prefix. This is the
+     * DPAPI *destination*, not the frozen legacy `ksafe_key_` migration
+     * source, so namespacing it is migration-safe.
+     */
+    appNamespace: String = "",
 ) : JvmKeyVault {
 
-    private val store = DataStorePrefStore(dataStore, BLOB_PREFIX)
+    private val store = DataStorePrefStore(
+        dataStore,
+        if (appNamespace.isBlank()) BLOB_PREFIX else "$BLOB_PREFIX${appNamespace}_",
+    )
 
     override val name: String = "Windows DPAPI (CryptProtectData, current-user)"
     override val isOsBacked: Boolean = true

@@ -142,6 +142,16 @@ internal class DataStoreKeyVault(
  */
 internal class JvmKeyVaultProvider(
     dataStore: DataStore<Preferences>,
+    /**
+     * App-isolation namespace applied to the OS-vault **destination** only
+     * (Keychain service / DPAPI blob prefix / Secret Service attribute) so
+     * different desktop apps sharing the per-user secret store don't collide.
+     * Blank = no namespace (legacy behaviour / tests). The legacy
+     * [DataStoreKeyVault] is intentionally NOT namespaced — its `ksafe_key_`
+     * layout is the frozen KSafe ≤ 2.0 on-disk format and the migration
+     * source.
+     */
+    private val appNamespace: String = "",
     /** Test seam: force a specific vault and skip OS detection. */
     forced: JvmKeyVault? = null,
 ) {
@@ -165,10 +175,10 @@ internal class JvmKeyVaultProvider(
         val os = System.getProperty("os.name").orEmpty().lowercase()
         val candidate: JvmKeyVault? = try {
             when {
-                os.contains("win") -> WindowsDpapiKeyVault(dataStore)
-                os.contains("mac") || os.contains("darwin") -> MacosKeychainKeyVault()
+                os.contains("win") -> WindowsDpapiKeyVault(dataStore, appNamespace)
+                os.contains("mac") || os.contains("darwin") -> MacosKeychainKeyVault(appNamespace)
                 os.contains("nux") || os.contains("nix") || os.contains("aix") ->
-                    LinuxSecretServiceKeyVault()
+                    LinuxSecretServiceKeyVault(appNamespace)
                 else -> null
             }
         } catch (t: Throwable) {
@@ -217,4 +227,42 @@ internal class JvmKeyVaultProvider(
             }
         }
     }
+}
+
+/**
+ * Resolves the effective app-isolation namespace for the JVM OS vaults.
+ *
+ * Priority: explicit [override] (`KSafeConfig.appNamespace`) →
+ * `-Dksafe.appNamespace` → env `KSAFE_APP_NAMESPACE` → best-effort from the
+ * app's launcher (`sun.java.command`) → `"shared"`. Sanitised to
+ * `[A-Za-z0-9._-]` so it is safe as a Keychain service / DataStore key /
+ * Secret Service attribute.
+ *
+ * Best-effort auto-derivation favours **stability** (the entry-point class /
+ * jar name is stable across runs and install locations) over uniqueness;
+ * production apps should set `KSafeConfig.appNamespace` explicitly. A blank
+ * result is impossible (falls back to `"shared"`).
+ */
+internal fun resolveJvmAppNamespace(override: String?): String {
+    fun String?.clean(): String? =
+        this?.trim()?.takeIf { it.isNotEmpty() }
+            ?.replace(Regex("[^A-Za-z0-9._-]"), "_")
+            ?.take(120)
+            ?.takeIf { it.isNotEmpty() }
+
+    override.clean()?.let { return it }
+    System.getProperty("ksafe.appNamespace").clean()?.let { return it }
+    System.getenv("KSAFE_APP_NAMESPACE").clean()?.let { return it }
+
+    // `sun.java.command` = "<mainClass-or-jar> <args...>"; keep only the
+    // launcher token — the entry point is stable per app, args are not.
+    val cmd = System.getProperty("sun.java.command").orEmpty().trim().substringBefore(' ')
+    val launcher = when {
+        cmd.isEmpty() -> null
+        cmd.endsWith(".jar", ignoreCase = true) ->
+            cmd.replace('\\', '/').substringAfterLast('/').removeSuffix(".jar")
+        else -> cmd
+    }
+    launcher.clean()?.let { return it }
+    return "shared"
 }
