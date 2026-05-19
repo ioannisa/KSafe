@@ -58,7 +58,13 @@ class JvmKeyVaultMigrationTest {
         val legacyKey = ByteArray(32) { it.toByte() }
         legacy.put(alias, legacyKey)
 
-        val fake = FakeOsVault()
+        // DIRTY precondition (the real-world case): the per-user OS store
+        // ALREADY holds a stale/mismatched key for this alias from a prior
+        // KSafe lifecycle. The legacy DataStore key is authoritative and must
+        // win — an empty FakeOsVault here would pass even on the broken,
+        // data-destroying code (it did: see the audit), testing nothing.
+        val staleOsKey = ByteArray(32) { 0x5A }
+        val fake = FakeOsVault().apply { store[alias] = staleOsKey.copyOf() }
         val engine = JvmSoftwareEncryption(
             dataStore = dataStore,
             vaultProvider = JvmKeyVaultProvider(dataStore, forced = fake),
@@ -68,8 +74,8 @@ class JvmKeyVaultMigrationTest {
         val ct = engine.encrypt(alias, "hello".toByteArray())
         assertEquals("hello", String(engine.decrypt(alias, ct)))
 
-        // Key moved into the OS vault using the *same* bytes (so older
-        // ciphertext stays decryptable) and scrubbed from the plaintext file.
+        // The stale OS key was OVERWRITTEN with the real (legacy) bytes (so
+        // older ciphertext stays decryptable) and the plaintext file scrubbed.
         assertContentEquals(legacyKey, fake.store[alias])
         assertNull(legacy.get(alias), "legacy DataStore entry must be removed after migration")
         assertEquals(fake.name, engine.keyVaultName)
@@ -127,18 +133,24 @@ class JvmKeyVaultMigrationTest {
         val key200 = DataStoreKeyVault(dataStore).get(alias)
         assertNotNull(key200, "2.0.0 must persist the AES key in the DataStore file")
 
-        // 2.1.0 upgrade: a fresh engine (new process) with an OS-backed vault
-        // decrypts the SAME at-rest ciphertext written by 2.0.0.
-        val osVault = FakeOsVault()
+        // 2.1.0 upgrade — the REAL precondition: the global per-user OS store
+        // already holds a STALE key for this alias (prior install / data-clear
+        // / reinstall / mixed-version run). A fresh engine must still decrypt
+        // the 2.0.0 at-rest ciphertext because the legacy DataStore key is
+        // authoritative. (With an empty osVault this test passed even on the
+        // data-destroying pre-fix code — proven in the audit — so it tested
+        // nothing. The stale seed is what makes it discriminate.)
+        val osVault = FakeOsVault().apply { store[alias] = ByteArray(32) { 0x5A } }
         val v210 = JvmSoftwareEncryption(
             dataStore = dataStore,
             vaultProvider = JvmKeyVaultProvider(dataStore, forced = osVault),
         )
         assertContentEquals(
             payload, v210.decrypt(alias, ciphertextAtRest),
-            "2.0.0 ciphertext must still decrypt after the 2.1.0 upgrade",
+            "2.0.0 ciphertext must still decrypt after upgrade even when the " +
+                "OS store already held a stale key for this alias",
         )
-        assertContentEquals(key200, osVault.store[alias], "key migrated byte-for-byte into the OS vault")
+        assertContentEquals(key200, osVault.store[alias], "stale OS key overwritten with the real one")
         assertNull(DataStoreKeyVault(dataStore).get(alias), "plaintext key scrubbed from DataStore post-migration")
     }
 

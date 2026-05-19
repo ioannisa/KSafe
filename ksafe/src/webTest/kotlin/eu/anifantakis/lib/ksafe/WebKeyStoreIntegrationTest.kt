@@ -89,6 +89,63 @@ class WebKeyStoreIntegrationTest {
         localStorageRemove(legacyLsKey(prefix, alias))
     }
 
+    /**
+     * 2.0.0 → 2.1.0 data-loss regression, web edition, with the realistic
+     * **dirty** precondition: IndexedDB already holds a STALE non-extractable
+     * key under this name (from a prior KSafe lifecycle in this origin) while
+     * the genuine legacy raw key is still in localStorage. The legacy key
+     * provably encrypted the ciphertext and must win; the stale IDB key must
+     * be overwritten and the legacy key must NOT be destroyed.
+     *
+     * Every other web keyvault test uses a unique prefix ⇒ pristine IndexedDB
+     * ⇒ the stale-shadow branch is unreachable, so they pass on the broken
+     * code and prove nothing. This one fails on the pre-fix code.
+     */
+    @Test
+    fun legacyKey_survivesUpgrade_evenWhenIndexedDbHoldsAStaleKey() = runTest {
+        val prefix = uniquePrefix()
+        val alias = "tok"
+        val payload = "web-stale-precondition-secret"
+        val realKey = ByteArray(32) { (it * 5 + 1).toByte() }
+
+        // (1) Ciphertext genuinely encrypted with the REAL legacy key (throw-
+        //     away prefix, pristine IDB ⇒ it imports realKey and encrypts).
+        val ctPrefix = uniquePrefix()
+        localStorageSet(legacyLsKey(ctPrefix, alias), Base64.encode(realKey))
+        val ctMaker = WebSoftwareEncryption(storagePrefix = ctPrefix)
+        val ct = ctMaker.encryptSuspend(alias, payload.encodeToByteArray())
+        ctMaker.deleteKeySuspend(alias)
+
+        // (2) Pollute the TARGET prefix's IndexedDB with a STALE key under the
+        //     same record name (import a different "legacy" then scrub LS).
+        localStorageSet(legacyLsKey(prefix, alias), Base64.encode(ByteArray(32) { 0x5A }))
+        WebSoftwareEncryption(storagePrefix = prefix)
+            .encryptSuspend(alias, "x".encodeToByteArray()) // IDB[name] = STALE
+
+        // (3) Recreate the genuine 2.0.0 state: real legacy key in localStorage
+        //     alongside the now-stale IndexedDB key.
+        localStorageSet(legacyLsKey(prefix, alias), Base64.encode(realKey))
+
+        // (4) Fresh engine must decrypt the 2.0.0 ciphertext: legacy is
+        //     authoritative and overwrites the stale IDB key.
+        val engine = WebSoftwareEncryption(storagePrefix = prefix)
+        assertEquals(
+            payload,
+            engine.decryptSuspend(alias, ct).decodeToString(),
+            "legacy localStorage key must override a stale IndexedDB key",
+        )
+
+        // Legacy scrubbed only AFTER the real key was persisted to IDB; and a
+        // brand-new instance still decrypts (real key truly in IndexedDB now).
+        assertNull(
+            localStorageGet(legacyLsKey(prefix, alias)),
+            "legacy raw key scrubbed after authoritative migration",
+        )
+        val fresh = WebSoftwareEncryption(storagePrefix = prefix)
+        assertEquals(payload, fresh.decryptSuspend(alias, ct).decodeToString())
+        fresh.deleteKeySuspend(alias)
+    }
+
     @Test
     fun eagerSweep_importsEveryLegacyLocalStorageKey_andScrubs() = runTest {
         val prefix = uniquePrefix()

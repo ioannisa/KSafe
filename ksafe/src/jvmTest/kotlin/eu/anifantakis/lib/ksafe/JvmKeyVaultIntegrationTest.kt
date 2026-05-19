@@ -4,6 +4,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import eu.anifantakis.lib.ksafe.internal.JvmSoftwareEncryption
+import eu.anifantakis.lib.ksafe.internal.keyvault.DataStoreKeyVault
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVaultProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -12,6 +13,7 @@ import kotlinx.coroutines.cancel
 import java.io.File
 import kotlin.test.AfterTest
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -106,6 +108,60 @@ class JvmKeyVaultIntegrationTest {
         } finally {
             engine.deleteKey(alias)
             assertNull(provider.active.get(alias))
+        }
+    }
+
+    /**
+     * The 2.0.0 → 2.1.0 data-loss regression, against the **real** OS store
+     * with the **realistic dirty precondition**: the per-user secret store
+     * already holds a STALE/mismatched key for this alias (prior install /
+     * data-clear / reinstall / mixed-version run). The legacy DataStore key
+     * provably encrypted the ciphertext and must win; the stale OS entry must
+     * be overwritten — not trusted. This is the case every other keyvault
+     * test missed (a fresh alias ⇒ pristine store ⇒ the bug never triggers);
+     * it fails on the pre-fix code on a real Keychain/DPAPI/Secret Service.
+     */
+    @Test
+    fun legacyData_survivesUpgrade_evenWhenRealOsStoreHoldsAStaleKey() {
+        if (!enabled) return
+
+        val provider = JvmKeyVaultProvider(dataStore)
+        if (!provider.active.isOsBacked) return
+
+        val alias = "ksafe_it_stale_${System.nanoTime()}"
+        val payload = "iban=GR1601;balance=4242".toByteArray()
+        try {
+            // 2.0.0: key + ciphertext written with the legacy DataStore vault.
+            val v200 = JvmSoftwareEncryption(
+                dataStore = dataStore,
+                vaultProvider = JvmKeyVaultProvider(dataStore, forced = DataStoreKeyVault(dataStore)),
+            )
+            val ciphertextAtRest = v200.encrypt(alias, payload)
+            val legacyKey = DataStoreKeyVault(dataStore).get(alias)
+            assertNotNull(legacyKey, "2.0.0 must persist the AES key in the DataStore file")
+
+            // DIRTY: the REAL OS store already holds a different key here.
+            provider.active.put(alias, ByteArray(32) { 0x5A })
+
+            // 2.1.0 upgrade: fresh engine must still decrypt the 2.0.0 bytes.
+            val v210 = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+            assertContentEquals(
+                payload, v210.decrypt(alias, ciphertextAtRest),
+                "2.0.0 data must survive upgrade even when the real OS store " +
+                    "already held a stale key for this alias",
+            )
+            assertContentEquals(
+                legacyKey, provider.active.get(alias),
+                "the stale real-OS-store key must be overwritten with the real one",
+            )
+            assertNull(
+                DataStoreKeyVault(dataStore).get(alias),
+                "legacy plaintext key scrubbed only after verified migration",
+            )
+        } finally {
+            JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+                .deleteKey(alias)
+            assertNull(provider.active.get(alias), "real OS-store entry purged on cleanup")
         }
     }
 }

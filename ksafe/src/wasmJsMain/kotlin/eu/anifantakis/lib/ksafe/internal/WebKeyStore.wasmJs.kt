@@ -54,8 +54,12 @@ import kotlin.js.Promise
         // every encrypted value silently reset; see the 2.0.0→2.1.0 data-loss
         // regression — JVM had the identical flaw.)
         var ensure = function(name, legacy) {
-          if (mem.has(name)) return Promise.resolve(null);
+          // Legacy is authoritative over EVERYTHING — the in-memory `mem`
+          // cache (page-global, shared across instances, can hold a stale
+          // entry from a prior lifecycle) AND any IndexedDB key. So the
+          // legacy import/overwrite must precede the mem short-circuit.
           if (legacy) { return subtle.importKey('raw', b2u(legacy), 'AES-GCM', false, ['encrypt', 'decrypt']).then(function(nk) { return idbPut(name, nk).then(function() { mem.set(name, nk); return null; }); }); }
+          if (mem.has(name)) return Promise.resolve(null);
           return idbGet(name).then(function(k) {
             if (k) { mem.set(name, k); return null; }
             return subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']).then(function(nk) { return idbPut(name, nk).then(function() { mem.set(name, nk); return null; }); });
