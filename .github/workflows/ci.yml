@@ -363,20 +363,23 @@ jobs:
         if: steps.ftl.outputs.enabled == 'true'
         run: |
           set -euo pipefail
-          TEST_APK=$(find ksafe/build/outputs -name '*.apk' -path '*ndroidDeviceTest*' | head -1)
-          [ -n "$TEST_APK" ] || { echo "No androidDeviceTest APK found"; exit 1; }
+          TEST_APK=$(find ksafe/build/outputs/apk -name '*.apk' -type f | head -1)
+          [ -n "$TEST_APK" ] || { echo "No androidTest APK found under ksafe/build/outputs/apk"; exit 1; }
           echo "Test APK: $TEST_APK"
-          # Self-instrumented library: the androidDeviceTest APK is both the
-          # app under test and the test. Real device => full suite (no
-          # notClass exclusion; the emulator-only stalls don't apply).
+          # Self-instrumented library: the AGP KMP plugin emits a single
+          # androidTest APK (ksafe/build/outputs/apk/androidTest/) that is
+          # both the app under test and the test. Real device => full suite
+          # (no notClass exclusion; the emulator-only stalls don't apply).
           # --use-orchestrator matches the build's clearPackageData config.
-          # Adjust the device with: gcloud firebase test android models list
+          # This exact invocation was validated on Firebase Test Lab:
+          # Pixel 8 / API 34, 123/123 passed (~2 min on device). Adjust with:
+          # gcloud firebase test android models list --filter="form=PHYSICAL"
           gcloud firebase test android run \
             --project "$FIREBASE_PROJECT" \
             --type instrumentation \
             --app "$TEST_APK" \
             --test "$TEST_APK" \
-            --device model=oriole,version=33,locale=en,orientation=portrait \
+            --device model=shiba,version=34,locale=en,orientation=portrait \
             --use-orchestrator \
             --timeout 20m \
             --num-flaky-test-attempts 2
