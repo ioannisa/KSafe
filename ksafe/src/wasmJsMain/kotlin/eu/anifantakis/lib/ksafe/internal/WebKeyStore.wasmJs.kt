@@ -45,14 +45,22 @@ import kotlin.js.Promise
         var u2b = function(buf) { var u = new Uint8Array(buf); var s = ''; for (var i = 0; i < u.length; i++) s += String.fromCharCode(u[i]); return btoa(s); };
         var mem = new Map();
         var subtle = G.crypto.subtle;
-        var ensure = function(name, legacy) { return idbGet(name).then(function(k) {
-          if (mem.has(name)) return null;
-          if (k) { mem.set(name, k); return null; }
-          var mk = legacy
-            ? subtle.importKey('raw', b2u(legacy), 'AES-GCM', false, ['encrypt', 'decrypt'])
-            : subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
-          return mk.then(function(nk) { return idbPut(name, nk).then(function() { mem.set(name, nk); return null; }); });
-        }); };
+        // Legacy-first: a legacy localStorage raw key, WHEN PRESENT, is
+        // authoritative — it provably encrypted the current ciphertext. Import
+        // it and OVERWRITE any (possibly stale, from a prior lifecycle)
+        // IndexedDB key under this name. Only fall back to an existing IDB key
+        // when there is no legacy key. (Old code trusted an existing IDB key
+        // first and ignored legacy → a stale IDB key shadowed the real key and
+        // every encrypted value silently reset; see the 2.0.0→2.1.0 data-loss
+        // regression — JVM had the identical flaw.)
+        var ensure = function(name, legacy) {
+          if (mem.has(name)) return Promise.resolve(null);
+          if (legacy) { return subtle.importKey('raw', b2u(legacy), 'AES-GCM', false, ['encrypt', 'decrypt']).then(function(nk) { return idbPut(name, nk).then(function() { mem.set(name, nk); return null; }); }); }
+          return idbGet(name).then(function(k) {
+            if (k) { mem.set(name, k); return null; }
+            return subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']).then(function(nk) { return idbPut(name, nk).then(function() { mem.set(name, nk); return null; }); });
+          });
+        };
         var keyOf = function(name) { if (mem.has(name)) return Promise.resolve(mem.get(name));
           return idbGet(name).then(function(k) { if (k) mem.set(name, k); return k; }); };
         var enc = function(name, dataB64) { return keyOf(name).then(function(k) {

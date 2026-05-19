@@ -293,12 +293,23 @@ tasks.named<Test>("jvmTest") {
         maxFailures.set(8)
         failOnPassedAfterRetry.set(false)
     }
+    // Isolate the test JVM from the real user home. KSafe's JVM default
+    // datastore dir is `<user.home>/.eu_anifantakis_ksafe`; tests that don't
+    // pass an explicit baseDir would otherwise read/WRITE/DELETE the real
+    // user's (or a dev's demo) data — the pre-2.1.1 cleanup below
+    // recursively deleted `~/.eu_anifantakis_ksafe` and destroyed real demo
+    // data. Overriding `user.home` for the (forked) test JVM transparently
+    // redirects that default into build/, so the cleanup can only ever touch
+    // an isolated, disposable directory — never real user data.
+    val testHome = layout.buildDirectory.dir("ksafe-test-home").get().asFile
+    systemProperty("user.home", testHome.absolutePath)
     doFirst {
-        val ksafeDir = File(System.getProperty("user.home"), ".eu_anifantakis_ksafe")
+        val ksafeDir = File(testHome, ".eu_anifantakis_ksafe")
         if (ksafeDir.exists()) {
             ksafeDir.deleteRecursively()
-            println("Cleaned up KSafe test data directory: $ksafeDir")
+            println("Cleaned up isolated KSafe test data directory: $ksafeDir")
         }
+        testHome.mkdirs()
     }
 }
 

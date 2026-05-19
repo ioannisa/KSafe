@@ -124,14 +124,32 @@ internal class JvmSoftwareEncryption(
             keyCache[alias]?.let { return it }
 
             val active = vaults.active
-            var keyBytes: ByteArray? = active.get(alias)
 
-            // Migrate a legacy plaintext key into the OS-backed vault, once.
-            // (Lazy path — also keeps the bytes usable for THIS session even
-            // if the OS write can't be finalised; never blocks a read.)
-            if (keyBytes == null && active !== vaults.legacy) {
-                keyBytes = migrateLegacyLocked(alias)
-            }
+            // Legacy-first when an OS-backed vault is active.
+            //
+            // The legacy DataStore key, WHEN PRESENT, is authoritative: it
+            // provably encrypted this datastore's on-disk ciphertext. The OS
+            // vault (Keychain / DPAPI / Secret Service) is global-per-user and
+            // long-lived — it can hold a STALE key under the same
+            // `<file>:<alias>` from a prior KSafe lifecycle (reinstall,
+            // data-clear, backup restore, mixed 2.0/2.1 runs). The old code
+            // trusted the OS vault first and migrated only when it was empty,
+            // so a stale OS key shadowed the real legacy key: every encrypted
+            // value failed to decrypt and silently reset to its default
+            // (plaintext values, needing no key, survived). See the 2.0.0→
+            // 2.1.0 data-loss regression.
+            //
+            // So: if a legacy key exists, migrate it now —
+            // [migrateLegacyLocked] overwrites any stale OS-vault entry,
+            // re-reads to verify, then scrubs the legacy copy — and use it.
+            // Only fall back to the OS vault when there is NO legacy key
+            // (already migrated and scrubbed, or a genuinely fresh alias).
+            var keyBytes: ByteArray? =
+                if (active !== vaults.legacy) {
+                    migrateLegacyLocked(alias) ?: active.get(alias)
+                } else {
+                    active.get(alias)
+                }
 
             val key: SecretKey = if (keyBytes != null) {
                 SecretKeySpec(keyBytes, "AES")

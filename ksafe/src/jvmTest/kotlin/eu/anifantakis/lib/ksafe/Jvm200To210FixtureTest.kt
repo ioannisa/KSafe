@@ -21,6 +21,7 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -114,6 +115,52 @@ class Jvm200To210FixtureTest {
         assertNull(
             DataStoreKeyVault(ds).get(ALIAS),
             "legacy ksafe_key_ entry must be scrubbed after verified migration",
+        )
+    }
+
+    @Test
+    fun frozen2_0_0_decrypts_even_when_os_vault_holds_a_STALE_key() {
+        // 2.0.0 -> 2.1.0 data-loss regression guard.
+        //
+        // The OS secret store (Keychain / DPAPI / Secret Service) is global
+        // per-user and long-lived: it survives DataStore deletion, app-data
+        // clear, reinstall, and mixed 2.0/2.1 runs. So on upgrade it can
+        // already hold a DIFFERENT (stale, from a prior lifecycle) key under
+        // the same `<file>:<alias>` while the REAL legacy key still sits in
+        // the 2.0.0 DataStore. The legacy key is authoritative — it provably
+        // encrypted this ciphertext — and must NOT be shadowed by the stale
+        // OS key. The pre-fix code trusted the OS vault first and migrated
+        // only when it was empty, so every encrypted value silently reset to
+        // its default (plaintext values, needing no key, survived). This test
+        // binds the *frozen real 2.0.0* bytes against a pre-populated (stale)
+        // OS vault; it fails on the old logic and passes on legacy-first.
+        val (ds, _) = freshDataStoreFromFixture()
+        val ciphertext = storedCiphertext(ds)
+
+        val staleKey = ByteArray(32) { 0x7B }
+        val osVault = FakeOsVault().apply { store[ALIAS] = staleKey.copyOf() }
+
+        val engine = JvmSoftwareEncryption(
+            dataStore = ds,
+            vaultProvider = JvmKeyVaultProvider(ds, forced = osVault),
+        )
+
+        assertEquals(
+            PLAINTEXT, String(engine.decrypt(ALIAS, ciphertext)),
+            "a stale OS-vault key must NOT shadow the authoritative legacy " +
+                "key — frozen 2.0.0 data must still decrypt under 2.1.0",
+        )
+        // The stale OS key was overwritten with the real (legacy) key…
+        val migrated = osVault.store[ALIAS]
+        assertNotNull(migrated, "real key must be written into the OS vault")
+        assertFalse(
+            migrated.contentEquals(staleKey),
+            "the stale OS-vault key must have been overwritten by the real one",
+        )
+        // …and the legacy copy scrubbed only after that.
+        assertNull(
+            DataStoreKeyVault(ds).get(ALIAS),
+            "legacy ksafe_key_ entry must be scrubbed after authoritative migration",
         )
     }
 
