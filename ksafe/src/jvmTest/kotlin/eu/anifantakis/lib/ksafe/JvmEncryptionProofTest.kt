@@ -1,6 +1,5 @@
 package eu.anifantakis.lib.ksafe
 
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import java.io.File
 import java.nio.file.Paths
@@ -36,6 +35,27 @@ class JvmEncryptionProofTest {
         return File(baseDir, "eu_anifantakis_ksafe_datastore_$fileName.preferences_pb")
     }
 
+    /**
+     * Waits (REAL time) until [file] exists and its size is stable. The write
+     * path flushes to disk on a background coroutine, and `delay(...)` is
+     * *virtual* under `runTest` (skipped instantly) — so on a slow CI runner
+     * the on-disk file may not exist yet when the test reads it
+     * (`FileNotFoundException`). `Thread.sleep` is real even under runTest's
+     * virtual clock, so this is a deterministic settle barrier.
+     */
+    private fun awaitFileReady(file: File, timeoutMs: Long = 15_000) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        var lastLen = -1L
+        while (System.currentTimeMillis() < deadline) {
+            if (file.exists()) {
+                val len = file.length()
+                if (len > 0L && len == lastLen) return
+                lastLen = len
+            }
+            Thread.sleep(50)
+        }
+    }
+
     @Test
     fun encryptedWriteDoesNotLeakPlaintextToDataStoreFile() = runTest {
         val fileName = JvmKSafeTest.generateUniqueFileName()
@@ -43,7 +63,7 @@ class JvmEncryptionProofTest {
 
         // Encrypted write (the default mode).
         ksafe.put(KEY, SENTINEL)
-        delay(500) // let the DataStore flush settle
+        awaitFileReady(dataStoreFile(fileName))
 
         // Sanity — encryption must be reversible.
         assertEquals(SENTINEL, ksafe.get(KEY, "DEFAULT"), "encryption must round-trip")
@@ -70,7 +90,7 @@ class JvmEncryptionProofTest {
         val ksafe = KSafe(fileName = fileName)
 
         ksafe.put(KEY, SENTINEL, KSafeWriteMode.Plain)
-        delay(500)
+        awaitFileReady(dataStoreFile(fileName))
 
         assertEquals(SENTINEL, ksafe.get(KEY, "DEFAULT"))
 

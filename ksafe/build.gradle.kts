@@ -8,6 +8,12 @@ plugins {
     alias(libs.plugins.vanniktech.mavenPublish)
 
     alias(libs.plugins.kotlin.serialization)
+
+    // CI-only flaky-test retry. The full jvmTest suite has timing/durability
+    // -sensitive tests that flake on a shared, variable-speed 2-vCPU runner
+    // (same commit: 2m21s vs 4m17s). Retry distinguishes runner-variance
+    // flakes (pass on retry) from real regressions (fail every attempt).
+    id("org.gradle.test-retry") version "1.6.2"
 }
 
 group = "eu.anifantakis"
@@ -243,6 +249,10 @@ val keyVaultItEnv = providers.environmentVariable("KSAFE_KEYVAULT_IT")
 // local output quiet. providers API => configuration-cache safe.
 val ksafeTestLog = providers.gradleProperty("ksafeTestLog")
 
+// GitHub Actions (and most CI) set CI=true. Used to enable flaky-test retry
+// ONLY on CI — local runs must pass first try (no retry masking).
+val ciEnv = providers.environmentVariable("CI")
+
 // `-PksafeStressScale=<0.01..1.0>` shrinks the JvmKSafeTest concurrency-stress
 // magnitudes so the full suite is drainable on a 2-vCPU CI runner (the
 // documented livelock). Default (absent) = full local intensity.
@@ -271,6 +281,17 @@ tasks.named<Test>("jvmTest") {
     }
     if (ksafeStressScale.isPresent) {
         systemProperty("ksafe.stressScale", ksafeStressScale.get())
+    }
+    // Flaky-test retry — CI only. A runner-variance flake passes on retry
+    // (build green, still listed in the report so it's tracked, not hidden);
+    // a real regression fails all attempts and still reds the build.
+    // maxFailures caps a genuinely broken suite so it fails fast instead of
+    // retrying everything. Local runs: maxRetries=0 (must pass first try).
+    retry {
+        val onCi = ciEnv.orNull?.equals("true", ignoreCase = true) == true
+        maxRetries.set(if (onCi) 2 else 0)
+        maxFailures.set(8)
+        failOnPassedAfterRetry.set(false)
     }
     doFirst {
         val ksafeDir = File(System.getProperty("user.home"), ".eu_anifantakis_ksafe")
