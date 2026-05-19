@@ -195,7 +195,7 @@ KSafe provides enterprise-grade encrypted persistence using DataStore Preference
 |----------|--------|-------------|----------|
 | **Android** | AES-256-GCM | Android Keystore — TEE by default, StrongBox opt-in | Keys non-exportable, app-bound, auto-deleted on uninstall |
 | **iOS** | AES-256-GCM via CryptoKit | iOS Keychain Services — Secure Enclave opt-in | Protected by device passcode/biometrics, not in backups |
-| **JVM/Desktop** | AES-256-GCM via javax.crypto | OS secret store — Windows DPAPI / macOS Keychain / Linux Secret Service (libsecret); software fallback in `~/.eu_anifantakis_ksafe/` | Key bound to the OS user login; legacy ≤2.0 keys migrate on first read. Fallback (no keyring) relies on OS file permissions (0700 POSIX) + a one-time warning |
+| **JVM/Desktop** | AES-256-GCM via javax.crypto | OS secret store — Windows DPAPI / macOS Keychain / Linux Secret Service (libsecret); software fallback in `~/.eu_anifantakis_ksafe/` | Key bound to the OS user login. The store is **per-OS-user, shared across all of that user's apps** (not per-app like Android/iOS) — set `KSafeConfig.appNamespace` to isolate one app's keys from another's. Legacy ≤2.0 keys migrate on first read and remain authoritative (a stale store entry can't shadow them). Fallback (no keyring) relies on OS file permissions (0700 POSIX) + a one-time warning |
 | **Kotlin/WASM (Browser)** | AES-256-GCM via WebCrypto | Non-extractable `CryptoKey` in **IndexedDB**; values in `localStorage` | Raw key bytes never exposed to JS. Scoped per origin, ~5-10 MB limit. Requires WasmGC (Chrome 119+ / Firefox 120+ / Safari 18+) |
 | **Kotlin/JS (Browser)** | AES-256-GCM via WebCrypto | Non-extractable `CryptoKey` in **IndexedDB**; values in `localStorage` | Raw key bytes never exposed to JS. Scoped per origin. Same origin/IndexedDB as wasmJs — data readable by either target; legacy ≤2.0 localStorage keys migrate on first access |
 
@@ -217,7 +217,7 @@ KSafe provides enterprise-grade encrypted persistence using DataStore Preference
 **What KSafe protects against:**
 - ✅ Casual file inspection (data at rest is encrypted)
 - ✅ Data extraction from unrooted device backups
-- ✅ App data access by other apps (sandboxing + encryption)
+- ✅ App data access by other apps (Android/iOS: OS sandboxing + encryption). **JVM/Desktop caveat:** the OS secret store is per-OS-user and shared across that user's processes — set a unique `KSafeConfig.appNamespace` so a different desktop app run by the same user can't collide with or overwrite this app's keys (Web is isolated per origin by the browser).
 - ✅ Reinstall data leakage (automatic cleanup)
 - ✅ Tampering detection (GCM authentication tag)
 - ✅ Rooted/jailbroken devices (detection with configurable WARN/BLOCK)

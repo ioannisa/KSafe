@@ -356,6 +356,16 @@ authInfo = authInfo.copy(accessToken = "newToken")
 
 For third-party types you can't annotate (`UUID`, `Instant`, `BigDecimal`…), register a `KSerializer` via `KSafeConfig(json = customJson)` and use `@Contextual` fields at the call site. Full walkthrough: **[docs/SERIALIZATION.md](docs/SERIALIZATION.md)**.
 
+## Isolating an app's keys (Desktop / Web)
+
+Android and iOS keystores are OS-sandboxed per app. The **JVM/Desktop** OS secret store (macOS Keychain / Linux Secret Service) is **per-OS-user, shared by every process**, and **Web** IndexedDB/localStorage is shared per browser origin — so two apps using the same `fileName` could collide on the same key. Set a stable, app-unique namespace:
+
+```Kotlin
+val ksafe = KSafe(config = KSafeConfig(appNamespace = "com.example.myapp"))
+```
+
+Production desktop apps should set it explicitly. Only the key-store destination is namespaced — KSafe ≤ 2.0 data still migrates unchanged. See **[docs/USAGE.md](docs/USAGE.md)**.
+
 ***
 
 ## Cryptographic Utilities

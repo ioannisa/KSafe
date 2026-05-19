@@ -149,10 +149,11 @@ Data class of non-cryptographic knobs that users can pass to the `KSafe` factory
 
 **Key declarations:**
 
-- `data class KSafeConfig(keySize, androidAuthValiditySeconds, requireUnlockedDevice, json)`.
+- `data class KSafeConfig(keySize, androidAuthValiditySeconds, requireUnlockedDevice, json, appNamespace)`.
 - `object KSafeDefaults { val json }` — the default `Json` instance (`ignoreUnknownKeys = true`), used when the caller doesn't supply their own. `Json` is declared `api` in the build script so consumers can pass a custom one without declaring `kotlinx-serialization-json` themselves.
+- `appNamespace: String? = null` — optional per-app isolation for the **JVM/Desktop and Web** key store. Android/iOS keystores are already OS-sandboxed per app, but the desktop OS secret store (macOS Keychain / Linux Secret Service) is **per-OS-user, shared by every process**, and Web IndexedDB/localStorage is shared within an origin — so two apps using the same `fileName` would otherwise collide on the same key. `null` ⇒ JVM best-effort-derives a stable id from the app's launcher (override with `-Dksafe.appNamespace=` / env `KSAFE_APP_NAMESPACE`); Web falls back to its origin isolation. Only the key-store *destination* is namespaced — legacy KSafe ≤ 2.0 keys still migrate unchanged.
 
-**Why:** centralises the "things you configure once at construction time" — key size, the default unlock policy, and the `Json` instance for `@Serializable` types. Separating config into its own class keeps the factory signatures readable, and it lets users swap in a `Json` with `@Contextual` serializers for `UUID`, `Instant`, etc.
+**Why:** centralises the "things you configure once at construction time" — key size, the default unlock policy, the `Json` instance for `@Serializable` types, and the app namespace that keeps one app's desktop/web keys from colliding with another's in the shared per-user secret store. Separating config into its own class keeps the factory signatures readable, and it lets users swap in a `Json` with `@Contextual` serializers for `UUID`, `Instant`, etc.
 
 ## `KSafeWriteMode.kt` — how writes are parameterised
 

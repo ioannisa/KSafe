@@ -407,6 +407,21 @@ ksafe.putDirect("theme", "dark", mode = KSafeWriteMode.Plain)
 
 No-mode writes (`put`/`putDirect` without `mode`) use encrypted defaults and pick up `KSafeConfig.requireUnlockedDevice` as the default unlock policy.
 
+## Isolating an app's keys (`KSafeConfig.appNamespace`)
+
+On **Android and iOS** the OS sandboxes each app's keystore, so different apps can never see each other's keys. On **JVM/Desktop** the OS secret store (macOS Keychain / Linux Secret Service) is **per-OS-user and shared by every process**, and on **Web** IndexedDB/localStorage is shared within a browser origin. Two different apps (or two KSafe setups) that use the same `fileName` would therefore collide on — and could overwrite — each other's encryption keys.
+
+Set a stable, app-unique `appNamespace` to isolate the key-store destination:
+
+```Kotlin
+val ksafe = KSafe(
+    fileName = "userdata",
+    config = KSafeConfig(appNamespace = "com.example.myapp")
+)
+```
+
+If left `null`, JVM best-effort-derives a stable id from the app's launcher class (override with `-Dksafe.appNamespace=…` or env `KSAFE_APP_NAMESPACE`); Web relies on its built-in per-origin isolation. **Production desktop apps should set it explicitly** so the namespace is stable across run modes and packaging. Only the key-store *destination* is namespaced — legacy KSafe ≤ 2.0 keys still migrate unchanged, so adding `appNamespace` does not strand existing data.
+
 ## Storing Complex Objects
 
 ```Kotlin
