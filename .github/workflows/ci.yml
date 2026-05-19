@@ -374,8 +374,21 @@ jobs:
           # This exact invocation was validated on Firebase Test Lab:
           # Pixel 8 / API 34, 123/123 passed (~2 min on device). Adjust with:
           # gcloud firebase test android models list --filter="form=PHYSICAL"
+          # --results-bucket: FTL's *default* results bucket is a
+          # Firebase-managed bucket NOT governed by this project's IAM, so a
+          # custom CI service account can never get storage.objects.create on
+          # it (403 on upload, regardless of project-level storage roles). We
+          # therefore write to a dedicated bucket we own in this project; the
+          # SA has roles/storage.objectAdmin scoped to exactly that bucket.
+          # Setup: gcloud storage buckets create gs://ksafe-ci-ftl-results
+          #          --project=ksafe-ci --location=US --uniform-bucket-level-access
+          #        gcloud storage buckets add-iam-policy-binding
+          #          gs://ksafe-ci-ftl-results
+          #          --member=serviceAccount:<the GCP_SA_KEY account>
+          #          --role=roles/storage.objectAdmin
           gcloud firebase test android run \
             --project "$FIREBASE_PROJECT" \
+            --results-bucket=ksafe-ci-ftl-results \
             --type instrumentation \
             --app "$TEST_APK" \
             --test "$TEST_APK" \
