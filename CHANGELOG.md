@@ -2,125 +2,82 @@
 
 All notable changes to KSafe will be documented in this file.
 
-## 2.1.0 - 2026-05-24
+## [2.1.0] - 2026-05-24
+
+OS-native key custody on JVM and Web, plus a new cross-platform key-protection diagnostic API. **Drop-in upgrade** — on-disk format is unchanged and existing 2.0 keys migrate on first read.
+
+### Highlights
+
+- **JVM keys now live in the OS secret store** — Windows DPAPI, macOS login Keychain, or Linux Secret Service (libsecret) via JNA — instead of Base64'd next to the ciphertext in the DataStore file.
+- **Web keys are now non-extractable** by the browser. The WebCrypto `CryptoKey` (`extractable = false`) lives in IndexedDB; raw key bytes are no longer recoverable by XSS, extensions, or profile reads.
+- **New `KSafe.protectionInfo` API** — instance-level diagnostic on a universally-ordered scale (`SOFTWARE < SANDBOX_PROTECTED < HARDWARE_BACKED < HARDWARE_ISOLATED`). Drives startup gates, telemetry, UI badges, runtime feature policy.
+- **`KSafeKeyInfo.level`** — per-key audit on the same universal scale. Pair it with `protectionInfo` for instance-level *and* per-key threshold checks.
+- **Regression fix** — `get` / `getFlow` with a nullable default on `@Serializable` classes ([#31](https://github.com/ioannisa/KSafe/issues/31), thanks @DestBro).
 
 ### Security
 
-- **JVM keys now live in the OS secret store.** The AES key is protected by
-  **Windows DPAPI**, the **macOS Keychain**, or the **Linux Secret Service
-  (libsecret)** via JNA, instead of being Base64-encoded next to the data in
-  the DataStore file. When no secret store is reachable (headless Linux with no
-  keyring, JNA link failure, …) KSafe falls back to the legacy in-file scheme
-  and logs a one-time security warning. Keys written by KSafe ≤ 2.0 are
-  **migrated on first read**: copied into the OS store, then removed from the
-  DataStore file **only after the OS store is read back and byte-verified**
-  (a buggy or again-unavailable keyring that silently no-ops cannot destroy
-  the only copy). Migration is **hybrid**: lazy per-key on first read *plus*
-  a one-time best-effort background sweep (no-op under the software fallback)
-  so a key that's never read again doesn't linger in the file. Opt out with
-  `-Dksafe.jvm.keyVault=software` (or env `KSAFE_JVM_KEY_VAULT=software`).
-- **Web keys are now non-extractable.** The browser engine generates an
-  `extractable = false` AES-GCM `CryptoKey` and persists the live key object in
-  **IndexedDB**, instead of exporting the raw key and Base64-ing it into
-  `localStorage`. The raw key bytes are no longer recoverable by XSS,
-  extensions, or profile reads. A legacy `localStorage` key is imported as a
-  non-extractable key on first access and the `localStorage` entry is deleted;
-  previously encrypted data keeps decrypting. Like JVM, this runs both lazily
-  per-key and via a one-time background sweep so old raw keys don't linger in
-  `localStorage`.
+- **JVM keys now live in the OS secret store.** The AES key is protected by **Windows DPAPI**, the **macOS Keychain**, or the **Linux Secret Service (libsecret)** via JNA, instead of being Base64-encoded next to the data in the DataStore file. When no secret store is reachable (headless Linux with no keyring, JNA link failure, …) KSafe falls back to the legacy in-file scheme and logs a one-time security warning. Keys written by KSafe ≤ 2.0 are **migrated on first read**: copied into the OS store, then removed from the DataStore file **only after the OS store is read back and byte-verified** (a buggy or again-unavailable keyring that silently no-ops cannot destroy the only copy). Migration is **hybrid**: lazy per-key on first read *plus* a one-time best-effort background sweep so a key that's never read again doesn't linger in the file. Opt out with `-Dksafe.jvm.keyVault=software` (or env `KSAFE_JVM_KEY_VAULT=software`).
+- **Web keys are now non-extractable.** The browser engine generates an `extractable = false` AES-GCM `CryptoKey` and persists the live key object in **IndexedDB**, instead of exporting the raw key and Base64-ing it into `localStorage`. A legacy `localStorage` key is imported as non-extractable on first access and the `localStorage` entry deleted; previously encrypted data keeps decrypting. Same hybrid lazy + background-sweep migration as JVM.
 
 ### Added
 
-- **JNA dependency on the JVM target** (`net.java.dev.jna` + `jna-platform`)
-  for the OS secret-store integration above. JVM/Desktop consumers only.
-- **`KSafe.protectionInfo` — instance-level protection diagnostic.** New
-  public, cross-platform API that reports the key custody this `KSafe` is
-  actually running with, including any runtime fallback negotiated at
-  construction. Read once at startup to drive **gating, feature-level
-  policy, telemetry, or UI badges** — branch on the *achieved* level, not the
-  intended one. Introduces:
-  - **`KSafeProtectionLevel`** — universally-ordered scale: `SOFTWARE` <
-    `SANDBOX_PROTECTED` < `HARDWARE_BACKED` < `HARDWARE_ISOLATED`. Every
-    platform produces exactly one value; thresholds are a single ordinal
-    comparison (`check(info.effectiveLevel >= SANDBOX_PROTECTED)`). The
-    bottom rung describes *key custody*, not data — payload data is always
-    AES-256-GCM ciphertext.
-  - **`KSafeProtectionInfo(intendedLevel, effectiveLevel, custody, notes)`** —
-    data class returned from `ksafe.protectionInfo`. `effectiveLevel` is the
-    actionable field; `intendedLevel` is the engine's baseline target so a
-    consumer can detect when negotiation fell short. `custody` is a
-    human-readable description (display, never parse); `notes` is a list of
-    stable lowercase_snake codes (`jvm_os_vault_unavailable`,
-    `jvm_user_opted_out`, `apple_secure_enclave_absent`).
-  - Per-platform population: Android/Apple report `HARDWARE_BACKED` baselines
-    (StrongBox / Secure Enclave remain per-write upgrades via
-    `KSafeWriteMode.Encrypted(HARDWARE_ISOLATED)`); JVM reports
-    `SANDBOX_PROTECTED` when the OS vault is healthy and falls to `SOFTWARE`
-    with the appropriate `notes` code when the vault self-test fails or the
-    user opts out; Web reports `SANDBOX_PROTECTED` (browser-origin sandbox).
-  - Branching on `effectiveLevel` lets apps make runtime decisions —
-    refuse-to-persist, tighten re-auth, disable a feature, show an honesty
-    banner — instead of just logging the negotiated state. See
-    [docs/PROTECTION_INFO.md](docs/PROTECTION_INFO.md) for patterns.
-- **`KSafeKeyInfo.level: KSafeProtectionLevel`** — per-key audit now reports
-  on the same universally-ordered scale as `KSafe.protectionInfo`. A consumer
-  can apply one threshold at the instance level (gate startup) and another at
-  the per-key level (refuse to *use* a specific key whose actual protection
-  didn't meet the bar):
+- **`KSafe.protectionInfo: KSafeProtectionInfo`** — public, cross-platform diagnostic that reports the key custody this `KSafe` is *actually* running with, including any runtime fallback negotiated at construction. Read once at startup:
+
+  ```kotlin
+  val info = ksafe.protectionInfo
+
+  // Gate startup
+  check(info.effectiveLevel >= KSafeProtectionLevel.SANDBOX_PROTECTED)
+
+  // Detect silent fallback (effective < intended)
+  check(info.effectiveLevel >= info.intendedLevel)
+
+  // Telemetry
+  analytics.log("ksafe_protection",
+      "level"   to info.effectiveLevel.name,
+      "custody" to info.custody,
+      "notes"   to info.notes.joinToString(","))
+  ```
+
+  Introduces:
+    - **`KSafeProtectionLevel`** — universally-ordered scale: `SOFTWARE` < `SANDBOX_PROTECTED` < `HARDWARE_BACKED` < `HARDWARE_ISOLATED`. One ordinal comparison works across every platform.
+    - **`KSafeProtectionInfo(intendedLevel, effectiveLevel, custody, notes)`** — `effectiveLevel` is the actionable field; `intendedLevel` is the engine's baseline target so consumers can detect when negotiation fell short. `custody` is a human-readable description (display, never parse); `notes` is a list of stable lowercase_snake codes (`jvm_os_vault_unavailable`, `jvm_user_opted_out`, `apple_secure_enclave_absent`).
+
+  Per-platform population: Android / Apple report `HARDWARE_BACKED` baselines (StrongBox / Secure Enclave remain per-write upgrades via `KSafeWriteMode.Encrypted(HARDWARE_ISOLATED)`); JVM reports `SANDBOX_PROTECTED` when the OS vault is healthy and falls to `SOFTWARE` with the appropriate `notes` code when the vault self-test fails or the user opts out; Web reports `SANDBOX_PROTECTED` (browser-origin sandbox). Full guide and runtime-decision patterns in [`docs/PROTECTION_INFO.md`](docs/PROTECTION_INFO.md).
+
+- **`KSafeKeyInfo.level: KSafeProtectionLevel`** — per-key audit now reports on the same universal scale as `protectionInfo`. Layered checks become possible (gate the engine at startup *and* refuse to use a specific high-sensitivity key if its own custody didn't meet the bar):
+
   ```kotlin
   val tokenLevel = ksafe.getKeyInfo("auth_token")?.level
   check(tokenLevel != null && tokenLevel >= KSafeProtectionLevel.HARDWARE_BACKED)
   ```
-  The new field gives JVM and Web richer granularity than the legacy
-  `KSafeKeyInfo.storage` did — JVM OS-vault keys now report
-  `SANDBOX_PROTECTED` (vs. legacy `SOFTWARE`), and Web browser-origin keys
-  report `SANDBOX_PROTECTED` (vs. legacy `SOFTWARE`). The plaintext-in-file
-  JVM fallback case is the only one that still reports `SOFTWARE` at the
-  `level` field.
+
+  Gives JVM and Web richer granularity than the legacy `KSafeKeyInfo.storage` — JVM OS-vault keys and Web browser-origin keys now report `SANDBOX_PROTECTED`; only the plaintext-in-file JVM fallback still reports `SOFTWARE`.
+
+- **JNA dependency on the JVM target** (`net.java.dev.jna` + `jna-platform`) for the OS secret-store integration above. JVM / Desktop consumers only.
 
 ### Deprecated
 
-- **`KSafeKeyInfo.storage: KSafeKeyStorage`** — superseded by
-  `KSafeKeyInfo.level: KSafeProtectionLevel`. `storage` keeps working with a
-  `@Deprecated(ReplaceWith("level"))` annotation; planned removal in 3.0.
-
-### Documentation
-
-- **[docs/JVM_PROTECTION.md](docs/JVM_PROTECTION.md)** — platform-by-platform
-  deep dive on the JVM OS vaults (Windows DPAPI / macOS login Keychain / Linux
-  Secret Service / libsecret): what each store actually is, threat model per
-  OS, the self-test, the software fallback, the opt-out, and the per-app
-  namespace.
-- **[docs/PROTECTION_INFO.md](docs/PROTECTION_INFO.md)** — the new
-  `KSafe.protectionInfo` API: model, per-platform truth table, defined
-  `notes` codes, and runtime-decision patterns (gating, tighter re-auth
-  windows, feature disablement, UX honesty banners, intended-vs-effective
-  delta checks).
-
-### Build
-
-- **Suppressed `IncorrectCompileOnlyDependencyWarning`** in `gradle.properties`
-  for the `compose-runtime` `compileOnly` dependency on Native/JS/WASM targets.
-  The dependency is intentionally `compileOnly` so non-Compose consumers
-  (Ktor servers, CLI tools, plain JVM) don't pull `compose-runtime` onto their
-  runtime classpath — `@Stable` has `BINARY` retention and no runtime cost.
-  Native/JS/WASM consumers of `:ksafe` without Compose must declare
-  `compose-runtime` themselves to compile against the published klib (an
-  accepted trade-off; promoting to `api` for those targets would force
-  `compose-runtime` onto every consumer's runtime classpath).
+- **`KSafeKeyInfo.storage: KSafeKeyStorage`** — superseded by `KSafeKeyInfo.level: KSafeProtectionLevel`. `storage` keeps working with a `@Deprecated(ReplaceWith("level"))` annotation; planned removal in 3.0.
 
 ### Fixed
 
-- **`get`/`getFlow` with a nullable default now deserialize `@Serializable`
-  classes correctly** ([#31](https://github.com/ioannisa/KSafe/issues/31),
-  thanks @DestBro). Calling `get(key, null as MyType?)` /
-  `getFlow(key, null as MyType?)` on a `@Serializable` class whose first
-  property is a primitive (e.g. a leading `String`) threw
-  `ClassCastException: java.lang.String cannot be cast to MyType` — a
-  regression introduced in 2.0.0. `primitiveKindOrNull` was descending into
-  the class's first field for a nullable serializer and misclassifying the
-  type as a `String`, so the raw stored JSON was returned instead of being
-  decoded. A non-null default (`get(key, MyType())`) was unaffected.
+- **`get` / `getFlow` with a nullable default now deserialize `@Serializable` classes correctly** ([#31](https://github.com/ioannisa/KSafe/issues/31), thanks @DestBro). Calling `get(key, null as MyType?)` or `getFlow(key, null as MyType?)` on a `@Serializable` class whose first property is a primitive (e.g. a leading `String`) threw `ClassCastException: java.lang.String cannot be cast to MyType` — a regression introduced in 2.0.0. `primitiveKindOrNull` was descending into the class's first field for a nullable serializer and misclassifying the type as a `String`, so the raw stored JSON was returned instead of being decoded. A non-null default (`get(key, MyType())`) was unaffected.
+
+### Documentation
+
+- **New: [`docs/PROTECTION_INFO.md`](docs/PROTECTION_INFO.md)** — the new `KSafe.protectionInfo` API: model, per-platform truth table, defined `notes` codes, and five runtime-decision patterns (gating, tighter re-auth windows, feature disablement, UX honesty banners, intended-vs-effective delta checks).
+- **New: [`docs/JVM_PROTECTION.md`](docs/JVM_PROTECTION.md)** — platform-by-platform deep dive on the JVM OS vaults (DPAPI / Keychain / libsecret): what each store actually is, threat model per OS, the self-test, the software fallback, the opt-out, and the per-app namespace.
+
+### Build
+
+- **Suppressed `IncorrectCompileOnlyDependencyWarning`** for the `compose-runtime` `compileOnly` dependency on Native / JS / Wasm targets. The dep is intentionally `compileOnly` so non-Compose consumers (Ktor servers, CLI tools, plain JVM) don't pull `compose-runtime` onto their runtime classpath — `@Stable` has `BINARY` retention and no runtime cost. Native / JS / Wasm consumers using `:ksafe` without Compose must declare `compose-runtime` themselves to compile against the published klib (accepted trade-off; promoting to `api` would force `compose-runtime` onto every consumer's runtime classpath).
+
+### Upgrade notes
+
+- **No source-level changes required** for existing 2.0 consumers. `ksafe.put` / `ksafe.get` / `by ksafe(0)` and all delegates are unchanged.
+- **No on-disk format change.** Existing 2.0 ciphertext continues to decrypt; the AES key migrates to the OS-backed custody automatically on first read.
+- The legacy `KSafeKeyInfo.storage` field still works. New code should prefer `level` (IDE quick-fix offers the replacement).
 
 ## [2.0.0] - 2026-05-13
 
