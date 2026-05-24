@@ -61,6 +61,14 @@ internal class JvmSoftwareEncryption(
     @PublishedApi
     internal val keyVaultName: String get() = vaults.active.name
 
+    /**
+     * True iff the active vault is OS-backed (DPAPI / Keychain / Secret
+     * Service). False when fallback or opt-out selected [vaults.legacy].
+     * Used by the JVM `KSafe` factory to populate `KSafeProtectionInfo`.
+     */
+    @PublishedApi
+    internal val keyVaultIsOsBacked: Boolean get() = vaults.active.isOsBacked
+
     /** In-memory cache to avoid repeated vault round-trips. */
     private val keyCache = ConcurrentHashMap<String, SecretKey>()
 

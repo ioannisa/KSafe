@@ -121,6 +121,12 @@ private fun buildWebKSafe(
     return KSafe(
         core = core,
         deviceKeyStorages = setOf(KSafeKeyStorage.SOFTWARE),
+        protectionInfo = KSafeProtectionInfo(
+            intendedLevel = KSafeProtectionLevel.SANDBOX_PROTECTED,
+            effectiveLevel = KSafeProtectionLevel.SANDBOX_PROTECTED,
+            custody = "WebCrypto non-extractable key in IndexedDB",
+            notes = emptyList(),
+        ),
     )
 }
 

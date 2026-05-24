@@ -33,6 +33,60 @@ All notable changes to KSafe will be documented in this file.
 
 - **JNA dependency on the JVM target** (`net.java.dev.jna` + `jna-platform`)
   for the OS secret-store integration above. JVM/Desktop consumers only.
+- **`KSafe.protectionInfo` — instance-level protection diagnostic.** New
+  public, cross-platform API that reports the key custody this `KSafe` is
+  actually running with, including any runtime fallback negotiated at
+  construction. Read once at startup to drive **gating, feature-level
+  policy, telemetry, or UI badges** — branch on the *achieved* level, not the
+  intended one. Introduces:
+  - **`KSafeProtectionLevel`** — universally-ordered scale: `SOFTWARE` <
+    `SANDBOX_PROTECTED` < `HARDWARE_BACKED` < `HARDWARE_ISOLATED`. Every
+    platform produces exactly one value; thresholds are a single ordinal
+    comparison (`check(info.effectiveLevel >= SANDBOX_PROTECTED)`). The
+    bottom rung describes *key custody*, not data — payload data is always
+    AES-256-GCM ciphertext.
+  - **`KSafeProtectionInfo(intendedLevel, effectiveLevel, custody, notes)`** —
+    data class returned from `ksafe.protectionInfo`. `effectiveLevel` is the
+    actionable field; `intendedLevel` is the engine's baseline target so a
+    consumer can detect when negotiation fell short. `custody` is a
+    human-readable description (display, never parse); `notes` is a list of
+    stable lowercase_snake codes (`jvm_os_vault_unavailable`,
+    `jvm_user_opted_out`, `apple_secure_enclave_absent`).
+  - Per-platform population: Android/Apple report `HARDWARE_BACKED` baselines
+    (StrongBox / Secure Enclave remain per-write upgrades via
+    `KSafeWriteMode.Encrypted(HARDWARE_ISOLATED)`); JVM reports
+    `SANDBOX_PROTECTED` when the OS vault is healthy and falls to `SOFTWARE`
+    with the appropriate `notes` code when the vault self-test fails or the
+    user opts out; Web reports `SANDBOX_PROTECTED` (browser-origin sandbox).
+  - Branching on `effectiveLevel` lets apps make runtime decisions —
+    refuse-to-persist, tighten re-auth, disable a feature, show an honesty
+    banner — instead of just logging the negotiated state. See
+    [docs/PROTECTION_INFO.md](docs/PROTECTION_INFO.md) for patterns.
+
+### Documentation
+
+- **[docs/JVM_PROTECTION.md](docs/JVM_PROTECTION.md)** — platform-by-platform
+  deep dive on the JVM OS vaults (Windows DPAPI / macOS login Keychain / Linux
+  Secret Service / libsecret): what each store actually is, threat model per
+  OS, the self-test, the software fallback, the opt-out, and the per-app
+  namespace.
+- **[docs/PROTECTION_INFO.md](docs/PROTECTION_INFO.md)** — the new
+  `KSafe.protectionInfo` API: model, per-platform truth table, defined
+  `notes` codes, and runtime-decision patterns (gating, tighter re-auth
+  windows, feature disablement, UX honesty banners, intended-vs-effective
+  delta checks).
+
+### Build
+
+- **Suppressed `IncorrectCompileOnlyDependencyWarning`** in `gradle.properties`
+  for the `compose-runtime` `compileOnly` dependency on Native/JS/WASM targets.
+  The dependency is intentionally `compileOnly` so non-Compose consumers
+  (Ktor servers, CLI tools, plain JVM) don't pull `compose-runtime` onto their
+  runtime classpath — `@Stable` has `BINARY` retention and no runtime cost.
+  Native/JS/WASM consumers of `:ksafe` without Compose must declare
+  `compose-runtime` themselves to compile against the published klib (an
+  accepted trade-off; promoting to `api` for those targets would force
+  `compose-runtime` onto every consumer's runtime classpath).
 
 ### Fixed
 

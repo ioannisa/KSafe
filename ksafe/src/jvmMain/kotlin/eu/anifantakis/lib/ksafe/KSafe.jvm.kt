@@ -178,6 +178,7 @@ private fun buildJvmKSafe(
     return KSafe(
         core = core,
         deviceKeyStorages = setOf(KSafeKeyStorage.SOFTWARE),
+        protectionInfo = jvmProtectionInfo(engine),
         // Belt-and-braces: also remove the physical DataStore file after
         // `core.clearAll()`. Some tests assert on file absence, and
         // `DataStore.edit { clear() }` leaves an empty protobuf behind.
@@ -188,6 +189,46 @@ private fun buildJvmKSafe(
         },
     )
 }
+
+/**
+ * Builds [KSafeProtectionInfo] for the JVM target.
+ *
+ * Reads the active vault descriptor from [JvmSoftwareEncryption] when that's
+ * the engine in use. For test-injected engines (the internal `KSafe(...,
+ * testEngine = …)` overload), there's no vault to introspect, so we report
+ * the engine's class name as custody and leave the level at the intended
+ * baseline — tests that care about protection state inject their own value
+ * by going through the production path.
+ */
+private fun jvmProtectionInfo(engine: KSafeEncryption): KSafeProtectionInfo {
+    val intended = KSafeProtectionLevel.SANDBOX_PROTECTED
+    if (engine !is JvmSoftwareEncryption) {
+        return KSafeProtectionInfo(
+            intendedLevel = intended,
+            effectiveLevel = intended,
+            custody = "Test engine: ${engine::class.simpleName}",
+            notes = emptyList(),
+        )
+    }
+    val osBacked = engine.keyVaultIsOsBacked
+    val optOut = (System.getProperty(PROP_KEY_VAULT) ?: System.getenv(ENV_KEY_VAULT))
+        ?.lowercase()
+        ?.let { it in OPT_OUT_VALUES } ?: false
+    return KSafeProtectionInfo(
+        intendedLevel = intended,
+        effectiveLevel = if (osBacked) KSafeProtectionLevel.SANDBOX_PROTECTED else KSafeProtectionLevel.SOFTWARE,
+        custody = engine.keyVaultName,
+        notes = when {
+            osBacked -> emptyList()
+            optOut   -> listOf("jvm_user_opted_out")
+            else     -> listOf("jvm_os_vault_unavailable")
+        },
+    )
+}
+
+private const val PROP_KEY_VAULT = "ksafe.jvm.keyVault"
+private const val ENV_KEY_VAULT = "KSAFE_JVM_KEY_VAULT"
+private val OPT_OUT_VALUES = setOf("software", "datastore", "off", "false", "none")
 
 private fun secureDirectory(file: File) {
     try {

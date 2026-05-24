@@ -394,6 +394,7 @@ Migration is lazy and safe:
 * Keys written by KSafe ≤ 2.0 are migrated into the OS store on first read (scrubbed only after read-back verification). Opt out with `-Dksafe.jvm.keyVault=software`
 * Suitable for desktop applications and server-side use
 * Full per-platform deep dive — what each store actually is, threat model, fallback behaviour, self-test, namespace resolution: **[docs/JVM_PROTECTION.md](JVM_PROTECTION.md)**
+* Instance-level diagnostic that captures which vault was actually selected (and surfaces any fallback to plaintext): **`KSafe.protectionInfo`** — see **[docs/PROTECTION_INFO.md](PROTECTION_INFO.md)**
 
 #### Web (Kotlin/WASM + Kotlin/JS)
 * AES-256-GCM encryption via WebCrypto **SubtleCrypto** on both browser targets

@@ -347,6 +347,20 @@ same main class would still collide).
 
 ## Verifying which vault is active
 
+From 2.1.x the active vault is also surfaced through the public, cross-platform
+diagnostic [`KSafe.protectionInfo`](PROTECTION_INFO.md):
+
+```kotlin
+val info = ksafe.protectionInfo
+// JVM-vault healthy:    effectiveLevel = SANDBOX_PROTECTED, custody = "Linux Secret Service (...)", notes = []
+// JVM fallback:         effectiveLevel = SOFTWARE,          custody = "DataStore (software, ...)",  notes = ["jvm_os_vault_unavailable"]
+// JVM user opted out:   effectiveLevel = SOFTWARE,          custody = "DataStore (software, ...)",  notes = ["jvm_user_opted_out"]
+```
+
+Use that API in production code (gating, telemetry, UI badges). The internal
+engine accessors below are kept for tests only — they're not part of the public
+API surface.
+
 The active vault's `name` and `isOsBacked` properties are surfaced for
 diagnostics on the engine (not part of KSafe's public API — they are
 internal-visible for tests). Possible `name` values:

@@ -85,8 +85,23 @@ class KSafe @PublishedApi internal constructor(
      * | iOS      | `{HARDWARE_BACKED}` or `{HARDWARE_BACKED, HARDWARE_ISOLATED}` |
      * | JVM      | `{SOFTWARE}` |
      * | WASM     | `{SOFTWARE}` |
+     *
+     * This is a *device-capability* probe. For "what protection is this
+     * instance actually running at right now (post-fallback)?", use
+     * [protectionInfo] instead.
      */
     val deviceKeyStorages: Set<KSafeKeyStorage>,
+
+    /**
+     * Instance-level diagnostic describing the encryption-key custody this
+     * [KSafe] negotiated at construction time — including any runtime
+     * fallback (e.g. JVM dropping from `OS_PROTECTED` to `PLAINTEXT` when
+     * no OS secret store is reachable).
+     *
+     * Read once at startup to gate, log, or surface a UI badge. See
+     * [KSafeProtectionInfo] for usage patterns.
+     */
+    val protectionInfo: KSafeProtectionInfo,
 
     /**
      * Optional callback run after [clearAll] flushes the core cache. JVM uses

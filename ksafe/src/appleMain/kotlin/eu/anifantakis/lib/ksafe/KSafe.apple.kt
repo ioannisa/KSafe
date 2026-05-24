@@ -346,6 +346,16 @@ private fun buildAppleKSafe(
     return KSafe(
         core = core,
         deviceKeyStorages = deviceKeyStorages,
+        protectionInfo = KSafeProtectionInfo(
+            intendedLevel = KSafeProtectionLevel.HARDWARE_BACKED,
+            effectiveLevel = KSafeProtectionLevel.HARDWARE_BACKED,
+            custody = if (hasSecureEnclave) {
+                "Apple Keychain (Secure Enclave available per-write)"
+            } else {
+                "Apple Keychain"
+            },
+            notes = if (hasSecureEnclave) emptyList() else listOf("apple_secure_enclave_absent"),
+        ),
     )
 }
 
