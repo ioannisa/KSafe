@@ -393,6 +393,7 @@ Migration is lazy and safe:
 * When no secret store is reachable (e.g. headless Linux with no keyring), it falls back to a key Base64-encoded in the DataStore file under `~/.eu_anifantakis_ksafe/` (POSIX `0700`) and logs a one-time security warning
 * Keys written by KSafe ≤ 2.0 are migrated into the OS store on first read (scrubbed only after read-back verification). Opt out with `-Dksafe.jvm.keyVault=software`
 * Suitable for desktop applications and server-side use
+* Full per-platform deep dive — what each store actually is, threat model, fallback behaviour, self-test, namespace resolution: **[docs/JVM_PROTECTION.md](JVM_PROTECTION.md)**
 
 #### Web (Kotlin/WASM + Kotlin/JS)
 * AES-256-GCM encryption via WebCrypto **SubtleCrypto** on both browser targets

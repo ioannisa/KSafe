@@ -565,6 +565,7 @@ Internals, advanced features, reference material:
 | [Performance Benchmarks](docs/BENCHMARKS.md) | Full benchmark tables, cold start numbers, architecture deep-dive |
 | [Biometric Authentication](docs/BIOMETRICS.md) | Authorization caching, scoped sessions, platform setup, complete examples |
 | [Security](docs/SECURITY.md) | Runtime security policy, encryption internals, threat model, hardware isolation, key storage queries, crypto utilities |
+| [JVM Key Protection](docs/JVM_PROTECTION.md) | Deep dive on how the AES key is held on each JVM host: Windows DPAPI, macOS login Keychain, Linux Secret Service (libsecret), the software fallback, the opt-out, and the per-app namespace |
 | [Encryption Proof](docs/ENCRYPTION_PROOF.md) | Per-platform automated proof tests + manual commands to inspect the raw stored bytes and see the ciphertext yourself |
 | [Memory Policy](docs/MEMORY.md) | Timed cache, constructor parameters, encryption config, device lock-state policies |
 | [Architecture](docs/ARCHITECTURE.md) | The conceptual model: three modules, three rings (public API / `KSafeCore` orchestrator / platform shells), hot cache + write coalescer, the `KSafePlatformStorage` and `KSafeEncryption` interfaces, memory policies, and how 2.0 consolidated ~5,900 lines of duplicated platform logic into ~890 |
