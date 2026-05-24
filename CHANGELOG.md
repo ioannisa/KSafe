@@ -62,6 +62,27 @@ All notable changes to KSafe will be documented in this file.
     refuse-to-persist, tighten re-auth, disable a feature, show an honesty
     banner — instead of just logging the negotiated state. See
     [docs/PROTECTION_INFO.md](docs/PROTECTION_INFO.md) for patterns.
+- **`KSafeKeyInfo.level: KSafeProtectionLevel`** — per-key audit now reports
+  on the same universally-ordered scale as `KSafe.protectionInfo`. A consumer
+  can apply one threshold at the instance level (gate startup) and another at
+  the per-key level (refuse to *use* a specific key whose actual protection
+  didn't meet the bar):
+  ```kotlin
+  val tokenLevel = ksafe.getKeyInfo("auth_token")?.level
+  check(tokenLevel != null && tokenLevel >= KSafeProtectionLevel.HARDWARE_BACKED)
+  ```
+  The new field gives JVM and Web richer granularity than the legacy
+  `KSafeKeyInfo.storage` did — JVM OS-vault keys now report
+  `SANDBOX_PROTECTED` (vs. legacy `SOFTWARE`), and Web browser-origin keys
+  report `SANDBOX_PROTECTED` (vs. legacy `SOFTWARE`). The plaintext-in-file
+  JVM fallback case is the only one that still reports `SOFTWARE` at the
+  `level` field.
+
+### Deprecated
+
+- **`KSafeKeyInfo.storage: KSafeKeyStorage`** — superseded by
+  `KSafeKeyInfo.level: KSafeProtectionLevel`. `storage` keeps working with a
+  `@Deprecated(ReplaceWith("level"))` annotation; planned removal in 3.0.
 
 ### Documentation
 

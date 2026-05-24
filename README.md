@@ -531,6 +531,25 @@ Preset policies, BLOCK exception handling, Compose stability, detection methods:
 
 ***
 
+## Key Protection Diagnostics
+
+Find out what key custody this `KSafe` instance **actually** got — including any silent fallback (e.g. JVM dropping from `SANDBOX_PROTECTED` to `SOFTWARE` when no OS vault is reachable):
+
+```kotlin
+val info = ksafe.protectionInfo
+// info.intendedLevel  = SANDBOX_PROTECTED              // engine baseline
+// info.effectiveLevel = SOFTWARE                       // vault self-test failed
+// info.custody        = "DataStore (software, ...)"    // human-readable
+// info.notes          = ["jvm_os_vault_unavailable"]   // stable code
+
+// Gate startup, drive feature logic, or surface a UX banner
+check(info.effectiveLevel >= KSafeProtectionLevel.SANDBOX_PROTECTED)
+```
+
+`KSafeProtectionLevel` is a universally-ordered scale — `SOFTWARE < SANDBOX_PROTECTED < HARDWARE_BACKED < HARDWARE_ISOLATED`. One ordinal comparison works across every platform. Per-platform truth table, runtime-decision patterns (gating, tighter re-auth windows, feature disablement, UX honesty banners, intended-vs-effective delta), and all defined `notes` codes: **[docs/PROTECTION_INFO.md](docs/PROTECTION_INFO.md)**.
+
+***
+
 ## Memory Security Policy
 
 Trade off performance vs. security for data in RAM:

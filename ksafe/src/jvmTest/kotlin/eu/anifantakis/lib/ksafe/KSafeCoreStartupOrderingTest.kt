@@ -69,6 +69,7 @@ class KSafeCoreStartupOrderingTest {
             memoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
             plaintextCacheTtl = 5.seconds,
             resolveKeyStorage = { _, _ -> KSafeKeyStorage.SOFTWARE },
+            resolveKeyLevel = { _, _ -> KSafeProtectionLevel.SOFTWARE },
             migrateAccessPolicy = {
                 recorder.record("migrateAccessPolicy")
                 migrateFired.complete(Unit)

@@ -293,6 +293,13 @@ private fun buildAppleKSafe(
         else KSafeKeyStorage.HARDWARE_BACKED
     }
 
+    fun resolveKeyLevelTier(userKey: String, protection: KSafeProtection?): KSafeProtectionLevel {
+        if (protection == null) return KSafeProtectionLevel.SOFTWARE
+        return if (protection == KSafeProtection.HARDWARE_ISOLATED && hasSecureEnclave)
+            KSafeProtectionLevel.HARDWARE_ISOLATED
+        else KSafeProtectionLevel.HARDWARE_BACKED
+    }
+
     @Suppress("DEPRECATION")
     fun promoteMode(mode: KSafeWriteMode): KSafeWriteMode {
         if (!useSecureEnclave) return mode
@@ -333,6 +340,7 @@ private fun buildAppleKSafe(
         memoryPolicy = memoryPolicy,
         plaintextCacheTtl = plaintextCacheTtl,
         resolveKeyStorage = ::resolveKeyStorageTier,
+        resolveKeyLevel = ::resolveKeyLevelTier,
         migrateAccessPolicy = { cleanupOrphanedKeychainEntriesSafe() },
         lazyLoad = lazyLoad,
         keyAlias = ::iosKeyAlias,

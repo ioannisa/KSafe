@@ -113,6 +113,13 @@ private fun buildWebKSafe(
         memoryPolicy = KSafeMemoryPolicy.PLAIN_TEXT,
         plaintextCacheTtl = plaintextCacheTtl,
         resolveKeyStorage = { _, _ -> KSafeKeyStorage.SOFTWARE },
+        resolveKeyLevel = { _, protection ->
+            // Plain values: no key, no protection. Encrypted: the non-extractable
+            // WebCrypto CryptoKey in IndexedDB is bound to the browser origin —
+            // SANDBOX_PROTECTED on the universal scale.
+            if (protection == null) KSafeProtectionLevel.SOFTWARE
+            else KSafeProtectionLevel.SANDBOX_PROTECTED
+        },
         lazyLoad = lazyLoad,
         keyAlias = { userKey -> fileName?.let { "$it:$userKey" } ?: userKey },
         masterAlias = { _ -> fileName?.let { "$it:$MASTER_KEY_DEFAULT" } ?: MASTER_KEY_DEFAULT },

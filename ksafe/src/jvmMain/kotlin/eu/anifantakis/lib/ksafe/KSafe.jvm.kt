@@ -169,6 +169,20 @@ private fun buildJvmKSafe(
         memoryPolicy = memoryPolicy,
         plaintextCacheTtl = plaintextCacheTtl,
         resolveKeyStorage = { _, _ -> KSafeKeyStorage.SOFTWARE },
+        resolveKeyLevel = { _, protection ->
+            // No key for plain values → SOFTWARE (nothing to protect).
+            // Otherwise: the active vault decides — SANDBOX_PROTECTED when an
+            // OS vault holds the key, SOFTWARE when the fallback / opt-out is
+            // active. Matches the instance-level protectionInfo.effectiveLevel.
+            when {
+                protection == null -> KSafeProtectionLevel.SOFTWARE
+                engine is JvmSoftwareEncryption && engine.keyVaultIsOsBacked ->
+                    KSafeProtectionLevel.SANDBOX_PROTECTED
+                engine is JvmSoftwareEncryption ->
+                    KSafeProtectionLevel.SOFTWARE
+                else -> KSafeProtectionLevel.SANDBOX_PROTECTED   // test-injected engine: assume baseline
+            }
+        },
         lazyLoad = lazyLoad,
         keyAlias = { userKey -> fileName?.let { "$it:$userKey" } ?: userKey },
         masterAlias = { _ -> fileName?.let { "$it:$MASTER_KEY_DEFAULT" } ?: MASTER_KEY_DEFAULT },

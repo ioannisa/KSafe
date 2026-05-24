@@ -199,6 +199,13 @@ private fun buildAndroidKSafe(
         else KSafeKeyStorage.HARDWARE_BACKED
     }
 
+    fun resolveKeyLevelTier(userKey: String, protection: KSafeProtection?): KSafeProtectionLevel {
+        if (protection == null) return KSafeProtectionLevel.SOFTWARE
+        return if (protection == KSafeProtection.HARDWARE_ISOLATED && hasStrongBox)
+            KSafeProtectionLevel.HARDWARE_ISOLATED
+        else KSafeProtectionLevel.HARDWARE_BACKED
+    }
+
     /**
      * Honors the deprecated `useStrongBox` constructor flag by promoting every
      * default-protection encrypted write to [KSafeEncryptedProtection.HARDWARE_ISOLATED].
@@ -222,6 +229,7 @@ private fun buildAndroidKSafe(
         memoryPolicy = memoryPolicy,
         plaintextCacheTtl = plaintextCacheTtl,
         resolveKeyStorage = ::resolveKeyStorageTier,
+        resolveKeyLevel = ::resolveKeyLevelTier,
         lazyLoad = lazyLoad,
         keyAlias = { userKey ->
             listOfNotNull(KEY_ALIAS_PREFIX, fileName, userKey).joinToString(".")

@@ -336,7 +336,23 @@ delta check for support escalation.
 |---|---|---|
 | `deviceKeyStorages: Set<KSafeKeyStorage>` | Device | "What CAN the device offer?" |
 | `protectionInfo: KSafeProtectionInfo` | Instance / process | "What is THIS engine running at right now?" |
-| `getKeyInfo(key): KSafeKeyInfo?` | Per-key | "What did THIS specific write end up using?" |
+| `getKeyInfo(key)?.level: KSafeProtectionLevel` | Per-key | "What did THIS specific write end up using?" |
+
+> **`KSafeKeyInfo` shares the same `KSafeProtectionLevel` scale.** As of 2.1
+> the per-key audit record returned by `getKeyInfo(key)` exposes a
+> `level: KSafeProtectionLevel` field alongside the legacy `storage`
+> ([`KSafeKeyStorage`](SECURITY.md)). `level` uses the same ordinal scale as
+> `protectionInfo.effectiveLevel`, so a single threshold works at both the
+> instance level and the per-key level:
+>
+> ```kotlin
+> // Instance-level: refuse to launch if engine isn't sandbox-or-better.
+> check(ksafe.protectionInfo.effectiveLevel >= KSafeProtectionLevel.SANDBOX_PROTECTED)
+>
+> // Per-key: refuse to USE this specific token if it didn't end up hardware-backed.
+> val tokenLevel = ksafe.getKeyInfo("auth_token")?.level
+> check(tokenLevel != null && tokenLevel >= KSafeProtectionLevel.HARDWARE_BACKED)
+> ```
 
 A typical production flow uses all three:
 

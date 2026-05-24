@@ -5,6 +5,7 @@ import eu.anifantakis.lib.ksafe.KSafeKeyInfo
 import eu.anifantakis.lib.ksafe.KSafeKeyStorage
 import eu.anifantakis.lib.ksafe.KSafeMemoryPolicy
 import eu.anifantakis.lib.ksafe.KSafeProtection
+import eu.anifantakis.lib.ksafe.KSafeProtectionLevel
 import eu.anifantakis.lib.ksafe.KSafeWriteMode
 import eu.anifantakis.lib.ksafe.toProtection
 import kotlinx.coroutines.CancellationException
@@ -71,8 +72,28 @@ internal class KSafeCore(
      * protection. Platform shells inject their own (Android inspects the
      * Keystore for StrongBox; iOS inspects the Keychain for Secure Enclave).
      * JVM/WASM always report [KSafeKeyStorage.SOFTWARE].
+     *
+     * Legacy three-value vocabulary — see [resolveKeyLevel] for the
+     * universally-ordered [KSafeProtectionLevel] scale that additionally
+     * distinguishes JVM OS-vault keys from the plaintext-in-file fallback.
      */
     private val resolveKeyStorage: (userKey: String, protection: KSafeProtection?) -> KSafeKeyStorage,
+    /**
+     * Resolves the per-key protection level on the universally-ordered
+     * [KSafeProtectionLevel] scale. Parallel to [resolveKeyStorage]; populates
+     * the new [KSafeKeyInfo.level] field.
+     *
+     * Platform mapping:
+     *  - **Android:** `null` (plain) → SOFTWARE; HARDWARE_ISOLATED-on-StrongBox
+     *    → HARDWARE_ISOLATED; otherwise HARDWARE_BACKED.
+     *  - **Apple:** same, with Secure Enclave.
+     *  - **JVM:** `null` → SOFTWARE; encrypted → SANDBOX_PROTECTED if the
+     *    active vault is OS-backed (DPAPI/Keychain/SecretService), SOFTWARE
+     *    when the fallback / opt-out is active.
+     *  - **Web:** `null` → SOFTWARE; encrypted → SANDBOX_PROTECTED (browser
+     *    origin enforces non-extractability).
+     */
+    private val resolveKeyLevel: (userKey: String, protection: KSafeProtection?) -> KSafeProtectionLevel,
     /**
      * Optional per-platform migration hook run once before
      * orphan-ciphertext cleanup. iOS uses it to move keys between
@@ -1148,7 +1169,12 @@ internal class KSafeCore(
         if (!hasEncrypted && !hasPlain) return null
         val protection = KeySafeMetadataManager.parseProtection(protectionMap[key])
             ?: if (hasEncrypted) KSafeProtection.DEFAULT else null
-        return KSafeKeyInfo(protection, resolveKeyStorage(key, protection))
+        @Suppress("DEPRECATION")
+        return KSafeKeyInfo(
+            protection = protection,
+            storage = resolveKeyStorage(key, protection),
+            level = resolveKeyLevel(key, protection),
+        )
     }
 
     // ============================================================

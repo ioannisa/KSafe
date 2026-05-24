@@ -113,14 +113,24 @@ class KSafe @PublishedApi internal constructor(
     /**
      * Returns the protection tier and actual storage location of a specific key.
      *
-     * | Scenario | Return value |
-     * |----------|-------------|
-     * | Key not found | `null` |
-     * | Unencrypted key | `KSafeKeyInfo(null, SOFTWARE)` |
-     * | Encrypted DEFAULT (Android/iOS) | `KSafeKeyInfo(DEFAULT, HARDWARE_BACKED)` |
-     * | Encrypted HARDWARE_ISOLATED (w/ hardware) | `KSafeKeyInfo(HARDWARE_ISOLATED, HARDWARE_ISOLATED)` |
-     * | Encrypted HARDWARE_ISOLATED (no hardware) | `KSafeKeyInfo(HARDWARE_ISOLATED, HARDWARE_BACKED)` |
-     * | Encrypted (JVM/WASM) | `KSafeKeyInfo(detected_protection, SOFTWARE)` |
+     * `KSafeKeyInfo` carries both the legacy [KSafeKeyInfo.storage]
+     * ([KSafeKeyStorage]) and the new [KSafeKeyInfo.level]
+     * ([KSafeProtectionLevel]). Prefer `level` — it's the same scale as
+     * [protectionInfo] and additionally distinguishes JVM OS-vault keys
+     * (`SANDBOX_PROTECTED`) from the plaintext-in-file fallback (`SOFTWARE`),
+     * and Web browser-origin keys (`SANDBOX_PROTECTED`) from raw software
+     * (`SOFTWARE`).
+     *
+     * | Scenario | `protection` | `storage` | `level` |
+     * |----------|--------------|-----------|---------|
+     * | Key not found | (returns `null`) | | |
+     * | Unencrypted key (Plain mode) | `null` | `SOFTWARE` | `SOFTWARE` |
+     * | Encrypted DEFAULT (Android / Apple) | `DEFAULT` | `HARDWARE_BACKED` | `HARDWARE_BACKED` |
+     * | Encrypted HARDWARE_ISOLATED with StrongBox / SE | `HARDWARE_ISOLATED` | `HARDWARE_ISOLATED` | `HARDWARE_ISOLATED` |
+     * | Encrypted HARDWARE_ISOLATED, no hardware (demoted) | `HARDWARE_ISOLATED` | `HARDWARE_BACKED` | `HARDWARE_BACKED` |
+     * | Encrypted (JVM, OS vault healthy) | detected | `SOFTWARE` | `SANDBOX_PROTECTED` |
+     * | Encrypted (JVM, fallback / opt-out) | detected | `SOFTWARE` | `SOFTWARE` |
+     * | Encrypted (Web) | detected | `SOFTWARE` | `SANDBOX_PROTECTED` |
      *
      * Same cold-start behavior as [getDirect] — blocks once if cache hasn't initialized.
      *

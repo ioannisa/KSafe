@@ -284,10 +284,19 @@ val info = ksafe.getKeyInfo("auth_token")
 
 ```kotlin
 data class KSafeKeyInfo(
-    val protection: KSafeProtection?,  // null, DEFAULT, or HARDWARE_ISOLATED
-    val storage: KSafeKeyStorage       // SOFTWARE, HARDWARE_BACKED, or HARDWARE_ISOLATED
+    val protection: KSafeProtection?,    // null, DEFAULT, or HARDWARE_ISOLATED — what the write asked for
+    val storage: KSafeKeyStorage,        // legacy 3-value: SOFTWARE, HARDWARE_BACKED, HARDWARE_ISOLATED  (DEPRECATED, use level)
+    val level: KSafeProtectionLevel,     // 4-value universal scale: SOFTWARE < SANDBOX_PROTECTED < HARDWARE_BACKED < HARDWARE_ISOLATED
 )
 ```
+
+> **Prefer `level` over `storage`.** `level` uses the same universally-ordered
+> [`KSafeProtectionLevel`](PROTECTION_INFO.md) scale as
+> [`KSafe.protectionInfo`](PROTECTION_INFO.md), and additionally distinguishes
+> JVM OS-vault keys (`SANDBOX_PROTECTED`) from the plaintext-in-file fallback
+> (`SOFTWARE`), plus Web browser-origin keys (`SANDBOX_PROTECTED`) from raw
+> software (`SOFTWARE`). `storage` is kept for KSafe ≤ 2.0 compatibility and
+> will be removed in a future major version.
 
 The `KSafeKeyStorage` enum has three levels with natural ordinal ordering:
 
@@ -319,14 +328,16 @@ ksafe.getKeyInfo("theme")         // KSafeKeyInfo(null, SOFTWARE) if unencrypted
 ksafe.getKeyInfo("nonexistent")   // null (key doesn't exist)
 ```
 
-| Scenario | Return value |
-|----------|-------------|
-| Key not found | `null` |
-| Unencrypted key | `KSafeKeyInfo(null, SOFTWARE)` |
-| Encrypted key (Android/iOS) | `KSafeKeyInfo(DEFAULT, HARDWARE_BACKED)` |
-| Encrypted key (JVM / Kotlin-WASM / Kotlin-JS) | `KSafeKeyInfo(DEFAULT, SOFTWARE)` |
-| `HARDWARE_ISOLATED` key (device supports it) | `KSafeKeyInfo(HARDWARE_ISOLATED, HARDWARE_ISOLATED)` |
-| `HARDWARE_ISOLATED` key (device lacks it, fell back) | `KSafeKeyInfo(HARDWARE_ISOLATED, HARDWARE_BACKED)` |
+| Scenario | `protection` | `storage` (legacy) | `level` (preferred) |
+|----------|--------------|--------------------|--------------------|
+| Key not found | (returns `null`) | | |
+| Unencrypted (Plain mode) | `null` | `SOFTWARE` | `SOFTWARE` |
+| Encrypted DEFAULT, Android / Apple | `DEFAULT` | `HARDWARE_BACKED` | `HARDWARE_BACKED` |
+| Encrypted, JVM with OS vault healthy | `DEFAULT` | `SOFTWARE` | `SANDBOX_PROTECTED` |
+| Encrypted, JVM fallback / opt-out | `DEFAULT` | `SOFTWARE` | `SOFTWARE` |
+| Encrypted, Web | `DEFAULT` | `SOFTWARE` | `SANDBOX_PROTECTED` |
+| `HARDWARE_ISOLATED` with StrongBox / SE | `HARDWARE_ISOLATED` | `HARDWARE_ISOLATED` | `HARDWARE_ISOLATED` |
+| `HARDWARE_ISOLATED` demoted (no hardware) | `HARDWARE_ISOLATED` | `HARDWARE_BACKED` | `HARDWARE_BACKED` |
 
 **Use cases:**
 - Display a security badge in your UI based on device capabilities

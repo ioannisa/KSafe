@@ -27,19 +27,39 @@ class KSafeKeyStorageTest {
     }
 
     @Test
+    @Suppress("DEPRECATION")
     fun getKeyInfo_returnsNoneProtectionAndSoftwareForUnencryptedKey() {
         val ksafe = KSafe(fileName = "keyinfounenctest")
         ksafe.putDirect("plain_key", "hello", mode = KSafeWriteMode.Plain)
         val result = ksafe.getKeyInfo("plain_key")
-        assertEquals(KSafeKeyInfo(null, KSafeKeyStorage.SOFTWARE), result)
+        // jvmTest forces -Dksafe.jvm.keyVault=software (see ksafe/build.gradle.kts),
+        // so the engine runs in fallback mode → level = SOFTWARE for any value.
+        // Plain values have no key, so SOFTWARE on either scale is the honest answer.
+        assertEquals(
+            KSafeKeyInfo(
+                protection = null,
+                storage = KSafeKeyStorage.SOFTWARE,
+                level = KSafeProtectionLevel.SOFTWARE,
+            ),
+            result,
+        )
     }
 
     @Test
+    @Suppress("DEPRECATION")
     fun getKeyInfo_returnsDefaultProtectionAndSoftwareForEncryptedKey() {
         val ksafe = KSafe(fileName = "keyinfoenctest")
         ksafe.putDirect("secret_key", "secret_value")
         val result = ksafe.getKeyInfo("secret_key")
-        assertEquals(KSafeKeyInfo(KSafeProtection.DEFAULT, KSafeKeyStorage.SOFTWARE), result)
+        // Same reason as above — software-fallback mode for jvmTest.
+        assertEquals(
+            KSafeKeyInfo(
+                protection = KSafeProtection.DEFAULT,
+                storage = KSafeKeyStorage.SOFTWARE,
+                level = KSafeProtectionLevel.SOFTWARE,
+            ),
+            result,
+        )
     }
 
     @Test
