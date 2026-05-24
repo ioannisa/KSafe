@@ -93,6 +93,17 @@ kotlin {
                 // parameter. @Stable has BINARY retention and no runtime effect, so
                 // non-Compose consumers (Ktor servers, CLI tools, plain JVM) do NOT
                 // need compose-runtime on their classpath at runtime.
+                //
+                // Kotlin/JS, Kotlin/Native and Kotlin/WASM don't model compileOnly the
+                // same way as JVM — klib metadata requires annotation references to
+                // resolve at consumer compile-time, which triggers
+                // IncorrectCompileOnlyDependencyWarning. We suppress that warning in
+                // gradle.properties (kotlin.suppressGradlePluginWarnings=...). A
+                // non-Compose consumer on those targets would need to declare
+                // compose-runtime themselves to compile against this klib — an
+                // accepted trade-off; promoting this to `api` for those targets would
+                // leak compose-runtime onto every consumer's runtime classpath, which
+                // is exactly what we're avoiding.
                 compileOnly(libs.runtime)
             }
         }

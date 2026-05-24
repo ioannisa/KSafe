@@ -2,7 +2,7 @@
 
 All notable changes to KSafe will be documented in this file.
 
-## 2.1.0
+## 2.1.0 - 2026-05-20
 
 ### Security
 
