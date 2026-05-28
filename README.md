@@ -15,7 +15,13 @@ KSafe ships an [**agent skills**](https://agentskills.io)-compatible skill that 
 
 The skill lives at [**KSAFE_SKILL.md**](KSAFE_SKILL.md) at the root of this repo.
 
-**One-line install for all supported agents on your machine:**
+### Pick a scope, copy the command
+
+Every install path below downloads the same file (or copies it from disk) into a per-agent skills directory. Pick the scope that fits — you can always remove or rerun later.
+
+**🔥 Recommended — install for every supported agent on this machine**
+
+Mirrors what `android skills add` does for Google's Android skills. Installs into `~/.<agent>/skills/ksafe/SKILL.md` for each agent it finds.
 
 ```bash
 for agent in claude codex gemini copilot junie; do
@@ -25,21 +31,92 @@ for agent in claude codex gemini copilot junie; do
 done
 ```
 
-Single-agent variant (Claude Code):
+**Single agent only** — pick one of these if you only want the skill in one agent's directory:
+
 ```bash
+# Claude Code
 mkdir -p ~/.claude/skills/ksafe && \
   curl -fsSL https://raw.githubusercontent.com/ioannisa/KSafe/main/KSAFE_SKILL.md \
   > ~/.claude/skills/ksafe/SKILL.md
+
+# Codex
+mkdir -p ~/.codex/skills/ksafe && \
+  curl -fsSL https://raw.githubusercontent.com/ioannisa/KSafe/main/KSAFE_SKILL.md \
+  > ~/.codex/skills/ksafe/SKILL.md
+
+# Gemini CLI
+mkdir -p ~/.gemini/skills/ksafe && \
+  curl -fsSL https://raw.githubusercontent.com/ioannisa/KSafe/main/KSAFE_SKILL.md \
+  > ~/.gemini/skills/ksafe/SKILL.md
+
+# GitHub Copilot CLI
+mkdir -p ~/.copilot/skills/ksafe && \
+  curl -fsSL https://raw.githubusercontent.com/ioannisa/KSafe/main/KSAFE_SKILL.md \
+  > ~/.copilot/skills/ksafe/SKILL.md
+
+# JetBrains Junie
+mkdir -p ~/.junie/skills/ksafe && \
+  curl -fsSL https://raw.githubusercontent.com/ioannisa/KSafe/main/KSAFE_SKILL.md \
+  > ~/.junie/skills/ksafe/SKILL.md
 ```
 
-Project-scoped (only this repo's checkouts see it — useful for one-off experiments):
+**Project-scoped** — only the current project's agent sessions see the skill. Useful for trying it out without polluting other projects, or for committing the skill alongside a sample / demo project so contributors get it automatically. Run from the project root:
+
 ```bash
 mkdir -p .claude/skills/ksafe && \
   curl -fsSL https://raw.githubusercontent.com/ioannisa/KSafe/main/KSAFE_SKILL.md \
   > .claude/skills/ksafe/SKILL.md
 ```
 
-Once installed, the skill activates automatically when your agent sees KSafe-related work. Restart the agent session for it to pick up the new skill.
+(Substitute `.claude` for `.codex`, `.gemini`, `.copilot`, `.junie` to install for a different agent in this project.)
+
+**Already cloned the KSafe repo?** Skip the download — `cp` the file from your local checkout. Faster, works offline, useful if you're contributing to KSafe and want to test skill edits in-place:
+
+```bash
+# Replace this path with wherever you cloned KSafe
+KSAFE_REPO=~/Developer/libs/KSafe
+
+for agent in claude codex gemini copilot junie; do
+  mkdir -p "$HOME/.$agent/skills/ksafe" && \
+    cp "$KSAFE_REPO/KSAFE_SKILL.md" "$HOME/.$agent/skills/ksafe/SKILL.md"
+done
+```
+
+**Want to inspect the skill before installing?** It's ~450 lines of plain markdown — quick to skim:
+
+```bash
+# Preview without installing
+curl -fsSL https://raw.githubusercontent.com/ioannisa/KSafe/main/KSAFE_SKILL.md | less
+
+# Or open in your editor / browser:
+#   https://github.com/ioannisa/KSafe/blob/main/KSAFE_SKILL.md
+```
+
+### Verify the install
+
+After running an install command, the file should be at `$HOME/.<agent>/skills/ksafe/SKILL.md` (or `<project>/.<agent>/skills/ksafe/SKILL.md` for project-scoped). Check with:
+
+```bash
+ls -la ~/.claude/skills/ksafe/   # adjust agent name as needed
+```
+
+### Activation
+
+The skill activates automatically when your agent sees KSafe-related work in your prompts (the frontmatter's trigger phrases cover the typical surface: `ksafe`, `persist a token`, `encrypted preferences`, `Apple Keychain`, `BiometricPrompt`, `mutableStateOf` + `persist`, etc.).
+
+**Restart your agent session after installing** — skills load at session start, not mid-conversation. After restart, `ksafe` will appear in your agent's available-skills list.
+
+### Update / uninstall
+
+The skill file is just a plain markdown file at a known location. To **update**, re-run the same install command (it overwrites in place). To **uninstall**, delete the directory:
+
+```bash
+# Uninstall for a single agent
+rm -rf ~/.claude/skills/ksafe
+
+# Uninstall for every supported agent on this machine
+for agent in claude codex gemini copilot junie; do rm -rf "$HOME/.$agent/skills/ksafe"; done
+```
 
 ---
 
