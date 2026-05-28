@@ -124,7 +124,8 @@ kotlin {
 mavenPublishing {
     publishToMavenCentral()
 
-    signAllPublications()
+    // See note in :ksafe/build.gradle.kts.
+    if (!project.hasProperty("ksafe.skipSign")) signAllPublications()
     coordinates(
         groupId = group.toString(),
         artifactId = "ksafe-biometrics",

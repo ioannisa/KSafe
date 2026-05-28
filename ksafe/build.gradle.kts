@@ -253,7 +253,10 @@ kotlin.sourceSets.named("commonMain") {
 mavenPublishing {
     publishToMavenCentral()
 
-    signAllPublications()
+    // Release builds sign; local `publishToMavenLocal` runs and contributors
+    // without GPG keys can opt out with `-Pksafe.skipSign=true`. CI release
+    // jobs leave the property unset, so they continue to require signatures.
+    if (!project.hasProperty("ksafe.skipSign")) signAllPublications()
     coordinates(
         groupId =  group.toString(),
         artifactId = "ksafe",
