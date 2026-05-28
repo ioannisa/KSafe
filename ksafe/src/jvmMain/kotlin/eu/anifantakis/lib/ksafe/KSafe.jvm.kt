@@ -129,6 +129,7 @@ private fun buildJvmKSafe(
     if (fileName != null && !fileName.matches(fileNameRegex)) {
         throw IllegalArgumentException("File name must start with a lowercase letter and contain only lowercase letters, digits, or underscores")
     }
+    warnIfUnsafeMissing()
     validateSecurityPolicy(securityPolicy)
 
     // Resolve the storage directory once. Both the produceFile lambda and the
@@ -246,6 +247,47 @@ private fun jvmProtectionInfo(engine: KSafeEncryption): KSafeProtectionInfo {
 private const val PROP_KEY_VAULT = "ksafe.jvm.keyVault"
 private const val ENV_KEY_VAULT = "KSAFE_JVM_KEY_VAULT"
 private val OPT_OUT_VALUES = setOf("software", "datastore", "off", "false", "none")
+
+/**
+ * One-time, fail-fast diagnostic for the single most common JVM-desktop
+ * packaging mistake. KSafe persists through Jetpack DataStore, whose protobuf
+ * layer (`androidx.datastore.preferences.protobuf.*`) hard-requires
+ * `sun.misc.Unsafe` (JDK module `jdk.unsupported`) to parse its files. A
+ * Compose Desktop release distributable built without
+ * `modules("jdk.unsupported")` ships a `jlink`-trimmed runtime that omits it,
+ * and DataStore then throws `NoClassDefFoundError: sun/misc/Unsafe` deep on a
+ * background coroutine when it first reads/writes — crashing the app with a
+ * cryptic stack KSafe cannot catch (it's inside DataStore, not KSafe).
+ *
+ * KSafe's own OS-keyvault path degrades gracefully when JNA can't link, but it
+ * cannot rescue DataStore's storage layer. So we detect the missing class at
+ * construction and print a clear, actionable message up front, before the
+ * inevitable async crash — turning "sun/misc/Unsafe" into a fix.
+ */
+private val unsafeMissingWarned = java.util.concurrent.atomic.AtomicBoolean(false)
+
+private fun warnIfUnsafeMissing() {
+    val present = try {
+        Class.forName("sun.misc.Unsafe", false, KSafe::class.java.classLoader)
+        true
+    } catch (_: Throwable) {
+        false
+    }
+    if (!present && unsafeMissingWarned.compareAndSet(false, true)) {
+        System.err.println(
+            "KSafe FATAL RISK: `sun.misc.Unsafe` (JDK module `jdk.unsupported`) is " +
+                "missing from this runtime. KSafe persists via Jetpack DataStore, " +
+                "whose protobuf layer REQUIRES it — DataStore will throw " +
+                "NoClassDefFoundError on first read/write and your app will crash; " +
+                "KSafe cannot work around this. This almost always means a Compose " +
+                "Desktop release distributable whose jlink runtime was trimmed. FIX: " +
+                "add `modules(\"jdk.unsupported\")` to your " +
+                "`compose.desktop.application.nativeDistributions` block " +
+                "(add `\"java.management\"` too if you use a non-default " +
+                "KSafeSecurityPolicy). See docs/JVM_PROTECTION.md."
+        )
+    }
+}
 
 private fun secureDirectory(file: File) {
     try {

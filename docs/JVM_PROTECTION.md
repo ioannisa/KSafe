@@ -385,23 +385,57 @@ keyring, check:
 
 ## Compose Desktop release distributables: `jdk.unsupported`
 
+**`modules("jdk.unsupported")` is REQUIRED for Compose Desktop release
+distributables — without it KSafe cannot persist data.**
+
 If you ship a Compose Desktop app via `runReleaseDistributable`,
 `packageReleaseDistributable`, or `createReleaseDistributable`, the build
 uses `jlink` to assemble a **trimmed custom JRE** bundled inside your app.
 `jlink` only includes JDK modules it can statically detect in your
-bytecode. JNA — used by every OS keyvault here — relies on
-`sun.misc.Unsafe`, which lives in `jdk.unsupported`. Nothing in your app
-or KSafe references it directly, so `jlink` leaves it out of the bundled
-runtime and JNA throws `NoClassDefFoundError: sun/misc/Unsafe` on first
-real call.
+bytecode. **Two** things KSafe depends on need `sun.misc.Unsafe` (which
+lives in `jdk.unsupported`), and neither is statically detectable:
 
-Pre-2.1.x this surfaced as silently dropped writes
-([issue #32](https://github.com/ioannisa/KSafe/issues/32)). From 2.1.x the
-engine catches `LinkageError` on the encrypt path, emits a one-time
-`System.err` warning naming `jdk.unsupported`, and degrades to the
-software vault for the rest of the process so writes are not lost — but
-your users then run without OS-level key protection until the next launch
-with the module included.
+1. **JNA** — used by the OS keyvaults (Keychain / DPAPI / Secret Service).
+   KSafe *handles* this: from 2.1.x the engine catches the `LinkageError`,
+   degrades key custody to the software vault, and warns.
+2. **Jetpack DataStore's embedded protobuf** — KSafe's storage backend on
+   JVM/Desktop. `androidx.datastore.preferences.protobuf.MessageSchema`
+   references `sun.misc.Unsafe`. KSafe **cannot** work around this — the
+   failure is inside DataStore, on a background coroutine.
+
+### Why the symptom varies: crash vs. silently dropped writes
+
+KSafe's write path is **`encrypt` (JNA) → then `DataStore.write` (protobuf)**.
+That ordering, combined with whether your bundled DataStore can do protobuf
+I/O without `sun.misc.Unsafe`, decides what you see:
+
+- **Older DataStore builds that tolerate a missing `Unsafe`** (the original
+  [#32](https://github.com/ioannisa/KSafe/issues/32) report): pre-2.1.x,
+  `encrypt` hit JNA first → `processBatch` caught it and **dropped the
+  write** → DataStore was never reached → **no crash, data silently not
+  persisted.** With 2.1.1's keyvault fallback, `encrypt` now succeeds via
+  the software vault, the write reaches DataStore, and (because that build
+  tolerates no-`Unsafe`) **data persists** — so the fallback genuinely
+  fixes #32 *on those builds*.
+- **DataStore builds whose protobuf hard-requires `Unsafe`** (including the
+  version KSafe currently bundles): DataStore throws
+  `NoClassDefFoundError: sun/misc/Unsafe` on the first read/write and the
+  **app crashes**, regardless of the keyvault fallback. Note that 2.1.1's
+  fallback, by letting `encrypt` succeed, lets the write *reach* DataStore —
+  so you now see DataStore's loud crash (with KSafe's `FATAL RISK` warning
+  pointing at the fix) rather than a silent drop. That is the better
+  outcome: a diagnosable failure beats silent data loss, and the only real
+  resolution in both cases is to add the module.
+
+So `jdk.unsupported` is **mandatory for the app to function**, not just for
+OS-level key protection. The keyvault fallback only fully rescues the cases
+where JNA fails *but DataStore works* (headless Linux with no keyring, a
+locked keychain, or a DataStore build that tolerates missing `Unsafe`).
+
+From 2.1.1, KSafe prints a clear `KSafe FATAL RISK: sun.misc.Unsafe …`
+warning at `KSafe(...)` construction when the class is missing, so the
+otherwise-cryptic async DataStore crash (or silent drop) is diagnosable up
+front, on every environment.
 
 **The fix** — declare the module(s) in your app's Compose Desktop block:
 
@@ -409,8 +443,9 @@ with the module included.
 compose.desktop {
     application {
         nativeDistributions {
-            // `jdk.unsupported` — required by JNA → OS keyvault path
-            //                    (Keychain / DPAPI / Secret Service).
+            // `jdk.unsupported` — REQUIRED. DataStore's protobuf and JNA
+            //                    both need sun.misc.Unsafe. Without it the
+            //                    app crashes (DataStore) on first read/write.
             // `java.management` — only required when a non-IGNORE
             //                    `KSafeSecurityPolicy` is in use (e.g.
             //                    `KSafeSecurityPolicy.WarnOnly` /

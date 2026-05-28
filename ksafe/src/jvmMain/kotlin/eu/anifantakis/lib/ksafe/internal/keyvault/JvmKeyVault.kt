@@ -264,13 +264,22 @@ internal class JvmKeyVaultProvider(
         fun warnRuntimeDegrade(vaultName: String, cause: Throwable) {
             if (runtimeDegradeWarned.compareAndSet(false, true)) {
                 val typed = "${cause::class.java.simpleName}: ${cause.message}"
+                // NOTE: we deliberately do NOT promise "writes are not lost" here.
+                // A runtime LinkageError almost always means a missing JDK module
+                // (jdk.unsupported / sun.misc.Unsafe) in a jlink-trimmed runtime —
+                // and Jetpack DataStore's protobuf layer ALSO requires
+                // sun.misc.Unsafe, so it will crash independently of this key-vault
+                // degrade. The key-vault fallback keeps key custody working; it
+                // cannot rescue DataStore. The module is therefore required, not
+                // optional, for KSafe on Compose Desktop release distributables.
                 System.err.println(
                     "KSafe SECURITY WARNING: the OS keyvault ($vaultName) failed at " +
-                        "runtime ($typed). Falling back to the software vault " +
-                        "(Base64 key in the DataStore file) for the rest of this " +
-                        "process so writes are not lost. Common cause on Compose " +
-                        "Desktop release distributables: the bundled jlink runtime " +
-                        "is missing the JDK module JNA needs. Fix by adding " +
+                        "runtime ($typed); key custody has degraded to the software " +
+                        "vault. This usually means a jlink-trimmed runtime is missing " +
+                        "`jdk.unsupported` (sun.misc.Unsafe). IMPORTANT: that same " +
+                        "module is REQUIRED by Jetpack DataStore (KSafe's storage " +
+                        "backend) — without it DataStore itself crashes and data will " +
+                        "NOT persist; KSafe cannot work around that. Add " +
                         "`modules(\"jdk.unsupported\")` to your " +
                         "`compose.desktop.application.nativeDistributions` block " +
                         "(or run `./gradlew :<app>:suggestRuntimeModules`)."

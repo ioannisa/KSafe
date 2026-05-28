@@ -386,20 +386,23 @@ val ksafe = KSafe(config = KSafeConfig(appNamespace = "com.example.myapp"))
 
 Production desktop apps should set it explicitly. Only the key-store destination is namespaced — KSafe ≤ 2.0 data still migrates unchanged. See **[docs/USAGE.md](docs/USAGE.md)**.
 
-## Compose Desktop release builds (`jdk.unsupported`)
+## Compose Desktop release builds — `modules("jdk.unsupported")` is REQUIRED
 
-If you ship a Compose Desktop app via `runReleaseDistributable` / `packageReleaseDistributable`, add `modules("jdk.unsupported")` to your `nativeDistributions` block:
+If you ship a Compose Desktop app via `runReleaseDistributable` / `packageReleaseDistributable` (or any `package*Distributable` task), you **must** add `modules("jdk.unsupported")` to your `nativeDistributions` block — otherwise **KSafe cannot persist data.** Depending on the DataStore/JDK build this shows up either as a **hard crash** (the DataStore version KSafe currently bundles) or as **silently dropped writes** ([issue #32](https://github.com/ioannisa/KSafe/issues/32)) — either way your data is lost:
 
 ```Kotlin
 compose.desktop {
     application {
         nativeDistributions {
-            // jdk.unsupported  → JNA needs sun.misc.Unsafe for the OS keyvault path.
-            // java.management  → only if you use a non-IGNORE KSafeSecurityPolicy
-            //                    (WarnOnly / Strict / custom). SecurityChecker reads
-            //                    java.lang.management.ManagementFactory to detect a
-            //                    debugger. Omit if you stay on the IGNORE-everything
-            //                    default policy.
+            // REQUIRED. Jetpack DataStore (KSafe's storage backend) uses an
+            // embedded protobuf that needs sun.misc.Unsafe — without this module
+            // DataStore throws NoClassDefFoundError on first read/write and the
+            // app crashes. JNA (KSafe's OS keyvault) needs it too.
+            //
+            // java.management → add ONLY if you use a non-default KSafeSecurityPolicy
+            //   (WarnOnly / Strict / custom). SecurityChecker reads
+            //   java.lang.management.ManagementFactory to detect a debugger.
+            //   On the default IGNORE-everything policy you can omit it.
             modules("jdk.unsupported", "java.management")
             // …your other settings
         }
@@ -407,9 +410,9 @@ compose.desktop {
 }
 ```
 
-Compose Desktop's release task uses `jlink` to bundle a minimal JRE inside your app, and `jlink` only includes JDK modules it can statically see your code using. KSafe (and many other libraries) reaches the OS Keychain / DPAPI / Secret Service through **JNA**, which needs `sun.misc.Unsafe` from `jdk.unsupported`. Without that module, the bundled runtime is missing it and JNA fails on first call. From 2.1.x KSafe detects this and degrades to the software vault so writes are not lost — but you want the line in place so your release build keeps OS-level key protection. Dev/debug runs (`./gradlew run`, IDE run) are unaffected because they execute against your full local JDK. Full background: **[docs/JVM_PROTECTION.md](docs/JVM_PROTECTION.md#compose-desktop-release-distributables-jdkunsupported)**.
+**Why it's mandatory.** Compose Desktop's release task uses `jlink` to bundle a trimmed JRE, including only the JDK modules it can statically detect in your bytecode. Two things KSafe relies on need `sun.misc.Unsafe` (which lives in `jdk.unsupported`) and neither is statically detectable: **(1) JNA**, which reaches the OS Keychain/DPAPI/Secret Service, and **(2) Jetpack DataStore's embedded protobuf**, KSafe's storage backend. KSafe degrades the *keyvault* gracefully when JNA can't link (key custody drops to the software vault, with a loud warning) — but it **cannot** work around DataStore's own requirement: that failure is deep inside DataStore on a background thread. So the module is required for the app to function, not merely for OS-level key protection. From 2.1.1 KSafe prints a clear `KSafe FATAL RISK: sun.misc.Unsafe missing …` warning at construction so the cause is obvious. Dev/debug runs (`./gradlew run`, IDE run) are unaffected — they use your full local JDK. Full background and the crash-vs-silent-drop explanation: **[docs/JVM_PROTECTION.md](docs/JVM_PROTECTION.md#compose-desktop-release-distributables-jdkunsupported)**.
 
-Working example: [**KSafeDemo**](https://github.com/ioannisa/KSafeDemo) — see `composeApp/build.gradle.kts` for the `modules("jdk.unsupported")` line in context, and open the demo's **Security screen** (`composeApp/src/commonMain/kotlin/eu/anifantakis/ksafe_demo/screens/security/SecurityScreen.kt`) to see `KSafe.protectionInfo` rendered live — green card = OS vault healthy, red card with `jvm_os_vault_unavailable` = runtime fallback active.
+Working example: [**KSafeDemo**](https://github.com/ioannisa/KSafeDemo) — see `composeApp/build.gradle.kts` for the `modules(...)` line in context, and the demo's **Security screen** renders `KSafe.protectionInfo` live (green = OS vault healthy; red `jvm_os_vault_unavailable` = degraded key custody).
 
 ***
 
