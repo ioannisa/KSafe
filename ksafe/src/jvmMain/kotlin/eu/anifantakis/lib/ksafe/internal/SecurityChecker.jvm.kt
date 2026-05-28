@@ -17,6 +17,14 @@ internal actual object SecurityChecker {
     /**
      * Check if a debugger is attached.
      * Uses JVM management APIs to detect debugging.
+     *
+     * Catches `Throwable` (not just `Exception`) so a missing
+     * `java.management` JDK module — common in trimmed jlink runtimes such
+     * as Compose Desktop release distributables, see
+     * `docs/JVM_PROTECTION.md` — surfaces as "no debugger detected" rather
+     * than crashing `KSafe(...)` construction with `NoClassDefFoundError`.
+     * The honest answer there is "unknown," but production apps shouldn't
+     * fail to start over a security probe.
      */
     actual fun isDebuggerAttached(): Boolean {
         return try {
@@ -29,7 +37,9 @@ internal actual object SecurityChecker {
                         arg.contains("-Xdebug") ||
                         arg.contains("-Xrunjdwp")
             }
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
+            // `NoClassDefFoundError` (missing `java.management` in a trimmed
+            // jlink runtime) or any other failure → can't tell, fail open.
             false
         }
     }
@@ -37,6 +47,9 @@ internal actual object SecurityChecker {
     /**
      * Check if this is a debug build.
      * On JVM, we check for assertions being enabled.
+     *
+     * Catches `Throwable` for the same reason as [isDebuggerAttached] —
+     * defensive against trimmed runtimes and JVM oddities.
      */
     actual fun isDebugBuild(): Boolean {
         return try {
@@ -45,7 +58,7 @@ internal actual object SecurityChecker {
             @Suppress("KotlinConstantConditions", "UNUSED_VALUE")
             assert(true.also { assertionsEnabled = true })
             assertionsEnabled
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             false
         }
     }

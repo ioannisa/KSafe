@@ -403,18 +403,29 @@ software vault for the rest of the process so writes are not lost — but
 your users then run without OS-level key protection until the next launch
 with the module included.
 
-**The fix** — declare the module in your app's Compose Desktop block:
+**The fix** — declare the module(s) in your app's Compose Desktop block:
 
 ```kotlin
 compose.desktop {
     application {
         nativeDistributions {
-            modules("jdk.unsupported")
+            // `jdk.unsupported` — required by JNA → OS keyvault path
+            //                    (Keychain / DPAPI / Secret Service).
+            // `java.management` — only required when a non-IGNORE
+            //                    `KSafeSecurityPolicy` is in use (e.g.
+            //                    `KSafeSecurityPolicy.WarnOnly` /
+            //                    `Strict`). `SecurityChecker` reads
+            //                    `java.lang.management.ManagementFactory`
+            //                    to detect a debugger. Omit if you stay
+            //                    on the default IGNORE-everything baseline.
+            modules("jdk.unsupported", "java.management")
             // …your other settings
         }
     }
 }
 ```
+
+From 2.1.1, `SecurityChecker` defensively catches `NoClassDefFoundError` from a missing `java.management` (the previous `catch (_: Exception)` did not, since `NoClassDefFoundError` is an `Error`, not an `Exception`). So a release distributable that forgot `java.management` now degrades cleanly — the security probes report "no debugger / not a debug build" instead of crashing `KSafe(...)` construction. You still want the module listed if you actually need the checks to work.
 
 This applies on **every OS** (macOS, Windows, Linux), not only the one
 the report came in from — JNA needs `sun.misc.Unsafe` regardless of which
