@@ -366,6 +366,25 @@ val ksafe = KSafe(config = KSafeConfig(appNamespace = "com.example.myapp"))
 
 Production desktop apps should set it explicitly. Only the key-store destination is namespaced — KSafe ≤ 2.0 data still migrates unchanged. See **[docs/USAGE.md](docs/USAGE.md)**.
 
+## Compose Desktop release builds (`jdk.unsupported`)
+
+If you ship a Compose Desktop app via `runReleaseDistributable` / `packageReleaseDistributable`, add `modules("jdk.unsupported")` to your `nativeDistributions` block:
+
+```Kotlin
+compose.desktop {
+    application {
+        nativeDistributions {
+            modules("jdk.unsupported")
+            // …your other settings
+        }
+    }
+}
+```
+
+Compose Desktop's release task uses `jlink` to bundle a minimal JRE inside your app, and `jlink` only includes JDK modules it can statically see your code using. KSafe (and many other libraries) reaches the OS Keychain / DPAPI / Secret Service through **JNA**, which needs `sun.misc.Unsafe` from `jdk.unsupported`. Without this line, the bundled runtime is missing that module and JNA fails on first call. From 2.1.x KSafe detects this and degrades to the software vault so writes are not lost — but you want the line in place so your release build keeps OS-level key protection. Dev/debug runs (`./gradlew run`, IDE run) are unaffected because they execute against your full local JDK. Full background: **[docs/JVM_PROTECTION.md](docs/JVM_PROTECTION.md#compose-desktop-release-distributables-jdkunsupported)**.
+
+Working example: [**KSafeDemo**](https://github.com/ioannisa/KSafeDemo) — see `composeApp/build.gradle.kts` for the `modules("jdk.unsupported")` line in context, and open the demo's **Security screen** (`composeApp/src/commonMain/kotlin/eu/anifantakis/ksafe_demo/screens/security/SecurityScreen.kt`) to see `KSafe.protectionInfo` rendered live — green card = OS vault healthy, red card with `jvm_os_vault_unavailable` = runtime fallback active.
+
 ***
 
 ## Cryptographic Utilities

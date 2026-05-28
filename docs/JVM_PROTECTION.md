@@ -380,3 +380,76 @@ keyring, check:
   dismissed?
 - Windows: DPAPI is part of the OS — fallback here usually means JNA
   failed to load `Crypt32`, which points to a JRE/JNA packaging problem.
+
+---
+
+## Compose Desktop release distributables: `jdk.unsupported`
+
+If you ship a Compose Desktop app via `runReleaseDistributable`,
+`packageReleaseDistributable`, or `createReleaseDistributable`, the build
+uses `jlink` to assemble a **trimmed custom JRE** bundled inside your app.
+`jlink` only includes JDK modules it can statically detect in your
+bytecode. JNA — used by every OS keyvault here — relies on
+`sun.misc.Unsafe`, which lives in `jdk.unsupported`. Nothing in your app
+or KSafe references it directly, so `jlink` leaves it out of the bundled
+runtime and JNA throws `NoClassDefFoundError: sun/misc/Unsafe` on first
+real call.
+
+Pre-2.1.x this surfaced as silently dropped writes
+([issue #32](https://github.com/ioannisa/KSafe/issues/32)). From 2.1.x the
+engine catches `LinkageError` on the encrypt path, emits a one-time
+`System.err` warning naming `jdk.unsupported`, and degrades to the
+software vault for the rest of the process so writes are not lost — but
+your users then run without OS-level key protection until the next launch
+with the module included.
+
+**The fix** — declare the module in your app's Compose Desktop block:
+
+```kotlin
+compose.desktop {
+    application {
+        nativeDistributions {
+            modules("jdk.unsupported")
+            // …your other settings
+        }
+    }
+}
+```
+
+This applies on **every OS** (macOS, Windows, Linux), not only the one
+the report came in from — JNA needs `sun.misc.Unsafe` regardless of which
+OS vault it ends up calling. The non-release `run` / `runDistributable`
+tasks are unaffected because they execute against your full local JDK,
+where every module is already present.
+
+You can also let Gradle figure out the full module list for you:
+
+```bash
+./gradlew :<your-app>:suggestRuntimeModules
+```
+
+The task prints exactly the `modules(...)` call your release distributable
+needs based on the dependency tree.
+
+### Working example: KSafeDemo
+
+A live, end-to-end example lives in the
+[**KSafeDemo**](https://github.com/ioannisa/KSafeDemo) repo:
+
+- **The build wiring** — see `composeApp/build.gradle.kts` inside the
+  `compose.desktop { application { nativeDistributions { … } } }` block,
+  where `modules("jdk.unsupported")` is declared with the rationale
+  inline.
+- **The user-visible verification** — open the demo and navigate to the
+  **Security screen**
+  (`composeApp/src/commonMain/kotlin/eu/anifantakis/ksafe_demo/screens/security/SecurityScreen.kt`).
+  That screen renders `KSafe.protectionInfo`. When the module is included
+  the card is green and `custody` is the OS vault name (e.g. *"macOS
+  Keychain (Security.framework, login keychain)"*). Remove the
+  `modules("jdk.unsupported")` line, rebuild
+  `runReleaseDistributable`, and the card turns red with note
+  `jvm_os_vault_unavailable` — the runtime fallback in action.
+- **Cross-references in the demo** — header comment in
+  `composeApp/src/jvmMain/kotlin/eu/anifantakis/ksafe_demo/main.kt`
+  points back here, so a developer who lands in the JVM entrypoint
+  first sees the connection.

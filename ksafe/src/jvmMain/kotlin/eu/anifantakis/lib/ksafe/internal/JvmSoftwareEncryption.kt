@@ -111,8 +111,26 @@ internal class JvmSoftwareEncryption(
             keyCache.remove(identifier)
             // Remove from both the active store and the legacy store so a
             // re-create after delete cannot resurrect a migrated old key.
-            runCatching { vaults.active.delete(identifier) }
-            if (vaults.active !== vaults.legacy) {
+            // A LinkageError here means the OS vault's native binding is
+            // unavailable at runtime — degrade so subsequent encrypt/decrypt
+            // calls don't keep paying the same penalty (see
+            // [getOrCreateSecretKey]).
+            //
+            // Snapshot vaults.active BEFORE the try: a degrade inside the
+            // catch flips vaults.active to legacy, which would otherwise
+            // skip the legacy-cleanup branch below — even though that's
+            // exactly when the legacy cleanup is still needed (we never
+            // managed to delete from the OS vault, and there may be a
+            // stale legacy entry from before migration).
+            val activeAtStart = vaults.active
+            try {
+                activeAtStart.delete(identifier)
+            } catch (e: LinkageError) {
+                vaults.degradeToLegacy(e)
+            } catch (_: Throwable) {
+                // Pre-existing behaviour: swallow other failures on delete.
+            }
+            if (activeAtStart !== vaults.legacy) {
                 runCatching { vaults.legacy.delete(identifier) }
             }
         }
@@ -135,46 +153,69 @@ internal class JvmSoftwareEncryption(
         return synchronized(lockFor(alias)) {
             keyCache[alias]?.let { return it }
 
-            val active = vaults.active
-
-            // Legacy-first when an OS-backed vault is active.
-            //
-            // The legacy DataStore key, WHEN PRESENT, is authoritative: it
-            // provably encrypted this datastore's on-disk ciphertext. The OS
-            // vault (Keychain / DPAPI / Secret Service) is global-per-user and
-            // long-lived — it can hold a STALE key under the same
-            // `<file>:<alias>` from a prior KSafe lifecycle (reinstall,
-            // data-clear, backup restore, mixed 2.0/2.1 runs). The old code
-            // trusted the OS vault first and migrated only when it was empty,
-            // so a stale OS key shadowed the real legacy key: every encrypted
-            // value failed to decrypt and silently reset to its default
-            // (plaintext values, needing no key, survived). See the 2.0.0→
-            // 2.1.0 data-loss regression.
-            //
-            // So: if a legacy key exists, migrate it now —
-            // [migrateLegacyLocked] overwrites any stale OS-vault entry,
-            // re-reads to verify, then scrubs the legacy copy — and use it.
-            // Only fall back to the OS vault when there is NO legacy key
-            // (already migrated and scrubbed, or a genuinely fresh alias).
-            var keyBytes: ByteArray? =
-                if (active !== vaults.legacy) {
-                    migrateLegacyLocked(alias) ?: active.get(alias)
-                } else {
-                    active.get(alias)
-                }
-
-            val key: SecretKey = if (keyBytes != null) {
-                SecretKeySpec(keyBytes, "AES")
-            } else {
-                val keyGen = KeyGenerator.getInstance("AES")
-                keyGen.init(config.keySize)
-                val generated = keyGen.generateKey()
-                active.put(alias, generated.encoded)
-                generated
+            val key = try {
+                loadOrCreateKeyVia(vaults.active, alias)
+            } catch (e: LinkageError) {
+                // Runtime native-link / class-load failure on the active OS
+                // vault. Canonical case: Compose Desktop release distributable
+                // whose jlink-built JRE is missing `jdk.unsupported`, so JNA
+                // throws `NoClassDefFoundError: sun/misc/Unsafe` on first real
+                // call. Self-test at construction passed (full JDK present
+                // there) but the in-process JNA classloading fails now.
+                //
+                // Without this catch the error propagates up through
+                // encrypt/decrypt into KSafeCore.processBatch, which silently
+                // drops every batch — the data-loss symptom reported as #32.
+                // Degrade the provider (vaults.active is then === vaults.legacy)
+                // and retry on the legacy software vault so writes continue.
+                vaults.degradeToLegacy(e)
+                loadOrCreateKeyVia(vaults.active, alias)
             }
 
             keyCache[alias] = key
             key
+        }
+    }
+
+    /**
+     * Single attempt of the legacy-first key resolution against [active].
+     * Caller holds `lockFor(alias)` and is responsible for retrying on a
+     * different vault if [active] surfaces a runtime native-link error.
+     *
+     * Legacy-first when an OS-backed vault is active.
+     *
+     * The legacy DataStore key, WHEN PRESENT, is authoritative: it provably
+     * encrypted this datastore's on-disk ciphertext. The OS vault (Keychain /
+     * DPAPI / Secret Service) is global-per-user and long-lived — it can hold
+     * a STALE key under the same `<file>:<alias>` from a prior KSafe lifecycle
+     * (reinstall, data-clear, backup restore, mixed 2.0/2.1 runs). The old
+     * code trusted the OS vault first and migrated only when it was empty, so
+     * a stale OS key shadowed the real legacy key: every encrypted value
+     * failed to decrypt and silently reset to its default (plaintext values,
+     * needing no key, survived). See the 2.0.0→2.1.0 data-loss regression.
+     *
+     * So: if a legacy key exists, migrate it now — [migrateLegacyLocked]
+     * overwrites any stale OS-vault entry, re-reads to verify, then scrubs
+     * the legacy copy — and use it. Only fall back to the OS vault when
+     * there is NO legacy key (already migrated and scrubbed, or a genuinely
+     * fresh alias).
+     */
+    private fun loadOrCreateKeyVia(active: JvmKeyVault, alias: String): SecretKey {
+        val keyBytes: ByteArray? =
+            if (active !== vaults.legacy) {
+                migrateLegacyLocked(alias) ?: active.get(alias)
+            } else {
+                active.get(alias)
+            }
+
+        return if (keyBytes != null) {
+            SecretKeySpec(keyBytes, "AES")
+        } else {
+            val keyGen = KeyGenerator.getInstance("AES")
+            keyGen.init(config.keySize)
+            val generated = keyGen.generateKey()
+            active.put(alias, generated.encoded)
+            generated
         }
     }
 
@@ -192,11 +233,23 @@ internal class JvmSoftwareEncryption(
      */
     private fun migrateLegacyLocked(alias: String): ByteArray? {
         val legacyBytes = vaults.legacy.get(alias) ?: return null
-        runCatching {
+        try {
             vaults.active.put(alias, legacyBytes)
             if (vaults.active.get(alias)?.contentEquals(legacyBytes) == true) {
                 vaults.legacy.delete(alias)
             }
+        } catch (e: LinkageError) {
+            // Runtime native-link / class-load failure — let it propagate so
+            // [getOrCreateSecretKey]'s outer catch can degrade the provider
+            // and retry on the legacy vault. Swallowing this here would mean
+            // we silently keep believing the OS vault is healthy while every
+            // future encrypt repeats the same failure. The legacy copy is
+            // intact (the delete above is gated on a successful read-back).
+            throw e
+        } catch (_: Throwable) {
+            // Best-effort: a transient OS-vault hiccup must not destroy the
+            // legacy copy. The read-back gate already protects against a
+            // silently-no-op put; this also tolerates exceptions from put/get.
         }
         return legacyBytes
     }
@@ -212,14 +265,24 @@ internal class JvmSoftwareEncryption(
      * caller's coroutine dispatcher.
      */
     override suspend fun migrateLegacyKeysSuspend() {
-        val active = vaults.active
-        if (active === vaults.legacy || !active.isOsBacked) return
+        if (vaults.active === vaults.legacy || !vaults.active.isOsBacked) return
         withContext(Dispatchers.IO) {
             for (alias in vaults.legacy.legacyAliases()) {
-                runCatching {
+                // A LinkageError on any one alias is sticky for the whole
+                // engine (same JNA classloader), so stop the sweep instead of
+                // grinding through every alias. degradeToLegacy flips
+                // vaults.active === vaults.legacy, which both ends the sweep
+                // here and routes future encrypt calls to the software vault.
+                if (vaults.active === vaults.legacy) return@withContext
+                try {
                     synchronized(lockFor(alias)) {
                         if (vaults.legacy.get(alias) != null) migrateLegacyLocked(alias)
                     }
+                } catch (e: LinkageError) {
+                    vaults.degradeToLegacy(e)
+                    return@withContext
+                } catch (_: Throwable) {
+                    // Per-alias isolation: one bad entry can't stop the sweep.
                 }
             }
         }

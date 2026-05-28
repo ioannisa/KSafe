@@ -158,8 +158,41 @@ internal class JvmKeyVaultProvider(
     /** Legacy store — migration source and last-resort fallback. */
     val legacy: DataStoreKeyVault = DataStoreKeyVault(dataStore)
 
+    /**
+     * Picked at construction (after OS detection + self-test). May still
+     * fail at *runtime* — the canonical case is a Compose Desktop release
+     * distributable whose `jlink`-built JRE is missing `jdk.unsupported`,
+     * so JNA's first real call throws `NoClassDefFoundError: sun/misc/Unsafe`
+     * even though the host clearly has Keychain/DPAPI/Secret-Service.
+     * Runtime failures flip [degraded], after which [active] returns
+     * [legacy] for the rest of this engine's life — losing OS-level key
+     * protection but keeping data persistence working instead of silently
+     * dropping every write.
+     */
+    private val picked: JvmKeyVault = forced ?: pick(dataStore)
+    private val degraded = AtomicBoolean(false)
+
     /** The vault the engine should use for new keys. */
-    val active: JvmKeyVault = forced ?: pick(dataStore)
+    val active: JvmKeyVault
+        get() = if (degraded.get()) legacy else picked
+
+    /**
+     * Flips the provider into degraded mode after a runtime JNA failure on
+     * [picked]: subsequent reads of [active] return [legacy]. Emits a
+     * one-time loud warning naming the cause so the operator can install
+     * the missing JDK module (typically `jdk.unsupported`) rather than
+     * silently running on the software fallback forever.
+     *
+     * Called by [eu.anifantakis.lib.ksafe.internal.JvmSoftwareEncryption]
+     * when a `LinkageError` (NoClassDefFoundError, UnsatisfiedLinkError, …)
+     * or `ExceptionInInitializerError` escapes a `get`/`put`/`delete` on
+     * the active vault.
+     */
+    internal fun degradeToLegacy(cause: Throwable) {
+        if (degraded.compareAndSet(false, true)) {
+            warnRuntimeDegrade(picked.name, cause)
+        }
+    }
 
     private fun pick(dataStore: DataStore<Preferences>): JvmKeyVault {
         // Explicit opt-out: forces the legacy software store without a warning.
@@ -211,6 +244,7 @@ internal class JvmKeyVaultProvider(
         val OPT_OUT_VALUES = setOf("software", "datastore", "off", "false", "none")
 
         val warned = AtomicBoolean(false)
+        val runtimeDegradeWarned = AtomicBoolean(false)
 
         fun warnFallbackOnce(os: String) {
             if (warned.compareAndSet(false, true)) {
@@ -223,6 +257,23 @@ internal class JvmKeyVaultProvider(
                         "(Linux: gnome-keyring/ksecretservice) or run on a host " +
                         "with DPAPI (Windows) / Keychain (macOS) for OS-backed " +
                         "key protection."
+                )
+            }
+        }
+
+        fun warnRuntimeDegrade(vaultName: String, cause: Throwable) {
+            if (runtimeDegradeWarned.compareAndSet(false, true)) {
+                val typed = "${cause::class.java.simpleName}: ${cause.message}"
+                System.err.println(
+                    "KSafe SECURITY WARNING: the OS keyvault ($vaultName) failed at " +
+                        "runtime ($typed). Falling back to the software vault " +
+                        "(Base64 key in the DataStore file) for the rest of this " +
+                        "process so writes are not lost. Common cause on Compose " +
+                        "Desktop release distributables: the bundled jlink runtime " +
+                        "is missing the JDK module JNA needs. Fix by adding " +
+                        "`modules(\"jdk.unsupported\")` to your " +
+                        "`compose.desktop.application.nativeDistributions` block " +
+                        "(or run `./gradlew :<app>:suggestRuntimeModules`)."
                 )
             }
         }

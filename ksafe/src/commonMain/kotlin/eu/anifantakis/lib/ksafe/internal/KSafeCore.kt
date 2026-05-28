@@ -767,7 +767,19 @@ internal class KSafeCore(
                 runCatching { processBatch(batch) }
                     .onFailure { e ->
                         if (e is CancellationException) throw e
-                        println("KSafe: processBatch failed, dropping ${batch.size} writes: ${e.message}")
+                        // Awaiting callers (suspend put/delete) were already
+                        // notified via completeExceptionally inside processBatch.
+                        // This log surfaces the failure for fire-and-forget
+                        // putDirect callers who have no Deferred to listen on.
+                        // Include the exception type so a bare message like
+                        // "sun/misc/Unsafe" is recognisable as a
+                        // NoClassDefFoundError (see issue #32) instead of
+                        // looking like a stray log line.
+                        println(
+                            "KSafe SEVERE: processBatch failed " +
+                                "(${e::class.simpleName}: ${e.message}); " +
+                                "dropped ${batch.size} fire-and-forget write(s)."
+                        )
                     }
                 batch.clear()
             }

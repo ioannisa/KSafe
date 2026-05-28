@@ -229,4 +229,108 @@ class JvmKeyVaultMigrationTest {
             System.clearProperty("ksafe.jvm.keyVault")
         }
     }
+
+    // ── Runtime LinkageError fallback ────────────────────────────────────────
+    //
+    // Simulates the real-world Compose Desktop release-distributable case:
+    // selfTest at construction passes (full JDK on the build host), but the
+    // jlinked runtime served to the user is missing `jdk.unsupported`, so JNA
+    // throws `NoClassDefFoundError: sun/misc/Unsafe` on first real call from
+    // inside processBatch — silently dropping every write before this fix.
+    // See issue #32.
+
+    private class LinkErrorOsVault(
+        /** Flips to true after [armed] is set; lets selfTest succeed at init. */
+        @Volatile var armed: Boolean = false,
+    ) : JvmKeyVault {
+        override val name = "LinkErrorOsVault (test)"
+        override val isOsBacked = true
+        val store = ConcurrentHashMap<String, ByteArray>()
+        override fun get(alias: String): ByteArray? {
+            if (armed) throw NoClassDefFoundError("sun/misc/Unsafe")
+            return store[alias]?.copyOf()
+        }
+        override fun put(alias: String, keyBytes: ByteArray) {
+            if (armed) throw NoClassDefFoundError("sun/misc/Unsafe")
+            store[alias] = keyBytes.copyOf()
+        }
+        override fun delete(alias: String) {
+            if (armed) throw NoClassDefFoundError("sun/misc/Unsafe")
+            store.remove(alias)
+        }
+    }
+
+    @Test
+    fun runtimeLinkageError_degradesToLegacyVault_andEncryptSucceeds() {
+        val alias = "user:token"
+        val osVault = LinkErrorOsVault().also { it.armed = true }
+        val provider = JvmKeyVaultProvider(dataStore, forced = osVault)
+        val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+
+        // Pre-fix this would have thrown NoClassDefFoundError out of encrypt
+        // and KSafeCore.processBatch would have dropped the write.
+        val ct = engine.encrypt(alias, "hello".toByteArray())
+        assertContentEquals("hello".toByteArray(), engine.decrypt(alias, ct))
+
+        // After the runtime failure the provider must be degraded so the
+        // active vault is now the legacy DataStore.
+        assertEquals(provider.legacy, provider.active)
+        // And the key the engine just used must live in the legacy store
+        // (NOT in the unreachable OS vault).
+        assertNotNull(DataStoreKeyVault(dataStore).get(alias))
+    }
+
+    @Test
+    fun runtimeLinkageError_preservesLegacyKey_andDecryptsExisting2_0_0Data() {
+        // The most data-sensitive variant: a 2.0.0 user upgrades to 2.1.x and
+        // ships in a Compose Desktop release build. We must (a) not destroy
+        // the legacy key (which is authoritative for at-rest ciphertext), and
+        // (b) still decrypt their existing data.
+        val alias = "settings:theme"
+        val payload = "dark".toByteArray()
+
+        val v200 = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = DataStoreKeyVault(dataStore)),
+        )
+        val ciphertextAtRest = v200.encrypt(alias, payload)
+        val legacyKeyBefore = DataStoreKeyVault(dataStore).get(alias)
+        assertNotNull(legacyKeyBefore)
+
+        // Upgrade: jlinked runtime lacks jdk.unsupported → JNA always fails.
+        val osVault = LinkErrorOsVault().also { it.armed = true }
+        val provider = JvmKeyVaultProvider(dataStore, forced = osVault)
+        val v210 = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+
+        // Existing data must still decrypt.
+        assertContentEquals(payload, v210.decrypt(alias, ciphertextAtRest))
+
+        // Legacy key MUST still be present — migration tried, JNA failed, the
+        // read-back gate prevented the delete. Without that gate this user
+        // would lose their key.
+        assertContentEquals(
+            legacyKeyBefore, DataStoreKeyVault(dataStore).get(alias),
+            "LinkageError during migration must not destroy the legacy key",
+        )
+        assertEquals(provider.legacy, provider.active)
+    }
+
+    @Test
+    fun degradeIsIdempotent_andSurvivesConcurrentEncrypts() {
+        val osVault = LinkErrorOsVault().also { it.armed = true }
+        val provider = JvmKeyVaultProvider(dataStore, forced = osVault)
+        val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+
+        // Concurrent first hits: only ONE warning should be emitted by the
+        // provider (verified manually via System.err; here we just assert all
+        // threads see consistent post-degrade state and no exception escapes).
+        val threads = (0 until 16).map { i ->
+            Thread {
+                val ct = engine.encrypt("k$i", byteArrayOf(i.toByte()))
+                engine.decrypt("k$i", ct)
+            }.also { it.start() }
+        }
+        threads.forEach { it.join() }
+        assertEquals(provider.legacy, provider.active)
+    }
 }
