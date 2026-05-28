@@ -42,6 +42,8 @@ ksafe/src/
 │       ├── KSafeKeyInfo.kt
 │       ├── KSafeKeyStorage.kt
 │       ├── KSafeProtection.kt
+│       ├── KSafeProtectionInfo.kt          (2.1.0+: instance diagnostic — see KSafe.protectionInfo)
+│       ├── KSafeProtectionLevel.kt         (2.1.0+: universally-ordered scale)
 │       ├── KSafeSecret.kt
 │       ├── KSafeSecurityPolicy.kt
 │       ├── KSafeWriteMode.kt
@@ -123,7 +125,7 @@ The single regular `class KSafe` that consumers instantiate, with all storage me
 
 **Key declarations:**
 
-- `class KSafe @PublishedApi internal constructor(core, deviceKeyStorages, onClearAllCleanup)` — the public class. Constructor is `internal` so consumers always go through a per-platform factory function (see Part 4); they never see the raw `KSafeCore` they need to build.
+- `class KSafe @PublishedApi internal constructor(core, deviceKeyStorages, protectionInfoProvider, onClearAllCleanup)` — the public class. Constructor is `internal` so consumers always go through a per-platform factory function (see Part 4); they never see the raw `KSafeCore` they need to build. `protectionInfoProvider: () -> KSafeProtectionInfo` is invoked on every read of the public `protectionInfo` property — Android / Apple / Web pass a captured snapshot, JVM passes a closure over the engine so a runtime `degradeToLegacy` is visible on the next read (2.1.1+).
 - Members defined once for every platform:
   - `val deviceKeyStorages: Set<KSafeKeyStorage>` — what tiers the current device supports. Populated by the platform factory.
   - `fun getKeyInfo(key): KSafeKeyInfo?` — protection tier + storage location for a specific key. Forwards to `core.getKeyInfo`.
@@ -279,7 +281,7 @@ The big one. Takes a `KSafePlatformStorage`, a `KSafeEncryption`, a `KSafeConfig
 
 **Key state:**
 
-- `memoryCache: KSafeConcurrentMap<Any>` — the hot cache. Stores plaintext in `PLAIN_TEXT` mode, Base64 ciphertext in `ENCRYPTED` / `ENCRYPTED_WITH_TIMED_CACHE` / `LAZY_PLAIN_TEXT`. Keyed by the *cache key*: user key for plain entries, `"encrypted_<key>"` (legacy pattern) for encrypted ones.
+- `memoryCache: KSafeConcurrentMap<Any>` — the hot cache. Stores plaintext in `PLAIN_TEXT` mode, Base64 ciphertext in `ENCRYPTED` / `ENCRYPTED_WITH_TIMED_CACHE` / `LAZY_PLAIN_TEXT`. Keyed by the *cache key*: user key for plain entries, `"encrypted_<key>"` for encrypted ones — except on Apple platforms with a non-null `fileName`, where pre-1.8 builds used `"{fileName}_{key}"` and KSafeCore still recognises that legacy form via the `legacyEncryptedKeyFor` constructor parameter.
 - `protectionMap: KSafeConcurrentMap<String>` — per-user-key protection literal, populated from `__ksafe_meta_*__` entries on disk.
 - `plaintextCache: KSafeConcurrentMap<CachedPlaintext>` — secondary plaintext cache used by `ENCRYPTED_WITH_TIMED_CACHE` (TTL-bounded) and `LAZY_PLAIN_TEXT` (permanent — TTL check is short-circuited). Filled lazily on first read of each key.
 - Two private predicates derived from `memoryPolicy` at construction: `cacheHoldsCiphertext` (true for `ENCRYPTED`/`ENCRYPTED_WITH_TIMED_CACHE`/`LAZY_PLAIN_TEXT`) and `usesPlaintextSideCache` (true for `ENCRYPTED_WITH_TIMED_CACHE`/`LAZY_PLAIN_TEXT`). The cache layer branches on these, not on individual policy values, so adding a new policy is one enum entry plus the predicate updates.
@@ -291,13 +293,13 @@ The big one. Takes a `KSafePlatformStorage`, a `KSafeEncryption`, a `KSafeConfig
 **Key methods:**
 
 - `defaultEncryptedMode(): KSafeWriteMode` — `KSafeWriteMode.Encrypted(requireUnlockedDevice = config.requireUnlockedDevice)`. Used by the no-mode `put`/`putDirect` overloads on `KSafe`. Lives on `KSafeCore` (not `KSafe`) because it reads `config`, which is a `KSafeCore` constructor param.
-- `startBackgroundCollector()` — launches the collector coroutine that subscribes to `storage.snapshotFlow()` and, on the **first emission only**, runs `migrateAccessPolicy()` then `cleanupOrphanedCiphertext()` *after* `updateCache(snapshot)` has populated the in-memory cache. Subsequent emissions only refresh the cache. The "first emission first" ordering is load-bearing on Apple platforms: `migrateAccessPolicy = cleanupOrphanedKeychainEntries` reads `storage.snapshot()` to decide which Keychain entries are orphaned, and would otherwise see an empty snapshot during the 1.x → 2.0 path-migration window — destroying every Secure Enclave EC private key in the process. See the `### Fixed` block in CHANGELOG 2.0.0 for the failure walk-through; `KSafeCoreStartupOrderingTest` in jvmTest locks the order in.
+- `startBackgroundCollector()` — launches the collector coroutine that subscribes to `storage.snapshotFlow()` and, on the **first emission only**, runs three steps in order: `migrateAccessPolicy()` → `cleanupOrphanedCiphertext()` → `engine.migrateLegacyKeysSuspend()` (2.1.0+), *after* `updateCache(snapshot)` has populated the in-memory cache. Subsequent emissions only refresh the cache. The "first emission first" ordering is load-bearing on Apple platforms: `migrateAccessPolicy = cleanupOrphanedKeychainEntries` reads `storage.snapshot()` to decide which Keychain entries are orphaned, and would otherwise see an empty snapshot during the 1.x → 2.0 path-migration window — destroying every Secure Enclave EC private key in the process. The third step (added in 2.1.0) eagerly sweeps any remaining pre-2.1 raw keys out of weak locations (the JVM DataStore file, web localStorage) into the secure store; it's a no-op where there's no safer destination (software fallback, opt-out). See the `### Fixed` block in CHANGELOG 2.0.0 for the failure walk-through; `KSafeCoreStartupOrderingTest` in jvmTest locks the order in.
 - `suspend updateCache(snapshot)` — the workhorse that merges an on-disk snapshot into `memoryCache`. Handles dirty-key skipping, legacy-format classification (via `KeySafeMetadataManager.classifyStorageEntry`), and — only when `cacheHoldsCiphertext` is false (i.e. the explicit `PLAIN_TEXT` policy or the Web-forced equivalent) — decrypts every encrypted entry through `engine.decryptSuspend`. Two-pass structure: classification + plain entries + ciphertext stashing run sequentially (they mutate `validCacheKeys` and `protectionByKey`); the bulk-decrypt pass for `PLAIN_TEXT` is deferred into a `pendingDecrypts` list and flushed concurrently inside a `coroutineScope { … }` with a `Semaphore(8)` cap. Under the new default `LAZY_PLAIN_TEXT` (and under `ENCRYPTED` / `ENCRYPTED_WITH_TIMED_CACHE`), this pass is skipped entirely — encrypted entries land in the cache as ciphertext and decryption is deferred to read time. Cold start on a 1500-key store is therefore ~0.06 ms under any non-`PLAIN_TEXT` policy.
 - `startWriteConsumer()` — the coalescer coroutine. Two-phase loop: (1) `receive()` the first write to suspend until something arrives, then **greedy-drain** via `tryReceive()` until the channel is empty or `maxBatchSize` is reached — this is what lets a 1000-write burst land in a single batch instead of being cut into `maxBatchSize`-capped chunks; (2) **conditional 16 ms window** that opens *only* when no write in the current batch has a `completion`. If even one caller is awaiting their commit, the window is skipped and the batch flushes immediately. The window also exits early the moment a write with a `completion` arrives mid-window. Net effect: a single sequential `ksafe.put(...)` completes in roughly one `applyBatch` round-trip; bursty `putDirect` traffic still coalesces into one transaction per frame.
 - `processBatch(batch)` — wraps `processBatchBody(batch)` in a try/catch so that the `CompletableDeferred`s of any awaiting callers always resolve: `complete(Unit)` on success, `completeExceptionally(failure)` on a thrown error (which is then re-raised so `startWriteConsumer`'s `runCatching` can log it), and `cancel(e)` on `CancellationException` (re-thrown to honour structured concurrency). Without this wrapper, a thrown error in the body would leave every awaiting `suspend put` caller hanging forever.
 - `processBatchBody(batch)` — the actual work. Deduplicates `PendingWrite.Encrypted` by user-key (multiple writes to the same key in one window collapse to the latest), then encrypts the deduped set concurrently via `coroutineScope { batch.map { async { gate.withPermit { engine.encryptSuspend(...) } } }.awaitAll() }` with a `Semaphore(8)` cap — hardware-keystore IPC pipelines instead of running serially. Then builds the full `List<StorageOp>` (including metadata + legacy-key deletes) iterating the *original* batch order so duplicate-key writes still emit their deletes and last-applied-wins is preserved, calls `storage.applyBatch(ops)`, then deletes removed keys from the engine. When `cacheHoldsCiphertext` is true (i.e. `ENCRYPTED`, `ENCRYPTED_WITH_TIMED_CACHE`, or `LAZY_PLAIN_TEXT`), uses a CAS (`memoryCache.replaceIf`) to swap optimistic plaintext for ciphertext without clobbering a newer in-flight write.
 - `putPlainSuspend` / `putEncryptedSuspend` / `delete` (suspend) — apply optimistic in-memory state (matches the `*Direct` siblings), enqueue a `PendingWrite.*` carrying a `CompletableDeferred<Unit>`, then `await()` it. Concurrent suspend callers from independent coroutines coalesce into the same `processBatch` invocation as fire-and-forget `putDirect` traffic, so a burst of 500 `suspend put` calls amortises into a small number of `applyBatch` transactions instead of 500.
-- `cleanupOrphanedCiphertext()` — probes every encrypted entry; removes from storage any whose decryption fails with a "key not found" message (but not "device is locked"). Probes run concurrently inside a `coroutineScope { … }` with a `Semaphore(8)` cap (same fan-out budget as `processBatch` and `updateCache`), then orphan deletes are applied sequentially after all probes complete. A 1500-key sweep finishes in milliseconds rather than seconds because the Keystore IPC pipelines instead of stalling on each probe.
+- `cleanupOrphanedCiphertext()` — probes every encrypted entry; removes from storage any whose decryption fails with a "key not found" or "No encryption key found" message (case-insensitive — matches both Apple Keychain and Android Keystore phrasings), but **not** "device is locked" (transient). Probes run concurrently inside a `coroutineScope { … }` with a `Semaphore(8)` cap (same fan-out budget as `processBatch` and `updateCache`), then orphan deletes are applied sequentially after all probes complete. A 1500-key sweep finishes in milliseconds rather than seconds because the Keystore IPC pipelines instead of stalling on each probe.
 - `resolveFromCache(key, default, protection, serializer)` — the read hot-path called from both `getDirectRaw` (sync) and `getRaw` (suspend). Uses the timed plaintext cache when applicable, decrypts via blocking `engine.decrypt` in `ENCRYPTED` mode, and ultimately calls `convertStoredValue` to reconcile the stored type with the requested one.
 - `convertStoredValue(storedValue, default, serializer)` — the cross-type dispatcher. Uses `primitiveKindOrNull(serializer)` to route Int/Long/Float/Double/Boolean/String lookups. Handles both typed DataStore values (Android/iOS/JVM) *and* string-stored primitives (web localStorage), plus `@Serializable` types via JSON. Also handles Int↔Long cross-type migration (widening / range-checked narrowing).
 - `getDirectRaw` / `putDirectRaw` / `getRaw` / `putRaw` / `getFlowRaw` — the non-inline, non-reified entry points that everything in the library funnels through. `putDirectRaw` and `putRaw` shadow their `mode` parameter with `modeTransformer(mode)` at the very top.
@@ -319,7 +321,7 @@ A stateless helper object that owns the string-scheme for how user keys map to D
 - `isInternalStorageKey(rawKey)` — `true` for anything starting with `"__ksafe_"` or `"ksafe_"`. `classifyStorageEntry` uses this to skip internal housekeeping entries when building the cache.
 - `collectMetadata(entries, accept)` — merges canonical + legacy metadata across a snapshot; canonical wins on conflict.
 - `classifyStorageEntry(rawKey, legacyEncryptedPrefix, encryptedCacheKeyForUser, stagedMetadata, existingMetadata): ClassifiedStorageEntry?` — the algorithm that turns a raw on-disk key into `(userKey, cacheKey, encrypted)`. Handles both the canonical `__ksafe_value_` prefix and the pre-1.7 `encrypted_<key>` / bare-userKey variants.
-- `buildMetadataJson(protection, accessPolicy)` — compact JSON like `{"v":1,"p":"DEFAULT","u":"unlocked"}`.
+- `buildMetadataJson(protection, accessPolicy)` — compact JSON like `{"v":2,"p":"DEFAULT","u":"unlocked"}` (since 2.1.0 the latest envelope version is `2`; legacy on-disk entries written by pre-2.1.0 builds carry `"v":1` and are still readable).
 - `parseProtection(raw)` / `parseAccessPolicy(raw)` / `extractProtectionLiteral(raw)` — read-side parsers.
 - `protectionToLiteral(protection): String` — write-side.
 
@@ -333,7 +335,7 @@ Three small functions used by the read/write paths.
 
 - `jsonEncode(json, serializer, value)` / `jsonDecode(json, serializer, jsonString)` — `kotlinx-serialization-json` helpers that work with type-erased `KSerializer<*>`. Used by the non-inline `*Raw` methods.
 - `primitiveKindOrNull(serializer)` — returns the `PrimitiveKind` from a serializer's descriptor, unwrapping nullable markers (so `Int?`'s serializer still returns `INT`). The backbone of `convertStoredValue`'s dispatch.
-- `isStringSerializer(serializer)` — convenience wrapper. *Currently unused* after the 2.0 refactor; slated for removal in 2.1.
+- `isStringSerializer(serializer)` — convenience wrapper. *Currently unused* after the 2.0 refactor; retained for now (still present in 2.1.x) — removal deferred until a future major release.
 
 ## `KSafeConcurrent.kt` — common concurrency primitives
 
@@ -346,7 +348,7 @@ Thin `expect` abstractions so `KSafeCore` can use a thread-safe map/set/flag wit
 - `expect class KSafeConcurrentSet<T : Any>()` — thread-safe set.
 - `expect fun <T> runBlockingOnPlatform(block: suspend () -> T): T` — `runBlocking` on Android/iOS/JVM, error on web (browsers can't block their main thread).
 
-**Why `expect`:** JVM/Android use `ConcurrentHashMap` / `AtomicBoolean`; iOS uses copy-on-write `AtomicReference`; web is single-threaded so it uses plain `HashMap`. `KSafeCore` compiles unchanged against all three. (This and `KSafeSecureRandom` are the only `expect/actual` declarations in the storage module — `KSafe` itself is no longer one.)
+**Why `expect`:** JVM/Android use `ConcurrentHashMap` / `AtomicBoolean`; iOS uses copy-on-write `AtomicReference`; web is single-threaded so it uses plain `HashMap`. `KSafeCore` compiles unchanged against all three. The other `expect`s in the storage module are `KSafeSecureRandom`, `SecurityChecker`, and (web-only) `WebKeyStore` / `WebInterop`. `KSafe` itself is no longer an `expect` class — its construction lives in per-platform factory functions instead.
 
 ## `KSafeSecureRandom.kt` — cross-platform CSPRNG
 
@@ -398,7 +400,7 @@ Every platform also exposes an `@PublishedApi internal fun KSafe(..., testEngine
 
 ### `KSafe.android.kt` — the factory
 
-~176 lines (down from ~1,584 pre-2.0). Owns:
+~264 lines (down from ~1,584 pre-2.0). Owns:
 
 - **Top-level `KSafe(context: Context, fileName: String? = null, ..., useStrongBox: Boolean = false, baseDir: File? = null): KSafe`** — public factory.
 - **Top-level `@PublishedApi internal fun KSafe(..., baseDir: File? = null, testEngine: KSafeEncryption)`** — test overload.
@@ -432,7 +434,7 @@ The Apple-platform implementation lives in **`appleMain/`** — a single source 
 
 ### `KSafe.apple.kt` — the factory
 
-~225 lines (down from ~1,938 pre-2.0). Owns:
+~373 lines (down from ~1,938 pre-2.0). Owns:
 
 - **Top-level `KSafe(fileName: String? = null, ..., useSecureEnclave: Boolean = false, directory: String? = null): KSafe`** — public factory.
 - **Top-level `@PublishedApi internal fun KSafe(..., directory: String? = null, testEngine: KSafeEncryption)`** — test overload.
@@ -496,7 +498,7 @@ Standalone suspend function `cleanupOrphanedKeychainEntries(storage, engine, ser
 
 ### `KSafe.jvm.kt` — the factory + test extensions
 
-~212 lines (down from ~1,360 pre-2.0). Owns:
+~309 lines (down from ~1,360 pre-2.0). Owns:
 
 - **Top-level `KSafe(fileName: String? = null, ..., baseDir: File? = null): KSafe`** — public factory.
 - **Top-level `@PublishedApi internal fun KSafe(..., baseDir: File? = null, testEngine: KSafeEncryption)`** — test overload.
@@ -538,7 +540,7 @@ Selection is overridable with `-Dksafe.jvm.keyVault=software` (or env `KSAFE_JVM
 
 ### `KSafe.web.kt` — the shared factory
 
-~128 lines (down from ~1,052 pre-2.0), lives in `webMain` (shared by both `jsMain` and `wasmJsMain`). Owns:
+~149 lines (down from ~1,052 pre-2.0), lives in `webMain` (shared by both `jsMain` and `wasmJsMain`). Owns:
 
 - **Top-level `KSafe(fileName: String? = null, ...): KSafe`** — public factory. The `memoryPolicy` parameter is accepted for API parity but ignored — see below.
 - **Top-level `@PublishedApi internal fun KSafe(..., testEngine: KSafeEncryption)`** — test overload.

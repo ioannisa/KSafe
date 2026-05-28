@@ -93,15 +93,18 @@ class KSafe @PublishedApi internal constructor(
     val deviceKeyStorages: Set<KSafeKeyStorage>,
 
     /**
-     * Instance-level diagnostic describing the encryption-key custody this
-     * [KSafe] negotiated at construction time — including any runtime
-     * fallback (e.g. JVM dropping from `OS_PROTECTED` to `PLAINTEXT` when
-     * no OS secret store is reachable).
+     * Live producer of the per-access [KSafeProtectionInfo]. Each platform
+     * factory wires a closure that captures the engine and rebuilds the
+     * info on demand. Marked `@PublishedApi internal` to keep it off the
+     * public surface — consumers should read [protectionInfo] instead.
      *
-     * Read once at startup to gate, log, or surface a UI badge. See
-     * [KSafeProtectionInfo] for usage patterns.
+     * For Android / Apple / Web the closure is effectively a constant
+     * (their protection custody can't change after construction). The JVM
+     * closure recomputes from `engine.keyVaultIsOsBacked`, so a runtime
+     * `degradeToLegacy` (e.g. Compose Desktop release distributable
+     * lacking `jdk.unsupported`) is reflected on the very next read.
      */
-    val protectionInfo: KSafeProtectionInfo,
+    @PublishedApi internal val protectionInfoProvider: () -> KSafeProtectionInfo,
 
     /**
      * Optional callback run after [clearAll] flushes the core cache. JVM uses
@@ -110,6 +113,22 @@ class KSafe @PublishedApi internal constructor(
      */
     @PublishedApi internal val onClearAllCleanup: suspend () -> Unit = {},
 ) {
+    /**
+     * Instance-level diagnostic describing the encryption-key custody this
+     * [KSafe] is currently running with — including any runtime fallback
+     * (e.g. JVM dropping from `SANDBOX_PROTECTED` to `SOFTWARE` when no
+     * OS secret store is reachable, or a Compose Desktop release
+     * distributable hitting `LinkageError: sun/misc/Unsafe` and degrading
+     * to the software vault mid-process).
+     *
+     * **Recomputed on every access from 2.1.1** — earlier versions captured
+     * this at construction, so a runtime degrade only became visible after
+     * a process restart. Now safe to bind to UI / metrics that update.
+     *
+     * See [KSafeProtectionInfo] for usage patterns.
+     */
+    val protectionInfo: KSafeProtectionInfo
+        get() = protectionInfoProvider()
     /**
      * Returns the protection tier and actual storage location of a specific key.
      *

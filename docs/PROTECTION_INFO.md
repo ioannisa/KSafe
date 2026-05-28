@@ -2,8 +2,17 @@
 
 `KSafe.protectionInfo` is an instance-level diagnostic that tells your app
 **exactly what encryption-key custody this `KSafe` is actually running with**,
-right now, in this process — including any runtime fallback that happened
-during construction.
+right now, in this process — including any fallback that happened at
+construction *or* later in the process lifecycle.
+
+Prior to 2.1.1 the property was captured once at construction. From 2.1.1
+it's recomputed on every access, so a JVM runtime degrade (e.g. a Compose
+Desktop release distributable that hits `LinkageError: sun/misc/Unsafe` on
+first JNA call and flips to the software vault — see
+[`JVM_PROTECTION.md`](JVM_PROTECTION.md#compose-desktop-release-distributables-jdkunsupported))
+shows up on the next read without a process restart. Android, Apple, and
+Web custody can't change after construction, so their providers return
+captured snapshots — there is no per-access cost worth worrying about.
 
 It complements the two pre-existing surfaces:
 
@@ -228,9 +237,12 @@ log.info {
 The gating example above (refuse to launch) is the simplest case. The deeper
 value of `protectionInfo` is **driving feature-level decisions** from
 `effectiveLevel` — the actual, negotiated custody level, not what you asked
-for. Because `effectiveLevel` is fixed for the instance's lifetime (captured
-at construction), one read is enough: propagate the value or a derived policy,
-and every downstream branch stays consistent.
+for. From 2.1.1, `effectiveLevel` is recomputed per access (so a JVM runtime
+degrade is visible without restart); in practice it's stable across the
+process lifetime on every platform except JVM, and even there it only changes
+at most once (an OS-vault failure is sticky). One read at startup is enough
+for most flows; bind it to UI / metrics if you want it to track a possible
+mid-process JVM degrade automatically.
 
 A few patterns this enables beyond the startup gate:
 

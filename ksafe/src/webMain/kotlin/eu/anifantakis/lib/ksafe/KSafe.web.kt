@@ -125,15 +125,18 @@ private fun buildWebKSafe(
         masterAlias = { _ -> fileName?.let { "$it:$MASTER_KEY_DEFAULT" } ?: MASTER_KEY_DEFAULT },
     )
 
+    // Web custody can't change after construction, so the provider
+    // returns a captured snapshot.
+    val protectionInfoSnapshot = KSafeProtectionInfo(
+        intendedLevel = KSafeProtectionLevel.SANDBOX_PROTECTED,
+        effectiveLevel = KSafeProtectionLevel.SANDBOX_PROTECTED,
+        custody = "WebCrypto non-extractable key in IndexedDB",
+        notes = emptyList(),
+    )
     return KSafe(
         core = core,
         deviceKeyStorages = setOf(KSafeKeyStorage.SOFTWARE),
-        protectionInfo = KSafeProtectionInfo(
-            intendedLevel = KSafeProtectionLevel.SANDBOX_PROTECTED,
-            effectiveLevel = KSafeProtectionLevel.SANDBOX_PROTECTED,
-            custody = "WebCrypto non-extractable key in IndexedDB",
-            notes = emptyList(),
-        ),
+        protectionInfoProvider = { protectionInfoSnapshot },
     )
 }
 

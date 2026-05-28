@@ -76,7 +76,7 @@ xxd dump.pb | less
 You will see:
 
 - `__ksafe_value_<key>` → a Base64 string (ciphertext) for encrypted writes, or the raw typed value for `KSafeWriteMode.Plain` writes.
-- `__ksafe_meta_<key>__` → compact JSON like `{"v":1,"p":"DEFAULT"}` (add `,"u":"unlocked"` if `requireUnlockedDevice = true`).
+- `__ksafe_meta_<key>__` → compact JSON like `{"v":2,"p":"DEFAULT"}` (add `,"u":"unlocked"` if `requireUnlockedDevice = true`). `"v":2` is the master-key envelope shipped in 2.1.0; entries written by pre-2.1.0 builds still carry `"v":1` until they are rewritten.
 - No AES key material. The keys live in the Android Keystore, not in DataStore.
 
 ### 2b. iOS (Simulator)
@@ -107,14 +107,13 @@ Xcode → *Window* → *Devices and Simulators* → select device → select app
 ls ~/.eu_anifantakis_ksafe/
 # Expected: eu_anifantakis_ksafe_datastore.preferences_pb
 #     (plus eu_anifantakis_ksafe_datastore_<fileName>.preferences_pb per named instance)
-#     (plus a key file per encryption alias, software-backed)
 
 protoc --decode_raw < ~/.eu_anifantakis_ksafe/eu_anifantakis_ksafe_datastore.preferences_pb
 # or:
 xxd ~/.eu_anifantakis_ksafe/eu_anifantakis_ksafe_datastore.preferences_pb | less
 ```
 
-Note: unlike the mobile targets, the encryption **key** lives in `~/.eu_anifantakis_ksafe/` as a separate file (software-backed — OS file permissions are the perimeter). That directory should be `0700`. Anyone with read access to your home directory can decrypt the ciphertext. For higher-assurance Desktop scenarios, pair KSafe with an OS keyring or TPM.
+Note: as of 2.0 (hardened in 2.1) the encryption **key lives in the host OS secret store** — Windows DPAPI (key wrapped with the user's login), the macOS login Keychain, or the Linux Secret Service / libsecret keyring — accessed through `JvmKeyVault` via JNA. The DataStore file holds only ciphertext. When no OS store is reachable (headless Linux without a keyring, JNA `LinkageError` at runtime — e.g. a Compose Desktop release distributable missing `modules("jdk.unsupported")`, see [JVM_PROTECTION.md](JVM_PROTECTION.md)) KSafe degrades to the pre-2.0 layout: the AES key Base64-encoded inside the same DataStore file at POSIX `0700`. In that fallback case `KSafe.protectionInfo.effectiveLevel` reports `SOFTWARE` with note `jvm_os_vault_unavailable`. See [JVM_PROTECTION.md](JVM_PROTECTION.md) for the full threat model and self-test.
 
 ### 2e. Kotlin/WASM + Kotlin/JS (Browser)
 

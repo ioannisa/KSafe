@@ -373,8 +373,10 @@ val n = ksafe.getDirect("counter", 0)
 
 | API | Read | Write | Best For |
 |-----|------|-------|----------|
-| `getDirect`/`putDirect` | 0.006 ms | 0.008 ms | UI thread, fire-and-forget, hot cache |
-| `get`/`put` (suspend) | 0.016 ms | 0.94 ms | Guaranteed persistence; multiple concurrent callers |
+| `getDirect`/`putDirect` | 0.002 ms | 0.004 ms | UI thread, fire-and-forget, hot cache |
+| `get`/`put` (suspend) | 0.021 ms | 0.62 ms | Guaranteed persistence; multiple concurrent callers |
+
+> Numbers from the unencrypted-operations table in [BENCHMARKS.md](BENCHMARKS.md) (Delegated API row, rounded). See that doc for methodology, hardware, and the full table.
 
 ## Write Mode API (Per-Entry Unlock Policy)
 

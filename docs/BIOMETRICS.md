@@ -10,7 +10,7 @@ The module is **independent of `:ksafe`** — you can use it on its own (no stor
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe-biometrics:2.0.0")
+implementation("eu.anifantakis:ksafe-biometrics:2.1.1")
 ```
 
 That's it — no transitive dependency on `:ksafe`. Apps that don't need biometrics simply don't add this artifact.
@@ -41,8 +41,10 @@ On Android, the library auto-initializes via a `ContentProvider` declared in its
 
 | Method | Type | Use Case |
 |--------|------|----------|
-| `KSafeBiometrics.verifyBiometricDirect(reason, authorizationDuration?) { success -> }` | Callback-based | Simple, non-blocking, works anywhere |
-| `KSafeBiometrics.verifyBiometric(reason, authorizationDuration?): Boolean` | Suspend function | Coroutine-based, cleaner async code |
+| `KSafeBiometrics.verifyBiometricDirect(reason, authorizationDuration?, allowDeviceCredentialFallback = true) { success -> }` | Callback-based | Simple, non-blocking, works anywhere |
+| `KSafeBiometrics.verifyBiometric(reason, authorizationDuration?, allowDeviceCredentialFallback = true): Boolean` | Suspend function | Coroutine-based, cleaner async code |
+
+Set `allowDeviceCredentialFallback = false` to require biometrics only — the system PIN / password / pattern (Android) or login password / Apple Watch (macOS) won't satisfy the prompt. The platform behaviour table above shows what each platform does in each mode.
 
 ## Basic Usage
 
@@ -201,7 +203,7 @@ No manifest entries or special entitlements are required for basic Touch ID / pa
 
 **Unsandboxed apps** — Touch ID and password authentication work without any entitlement. On first Keychain access (when `:ksafe` is also used), macOS may show a system password prompt; suppress it by signing the app with a Keychain access group entitlement.
 
-**Fallback behaviour** — `LAPolicyDeviceOwnerAuthentication` is used on macOS, so the system automatically falls back to the macOS login password on machines without Touch ID (Mac mini, Intel MacBooks without T2, etc.). This means `verifyBiometric` always produces a real prompt and never silently returns `false` due to missing hardware.
+**Fallback behaviour** — depends on `allowDeviceCredentialFallback`. With the default `true`, KSafe uses `LAPolicyDeviceOwnerAuthentication`, so the system automatically falls back to the macOS login password on machines without Touch ID (Mac mini, Intel MacBooks without T2, etc.) — `verifyBiometric` always produces a real prompt. With `false`, KSafe uses `LAPolicyDeviceOwnerAuthenticationWithBiometrics` (Touch ID only) — on a Mac without Touch ID the policy fails up front and `verifyBiometric` returns `false`. Pick `false` when biometric-grade auth is a hard requirement; pick `true` (default) when you just need to confirm the human at the keyboard.
 
 ## Complete Example
 
@@ -297,7 +299,7 @@ In 2.0 it moved to its own module ([issue #14](https://github.com/ioannisa/KSafe
 
 ```kotlin
 // After (2.0)
-// build.gradle.kts: + implementation("eu.anifantakis:ksafe-biometrics:2.0.0")  // or latest
+// build.gradle.kts: + implementation("eu.anifantakis:ksafe-biometrics:2.1.1")  // or latest
 import eu.anifantakis.lib.ksafe.biometrics.KSafeBiometrics
 import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration
 
@@ -315,4 +317,4 @@ Method names and signatures are preserved — only the receiver and import paths
 - Scoped authorization for fine-grained control over cache invalidation
 - Works on Android (BiometricPrompt), iOS (LAContext — Face ID / Touch ID), and macOS (LAContext — Touch ID, password, or Apple Watch); JVM / JS / WasmJS return `true` so shared KMP business logic compiles unchanged
 - On Android, requires `AppCompatActivity`. Auto-init via ContentProvider — no `Application` changes needed.
-- On macOS, uses `LAPolicyDeviceOwnerAuthentication` so a real prompt is always shown even on Macs without Touch ID.
+- On macOS, the LAPolicy depends on `allowDeviceCredentialFallback`: default `true` → `LAPolicyDeviceOwnerAuthentication` (Touch ID + password + Apple Watch, always prompts even without Touch ID); `false` → `LAPolicyDeviceOwnerAuthenticationWithBiometrics` (Touch ID only, returns `false` on hardware-less Macs).

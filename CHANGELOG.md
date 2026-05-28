@@ -2,6 +2,38 @@
 
 All notable changes to KSafe will be documented in this file.
 
+## [2.1.1] - 2026-05-28
+
+Bug-fix and hardening release. **Drop-in upgrade from 2.1.0** — on-disk format is unchanged.
+
+### Highlights
+
+- **Security fix (Apple): `secureRandomBytes` now uses `SecRandomCopyBytes`** instead of `kotlin.random.Random`. AES-256 master keys generated on iOS / macOS in 2.1.0 came from a non-CSPRNG, critically weakening encryption on those platforms. **Upgrade strongly recommended on Apple targets.**
+- **JVM: runtime JNA-failure fallback** — Compose Desktop release distributables that omit the `jdk.unsupported` module no longer drop writes silently. The engine catches `LinkageError` on first JNA call, degrades to the software vault for the rest of the process with a loud one-time `System.err` warning, and `KSafe.protectionInfo` reflects the degrade live. Fixes [#32](https://github.com/ioannisa/KSafe/issues/32).
+- **`KSafe.protectionInfo` is now recomputed per-access** instead of captured at construction, so a runtime JVM degrade is visible through the public diagnostic without a process restart.
+
+### Security
+
+- **Apple `secureRandomBytes` now calls `SecRandomCopyBytes` (Security framework CSPRNG).** In 2.1.0 the `appleMain` actual returned `kotlin.random.Random.nextBytes(size)`, which is not cryptographically secure. Because this function generates the AES-256 master key inside `AppleKeychainEncryption.getOrCreateKeychainKeySE` / `getOrCreateKeychainKeyPlain`, every key created on iOS / macOS in 2.1.0 was produced by a predictable PRNG. The CSPRNG contract advertised by the common-main KDoc is now actually honoured. Android (`java.security.SecureRandom`), JVM (`java.security.SecureRandom`), and Web (`crypto.getRandomValues`) were not affected. Existing keys are still usable post-upgrade; **rotate sensitive material** if your threat model requires CSPRNG-grade key generation throughout the lifecycle.
+
+### Fixed
+
+- **JVM: runtime JNA `LinkageError` no longer drops writes silently** ([#32](https://github.com/ioannisa/KSafe/issues/32)). Compose Desktop's `runReleaseDistributable` / `packageReleaseDistributable` builds a `jlink`-trimmed JRE that omits `jdk.unsupported`. JNA's first call then threw `NoClassDefFoundError: sun/misc/Unsafe`, the encrypt path failed inside `KSafeCore.processBatch`, and every fire-and-forget `putDirect` was dropped (awaiting `put` / `delete` callers were already notified via `Deferred`, but had no auto-recovery). The new behaviour: `JvmKeyVaultProvider.degradeToLegacy(cause)` flips `active` to the legacy software vault and emits a one-time `System.err` warning naming the typical fix (`modules("jdk.unsupported")`). `JvmSoftwareEncryption.getOrCreateSecretKey`, `migrateLegacyLocked`, `deleteKey`, and `migrateLegacyKeysSuspend` all catch `LinkageError`, trigger the degrade, and retry on the legacy vault — preserving writes at the cost of OS-level key protection until the missing JDK module is added.
+
+- **`KSafe.protectionInfo` now reflects the live state of the engine.** In 2.1.0 the property was a `val` captured at construction, so a JVM runtime degrade (above) flipped the engine's vault but the public diagnostic still reported the OS vault as healthy. The constructor now takes a `protectionInfoProvider: () -> KSafeProtectionInfo` and the property is computed per-access. Android / Apple / Web closures return a captured snapshot (custody can't change there); the JVM closure rebuilds from `engine.keyVaultIsOsBacked` so the next read after `degradeToLegacy` reports `SOFTWARE` and `jvm_os_vault_unavailable`. UI / metrics bound to the property update automatically.
+
+### Changed
+
+- **`KSafeCore.startWriteConsumer` log line on persistent encrypt failure** now includes the exception class name (e.g. `NoClassDefFoundError: sun/misc/Unsafe`) so the message is recognisable as a JDK / packaging problem rather than looking like a stray log line. Awaiting callers still receive the exception via `completeExceptionally` on their `Deferred`.
+
+- **`KSafe` constructor signature** (internal, `@PublishedApi`): `protectionInfo: KSafeProtectionInfo` → `protectionInfoProvider: () -> KSafeProtectionInfo`. External consumers do not call this constructor directly. Inline / reified members do not reference it. All four platform factories were updated in lockstep.
+
+### Documentation
+
+- **`docs/JVM_PROTECTION.md`** — new section "Compose Desktop release distributables: `jdk.unsupported`" with the one-line fix, scope (every OS, not only macOS), why it doesn't bite debug runs, and a `suggestRuntimeModules` tip. Working example points to KSafeDemo `composeApp/build.gradle.kts` and its Security screen rendering of `KSafe.protectionInfo`.
+- **README** — short pointer to the section above so people hit the answer before the bug.
+- **`THREE_PILARS.md`** — appendix entry `A5` documenting the `jdk.unsupported` requirement.
+
 ## [2.1.0] - 2026-05-24
 
 OS-native key custody on JVM and Web, plus a new cross-platform key-protection diagnostic API. **Drop-in upgrade** — on-disk format is unchanged and existing 2.0 keys migrate on first read.

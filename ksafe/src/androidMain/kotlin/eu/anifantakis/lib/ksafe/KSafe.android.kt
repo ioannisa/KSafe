@@ -247,18 +247,21 @@ private fun buildAndroidKSafe(
         },
     )
 
+    // Android custody can't change after construction (no runtime fallback
+    // path on this platform), so the provider returns a captured snapshot.
+    val protectionInfoSnapshot = KSafeProtectionInfo(
+        intendedLevel = KSafeProtectionLevel.HARDWARE_BACKED,
+        effectiveLevel = KSafeProtectionLevel.HARDWARE_BACKED,
+        custody = if (hasStrongBox) {
+            "Android Keystore (TEE; StrongBox available per-write)"
+        } else {
+            "Android Keystore (TEE)"
+        },
+        notes = if (hasStrongBox) emptyList() else listOf("android_strongbox_absent"),
+    )
     return KSafe(
         core = core,
         deviceKeyStorages = deviceKeyStorages,
-        protectionInfo = KSafeProtectionInfo(
-            intendedLevel = KSafeProtectionLevel.HARDWARE_BACKED,
-            effectiveLevel = KSafeProtectionLevel.HARDWARE_BACKED,
-            custody = if (hasStrongBox) {
-                "Android Keystore (TEE; StrongBox available per-write)"
-            } else {
-                "Android Keystore (TEE)"
-            },
-            notes = if (hasStrongBox) emptyList() else listOf("android_strongbox_absent"),
-        ),
+        protectionInfoProvider = { protectionInfoSnapshot },
     )
 }

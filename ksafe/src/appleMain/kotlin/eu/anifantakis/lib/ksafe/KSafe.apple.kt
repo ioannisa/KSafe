@@ -351,19 +351,22 @@ private fun buildAppleKSafe(
         onCancel = { storageScope.cancel() },
     )
 
+    // Apple custody can't change after construction, so the provider
+    // returns a captured snapshot.
+    val protectionInfoSnapshot = KSafeProtectionInfo(
+        intendedLevel = KSafeProtectionLevel.HARDWARE_BACKED,
+        effectiveLevel = KSafeProtectionLevel.HARDWARE_BACKED,
+        custody = if (hasSecureEnclave) {
+            "Apple Keychain (Secure Enclave available per-write)"
+        } else {
+            "Apple Keychain"
+        },
+        notes = if (hasSecureEnclave) emptyList() else listOf("apple_secure_enclave_absent"),
+    )
     return KSafe(
         core = core,
         deviceKeyStorages = deviceKeyStorages,
-        protectionInfo = KSafeProtectionInfo(
-            intendedLevel = KSafeProtectionLevel.HARDWARE_BACKED,
-            effectiveLevel = KSafeProtectionLevel.HARDWARE_BACKED,
-            custody = if (hasSecureEnclave) {
-                "Apple Keychain (Secure Enclave available per-write)"
-            } else {
-                "Apple Keychain"
-            },
-            notes = if (hasSecureEnclave) emptyList() else listOf("apple_secure_enclave_absent"),
-        ),
+        protectionInfoProvider = { protectionInfoSnapshot },
     )
 }
 

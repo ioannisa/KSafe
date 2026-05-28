@@ -236,9 +236,9 @@ Data is now AES-256-GCM encrypted — keys in Android Keystore, Apple Keychain (
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:2.0.0")
-implementation("eu.anifantakis:ksafe-compose:2.0.0")     // ← Compose state (optional)
-implementation("eu.anifantakis:ksafe-biometrics:2.0.0")  // ← Biometric auth (optional)
+implementation("eu.anifantakis:ksafe:2.1.1")
+implementation("eu.anifantakis:ksafe-compose:2.1.1")     // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe-biometrics:2.1.1")  // ← Biometric auth (optional)
 ```
 
 > Skip `ksafe-compose` if you don't use Jetpack Compose or `mutableStateOf` persistence.
@@ -349,7 +349,7 @@ var authInfo by ksafe(AuthInfo())
 authInfo = authInfo.copy(accessToken = "newToken")
 ```
 
-> **Note:** The property delegate works only with the default KSafe instance. For named instances, use the suspend or direct APIs — see [docs/SETUP.md](docs/SETUP.md#multiple-instances).
+> **Note:** The property delegate works with **any** KSafe instance — `var x by myKsafe(default)` makes `myKsafe` the storage backend. The bare `var x by ksafe(default)` form requires an in-scope `ksafe` (the conventional name, typically your default instance). See [docs/USAGE.md](docs/USAGE.md#multi-instance) for the multi-instance pattern.
 
 
 ## Custom JSON Serialization
@@ -434,7 +434,7 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 | **Nullable support** | :x: No | :x: No | :white_check_mark: Primitives (`*OrNull` getters) | :white_check_mark: Primitives | :white_check_mark: Primitives + objects + delegates * |
 | **Complex types** | :x: Manual | :x: Manual/Proto | :x: Manual | :x: Manual | :white_check_mark: Auto-serialization |
 | **Biometric auth** | :x: Manual | :x: Manual | :x: Manual | :x: Manual | :white_check_mark: Built-in |
-| **Memory policy** | N/A | N/A | N/A | N/A | :white_check_mark: 4 policies (LAZY_PLAIN_TEXT / PLAIN_TEXT / ENCRYPTED / TIMED_CACHE) |
+| **Memory policy** | N/A | N/A | N/A | N/A | :white_check_mark: 4 policies (LAZY_PLAIN_TEXT / PLAIN_TEXT / ENCRYPTED / ENCRYPTED_WITH_TIMED_CACHE) |
 | **Hot cache** | :white_check_mark: Synchronized `HashMap` | :x: No (Flow only) | :white_check_mark: Platform-native cache | :x: No | :white_check_mark: `ConcurrentHashMap` + optimistic writes |
 | **Write batching** | :x: No | :x: No | :x: No | :x: No | :white_check_mark: 16ms coalescing |
 
@@ -474,7 +474,7 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 
 **vs competitors (encrypted):** ~21× faster reads than KVault and ~24× faster than EncryptedSharedPreferences; ~127× faster encrypted writes than KVault and ~14× faster than EncryptedSharedPreferences. Unencrypted writes are **~3× faster than MMKV** and ~3× faster than SharedPreferences.
 
-> Numbers reflect the **v2 envelope** introduced in 2.0 (per-datastore master AES key cached in-process, eliminating per-entry Keystore IPC for non-isolated encrypted ops). Measured on an AOSP Emulator (API 37) running on a MacBook Pro with the 18-core M5 Pro chip. Suspend API benchmarks issue all iterations as concurrent coroutines (`GlobalScope.launch` + `joinAll`) — the natural usage pattern when multiple coroutines persist values in parallel. Real-world numbers depend on device, workload, and data size — see [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the methodology, full tables, cold-start numbers, and architecture notes.
+> Numbers reflect the **v2 envelope** introduced in 2.0 (per-datastore master AES key cached in-process, eliminating per-entry Keystore IPC for non-isolated encrypted ops). Measured on an AOSP Emulator (API 37) running on a MacBook Pro (Apple Silicon). Suspend API benchmarks issue all iterations as concurrent coroutines (`GlobalScope.launch` + `joinAll`) — the natural usage pattern when multiple coroutines persist values in parallel. Real-world numbers depend on device, workload, and data size — see [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the methodology, full tables, cold-start numbers, and architecture notes.
 
 
 ## Compatibility
@@ -523,7 +523,7 @@ if (KSafeBiometrics.verifyBiometric("Authenticate to increment")) {
 
 Auth caching, scoped sessions, platform setup, complete examples: [docs/BIOMETRICS.md](docs/BIOMETRICS.md).
 
-> **Migrating from KSafe ≤1.x?** Biometric methods used to live on `KSafe` itself. In 2.0 they moved to a separate module. Add `implementation("eu.anifantakis:ksafe-biometrics:2.0.0")`, change `import eu.anifantakis.lib.ksafe.BiometricAuthorizationDuration` → `import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration`, replace `ksafe.verifyBiometric(...)` with `KSafeBiometrics.verifyBiometric(...)`. Method names and signatures are unchanged. No instance to construct, no DI wiring needed.
+> **Migrating from KSafe ≤1.x?** Biometric methods used to live on `KSafe` itself. In 2.0 they moved to a separate module. Add `implementation("eu.anifantakis:ksafe-biometrics:2.1.1")`, change `import eu.anifantakis.lib.ksafe.BiometricAuthorizationDuration` → `import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration`, replace `ksafe.verifyBiometric(...)` with `KSafeBiometrics.verifyBiometric(...)`. Method names and signatures are unchanged. No instance to construct, no DI wiring needed.
 
 ***
 

@@ -333,4 +333,27 @@ class JvmKeyVaultMigrationTest {
         threads.forEach { it.join() }
         assertEquals(provider.legacy, provider.active)
     }
+
+    @Test
+    fun engineDiagnostics_reflectRuntimeDegrade() {
+        // Pre-2.1.1, JvmSoftwareEncryption.keyVaultIsOsBacked / keyVaultName
+        // were read once at KSafe construction and frozen in
+        // KSafe.protectionInfo. After a runtime degrade the snapshot lied:
+        // it still reported the OS vault even though writes were going to
+        // the legacy file. This test pins the new contract — the engine's
+        // diagnostic getters read through vaults.active, so the captured
+        // protectionInfoProvider in KSafe sees the post-degrade truth.
+        val osVault = LinkErrorOsVault().also { it.armed = true }
+        val provider = JvmKeyVaultProvider(dataStore, forced = osVault)
+        val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+
+        // Pre-degrade snapshot: still reports the OS vault (selfTest passed,
+        // armed=true only kicks in on the next real op).
+        // Trigger the degrade by doing an encrypt.
+        engine.encrypt("trigger", byteArrayOf(0x01))
+
+        // Post-degrade: name + isOsBacked must reflect the legacy fallback.
+        assertEquals(false, engine.keyVaultIsOsBacked)
+        assertEquals(DataStoreKeyVault(dataStore).name, engine.keyVaultName)
+    }
 }

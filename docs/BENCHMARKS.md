@@ -8,7 +8,7 @@ Here are benchmark results comparing KSafe against popular Android persistence l
 
 ### Benchmark Environment
 
-- **Device:** AOSP Emulator, API 37, running on a MacBook Pro with the **18-core M5 Pro** chip.
+- **Device:** AOSP Emulator, API 37, running on a MacBook Pro (Apple Silicon).
 - **Test:** 500 read/write operations per library, exercised in their natural usage pattern.
 - **Reported numbers:** values from a representative steady-state run after the workload reaches stable JIT behavior.
 - **Libraries tested:** KSafe, SharedPreferences, EncryptedSharedPreferences, MMKV, DataStore, Multiplatform Settings, KVault.
@@ -85,8 +85,8 @@ Here are benchmark results comparing KSafe against popular Android persistence l
 - KSafe adds: encryption, biometrics, type-safe serialization, hardware isolation
 
 **Direct vs Suspend API (within KSafe):**
-- `getDirect()` is **~10× faster** than suspend `get()` for reads (hot cache vs DataStore round-trip)
-- `putDirect()` is **~146× faster** than suspend `put()` for writes (queue + return vs await disk commit)
+- `getDirect()` is **~10× faster** than suspend `get()` for reads (hot cache vs DataStore round-trip): Delegated 0.0021 ms vs Coroutine 0.0208 ms.
+- `putDirect()` is **~144× faster** than suspend `put()` for writes (queue + return vs await disk commit), measured against the Delegated API: 0.0043 ms vs 0.6204 ms. The Direct API's `putDirect` (0.0067 ms) is ~93× faster than suspend `put()` — same coalescer, slightly higher overhead from the explicit API surface.
 
 ### Cold Start Performance
 

@@ -192,7 +192,10 @@ private fun buildJvmKSafe(
     return KSafe(
         core = core,
         deviceKeyStorages = setOf(KSafeKeyStorage.SOFTWARE),
-        protectionInfo = jvmProtectionInfo(engine),
+        // Recomputed per-access so a runtime `degradeToLegacy` (Compose
+        // Desktop release distributable hitting LinkageError) is reflected
+        // in the public `KSafe.protectionInfo` getter.
+        protectionInfoProvider = { jvmProtectionInfo(engine) },
         // Belt-and-braces: also remove the physical DataStore file after
         // `core.clearAll()`. Some tests assert on file absence, and
         // `DataStore.edit { clear() }` leaves an empty protobuf behind.

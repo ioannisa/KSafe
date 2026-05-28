@@ -207,7 +207,7 @@ KSafe provides enterprise-grade encrypted persistence using DataStore Preference
 4. **Persist value** in DataStore/localStorage under `__ksafe_value_<key>`
    (encrypted writes store Base64 ciphertext, plaintext writes keep native type where supported)
 5. **Persist metadata** under `__ksafe_meta_<key>__` as compact JSON
-   (for example: `{"v":1,"p":"DEFAULT"}` or `{"v":1,"p":"DEFAULT","u":"unlocked"}`)
+   (for example: `{"v":2,"p":"DEFAULT"}` or `{"v":2,"p":"DEFAULT","u":"unlocked"}` — `v:2` since 2.1.0; entries from pre-2.1.0 builds still read `v:1`)
 6. **Keys managed by platform** - never stored in DataStore
 
 **What is GCM?** GCM (Galois/Counter Mode) is an authenticated encryption mode that provides both confidentiality and integrity. The authentication tag detects any tampering—if someone modifies even a single bit of the ciphertext, decryption will fail.
