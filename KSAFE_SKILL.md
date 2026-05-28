@@ -102,8 +102,9 @@ actual val platformModule = module {
 }
 ```
 
-`docs/SETUP.md` covers multi-instance setups, web `awaitCacheReady()`, custom storage
-directories (`baseDir` on JVM/Android, `directory` on iOS/macOS), and `KSafe.close()`.
+[`docs/SETUP.md`](https://raw.githubusercontent.com/ioannisa/KSafe/main/docs/SETUP.md) covers
+multi-instance setups, web `awaitCacheReady()`, custom storage directories (`baseDir`
+on JVM/Android, `directory` on iOS/macOS), and `KSafe.close()`.
 
 ---
 
@@ -162,7 +163,7 @@ KSafeBiometrics.verifyBiometric("Step-up auth", allowDeviceCredentialFallback = 
 ```
 
 Android auto-init via `ContentProvider` — no `Application` class changes needed. Requires
-`AppCompatActivity`. Full reference: `docs/BIOMETRICS.md`.
+`AppCompatActivity`. Full reference: [`docs/BIOMETRICS.md`](https://raw.githubusercontent.com/ioannisa/KSafe/main/docs/BIOMETRICS.md).
 
 ---
 
@@ -234,7 +235,8 @@ they hide this problem — it only bites in release distributables.
 
 Tip: `./gradlew :<your-app>:suggestRuntimeModules` will print the recommended module
 list based on your dependency tree. Full background and tracking issue:
-`docs/JVM_PROTECTION.md` and [#32](https://github.com/ioannisa/KSafe/issues/32).
+[`docs/JVM_PROTECTION.md`](https://raw.githubusercontent.com/ioannisa/KSafe/main/docs/JVM_PROTECTION.md)
+and [#32](https://github.com/ioannisa/KSafe/issues/32).
 
 ---
 
@@ -329,7 +331,7 @@ val ksafe = KSafe(config = KSafeConfig(json = json))
 data class User(@Contextual val id: UUID, val name: String)
 ```
 
-Full walkthrough: `docs/SERIALIZATION.md`.
+Full walkthrough: [`docs/SERIALIZATION.md`](https://raw.githubusercontent.com/ioannisa/KSafe/main/docs/SERIALIZATION.md).
 
 ---
 
@@ -383,22 +385,30 @@ Full walkthrough: `docs/SERIALIZATION.md`.
 
 ## Deep-dive references (when this skill isn't enough)
 
-| Question | Doc |
+These are **raw-markdown URLs** on the KSafe `main` branch — KSafe is distributed as a
+Maven artifact, so its `docs/` folder is not on the user's disk. Fetch any of these
+directly with your agent's web-fetch tool (`WebFetch`, `web_search`, etc.) when the
+patterns in this skill aren't enough for the task at hand. Each URL returns plain
+markdown ready to parse; no HTML chrome to strip.
+
+| Question | Raw-markdown URL on GitHub |
 |---|---|
-| Full API reference, every write mode, nullable handling, write modes | `docs/USAGE.md` |
-| Setup walkthroughs, Koin DI per platform, multi-instance, `close()`, custom dirs | `docs/SETUP.md` |
-| Cryptographic details, AES-GCM envelope, threat model per platform | `docs/SECURITY.md` |
-| `KSafe.protectionInfo` model, per-platform truth table, gating patterns | `docs/PROTECTION_INFO.md` |
-| JVM Desktop key custody deep dive, DPAPI/Keychain/libsecret, `jdk.unsupported` | `docs/JVM_PROTECTION.md` |
-| `:ksafe-biometrics` complete reference, scoped auth caching, macOS sandboxing | `docs/BIOMETRICS.md` |
-| Internals: hot cache, write coalescer, v2 master-key envelope | `docs/ARCHITECTURE.md` |
-| Memory policies (`LAZY_PLAIN_TEXT` default vs alternatives) | `docs/MEMORY.md` |
-| 1.x → 2.0 → 2.1 upgrade notes, on-disk format guarantees | `docs/MIGRATION.md` |
-| Custom `KSerializer`, `@Contextual`, third-party types | `docs/SERIALIZATION.md` |
-| Performance numbers vs MMKV / SharedPreferences / KVault / Multiplatform Settings | `docs/BENCHMARKS.md` |
-| Testing strategy, gradle test tasks per target | `docs/TESTING.md` |
-| Repo tour, file layout, where to find each subsystem | `docs/TOUR.md` |
-| Reproduce / verify the encryption on disk (Android Studio Database Inspector etc.) | `docs/ENCRYPTION_PROOF.md` |
+| Full API reference, every write mode, nullable handling, write modes | [USAGE.md](https://raw.githubusercontent.com/ioannisa/KSafe/main/docs/USAGE.md) |
+| Setup walkthroughs, Koin DI per platform, multi-instance, `close()`, custom dirs | [SETUP.md](https://raw.githubusercontent.com/ioannisa/KSafe/main/docs/SETUP.md) |
+| Cryptographic details, AES-GCM envelope, threat model per platform | [SECURITY.md](https://raw.githubusercontent.com/ioannisa/KSafe/main/docs/SECURITY.md) |
+| `KSafe.protectionInfo` model, per-platform truth table, gating patterns | [PROTECTION_INFO.md](https://raw.githubusercontent.com/ioannisa/KSafe/main/docs/PROTECTION_INFO.md) |
+| JVM Desktop key custody deep dive, DPAPI/Keychain/libsecret, `jdk.unsupported` | [JVM_PROTECTION.md](https://raw.githubusercontent.com/ioannisa/KSafe/main/docs/JVM_PROTECTION.md) |
+| `:ksafe-biometrics` complete reference, scoped auth caching, macOS sandboxing | [BIOMETRICS.md](https://raw.githubusercontent.com/ioannisa/KSafe/main/docs/BIOMETRICS.md) |
+| Internals: hot cache, write coalescer, v2 master-key envelope | [ARCHITECTURE.md](https://raw.githubusercontent.com/ioannisa/KSafe/main/docs/ARCHITECTURE.md) |
+| Memory policies (`LAZY_PLAIN_TEXT` default vs alternatives) | [MEMORY.md](https://raw.githubusercontent.com/ioannisa/KSafe/main/docs/MEMORY.md) |
+| 1.x → 2.0 → 2.1 upgrade notes, on-disk format guarantees | [MIGRATION.md](https://raw.githubusercontent.com/ioannisa/KSafe/main/docs/MIGRATION.md) |
+| Custom `KSerializer`, `@Contextual`, third-party types | [SERIALIZATION.md](https://raw.githubusercontent.com/ioannisa/KSafe/main/docs/SERIALIZATION.md) |
+| Performance numbers vs MMKV / SharedPreferences / KVault / Multiplatform Settings | [BENCHMARKS.md](https://raw.githubusercontent.com/ioannisa/KSafe/main/docs/BENCHMARKS.md) |
+| Testing strategy, gradle test tasks per target | [TESTING.md](https://raw.githubusercontent.com/ioannisa/KSafe/main/docs/TESTING.md) |
+| Repo tour, file layout, where to find each subsystem | [TOUR.md](https://raw.githubusercontent.com/ioannisa/KSafe/main/docs/TOUR.md) |
+| Reproduce / verify the encryption on disk (Android Studio Database Inspector etc.) | [ENCRYPTION_PROOF.md](https://raw.githubusercontent.com/ioannisa/KSafe/main/docs/ENCRYPTION_PROOF.md) |
+| Library README (latest stable version, install snippet, comparisons) | [README.md](https://raw.githubusercontent.com/ioannisa/KSafe/main/README.md) |
+| Changelog (per-version detail) | [CHANGELOG.md](https://raw.githubusercontent.com/ioannisa/KSafe/main/CHANGELOG.md) |
 
 ---
 
