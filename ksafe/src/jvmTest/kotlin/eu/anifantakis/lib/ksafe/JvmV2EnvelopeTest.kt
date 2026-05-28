@@ -203,4 +203,41 @@ class JvmV2EnvelopeTest {
             "no user values should remain after clearAll"
         )
     }
+
+    @Test
+    fun clearAllDeletesPerEntryHardwareIsolatedKeyNotJustMaster() = runTest {
+        // Regression: clearAll used to delete only the master alias. Per-entry
+        // HARDWARE_ISOLATED keys (and all legacy v1 keys) live OUTSIDE the
+        // DataStore on the real OS-vault (Keychain/DPAPI/Secret Service) and web
+        // (IndexedDB) backends, so wiping storage doesn't reclaim them — and those
+        // platforms have no startup orphan sweep for engine keys. They leaked
+        // across clearAll() cycles. clearAll must now explicitly delete them.
+        //
+        // FakeEncryption records every deleteKey identifier, so we can assert the
+        // engine was asked to drop the per-entry alias regardless of where a real
+        // engine would physically store it.
+        val fileName = JvmKSafeTest.generateUniqueFileName()
+        val fake = FakeEncryption()
+        val ksafe = KSafe(fileName = fileName, testEngine = fake)
+
+        ksafe.put("plainSecret", "a")  // DEFAULT → master alias
+        ksafe.put(
+            "hwSecret", "b",
+            mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED),
+        )                               // HARDWARE_ISOLATED → per-entry alias
+        delay(300)
+
+        fake.deletedKeys.clear()        // ignore any deletes from the writes themselves
+        ksafe.clearAll()
+        delay(300)
+
+        assertTrue(
+            fake.deletedKeys.contains(keyAliasFor(fileName, "hwSecret")),
+            "clearAll must delete the per-entry HARDWARE_ISOLATED key; deleted=${fake.deletedKeys}",
+        )
+        assertTrue(
+            fake.deletedKeys.contains(masterAliasFor(fileName)),
+            "clearAll must still delete the master key; deleted=${fake.deletedKeys}",
+        )
+    }
 }

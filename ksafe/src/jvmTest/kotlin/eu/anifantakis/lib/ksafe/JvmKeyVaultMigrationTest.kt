@@ -18,8 +18,10 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * Exercises the [JvmKeyVault] wiring and the KSafe ≤ 2.0 → OS-store migration
@@ -355,5 +357,45 @@ class JvmKeyVaultMigrationTest {
         // Post-degrade: name + isOsBacked must reflect the legacy fallback.
         assertEquals(false, engine.keyVaultIsOsBacked)
         assertEquals(DataStoreKeyVault(dataStore).name, engine.keyVaultName)
+    }
+
+    @Test
+    fun decryptOfOrphanedCiphertext_throwsKeyNotFound_andMintsNoKey() {
+        // Regression for the JVM decrypt-creates-a-key bug: JVM `decrypt` used to
+        // call getOrCreateSecretKey, so decrypting ciphertext whose key was gone
+        // (OS-vault wiped / reinstall) MINTED a fresh junk key into the vault and
+        // failed with a GCM "tag mismatch" instead of "No encryption key found".
+        // Consequences: (1) the orphan sweep — which matches "No encryption key
+        // found" / "key not found" — never reclaimed JVM orphans, and (2) a
+        // spurious key polluted the user's OS vault on every failed decrypt.
+        // JVM decrypt must now behave like Android/Apple: throw, mint nothing.
+        val alias = "user:token"
+
+        // 1. Encrypt with a real key in the vault.
+        val vault1 = FakeOsVault()
+        val engine1 = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = vault1),
+        )
+        val ciphertext = engine1.encrypt(alias, "secret".toByteArray())
+        assertNotNull(vault1.store[alias], "precondition: encrypt created the key")
+
+        // 2. Orphan the ciphertext: fresh, EMPTY vault + fresh engine (empty key
+        //    cache) — the key is gone and not cached anywhere.
+        val emptyVault = FakeOsVault()
+        val engine2 = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = emptyVault),
+        )
+
+        // 3. Decrypt must throw the cleanup-recognised message…
+        val ex = assertFailsWith<IllegalStateException> { engine2.decrypt(alias, ciphertext) }
+        assertTrue(
+            ex.message?.contains("No encryption key found", ignoreCase = true) == true,
+            "decrypt of orphaned ciphertext must report 'No encryption key found', was: ${ex.message}",
+        )
+
+        // 4. …and must NOT have minted a key into the vault.
+        assertNull(emptyVault.store[alias], "decrypt must not create a key for orphaned ciphertext")
     }
 }

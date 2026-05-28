@@ -1160,14 +1160,29 @@ internal class KSafeCore(
     }
 
     suspend fun clearAll() {
+        // Delete per-entry engine keys BEFORE clearing protectionMap (which is
+        // what tells us which keys exist). This covers HARDWARE_ISOLATED v2
+        // entries (per-entry alias) and ALL legacy v1 entries (which used a
+        // per-entry key even for DEFAULT). For v2 DEFAULT entries — which share
+        // the master key — `keyAlias(userKey)` has no entry, so the delete is a
+        // harmless no-op. Without this, web (IndexedDB) and JVM (OS vault) leak
+        // these keys across clearAll() cycles: unlike Android/Apple they have no
+        // startup orphan sweep for the engine's own keys, and after the storage
+        // is cleared there is nothing left to cross-reference. Best-effort.
+        val encryptedUserKeys = protectionMap.snapshot()
+            .filterValues { KeySafeMetadataManager.parseProtection(it) != null }
+            .keys
+        for (userKey in encryptedUserKeys) {
+            runCatching { engine.deleteKeySuspend(keyAlias(userKey)) }
+                .onFailure { if (it is CancellationException) throw it }
+        }
+
         storage.clear()
         memoryCache.clear()
         plaintextCache.clear()
         protectionMap.clear()
         encMetaMap.clear()
         // Drop both master keys so the next datastore use starts from scratch.
-        // Per-entry HARDWARE_ISOLATED keys are best-effort cleaned up by the
-        // orphan sweep on next startup; they aren't tracked here.
         for (reqUnlocked in listOf(false, true)) {
             runCatching { engine.deleteKeySuspend(masterAlias(reqUnlocked)) }
                 .onFailure { if (it is CancellationException) throw it }

@@ -1,5 +1,6 @@
 package eu.anifantakis.lib.ksafe.biometrics
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -55,6 +56,12 @@ internal actual suspend fun platformVerifyBiometric(
     } catch (e: BiometricActivityNotFoundException) {
         println("KSafeBiometrics: Biometric Activity not found - ${e.message}")
         false
+    } catch (e: CancellationException) {
+        // The caller's coroutine was cancelled while the prompt was in flight.
+        // Cancellation is NOT an auth failure — rethrow so structured concurrency
+        // works (otherwise a cancelled scope silently sees `false` = "denied").
+        // CancellationException is an Exception, so this MUST precede the generic catch.
+        throw e
     } catch (e: Exception) {
         println("KSafeBiometrics: Unexpected biometric error - ${e.message}")
         false

@@ -102,50 +102,14 @@ class JvmSecurityCheckerTest {
     // since JVM typically doesn't have rooted/emulator conditions.
     // Those tests would require dependency injection or mocking framework.
 
-    // ============ TRIMMED-JRE DEFENSIVENESS (2.1.1) ============
-    //
-    // A Compose Desktop release distributable bundles a `jlink`-trimmed
-    // JRE which can omit modules `SecurityChecker` reads — specifically
-    // `java.management` (for `isDebuggerAttached`). Pre-2.1.1 the catch
-    // clauses were `catch (_: Exception)`, which does NOT catch
-    // `NoClassDefFoundError` (it's an `Error`, not an `Exception`).
-    // A non-IGNORE security policy would then crash `KSafe(...)`
-    // construction with `NoClassDefFoundError: java/lang/management/
-    // ManagementFactory` against the trimmed runtime.
-    //
-    // We can't actually remove `java.management` from the test JVM, but
-    // we *can* simulate the failure by reflecting into the same code
-    // path and asserting the catch shape. The cheap proxy: the catch
-    // must accept any `Throwable`, which is verifiable by source
-    // inspection — these tests existing forces a reader to remember why
-    // `catch (_: Throwable)` is intentional, and the existing pair of
-    // tests (`isDebuggerAttached_returnsBoolean`,
-    // `isDebugBuild_returnsBoolean`) prove the methods are themselves
-    // exception-safe under the current (healthy) runtime.
-
-    /**
-     * Regression guard: a real-world consumer reported issue #32 with
-     * dropped writes on Compose Desktop release distributables. While
-     * fixing #32 we discovered `SecurityChecker.isDebuggerAttached()`
-     * also crashes against the same trimmed runtime, separately from
-     * the JNA path. This test asserts the method returns a Boolean
-     * (never throws) under the test JVM — the runtime simulation of
-     * the trimmed environment lives in the demo's release distributable
-     * documented in `docs/JVM_PROTECTION.md`.
-     */
-    @Test
-    fun securityChecker_isDebuggerAttached_isThrowableSafe_regression_issue32_followup() {
-        // The actual contract we care about: this never throws, even
-        // on a trimmed runtime missing `java.management`. The test JVM
-        // has the module, so this is just a "doesn't throw" probe; the
-        // real defence is the `catch (_: Throwable)` source change.
-        val result = SecurityChecker.isDebuggerAttached()
-        assertIs<Boolean>(result)
-    }
-
-    @Test
-    fun securityChecker_isDebugBuild_isThrowableSafe_regression_issue32_followup() {
-        val result = SecurityChecker.isDebugBuild()
-        assertIs<Boolean>(result)
-    }
+    // Trimmed-JRE Throwable-safety (issue #32 follow-up) is intentionally
+    // NOT unit-tested here. The bug — a `jlink`-trimmed runtime missing
+    // `java.management` makes `ManagementFactory` throw `NoClassDefFoundError`
+    // (an Error, not an Exception) — cannot be reproduced in a standard test
+    // JVM, which always has the module. The production guard is the
+    // `catch (_: Throwable)` in SecurityChecker.jvm.kt (the previous
+    // `catch (_: Exception)` let the Error escape and crashed KSafe(...)
+    // construction). End-to-end verification lives in the demo's release
+    // distributable; see docs/JVM_PROTECTION.md. The `_returnsBoolean`
+    // tests above prove the probes are exception-safe under a healthy JVM.
 }

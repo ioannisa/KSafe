@@ -207,7 +207,7 @@ KSafe provides enterprise-grade encrypted persistence using DataStore Preference
 4. **Persist value** in DataStore/localStorage under `__ksafe_value_<key>`
    (encrypted writes store Base64 ciphertext, plaintext writes keep native type where supported)
 5. **Persist metadata** under `__ksafe_meta_<key>__` as compact JSON
-   (for example: `{"v":2,"p":"DEFAULT"}` or `{"v":2,"p":"DEFAULT","u":"unlocked"}` — `v:2` since 2.1.0; entries from pre-2.1.0 builds still read `v:1`)
+   (for example: `{"v":2,"p":"DEFAULT"}` or `{"v":2,"p":"DEFAULT","u":"unlocked"}` — `v:2` since 2.0; entries from pre-2.0 builds still read `v:1`)
 6. **Keys managed by platform** - never stored in DataStore
 
 **What is GCM?** GCM (Galois/Counter Mode) is an authenticated encryption mode that provides both confidentiality and integrity. The authentication tag detects any tampering—if someone modifies even a single bit of the ciphertext, decryption will fail.
@@ -480,7 +480,7 @@ Each platform delegates to its strongest available CSPRNG:
 |----------|--------|
 | Android  | `java.security.SecureRandom` |
 | JVM      | `java.security.SecureRandom` |
-| iOS      | `arc4random_buf` (kernel CSPRNG) |
+| iOS / macOS | `SecRandomCopyBytes` (Security framework CSPRNG) |
 | Kotlin/WASM | `crypto.getRandomValues()` (WebCrypto API), via `@JsFun` + Base64 round-trip |
 | Kotlin/JS | `crypto.getRandomValues()` (WebCrypto API), direct `Uint8Array → ByteArray` |
 

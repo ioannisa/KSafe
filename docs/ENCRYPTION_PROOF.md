@@ -76,7 +76,7 @@ xxd dump.pb | less
 You will see:
 
 - `__ksafe_value_<key>` → a Base64 string (ciphertext) for encrypted writes, or the raw typed value for `KSafeWriteMode.Plain` writes.
-- `__ksafe_meta_<key>__` → compact JSON like `{"v":2,"p":"DEFAULT"}` (add `,"u":"unlocked"` if `requireUnlockedDevice = true`). `"v":2` is the master-key envelope shipped in 2.1.0; entries written by pre-2.1.0 builds still carry `"v":1` until they are rewritten.
+- `__ksafe_meta_<key>__` → compact JSON like `{"v":2,"p":"DEFAULT"}` (add `,"u":"unlocked"` if `requireUnlockedDevice = true`). `"v":2` is the master-key envelope shipped in 2.0; entries written by pre-2.0 builds still carry `"v":1` until they are rewritten.
 - No AES key material. The keys live in the Android Keystore, not in DataStore.
 
 ### 2b. iOS (Simulator)

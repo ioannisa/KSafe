@@ -1,6 +1,7 @@
 package eu.anifantakis.lib.ksafe.internal
 
 import eu.anifantakis.lib.ksafe.KSafeConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.io.encoding.Base64
@@ -148,6 +149,13 @@ internal class WebSoftwareEncryption(
                 if (full.startsWith(legacyPrefix)) add(full.removePrefix(legacyPrefix))
             }
         }
-        for (alias in aliases) runCatching { ensureKey(alias) }
+        for (alias in aliases) {
+            runCatching { ensureKey(alias) }
+                // Cancellation must propagate — `ensureKey` suspends on a mutex,
+                // and swallowing CancellationException here would keep the loop
+                // running on a cancelled coroutine (breaks structured concurrency).
+                // Matches the guard used at every other runCatching in the codebase.
+                .onFailure { if (it is CancellationException) throw it }
+        }
     }
 }

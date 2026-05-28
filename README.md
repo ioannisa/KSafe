@@ -420,7 +420,7 @@ Two small cross-platform helpers:
 ```kotlin
 import eu.anifantakis.lib.ksafe.internal.secureRandomBytes
 
-// Secure random bytes (SecureRandom / arc4random_buf / WebCrypto)
+// Secure random bytes (SecureRandom / SecRandomCopyBytes / WebCrypto)
 val nonce = secureRandomBytes(16)
 
 // Generate-or-retrieve a hardware-isolated 256-bit secret (great for DB passphrases)

@@ -321,7 +321,7 @@ A stateless helper object that owns the string-scheme for how user keys map to D
 - `isInternalStorageKey(rawKey)` — `true` for anything starting with `"__ksafe_"` or `"ksafe_"`. `classifyStorageEntry` uses this to skip internal housekeeping entries when building the cache.
 - `collectMetadata(entries, accept)` — merges canonical + legacy metadata across a snapshot; canonical wins on conflict.
 - `classifyStorageEntry(rawKey, legacyEncryptedPrefix, encryptedCacheKeyForUser, stagedMetadata, existingMetadata): ClassifiedStorageEntry?` — the algorithm that turns a raw on-disk key into `(userKey, cacheKey, encrypted)`. Handles both the canonical `__ksafe_value_` prefix and the pre-1.7 `encrypted_<key>` / bare-userKey variants.
-- `buildMetadataJson(protection, accessPolicy)` — compact JSON like `{"v":2,"p":"DEFAULT","u":"unlocked"}` (since 2.1.0 the latest envelope version is `2`; legacy on-disk entries written by pre-2.1.0 builds carry `"v":1` and are still readable).
+- `buildMetadataJson(protection, accessPolicy)` — compact JSON like `{"v":2,"p":"DEFAULT","u":"unlocked"}` (since 2.0 the latest envelope version is `2`; legacy on-disk entries written by pre-2.0 builds carry `"v":1` and are still readable).
 - `parseProtection(raw)` / `parseAccessPolicy(raw)` / `extractProtectionLiteral(raw)` — read-side parsers.
 - `protectionToLiteral(protection): String` — write-side.
 
@@ -491,7 +491,7 @@ Standalone suspend function `cleanupOrphanedKeychainEntries(storage, engine, ser
 ### `internal/KSafeConcurrent.apple.kt` / `internal/KSafeSecureRandom.apple.kt` / `internal/SecurityChecker.apple.kt`
 
 - `KSafeConcurrent` — `actual` via `kotlin.concurrent.AtomicReference` with copy-on-write semantics (Kotlin/Native lacks `ConcurrentHashMap`). `KSafeAtomicFlag` is backed by `AtomicInt` (0/1) rather than `AtomicReference<Boolean>` because boxed `Boolean` doesn't have stable reference identity on Kotlin/Native.
-- `KSafeSecureRandom` — `arc4random_buf` via `kotlinx.cinterop`. Same on iOS and macOS.
+- `KSafeSecureRandom` — `SecRandomCopyBytes` (Security framework CSPRNG) via `kotlinx.cinterop`. Same on iOS and macOS.
 - `SecurityChecker` — jailbreak detection (probes for `/Applications/Cydia.app`, `/bin/bash`, etc.), debugger check via `sysctl(CTL_KERN, KERN_PROC, …)` and `P_TRACED`, simulator via `NSProcessInfo.processInfo.environment["SIMULATOR_UDID"]`. **macOS short-circuit:** `isDeviceRooted()` early-returns `false` when `Platform.osFamily == OsFamily.MACOSX` — every Mac has `/bin/sh`, `/usr/bin/ssh`, and (after a Homebrew install) an `/etc/apt`-shaped tree, so the iOS heuristics would otherwise unconditionally report every macOS host as jailbroken and `KSafeSecurityPolicy.Strict` would refuse to run anywhere. The macOS test suite includes `MacosSecurityCheckerTest` to lock the short-circuit in (asserts that `/bin/sh` does exist on the host, then asserts that `isDeviceRooted()` returns `false` regardless).
 
 ## JVM

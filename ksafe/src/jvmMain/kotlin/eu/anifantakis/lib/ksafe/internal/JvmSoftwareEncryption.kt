@@ -95,7 +95,13 @@ internal class JvmSoftwareEncryption(
     }
 
     override fun decrypt(identifier: String, data: ByteArray): ByteArray {
-        val secretKey = getOrCreateSecretKey(identifier)
+        // Decrypt must NOT create a key. If the key is gone (orphaned
+        // ciphertext after an OS-vault wipe / reinstall), throw the same
+        // "No encryption key found" message Android and Apple use, so
+        // KSafeCore.cleanupOrphanedCiphertext reclaims the JVM orphan too —
+        // and so we don't mint a spurious junk key into the user's OS vault
+        // on every failed decrypt (which getOrCreateSecretKey would do).
+        val secretKey = getExistingSecretKey(identifier)
 
         val iv = data.copyOfRange(0, GCM_IV_LENGTH)
         val ciphertext = data.copyOfRange(GCM_IV_LENGTH, data.size)
@@ -147,14 +153,36 @@ internal class JvmSoftwareEncryption(
      * Per-alias `synchronized` prevents two concurrent creates from racing
      * (and is also held by [deleteKey] to block cache-repopulation races).
      */
-    private fun getOrCreateSecretKey(alias: String): SecretKey {
+    private fun getOrCreateSecretKey(alias: String): SecretKey =
+        // create = true never returns null.
+        secretKey(alias, create = true)!!
+
+    /**
+     * Decrypt-only lookup: returns the existing key, or throws the same
+     * "No encryption key found" message Android/Apple use so the orphan
+     * sweep can reclaim a JVM orphan and we never mint a junk key on a
+     * failed decrypt. NEVER creates.
+     */
+    private fun getExistingSecretKey(alias: String): SecretKey =
+        secretKey(alias, create = false)
+            ?: throw IllegalStateException("KSafe: No encryption key found for identifier: $alias")
+
+    /**
+     * Cache-checked, per-alias-locked key resolution with the runtime
+     * LinkageError degrade. Returns null only when [create] is false and no
+     * key exists.
+     *
+     * Per-alias `synchronized` prevents two concurrent creates from racing
+     * (and is also held by [deleteKey] to block cache-repopulation races).
+     */
+    private fun secretKey(alias: String, create: Boolean): SecretKey? {
         keyCache[alias]?.let { return it }
 
         return synchronized(lockFor(alias)) {
             keyCache[alias]?.let { return it }
 
             val key = try {
-                loadOrCreateKeyVia(vaults.active, alias)
+                resolveKeyVia(vaults.active, alias, create)
             } catch (e: LinkageError) {
                 // Runtime native-link / class-load failure on the active OS
                 // vault. Canonical case: Compose Desktop release distributable
@@ -169,10 +197,10 @@ internal class JvmSoftwareEncryption(
                 // Degrade the provider (vaults.active is then === vaults.legacy)
                 // and retry on the legacy software vault so writes continue.
                 vaults.degradeToLegacy(e)
-                loadOrCreateKeyVia(vaults.active, alias)
+                resolveKeyVia(vaults.active, alias, create)
             }
 
-            keyCache[alias] = key
+            if (key != null) keyCache[alias] = key
             key
         }
     }
@@ -181,6 +209,7 @@ internal class JvmSoftwareEncryption(
      * Single attempt of the legacy-first key resolution against [active].
      * Caller holds `lockFor(alias)` and is responsible for retrying on a
      * different vault if [active] surfaces a runtime native-link error.
+     * Returns null when [create] is false and no key exists.
      *
      * Legacy-first when an OS-backed vault is active.
      *
@@ -198,9 +227,10 @@ internal class JvmSoftwareEncryption(
      * overwrites any stale OS-vault entry, re-reads to verify, then scrubs
      * the legacy copy — and use it. Only fall back to the OS vault when
      * there is NO legacy key (already migrated and scrubbed, or a genuinely
-     * fresh alias).
+     * fresh alias). Migration only ever moves an *existing* key, so it is
+     * safe on the decrypt (create = false) path.
      */
-    private fun loadOrCreateKeyVia(active: JvmKeyVault, alias: String): SecretKey {
+    private fun resolveKeyVia(active: JvmKeyVault, alias: String, create: Boolean): SecretKey? {
         val keyBytes: ByteArray? =
             if (active !== vaults.legacy) {
                 migrateLegacyLocked(alias) ?: active.get(alias)
@@ -208,14 +238,16 @@ internal class JvmSoftwareEncryption(
                 active.get(alias)
             }
 
-        return if (keyBytes != null) {
-            SecretKeySpec(keyBytes, "AES")
-        } else {
-            val keyGen = KeyGenerator.getInstance("AES")
-            keyGen.init(config.keySize)
-            val generated = keyGen.generateKey()
-            active.put(alias, generated.encoded)
-            generated
+        return when {
+            keyBytes != null -> SecretKeySpec(keyBytes, "AES")
+            !create -> null
+            else -> {
+                val keyGen = KeyGenerator.getInstance("AES")
+                keyGen.init(config.keySize)
+                val generated = keyGen.generateKey()
+                active.put(alias, generated.encoded)
+                generated
+            }
         }
     }
 

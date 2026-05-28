@@ -77,11 +77,17 @@ internal actual object SecurityChecker {
      * Note: Full sysctl-based detection requires complex C interop.
      * This is a simplified check using environment variables.
      */
-    actual fun isDebuggerAttached(): Boolean {
-        // Check for common debugger environment variables
+    actual fun isDebuggerAttached(): Boolean = try {
+        // Check for common debugger environment variables.
         val env = NSProcessInfo.processInfo.environment
-        return env["_"] as? String == "lldb" ||
+        env["_"] as? String == "lldb" ||
                 env.containsKey("DYLD_INSERT_LIBRARIES")
+    } catch (_: Throwable) {
+        // Defensive fail-open, mirroring the JVM SecurityChecker: a security
+        // probe must never crash KSafe(...) construction (which runs
+        // validateSecurityPolicy). "Unknown" → not-attached is the
+        // safe-for-availability answer.
+        false
     }
 
     /**
