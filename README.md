@@ -9,6 +9,39 @@
 
 ![image](https://github.com/user-attachments/assets/e1b396e3-70a7-4473-a703-1ca0f2aa23c2)
 
+## 🤖 Using KSafe with an AI agent? Install the official KSafe Skill
+
+KSafe ships an [**agent skills**](https://agentskills.io)-compatible skill that teaches any AI agent — Claude Code, Codex, Gemini CLI, Copilot CLI, Junie, and others — the patterns, gotchas, and references for KSafe. With it installed, your agent generates idiomatic KSafe code on the first try and avoids the easy-to-miss footguns (Compose Desktop `modules("jdk.unsupported")`, web `awaitCacheReady()`, JVM `appNamespace`, biometric scoping, etc.).
+
+The skill lives at [**KSAFE_SKILL.md**](KSAFE_SKILL.md) at the root of this repo.
+
+**One-line install for all supported agents on your machine:**
+
+```bash
+for agent in claude codex gemini copilot junie; do
+  mkdir -p "$HOME/.$agent/skills/ksafe" && \
+    curl -fsSL https://raw.githubusercontent.com/ioannisa/KSafe/main/KSAFE_SKILL.md \
+    > "$HOME/.$agent/skills/ksafe/SKILL.md"
+done
+```
+
+Single-agent variant (Claude Code):
+```bash
+mkdir -p ~/.claude/skills/ksafe && \
+  curl -fsSL https://raw.githubusercontent.com/ioannisa/KSafe/main/KSAFE_SKILL.md \
+  > ~/.claude/skills/ksafe/SKILL.md
+```
+
+Project-scoped (only this repo's checkouts see it — useful for one-off experiments):
+```bash
+mkdir -p .claude/skills/ksafe && \
+  curl -fsSL https://raw.githubusercontent.com/ioannisa/KSafe/main/KSAFE_SKILL.md \
+  > .claude/skills/ksafe/SKILL.md
+```
+
+Once installed, the skill activates automatically when your agent sees KSafe-related work. Restart the agent session for it to pick up the new skill.
+
+---
 
 ## Demo Application
 KSafe in action across multiple scenarios: [Demo CMP App Using KSafe](https://github.com/ioannisa/KSafeDemo).
@@ -175,6 +208,7 @@ Under the hood, each platform uses its native crypto engine — Android Keystore
 
 ## Table of Contents
 
+- [🤖 KSafe Skill for AI agents](#using-ksafe-with-an-ai-agent-install-the-official-ksafe-skill) — [KSAFE_SKILL.md](KSAFE_SKILL.md)
 - [Quickstart](#quickstart)
 - [Setup](#setup)
 - [Basic Usage](#basic-usage) — full reference in [docs/USAGE.md](docs/USAGE.md)
@@ -603,6 +637,7 @@ Internals, advanced features, reference material:
 
 | Topic | Description |
 |-------|-------------|
+| [KSafe Skill for AI agents](KSAFE_SKILL.md) | Self-contained skill file teaching any agentskills.io-compatible agent (Claude Code, Codex, Gemini CLI, Copilot CLI, Junie, …) the patterns, anti-patterns, and gotchas for KSafe. Install instructions at the top of this README. |
 | [Complete Usage Guide](docs/USAGE.md) | Every API shape: delegates, flow delegates, Compose state, suspend/direct APIs, write modes, nullables, full ViewModel |
 | [Setup with Koin](docs/SETUP.md) | Multi-instance setups (prefs vs vault), web `awaitCacheReady()` (wasmJs + js), full platform examples, custom storage directory (`baseDir` / `directory`) |
 | [Custom JSON Serialization](docs/SERIALIZATION.md) | Registering `KSerializer`s for `UUID`, `Instant`, and other third-party types |
