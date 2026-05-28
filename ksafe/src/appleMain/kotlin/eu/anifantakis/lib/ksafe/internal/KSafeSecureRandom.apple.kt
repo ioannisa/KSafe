@@ -9,14 +9,11 @@ import platform.Security.kSecRandomDefault
 /**
  * Apple (iOS + macOS) actual for [secureRandomBytes].
  *
- * Uses `SecRandomCopyBytes` from the Security framework — Apple's
- * cryptographically secure RNG. The pre-2.1.1 implementation called
- * `kotlin.random.Random.nextBytes(size)`, which is **not** a CSPRNG;
- * because this function generates the AES-256 master keys on
- * iOS/macOS (`AppleKeychainEncryption.getOrCreateKeychainKeySE` /
- * `getOrCreateKeychainKeyPlain`), the predictable-PRNG output
- * critically weakened encryption on those platforms. This actual
- * restores the contract promised by the common-main KDoc.
+ * Reads from `SecRandomCopyBytes` — the Apple Security framework
+ * CSPRNG, the same source that backs `SecKey*` key generation and
+ * CryptoKit. Used by [AppleKeychainEncryption] for AES-256 master-key
+ * generation on Apple platforms, providing the strongest cryptographic
+ * guarantee the OS exposes for KSafe key material.
  */
 @OptIn(ExperimentalForeignApi::class)
 actual fun secureRandomBytes(size: Int): ByteArray {

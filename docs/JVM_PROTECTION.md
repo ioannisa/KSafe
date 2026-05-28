@@ -425,7 +425,7 @@ compose.desktop {
 }
 ```
 
-From 2.1.1, `SecurityChecker` defensively catches `NoClassDefFoundError` from a missing `java.management` (the previous `catch (_: Exception)` did not, since `NoClassDefFoundError` is an `Error`, not an `Exception`). So a release distributable that forgot `java.management` now degrades cleanly — the security probes report "no debugger / not a debug build" instead of crashing `KSafe(...)` construction. You still want the module listed if you actually need the checks to work.
+From 2.1.1, `SecurityChecker` degrades gracefully when its underlying JDK classes are unavailable: a release distributable built without `java.management` no longer prevents `KSafe(...)` construction — the security probes return their honest "unknown" default (`false`) instead. List the module in your `modules(...)` block when you want the probes to actively detect a debugger / debug build.
 
 This applies on **every OS** (macOS, Windows, Linux), not only the one
 the report came in from — JNA needs `sun.misc.Unsafe` regardless of which
