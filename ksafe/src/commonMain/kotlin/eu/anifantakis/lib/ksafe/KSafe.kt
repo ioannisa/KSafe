@@ -340,6 +340,26 @@ class KSafe @PublishedApi internal constructor(
     )
     inline fun <reified T> getFlow(key: String, defaultValue: T, encrypted: Boolean): Flow<T> =
         getFlow(key, defaultValue)
+
+    companion object {
+        /**
+         * The published version of this KSafe artifact (e.g. `"2.1.1"`).
+         *
+         * Sourced from `gradle.properties` → `ksafe.version` via the generated
+         * `KSafeBuildConfig.kt`, so this string is guaranteed to match the
+         * Maven coordinates produced by the same build. Useful for:
+         *
+         * - **Demo / sample apps** that load multiple KSafe versions and need
+         *   to confirm which one is linked at runtime.
+         * - **Diagnostic UIs** that surface the running version alongside
+         *   other [protectionInfo] fields.
+         * - **Telemetry** for crash reports / analytics.
+         *
+         * Also exposed as [KSafeProtectionInfo.kSafeVersion] on every instance,
+         * so audit code can read both fields off the same diagnostic object.
+         */
+        val VERSION: String = KSAFE_VERSION
+    }
 }
 
 /**

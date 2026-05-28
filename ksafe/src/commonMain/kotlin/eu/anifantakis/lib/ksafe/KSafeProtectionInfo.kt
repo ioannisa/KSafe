@@ -90,4 +90,17 @@ data class KSafeProtectionInfo(
      * Consumers should ignore unknown codes rather than reject them.
      */
     val notes: List<String>,
+
+    /**
+     * Published version of the linked KSafe artifact (e.g. `"2.1.1"`). Mirrors
+     * [KSafe.VERSION]; included on every diagnostic so audit code can capture
+     * version + custody + notes in one snapshot. Especially useful in demo /
+     * sample apps that load multiple KSafe versions side-by-side and need to
+     * confirm at runtime which one is actually linked.
+     *
+     * Sourced from `gradle.properties` → `ksafe.version` via the generated
+     * `KSafeBuildConfig.kt`, so this field is guaranteed to match the Maven
+     * coordinates produced by the same build.
+     */
+    val kSafeVersion: String = KSAFE_VERSION,
 )

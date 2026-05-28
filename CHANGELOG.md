@@ -22,6 +22,19 @@ Bug-fix and hardening release. **Drop-in upgrade from 2.1.0** — on-disk format
 
 - **`KSafe.protectionInfo` now reflects the live state of the engine.** In 2.1.0 the property was a `val` captured at construction, so a JVM runtime degrade (above) flipped the engine's vault but the public diagnostic still reported the OS vault as healthy. The constructor now takes a `protectionInfoProvider: () -> KSafeProtectionInfo` and the property is computed per-access. Android / Apple / Web closures return a captured snapshot (custody can't change there); the JVM closure rebuilds from `engine.keyVaultIsOsBacked` so the next read after `degradeToLegacy` reports `SOFTWARE` and `jvm_os_vault_unavailable`. UI / metrics bound to the property update automatically.
 
+### Added
+
+- **`KSafe.VERSION`** — public companion-object `val` returning the linked artifact version (e.g. `"2.1.1"`). Useful for demo / sample apps that load multiple KSafe versions side-by-side and need to confirm at runtime which one is linked, as well as for diagnostic UIs and telemetry.
+
+- **`KSafeProtectionInfo.kSafeVersion`** — new field mirroring [`KSafe.VERSION`] on every instance, so audit code can capture version + custody + notes in one snapshot. Default value (`KSAFE_VERSION`) keeps existing `KSafeProtectionInfo(...)` construction sites source-compatible.
+
+- **Single source of truth for the version string.** A new root `gradle.properties` entry `ksafe.version=2.1.1` feeds:
+  - the Maven coordinates of `:ksafe`, `:ksafe-compose`, and `:ksafe-biometrics` (each module's `build.gradle.kts` reads `providers.gradleProperty("ksafe.version")`),
+  - the generated `KSafeBuildConfig.kt` in `:ksafe`'s `commonMain` (a `generateKSafeBuildConfig` task writes `internal const val KSAFE_VERSION` into a generated source dir), and
+  - `KSafe.VERSION` / `KSafeProtectionInfo.kSafeVersion`.
+
+  Bumping the property in one place propagates to artifact + runtime + diagnostic. Pinned by `KSafeVersionTest` (3 tests): the constant matches the property, `protectionInfo.kSafeVersion` mirrors `KSafe.VERSION`, and the version is SemVer-shaped.
+
 ### Changed
 
 - **`KSafeCore.startWriteConsumer` log line on persistent encrypt failure** now includes the exception class name (e.g. `NoClassDefFoundError: sun/misc/Unsafe`) so the message is recognisable as a JDK / packaging problem rather than looking like a stray log line. Awaiting callers still receive the exception via `completeExceptionally` on their `Deferred`.

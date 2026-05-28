@@ -98,6 +98,7 @@ data class KSafeProtectionInfo(
     val effectiveLevel: KSafeProtectionLevel,
     val custody: String,
     val notes: List<String>,
+    val kSafeVersion: String,   // 2.1.1+: same as KSafe.VERSION, single source of truth in gradle.properties
 )
 ```
 
@@ -107,6 +108,7 @@ data class KSafeProtectionInfo(
 | `effectiveLevel` | Level KSafe actually negotiated. The value to gate on for "is my protection good enough?". |
 | `custody` | Human-readable description of where keys actually live. **Display, never parse.** |
 | `notes` | Stable lowercase_snake codes describing how/why the effective level differs from intended. Empty when nothing notable. |
+| `kSafeVersion` | Published version of the linked KSafe artifact (e.g. `"2.1.1"`). Same value as the public [`KSafe.VERSION`] constant. Useful in demo / sample apps that load multiple KSafe versions side-by-side, in audit logs, and in crash telemetry. (Added in 2.1.1.) |
 
 When `effectiveLevel == intendedLevel`, the engine got what it wanted. When
 `effectiveLevel < intendedLevel`, a runtime fallback happened — `notes`

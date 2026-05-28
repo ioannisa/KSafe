@@ -17,7 +17,8 @@ plugins {
 
 // Set the same group and version as your main library
 group = "eu.anifantakis"
-version = "2.1.1"
+// Single source of truth — see `ksafe.version` in the root gradle.properties.
+version = providers.gradleProperty("ksafe.version").get()
 
 kotlin {
     android {

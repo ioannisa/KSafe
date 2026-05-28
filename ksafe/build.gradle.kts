@@ -17,7 +17,9 @@ plugins {
 }
 
 group = "eu.anifantakis"
-version = "2.1.1"
+// Single source of truth — see `ksafe.version` in the root gradle.properties.
+// The same property feeds the generated `KSAFE_VERSION` constant below.
+version = providers.gradleProperty("ksafe.version").get()
 
 kotlin {
     android {
@@ -202,6 +204,50 @@ kotlin {
 
 dependencies {
     "androidTestUtil"(libs.androidx.orchestrator)
+}
+
+// ============================================================================
+// Generated `KSafeBuildConfig.kt` — single source of truth for the version
+// string is `ksafe.version` in the root gradle.properties. This task writes
+// `internal const val KSAFE_VERSION` into commonMain so the public
+// `KSafe.VERSION` companion val and `KSafeProtectionInfo.kSafeVersion` always
+// match the Maven coordinates produced by the same property. Bumping the
+// property in one place propagates to artifact + runtime + diagnostic.
+// ============================================================================
+// All providers and dir layouts are resolved before the `registering` block so
+// `doLast` captures only plain locals — script object references aren't
+// serialisable by the configuration cache.
+private val ksafeVersionProvider = providers.gradleProperty("ksafe.version")
+private val ksafeBuildConfigOutDir =
+    layout.buildDirectory.dir("generated/source/ksafe-version/commonMain/kotlin")
+
+val generateKSafeBuildConfig by tasks.registering {
+    val versionProvider = ksafeVersionProvider
+    val outDirProvider = ksafeBuildConfigOutDir
+    inputs.property("ksafeVersion", versionProvider)
+    outputs.dir(outDirProvider)
+    doLast {
+        val version = versionProvider.get()
+        val file = outDirProvider.get().asFile.resolve(
+            "eu/anifantakis/lib/ksafe/KSafeBuildConfig.kt"
+        )
+        file.parentFile.mkdirs()
+        file.writeText(
+            """
+            // Generated — do not edit by hand.
+            // Source: gradle.properties → `ksafe.version`.
+            // Regenerate via `./gradlew :ksafe:generateKSafeBuildConfig`.
+            package eu.anifantakis.lib.ksafe
+
+            internal const val KSAFE_VERSION: String = "$version"
+
+            """.trimIndent(),
+        )
+    }
+}
+
+kotlin.sourceSets.named("commonMain") {
+    kotlin.srcDir(generateKSafeBuildConfig)
 }
 
 mavenPublishing {
