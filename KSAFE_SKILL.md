@@ -49,17 +49,26 @@ degrade** through `KSafe.protectionInfo`. Never silent data loss.
 
 ## The 80% case — use the property delegate
 
+**KSafe is encrypted by default.** The bare `ksafe(value)` form encrypts and lands the
+key in OS-protected custody. You opt *out* with `mode = KSafeWriteMode.Plain` for
+non-secret values. The default value is the **first positional argument** (there is no
+`default =` or `encrypted =` named parameter — `encrypted` is a deprecated legacy param,
+do not generate it).
+
 ```kotlin
 class AuthViewModel(private val ksafe: KSafe) : ViewModel() {
-    // String, encrypted: lands in OS-protected key custody
-    var authToken by ksafe(default = "", encrypted = true)
+    // Encrypted by default — key lands in OS-protected custody.
+    var authToken by ksafe("")
 
-    // Long, plain (no encryption needed for non-secret values)
-    var userId by ksafe(default = 0L)
+    // Opt OUT of encryption for non-secret values with mode = Plain.
+    var userId by ksafe(0L, mode = KSafeWriteMode.Plain)
 
-    // Any @Serializable type works
-    var lastSync by ksafe(default = Instant.EPOCH)
-    var session by ksafe(default = Session())
+    // Any @Serializable type works (encrypted by default).
+    var lastSync by ksafe(Instant.EPOCH)
+    var session by ksafe(Session())
+
+    // Custom storage key (defaults to the property name otherwise).
+    var theme by ksafe(ThemeMode.DEVICE, key = "theme", mode = KSafeWriteMode.Plain)
 }
 ```
 
@@ -67,10 +76,13 @@ What you get for free:
 - **Synchronous reads** from an in-memory hot cache (~µs).
 - **Coalesced writes** on a background coroutine — never blocks the caller; multiple
   writes within a 16ms window land in one transaction.
-- **Reactivity** — every property has a matching `ksafe.asFlow<T>(key)` /
-  `ksafe.asStateFlow<T>(key, scope)` you can collect from. The delegate IS reactive.
+- **Reactivity** — observe the same keys as Flows. Two styles, pick either:
+  - Delegate (`defaultValue` first, optional `key`):
+    `val themeFlow: Flow<String> by ksafe.asFlow("light")` /
+    `val theme: StateFlow<String> by ksafe.asStateFlow("light", viewModelScope)`.
+  - Direct call: `ksafe.getFlow(key, defaultValue).collect { … }`.
 - **Multi-instance support** — the delegate works on any `KSafe` instance, not only a
-  "default" one. `var x by myKsafe(default)` makes `myKsafe` the backing store.
+  "default" one. `var x by myKsafe(value)` makes `myKsafe` the backing store.
 
 ---
 
@@ -112,19 +124,25 @@ on JVM/Android, `directory` on iOS/macOS), and `KSafe.close()`.
 
 ```kotlin
 // Add `eu.anifantakis:ksafe-compose:<latest>` to your dependencies.
+// Like the core delegate, ksafe.mutableStateOf is ENCRYPTED BY DEFAULT.
 
 class CounterViewModel(private val ksafe: KSafe) : ViewModel() {
+    // Class-field state: created once, lives for the ViewModel's lifetime.
     // Survives process death, recomposition, and configuration change.
-    var counter by ksafe.mutableStateOf(0)
+    // Encrypted by default — opt out with mode = KSafeWriteMode.Plain.
+    var counter by ksafe.mutableStateOf(0, mode = KSafeWriteMode.Plain)
 
-    // Encrypted Compose state — same one-liner.
-    var pin by ksafe.mutableStateOf("", encrypted = true)
+    // Encrypted (the default) — a secret PIN.
+    var pin by ksafe.mutableStateOf("")
 }
 
-// In a composable body (no ViewModel required):
+// In a composable BODY (no ViewModel) use rememberKSafeState — it's an
+// EXTENSION on ksafe, default value is the first positional arg.
+// (Using mutableStateOf directly in a composable body would re-create on
+// every recomposition; rememberKSafeState is remember-scoped.)
 @Composable
 fun ThemeToggle(ksafe: KSafe) {
-    var darkMode by rememberKSafeState(ksafe, key = "theme.dark", default = false)
+    var darkMode by ksafe.rememberKSafeState(false, key = "theme.dark", mode = KSafeWriteMode.Plain)
     Switch(checked = darkMode, onCheckedChange = { darkMode = it })
 }
 ```
@@ -276,12 +294,15 @@ This is a no-op on Android/iOS/macOS/JVM — they don't need it.
 
 ## Write modes
 
-Most code just uses `encrypted = true/false` on the delegate. When you need fine control:
+The delegate / `mutableStateOf` / `put` all default to encrypted. Use `mode` for fine
+control. **Note the enum name:** the `protection` parameter of `KSafeWriteMode.Encrypted`
+is `KSafeEncryptedProtection` (write-side), NOT `KSafeProtection` (which is the read-side
+detection enum returned by `getKeyInfo`). Using `KSafeProtection` here will not compile.
 
 ```kotlin
 // Per-entry unlock policy (Apple) — entry inaccessible until first unlock since boot
 ksafe.put("token", value, mode = KSafeWriteMode.Encrypted(
-    protection = KSafeProtection.DEFAULT,
+    protection = KSafeEncryptedProtection.DEFAULT,
     requireUnlockedDevice = true
 ))
 
@@ -289,7 +310,7 @@ ksafe.put("token", value, mode = KSafeWriteMode.Encrypted(
 // Per-write per-key Keystore allocation, slower, requires hardware support.
 // Use ONLY for high-sensitivity material (master passphrases, identity keys).
 ksafe.put("master_passphrase", value, mode = KSafeWriteMode.Encrypted(
-    protection = KSafeProtection.HARDWARE_ISOLATED
+    protection = KSafeEncryptedProtection.HARDWARE_ISOLATED
 ))
 
 // Plain mode — explicit unencrypted write (still goes through KSafe storage)
@@ -300,16 +321,22 @@ ksafe.put("theme", "dark", mode = KSafeWriteMode.Plain)
 
 ## Database passphrase (a complete pattern)
 
+`getOrCreateSecret` is a **`suspend`** extension — call it from a coroutine / suspend
+function, not synchronously.
+
 ```kotlin
 // 256-bit hardware-isolated random secret, generated once and persisted.
 // Idempotent: subsequent calls return the same bytes.
-val passphrase: ByteArray = ksafe.getOrCreateSecret("main.db")
+suspend fun openDatabase(): AppDatabase {
+    val passphrase: ByteArray = ksafe.getOrCreateSecret("main.db")   // suspend
 
-val db = Room.databaseBuilder(context, AppDatabase::class.java, "main.db")
-    .openHelperFactory(SupportFactory(SQLiteDatabase.getBytes(passphrase)))
-    .build()
+    return Room.databaseBuilder(context, AppDatabase::class.java, "main.db")
+        .openHelperFactory(SupportFactory(passphrase))
+        .build()
+}
 ```
 
+Optional params: `getOrCreateSecret(key, size = 32, protection = KSafeEncryptedProtection.HARDWARE_ISOLATED, requireUnlockedDevice = false)`.
 Same one-liner works for SQLDelight + SQLCipher.
 
 ---
@@ -337,6 +364,11 @@ Full walkthrough: [`docs/SERIALIZATION.md`](https://raw.githubusercontent.com/io
 
 ## ANTI-patterns (common mistakes — DO NOT generate this code)
 
+❌ **Don't use `ksafe(value, encrypted = true)`.** The `encrypted: Boolean` parameter is
+   **deprecated**. KSafe is encrypted by default — write `ksafe(value)` to encrypt, and
+   `ksafe(value, mode = KSafeWriteMode.Plain)` to opt out. There is no `default =` named
+   parameter either; the default value is the first positional argument.
+
 ❌ **Don't wrap a delegate in `MutableStateFlow`.** KSafe is already reactive.
    Use `ksafe.asFlow<T>(key)` or `ksafe.asStateFlow<T>(key, scope)` for flow consumers.
 
@@ -348,8 +380,9 @@ Full walkthrough: [`docs/SERIALIZATION.md`](https://raw.githubusercontent.com/io
    platform, with authorization-duration caching and scoped invalidation built in.
 
 ❌ **Don't ask for `HARDWARE_ISOLATED` by default.** It's slower and has strict hardware
-   requirements. The default `KSafeProtection.DEFAULT` is already TEE/SEP-backed on
-   modern hardware. Reserve `HARDWARE_ISOLATED` for master passphrases / identity keys.
+   requirements. The default encrypted mode (`KSafeEncryptedProtection.DEFAULT`) is
+   already TEE/SEP-backed on modern hardware. Reserve `HARDWARE_ISOLATED` for master
+   passphrases / identity keys.
 
 ❌ **Don't ignore `protectionInfo` when debugging "data not persisted".** Read its
    `notes` first — `jvm_os_vault_unavailable`, `jvm_user_opted_out`, etc. tell you
@@ -421,39 +454,44 @@ val ksafe = KSafe()                          // everywhere else
 val ksafe = KSafe(fileName = "session")      // named instance
 val ksafe = KSafe(config = KSafeConfig(appNamespace = "com.example.app"))
 
-// Delegate (preferred — synchronous reads, async writes, reactive)
-var token by ksafe(default = "", encrypted = true)
+// Delegate (preferred — encrypted by default; default value is positional)
+var token by ksafe("")                                  // encrypted
+var counter by ksafe(0, mode = KSafeWriteMode.Plain)    // opt out of encryption
+var theme by ksafe("light", key = "app_theme")          // custom key
 
-// Compose
-var counter by ksafe.mutableStateOf(0)                 // :ksafe-compose
-@Composable fun X() { var x by rememberKSafeState(ksafe, "key", default = 0) }
+// Compose (:ksafe-compose) — also encrypted by default
+var pin by ksafe.mutableStateOf("")                            // class field (ViewModel)
+@Composable fun X() { var x by ksafe.rememberKSafeState(0, key = "x") }  // composable body
 
-// Suspend
-val v = ksafe.get(key, default)
-ksafe.put(key, value)
+// Suspend (key first, then defaultValue)
+val v = ksafe.get(key, defaultValue)
+ksafe.put(key, value)                                   // optional: mode = KSafeWriteMode.Plain
 ksafe.delete(key)
 ksafe.clearAll()
 
-// Direct (fire-and-forget)
-val v = ksafe.getDirect(key, default)
+// Direct (fire-and-forget; key first, then defaultValue)
+val v = ksafe.getDirect(key, defaultValue)
 ksafe.putDirect(key, value)
 ksafe.deleteDirect(key)
 
-// Reactive
-ksafe.asFlow<T>(key).collect { … }
-ksafe.asStateFlow<T>(key, scope, initial = default)
+// Reactive — delegate (defaultValue first) or direct getFlow
+val nameFlow: Flow<String> by ksafe.asFlow("Guest")
+val nameState: StateFlow<String> by ksafe.asStateFlow("Guest", viewModelScope)
+ksafe.getFlow(key, defaultValue).collect { … }
 
 // Diagnostics
-ksafe.protectionInfo          // instance-level KSafeProtectionInfo
-ksafe.getKeyInfo(key)         // per-key KSafeKeyInfo
+ksafe.protectionInfo          // instance-level KSafeProtectionInfo (live, recomputed per access)
+ksafe.getKeyInfo(key)         // per-key KSafeKeyInfo (prefer .level)
 ksafe.deviceKeyStorages       // set of platform-capability tiers
 KSafe.VERSION                 // "x.y.z" of the linked artifact
 
 // Biometrics (separate :ksafe-biometrics module, static API)
-KSafeBiometrics.verifyBiometric(reason): Boolean
+suspend fun a() = KSafeBiometrics.verifyBiometric(reason): Boolean
 KSafeBiometrics.verifyBiometricDirect(reason) { success -> }
 
-// Secrets
-val passphrase: ByteArray = ksafe.getOrCreateSecret("name")   // 256-bit, hw-isolated
-val nonce: ByteArray = secureRandomBytes(16)                  // platform CSPRNG
+// Secrets — getOrCreateSecret is SUSPEND
+suspend fun s() {
+    val passphrase: ByteArray = ksafe.getOrCreateSecret("name")   // 256-bit, hw-isolated
+}
+val nonce: ByteArray = secureRandomBytes(16)                      // platform CSPRNG
 ```
