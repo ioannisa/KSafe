@@ -10,6 +10,7 @@ import eu.anifantakis.lib.ksafe.internal.KSafeCore
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
 import eu.anifantakis.lib.ksafe.internal.KSafePlatformStorage
 import eu.anifantakis.lib.ksafe.internal.StoredValue
+import eu.anifantakis.lib.ksafe.internal.migrateJsonFallbackToOsBacked
 import eu.anifantakis.lib.ksafe.internal.keyvault.FileKeyVault
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVaultProvider
 import eu.anifantakis.lib.ksafe.internal.validateSecurityPolicy
@@ -156,6 +157,11 @@ private fun buildJvmKSafe(
     // JSON-file fallback, but cheap and harmless.)
     val storageScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+    // Key-alias scheme — defined once and shared by KSafeCore and the
+    // fallback→OS-backed migration so both compute byte-identical aliases.
+    val keyAlias: (String) -> String = { userKey -> fileName?.let { "$it:$userKey" } ?: userKey }
+    val masterAlias: (Boolean) -> String = { _ -> fileName?.let { "$it:$MASTER_KEY_DEFAULT" } ?: MASTER_KEY_DEFAULT }
+
     val storage: KSafePlatformStorage
     val engine: KSafeEncryption
     val clearAllCleanup: suspend () -> Unit
@@ -196,6 +202,27 @@ private fun buildJvmKSafe(
                 if (datastoreFile.exists()) datastoreFile.delete()
             } catch (_: Exception) { /* best-effort */ }
         }
+
+        // One-time forward migration: if an earlier run persisted through the
+        // no-`Unsafe` JSON fallback, re-encrypt that data under the OS-backed key
+        // so it carries forward instead of appearing empty. Cheap `exists()`
+        // pre-gate (common path costs nothing); the migration itself only
+        // proceeds when the OS-backed store has no user data yet. Skipped for
+        // test-injected engines.
+        if (testEngine == null) {
+            val jsonFallback = File(resolvedBaseDir, "$baseFileName.ksafe.json")
+            if (jsonFallback.exists()) {
+                migrateJsonFallbackToOsBacked(
+                    config = config,
+                    jsonFallback = jsonFallback,
+                    keysFallback = File(resolvedBaseDir, "$baseFileName.ksafe-keys.json"),
+                    target = storage,
+                    targetEngine = engine,
+                    keyAlias = keyAlias,
+                    masterAlias = masterAlias,
+                )
+            }
+        }
     }
 
     val core = KSafeCore(
@@ -220,8 +247,8 @@ private fun buildJvmKSafe(
             }
         },
         lazyLoad = lazyLoad,
-        keyAlias = { userKey -> fileName?.let { "$it:$userKey" } ?: userKey },
-        masterAlias = { _ -> fileName?.let { "$it:$MASTER_KEY_DEFAULT" } ?: MASTER_KEY_DEFAULT },
+        keyAlias = keyAlias,
+        masterAlias = masterAlias,
         onCancel = { storageScope.cancel() },
     )
 
@@ -281,7 +308,7 @@ private val OPT_OUT_VALUES = setOf("software", "datastore", "off", "false", "non
  * Drives the JVM storage-backend selection in [buildJvmKSafe]: Jetpack
  * DataStore's protobuf hard-requires `sun.misc.Unsafe`, so on a `jlink`-trimmed
  * runtime that omits it (Compose Desktop release distributable) KSafe falls back
- * to [JsonFileStorage] instead of crashing inside DataStore.
+ * to [DataStoreJsonStorage] instead of crashing inside DataStore.
  */
 private fun isSunMiscUnsafePresent(): Boolean = try {
     Class.forName("sun.misc.Unsafe", false, KSafe::class.java.classLoader)
