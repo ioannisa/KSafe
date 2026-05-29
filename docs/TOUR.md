@@ -498,11 +498,12 @@ Standalone suspend function `cleanupOrphanedKeychainEntries(storage, engine, ser
 
 ### `KSafe.jvm.kt` — the factory + test extensions
 
-~309 lines (down from ~1,360 pre-2.0). Owns:
+~406 lines (down from ~1,360 pre-2.0). Owns:
 
 - **Top-level `KSafe(fileName: String? = null, ..., baseDir: File? = null): KSafe`** — public factory.
 - **Top-level `@PublishedApi internal fun KSafe(..., baseDir: File? = null, testEngine: KSafeEncryption)`** — test overload.
 - **DataStore directory resolution.** If `baseDir == null` (default), uses `~/.eu_anifantakis_ksafe`. If a custom `baseDir` is supplied (e.g. `$XDG_DATA_HOME/myapp`, `%APPDATA%`, a per-test temp dir), KSafe uses that. Either way the directory is `mkdir`ed if missing and the local `secureDirectory(File)` helper applies POSIX `0700` permissions — the user-supplied path is hardened the same way as the default (this was the security fix on top of [PR #25](https://github.com/ioannisa/KSafe/pull/25)). The resolved file path is `"$baseDir/eu_anifantakis_ksafe_datastore[_<fileName>].preferences_pb"`.
+- **Conditional backend selection (2.1.1+).** `buildJvmKSafe` probes `isSunMiscUnsafePresent()`. With `sun.misc.Unsafe` present (the normal case) it wires the usual DataStore (`PreferenceDataStoreFactory` → `DataStoreStorage`) + `JvmSoftwareEncryption` over the OS key vault. Absent (a trimmed Compose Desktop release distributable) it instead wires `DataStoreJsonStorage` + `JvmSoftwareEncryption(vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(...)))` — the no-`Unsafe` software backend — and prints a one-time `KSafe NOTICE`. On the OS-backed path it also runs `migrateJsonFallbackToOsBacked(...)` once when a `.ksafe.json` fallback file is present (draining it forward). The `keyAlias` / `masterAlias` lambdas are hoisted to locals so the core and the migration compute identical aliases.
 - **Public top-level `encodeBase64(bytes)`** helper. Kept public (not `@PublishedApi internal`) because test assertions use it.
 - **`onClearAllCleanup` callback** passed into `KSafe(...)`. Captures the same resolved `datastoreFile` used by the `produceFile` lambda and deletes it after `core.clearAll()` (DataStore's `edit { clear() }` leaves an empty protobuf behind and some tests assert on file absence). The pre-2.0 PR #25 merge had a bug here — it hardcoded the home dir, so `clearAll()` silently failed to delete the file when `baseDir` was set; that's fixed.
 - **Test-surface extensions** at the bottom of the file:
@@ -514,7 +515,7 @@ Standalone suspend function `cleanupOrphanedKeychainEntries(storage, engine, ser
 
 Implements `KSafeEncryption` via `javax.crypto` (`Cipher.getInstance("AES/GCM/NoPadding")`) for the payload. Notable specifics:
 
-- The AES key is **not** kept in the DataStore — it's delegated to a `JvmKeyVault` (see `internal/keyvault/` below): an OS secret store per host (Windows DPAPI, macOS Keychain, Linux libsecret). Only the legacy/fallback path keeps a Base64 key in the DataStore (`"ksafe_key_<alias>"`, file `0700`), used when no OS store is reachable + a one-time warning.
+- The AES key is **not** kept in the DataStore — it's delegated to a `JvmKeyVault` (see `internal/keyvault/` below): an OS secret store per host (Windows DPAPI, macOS Keychain, Linux libsecret). Only the legacy/fallback paths keep a Base64 key outside the OS store: `DataStoreKeyVault` (`"ksafe_key_<alias>"` in the DataStore) when no OS store is reachable, or `FileKeyVault` (a standalone `.ksafe-keys.json` at `0700`) on the no-`Unsafe` JSON-storage fallback — both with a one-time warning.
 - **Migration:** on first read for an alias, a key still in the legacy DataStore location is copied into the active OS vault and the file entry removed — but only after the OS vault is read back and byte-verified, so a buggy/again-unavailable keyring can't destroy the only copy.
 - In-memory key cache (`ConcurrentHashMap<String, SecretKey>`) avoids repeated vault round-trips.
 - A per-alias mutex (via `ConcurrentHashMap<String, Any>` for lock objects) prevents concurrent first-time key generation/migration under the same alias from racing; the same lock guards `deleteKey` so a delete can't race a cache repopulate.
@@ -527,8 +528,17 @@ Implements `KSafeEncryption` via `javax.crypto` (`Cipher.getInstance("AES/GCM/No
 - `MacosKeychainKeyVault` — `SecKeychainAddGenericPassword`/`Find`/`Delete` via JNA to `Security.framework` (login keychain generic-password items).
 - `LinuxSecretServiceKeyVault` — `secret_password_store/lookup/clear_sync` via JNA to libsecret (login keyring).
 - `DataStoreKeyVault` — the legacy Base64-in-DataStore scheme; also the migration source and last-resort fallback.
+- `FileKeyVault` — the software vault for the no-`sun.misc.Unsafe` storage fallback: alias→Base64 in a standalone `.ksafe-keys.json` at `0700`, `isOsBacked = false`. Wired via `JvmKeyVaultProvider(legacyOverride = …)` rather than host detection (there's no DataStore to host `DataStoreKeyVault` in that mode).
 
 Selection is overridable with `-Dksafe.jvm.keyVault=software` (or env `KSAFE_JVM_KEY_VAULT=software`) — used by the test suite and consumers who don't want OS-store integration. JNA (`net.java.dev.jna` + `jna-platform`) is a **JVM-target-only** dependency.
+
+### `internal/DataStoreJsonStorage.kt` — the no-`Unsafe` storage backend
+
+`KSafePlatformStorage` for the JVM fallback. `DataStoreFactory.create(serializer, produceFile)` with a custom JSON `Serializer<Map<String,String>>` instead of the Preferences protobuf (the sole `sun.misc.Unsafe` user) — keeps DataStore's atomic-write / single-process-coordinator / corruption-handling / fsync machinery but never loads the protobuf classes. Uses datastore-core's `java.io` serializer path, **not** the okio one: okio 3.x's multi-release jar fails bytecode verification (`VerifyError: Bad return type`) on a jlink-trimmed runtime. Flattens every `StoredValue` to its string form on disk (like web `LocalStorageStorage`); `KSafeCore` re-types on read. No new dependency — datastore-core is transitive via datastore-preferences.
+
+### `internal/JvmFallbackMigration.kt` — fallback → OS-backed forward migration
+
+`migrateJsonFallbackToOsBacked(...)`, called once from `buildJvmKSafe` on the OS-backed path when a `.ksafe.json` is present. Re-encrypts every fallback entry into the DataStore under the same alias — decrypt with the `FileKeyVault` software key, re-encrypt with the OS-backed engine (only the key store changes) — computing the alias statelessly from each entry's metadata (same formula as `KSafeCore.aliasForRead`). **Fallback values win** (at the transition the fallback is the just-active store), so a value changed on the fallback overwrites a stale earlier-migrated one. Per-entry protection / envelope version / unlock policy are preserved; plain entries copied verbatim. Archives the source files to `*.migrated` (rename, never delete) after a clean pass — failures leave the source to retry, and re-draining is idempotent. Runs in `runBlocking` at construction, gated on file existence so the common path is free. Covered by `JvmFallbackMigrationTest`.
 
 ### `internal/KSafeConcurrent.jvm.kt` / `internal/KSafeSecureRandom.jvm.kt` / `internal/SecurityChecker.jvm.kt`
 

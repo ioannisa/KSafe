@@ -2,14 +2,14 @@
 
 All notable changes to KSafe will be documented in this file.
 
-## [2.1.1] - 2026-05-28
+## [2.1.1] - 2026-05-29
 
 Hardening and diagnostic-API release. **Drop-in upgrade from 2.1.0** — on-disk format is unchanged.
 
 ### Highlights
 
 - **Apple: `secureRandomBytes` reads from `SecRandomCopyBytes`.** The Apple Security framework's CSPRNG — the same source backing `SecKey*` key generation and CryptoKit — is now wired through KSafe's AES-256 master-key generation path directly. **Recommended upgrade for all Apple-target consumers.**
-- **JVM: graceful runtime fallback when JNA's native dependencies are unavailable.** Compose Desktop release distributables that omit the `jdk.unsupported` module now degrade automatically to the software vault, emit a clear one-time `System.err` warning, and expose the new state through `KSafe.protectionInfo`. Writes continue to succeed; no data is lost. Addresses [#32](https://github.com/ioannisa/KSafe/issues/32).
+- **JVM: KSafe persists without `jdk.unsupported` — and migrates forward when you add it.** Compose Desktop release distributables that omit the `jdk.unsupported` module no longer crash or drop writes ([#32](https://github.com/ioannisa/KSafe/issues/32)): KSafe detects the missing `sun.misc.Unsafe` at construction and falls back to a software-encrypted store (`datastore-core` + a custom JSON serializer, plus a file-based software key vault). Data persists (AES-256-GCM); only OS-backed key custody is deferred, surfaced through `KSafe.protectionInfo` as `SOFTWARE`. When you later add the module, KSafe **migrates the fallback data forward automatically** — re-encrypting it under a freshly minted OS-backed key. The module stays strongly recommended for production (OS-backed key custody), it's just no longer mandatory for the app to function.
 - **`KSafe.protectionInfo` is now a live diagnostic.** Recomputed on every access, so a JVM mid-process degrade is visible without restarting the app.
 - **`KSafe.VERSION` and `KSafeProtectionInfo.kSafeVersion`** expose the linked artifact's version at runtime — useful for demo/sample apps, diagnostic UIs, and audit logs.
 
@@ -26,6 +26,12 @@ Hardening and diagnostic-API release. **Drop-in upgrade from 2.1.0** — on-disk
 
   Bumping the property in one place propagates to artifact + runtime + diagnostic. Pinned by `KSafeVersionTest` (3 tests): the constant matches the property, `protectionInfo.kSafeVersion` mirrors `KSafe.VERSION`, and the version is SemVer-shaped.
 
+- **JVM no-`sun.misc.Unsafe` fallback + automatic forward migration** ([#32](https://github.com/ioannisa/KSafe/issues/32)). When `sun.misc.Unsafe` (JDK module `jdk.unsupported`) is absent — the typical Compose Desktop release distributable whose `jlink` runtime was trimmed — `KSafe(...)` selects a software backend instead of crashing:
+  - **Storage** → `DataStoreJsonStorage`: Jetpack `datastore-core` driving a custom JSON serializer, so the DataStore *Preferences* protobuf (the sole `sun.misc.Unsafe` user) is never loaded. It keeps DataStore's atomic-write / single-process-coordinator / corruption-handling / fsync machinery. (Uses datastore-core's `java.io` serializer path, not okio — okio 3.x's multi-release jar fails bytecode verification on the trimmed runtime.)
+  - **Keys** → `FileKeyVault`: the AES key in a local JSON file at POSIX `0700`, software-protected.
+
+  Data persists (AES-256-GCM throughout); `protectionInfo.effectiveLevel` reports `SOFTWARE` with note `jvm_os_vault_unavailable`, and a one-time `KSafe NOTICE` describes the fallback. When `jdk.unsupported` is later added, a **one-time forward migration** drains the fallback into the OS-backed DataStore on first launch — decrypting each entry with the software key, re-encrypting under a freshly minted OS-backed key, preserving protection level + metadata, with the just-used fallback values winning — then renames the source files to `*.migrated` (recoverable, never deleted). Covered by `JvmJsonFileFallbackTest` and `JvmFallbackMigrationTest`.
+
 ### Changed
 
 - **Apple `secureRandomBytes` now sources from `SecRandomCopyBytes` (Security framework CSPRNG).** This is the same authoritative random source backing `SecKey*` and CryptoKit on iOS / macOS, providing the strongest cryptographic-quality random number generation the platform offers for KSafe's AES-256 master-key creation. Recommended upgrade for all Apple-target consumers; existing keys remain valid post-upgrade.
@@ -40,9 +46,7 @@ Hardening and diagnostic-API release. **Drop-in upgrade from 2.1.0** — on-disk
 
 ### Fixed
 
-- **JVM: graceful key-vault degradation when JNA can't link at runtime** ([#32](https://github.com/ioannisa/KSafe/issues/32)). The JVM key-vault path now catches `LinkageError` (e.g. `NoClassDefFoundError: sun/misc/Unsafe`) and falls back to the legacy software vault for the rest of the process with a one-time `System.err` warning. `JvmKeyVaultProvider.degradeToLegacy(cause)` flips `active` to the legacy vault; `JvmSoftwareEncryption` catches the error on the encrypt/decrypt/delete/migrate paths, degrades, and retries. **Scope note (important):** this rescues *key custody* only. On a Compose Desktop release distributable that omits `jdk.unsupported`, **Jetpack DataStore — KSafe's storage backend — also requires `sun.misc.Unsafe`** (its embedded protobuf), and that crash happens inside DataStore on a background thread where KSafe cannot intervene. So `modules("jdk.unsupported")` is **required**, not optional, for KSafe on Compose Desktop release builds; the key-vault fallback only fully helps the cases where JNA fails *but DataStore works* (headless Linux without a keyring, a locked keychain). See `docs/JVM_PROTECTION.md`.
-
-- **JVM: clear fail-fast diagnostic when `sun.misc.Unsafe` is missing.** `KSafe(...)` construction now probes for `sun.misc.Unsafe` and prints a prominent one-time `KSafe FATAL RISK: …` message naming `jdk.unsupported` (and explaining DataStore requires it) when the class is absent — turning the otherwise-cryptic background-thread `NoClassDefFoundError` into an actionable startup message. The runtime key-vault degrade warning was also corrected to stop promising "writes are not lost" (untrue in the missing-module case, where DataStore takes the app down regardless).
+- **JVM: graceful key-vault degradation when JNA can't link at runtime** ([#32](https://github.com/ioannisa/KSafe/issues/32)). When `sun.misc.Unsafe` *is* present at construction but a later JNA call fails (`LinkageError` / `NoClassDefFoundError`), the key-vault path catches it and falls back to the software vault for the rest of the process with a one-time `System.err` warning. `JvmKeyVaultProvider.degradeToLegacy(cause)` flips `active` to the software vault; `JvmSoftwareEncryption` catches the error on the encrypt/decrypt/delete/migrate paths, degrades, and retries. (The more common case — `sun.misc.Unsafe` missing entirely on a trimmed release distributable — is handled by the construction-time software fallback + forward migration described under **Added**, so data persists either way.)
 
 - **JVM: `decrypt` no longer mints a key for orphaned ciphertext.** `JvmSoftwareEncryption.decrypt` previously called `getOrCreateSecretKey`, so decrypting ciphertext whose key was gone (OS-vault wipe / reinstall) created a fresh junk key in the user's OS vault and failed with a GCM tag mismatch instead of "No encryption key found". This (a) polluted the OS vault on every failed decrypt and (b) prevented `KSafeCore.cleanupOrphanedCiphertext` (which matches "No encryption key found" / "key not found") from ever reclaiming JVM orphans. `decrypt` now uses a no-create lookup and throws the same message Android and Apple use. Regression test: `JvmKeyVaultMigrationTest.decryptOfOrphanedCiphertext_throwsKeyNotFound_andMintsNoKey`.
 
@@ -57,7 +61,7 @@ Hardening and diagnostic-API release. **Drop-in upgrade from 2.1.0** — on-disk
 
 ### Documentation
 
-- **`docs/JVM_PROTECTION.md`** — new section "Compose Desktop release distributables: `jdk.unsupported`" with the one-line fix, scope (every OS, not only macOS), why it doesn't bite debug runs, the additional `java.management` requirement when using non-default security policies, and a `suggestRuntimeModules` tip. Working example points to KSafeDemo `composeApp/build.gradle.kts` and its Security screen rendering of `KSafe.protectionInfo`.
+- **`docs/JVM_PROTECTION.md`** — section "Compose Desktop release distributables: `jdk.unsupported`" rewritten around the no-`Unsafe` software fallback and the automatic forward migration: what KSafe substitutes when the module is missing (storage + key vault), how data carries forward when you add it, the `java.management` note for non-default security policies, a `suggestRuntimeModules` tip, and the #32 crash-vs-silent-drop history. README and `KSAFE_SKILL.md` reframed to match — the module is **strongly recommended** for OS-backed key custody, no longer described as required for the app to function.
 - **README** — short pointer to the section above so people hit the answer before the bug.
 - **`THREE_PILARS.md`** — appendix entry `A5` documenting the `jdk.unsupported` requirement.
 

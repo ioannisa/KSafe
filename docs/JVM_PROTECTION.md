@@ -385,8 +385,12 @@ keyring, check:
 
 ## Compose Desktop release distributables: `jdk.unsupported`
 
-**`modules("jdk.unsupported")` is REQUIRED for Compose Desktop release
-distributables — without it KSafe cannot persist data.**
+**Strongly recommend adding `modules("jdk.unsupported")` to Compose Desktop
+release distributables.** It's what gives KSafe **OS-backed key custody**
+(Keychain / DPAPI / Secret Service) and its native Jetpack DataStore backend.
+Without it your data is still safe — KSafe falls back to a software-encrypted
+store (below) — but keys are software-protected rather than OS-backed, so add
+it for any production build.
 
 If you ship a Compose Desktop app via `runReleaseDistributable`,
 `packageReleaseDistributable`, or `createReleaseDistributable`, the build
@@ -396,56 +400,75 @@ bytecode. **Two** things KSafe depends on need `sun.misc.Unsafe` (which
 lives in `jdk.unsupported`), and neither is statically detectable:
 
 1. **JNA** — used by the OS keyvaults (Keychain / DPAPI / Secret Service).
-   KSafe *handles* this: from 2.1.x the engine catches the `LinkageError`,
-   degrades key custody to the software vault, and warns.
-2. **Jetpack DataStore's embedded protobuf** — KSafe's storage backend on
-   JVM/Desktop. `androidx.datastore.preferences.protobuf.MessageSchema`
-   references `sun.misc.Unsafe`. KSafe **cannot** work around this — the
-   failure is inside DataStore, on a background coroutine.
+   KSafe handles a runtime `LinkageError` here by degrading key custody to
+   the software vault.
+2. **Jetpack DataStore's embedded protobuf** — KSafe's *normal* storage
+   backend on JVM/Desktop. `androidx.datastore.preferences.protobuf.MessageSchema`
+   references `sun.misc.Unsafe`.
 
-### Why the symptom varies: crash vs. silently dropped writes
+### What KSafe does when the module is missing (2.1.1+)
 
-KSafe's write path is **`encrypt` (JNA) → then `DataStore.write` (protobuf)**.
-That ordering, combined with whether your bundled DataStore can do protobuf
-I/O without `sun.misc.Unsafe`, decides what you see:
+At `KSafe(...)` construction KSafe probes for `sun.misc.Unsafe`. If it's
+absent, rather than letting DataStore's protobuf crash deep on a background
+coroutine, KSafe selects a **no-`Unsafe` software backend** for that instance:
 
-- **Older DataStore builds that tolerate a missing `Unsafe`** (the original
-  [#32](https://github.com/ioannisa/KSafe/issues/32) report): pre-2.1.x,
-  `encrypt` hit JNA first → `processBatch` caught it and **dropped the
-  write** → DataStore was never reached → **no crash, data silently not
-  persisted.** With 2.1.1's keyvault fallback, `encrypt` now succeeds via
-  the software vault, the write reaches DataStore, and (because that build
-  tolerates no-`Unsafe`) **data persists** — so the fallback genuinely
-  fixes #32 *on those builds*.
-- **DataStore builds whose protobuf hard-requires `Unsafe`** (including the
-  version KSafe currently bundles): DataStore throws
-  `NoClassDefFoundError: sun/misc/Unsafe` on the first read/write and the
-  **app crashes**, regardless of the keyvault fallback. Note that 2.1.1's
-  fallback, by letting `encrypt` succeed, lets the write *reach* DataStore —
-  so you now see DataStore's loud crash (with KSafe's `FATAL RISK` warning
-  pointing at the fix) rather than a silent drop. That is the better
-  outcome: a diagnosable failure beats silent data loss, and the only real
-  resolution in both cases is to add the module.
+- **Storage** → `DataStoreJsonStorage`: Jetpack **`datastore-core`** (which
+  does *not* need `Unsafe`) driving a custom JSON serializer instead of the
+  Preferences protobuf. It keeps DataStore's atomic-write / single-process
+  coordinator / corruption-handling / fsync machinery — it just never loads
+  the protobuf classes. (It uses datastore-core's `java.io` serializer path,
+  not the okio one: okio 3.x's multi-release jar fails bytecode verification
+  — `VerifyError` — on the trimmed runtime.)
+- **Keys** → `FileKeyVault`: the AES key in a local JSON file at POSIX `0700`,
+  software-protected (no OS key store).
 
-So `jdk.unsupported` is **mandatory for the app to function**, not just for
-OS-level key protection. The keyvault fallback only fully rescues the cases
-where JNA fails *but DataStore works* (headless Linux with no keyring, a
-locked keychain, or a DataStore build that tolerates missing `Unsafe`).
+So **data persists** (AES-256-GCM throughout), reads and writes work, and
+KSafe logs a one-time `KSafe NOTICE` describing the fallback. The only thing
+you give up until you add the module is OS-backed key custody —
+`KSafe.protectionInfo.effectiveLevel` reports `SOFTWARE` with note
+`jvm_os_vault_unavailable`.
 
-From 2.1.1, KSafe prints a clear `KSafe FATAL RISK: sun.misc.Unsafe …`
-warning at `KSafe(...)` construction when the class is missing, so the
-otherwise-cryptic async DataStore crash (or silent drop) is diagnosable up
-front, on every environment.
+### Automatic forward migration when you add the module
 
-**The fix** — declare the module(s) in your app's Compose Desktop block:
+When you later add `modules("jdk.unsupported")` and rebuild, the next launch
+runs on the normal OS-backed path and KSafe **migrates the fallback data
+forward automatically**: it decrypts every entry with the old software key
+and re-encrypts it under a freshly minted OS-backed key, preserving each
+entry's protection level and metadata. The just-used fallback values win
+(they're the most recent), so a value you changed while on the fallback —
+even after an earlier partial migration — carries across. The source files
+are renamed to `*.migrated` (recoverable, never deleted), so the drain runs
+exactly once and nothing is stranded in the transition.
+
+### History: the #32 crash-vs-silent-drop (pre-2.1.1)
+
+Before the fallback existed, the symptom varied by DataStore build. KSafe's
+write path is **`encrypt` (JNA) → `DataStore.write` (protobuf)**:
+
+- On a DataStore build that tolerated a missing `Unsafe`, the original
+  [#32](https://github.com/ioannisa/KSafe/issues/32) report saw `encrypt` hit
+  JNA first → `processBatch` caught it and dropped the write → **no crash,
+  data silently not persisted.**
+- On a build whose protobuf hard-requires `Unsafe` (the version KSafe
+  bundles), the startup read `snapshotFlow().collect` threw
+  `NoClassDefFoundError: sun/misc/Unsafe` uncaught → **app crash.**
+
+2.1.1's JSON fallback removes both failure modes: no protobuf is ever loaded,
+so there is nothing to crash on and nothing to silently drop.
+
+**Recommended setup** — declare the module(s) in your app's Compose Desktop block:
 
 ```kotlin
 compose.desktop {
     application {
         nativeDistributions {
-            // `jdk.unsupported` — REQUIRED. DataStore's protobuf and JNA
-            //                    both need sun.misc.Unsafe. Without it the
-            //                    app crashes (DataStore) on first read/write.
+            // `jdk.unsupported` — STRONGLY RECOMMENDED. DataStore's protobuf
+            //                    and JNA both need sun.misc.Unsafe. With it you
+            //                    get OS-backed key custody + the DataStore
+            //                    backend. Without it KSafe falls back to a
+            //                    software-encrypted JSON store (data persists;
+            //                    keys software-protected) and migrates forward
+            //                    automatically once you add it.
             // `java.management` — only required when a non-IGNORE
             //                    `KSafeSecurityPolicy` is in use (e.g.
             //                    `KSafeSecurityPolicy.WarnOnly` /

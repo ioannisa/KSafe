@@ -509,24 +509,24 @@ Per-key audit: `ksafe.getKeyInfo(key)` → `KSafeKeyInfo(protection, storage, le
 
 ---
 
-## ⚠️ Compose Desktop release distributables — `modules("jdk.unsupported")` is REQUIRED
+## ⚠️ Compose Desktop release distributables — strongly recommend `modules("jdk.unsupported")`
 
-The #1 KSafe footgun on JVM Desktop. If your project uses `compose.desktop` and ever runs
-`runReleaseDistributable` / `packageReleaseDistributable`, this module is **mandatory** —
-without it KSafe **cannot persist data**: depending on the bundled DataStore/JDK you get
-either a **hard crash** (the DataStore version KSafe currently bundles) or **silently
-dropped writes** (older builds, the original issue #32). Not a graceful degrade either way:
+The #1 KSafe consideration on JVM Desktop. If the project uses `compose.desktop` and runs
+`runReleaseDistributable` / `packageReleaseDistributable`, add this module: it's what gives
+KSafe **OS-backed key custody** (Keychain / DPAPI / Secret Service) + its native Jetpack
+DataStore backend. It is **not** required for data to persist (2.1.1 falls back — see below),
+but you should add it for any production build:
 
 ```kotlin
 compose.desktop {
     application {
         nativeDistributions {
-            // jdk.unsupported  → REQUIRED. Jetpack DataStore (KSafe's storage backend)
-            //                    uses an embedded protobuf that needs sun.misc.Unsafe;
-            //                    without it DataStore throws NoClassDefFoundError on
-            //                    first read/write and the app crashes. JNA (OS keyvault)
-            //                    needs it too. KSafe degrades the keyvault gracefully but
-            //                    CANNOT rescue DataStore — so this is non-optional.
+            // jdk.unsupported  → STRONGLY RECOMMENDED. Jetpack DataStore's protobuf and
+            //                    JNA (OS keyvault) both need sun.misc.Unsafe. With it:
+            //                    OS-backed keys + DataStore. Without it KSafe falls back
+            //                    to a software-encrypted JSON store (data persists; keys
+            //                    software-protected) and migrates forward automatically
+            //                    when you later add it.
             // java.management  → only if you use a non-default KSafeSecurityPolicy
             //                    (WarnOnly / Strict / custom debugger probe). Default
             //                    IGNORE-everything policy → omit safely.
@@ -536,12 +536,16 @@ compose.desktop {
 }
 ```
 
-Why: `jlink` builds a trimmed JRE including only modules it can statically detect. KSafe
-reaches `sun.misc.Unsafe` through (1) DataStore's protobuf and (2) JNA — neither is
-statically detectable. The DataStore requirement is the hard blocker: that crash is inside
-DataStore on a background thread, so KSafe can't catch it. From 2.1.1 KSafe prints a clear
-`KSafe FATAL RISK: sun.misc.Unsafe …` warning at construction so the cause is obvious. Dev
-runs (`./gradlew run`) use your full local JDK and are unaffected. Tip:
+Why: `jlink` builds a trimmed JRE including only modules it can statically detect; KSafe
+reaches `sun.misc.Unsafe` through DataStore's protobuf and JNA, neither statically
+detectable. **Without the module (2.1.1+):** at construction KSafe detects the missing
+`Unsafe` and uses a software backend — `datastore-core` + a custom JSON serializer (no
+protobuf) for storage, plus a file-based software key vault — so data persists
+(AES-256-GCM), reads/writes work, and KSafe logs a one-time `KSafe NOTICE`;
+`protectionInfo.effectiveLevel` reports `SOFTWARE`. **When the module is later added,** KSafe
+migrates the fallback data forward automatically (decrypt with the software key, re-encrypt
+under a fresh OS-backed key; the just-used fallback values win) and renames the old files to
+`*.migrated`. Dev runs (`./gradlew run`) use your full local JDK and are unaffected. Tip:
 `./gradlew :<app>:suggestRuntimeModules` prints the recommended list.
 
 ---

@@ -6,9 +6,9 @@ right now, in this process — including any fallback that happened at
 construction *or* later in the process lifecycle.
 
 Prior to 2.1.1 the property was captured once at construction. From 2.1.1
-it's recomputed on every access, so a JVM runtime degrade (e.g. a Compose
-Desktop release distributable that hits `LinkageError: sun/misc/Unsafe` on
-first JNA call and flips to the software vault — see
+it's recomputed on every access, so a JVM runtime degrade (e.g. a JNA call
+that fails mid-process with a `LinkageError` and flips to the software vault —
+see
 [`JVM_PROTECTION.md`](JVM_PROTECTION.md#compose-desktop-release-distributables-jdkunsupported))
 shows up on the next read without a process restart. Android, Apple, and
 Web custody can't change after construction, so their providers return
