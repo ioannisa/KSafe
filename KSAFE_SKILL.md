@@ -511,25 +511,50 @@ Per-key audit: `ksafe.getKeyInfo(key)` → `KSafeKeyInfo(protection, storage, le
 
 ## ⚠️ Compose Desktop release distributables — strongly recommend `modules("jdk.unsupported")`
 
-For any production Compose Desktop release build, add this module — it restores **OS-backed
-key custody** (Keychain / DPAPI / Secret Service):
+For any production Compose Desktop release build, add these modules — they give KSafe
+**OS-backed key custody** (Keychain / DPAPI / Secret Service), a core KSafe guarantee:
 
 ```kotlin
 compose.desktop {
     application {
         nativeDistributions {
-            // STRONGLY RECOMMENDED — restores OS-backed key custody (JNA + DataStore's
-            // protobuf both need sun.misc.Unsafe, which jlink trims).
-            // java.management → only for a non-default KSafeSecurityPolicy (debugger probe).
+            // jdk.unsupported → OS-backed key custody + DataStore. JNA and DataStore's
+            //   protobuf both need sun.misc.Unsafe, which lives in jdk.unsupported and
+            //   which jlink can't detect statically, so it's trimmed from release builds.
+            // java.management → only for a non-default KSafeSecurityPolicy (WarnOnly /
+            //   Strict / custom debugger probe). Default IGNORE policy → omit.
             modules("jdk.unsupported", "java.management")
         }
     }
 }
 ```
 
-Without it KSafe doesn't crash — it persists at a software key tier (same DataStore engine +
-AES-256-GCM; key in a `0700` file, `protectionInfo.effectiveLevel == SOFTWARE`) and migrates
-forward automatically when you add the module. Risk + mechanism: KSafe `docs/JVM_PROTECTION.md`.
+**Why:** `jlink` builds a trimmed JRE with only the modules it can statically detect. Two
+things KSafe needs `sun.misc.Unsafe` for aren't detectable — JNA (the OS keyvault) and
+DataStore's embedded protobuf (its normal storage serializer).
+
+**Without the module (KSafe 2.1.1+) the app does NOT crash.** KSafe detects the missing
+`Unsafe` at construction and switches to a no-`Unsafe` software backend. Only the *key
+location* changes — storage and encryption do not:
+- Storage stays Jetpack `datastore-core` (same atomic writes / coordinator / fsync), just a
+  custom JSON serializer instead of the protobuf.
+- Encryption stays AES-256-GCM.
+- The AES key drops from the OS store to a local `0700` file (`FileKeyVault`) — KSafe's
+  `SOFTWARE` tier, the same one used when no OS keyring is reachable.
+  `protectionInfo.effectiveLevel` reports `SOFTWARE`.
+
+**Risk of the software tier (so you can advise correctly):** the key file (`…ksafe-keys.json`)
+holds the raw AES key Base64-encoded *in the clear*; anyone who can read it plus the
+ciphertext (`…ksafe.json`) can decrypt everything — the only barrier is the `0700` permission.
+The real exposure is off-host / same-user (an unencrypted backup, a copied/synced home dir, a
+stolen drive). That's why the module — which moves the key into the OS store — is recommended
+for production.
+
+**Migration:** when the module is added later, KSafe migrates the fallback data forward
+automatically on first launch — re-encrypting each entry under a freshly minted OS-backed key
+(the just-used fallback values win) and renaming the old files to `*.migrated`. Dev runs
+(`./gradlew run`) use the full local JDK and are unaffected. (The KSafe repo's
+`docs/JVM_PROTECTION.md` has the deeper #32 history if a human wants it.)
 
 ---
 

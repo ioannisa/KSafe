@@ -388,26 +388,21 @@ Production desktop apps should set it explicitly. Only the key-store destination
 
 ## Compose Desktop release builds — strongly recommend `modules("jdk.unsupported")`
 
-For any production Compose Desktop release build, add `modules("jdk.unsupported", "java.management")` to your `nativeDistributions` block — it restores **OS-backed key custody** (Keychain / DPAPI / Secret Service), a core KSafe guarantee:
+For production Compose Desktop release distributables, add these to your `nativeDistributions` block — they give KSafe **OS-backed key custody** (Keychain / DPAPI / Secret Service):
 
 ```Kotlin
 compose.desktop {
     application {
         nativeDistributions {
-            // STRONGLY RECOMMENDED — restores OS-backed key custody (JNA + DataStore's
-            // protobuf both need sun.misc.Unsafe, which jlink trims). Without it KSafe
-            // still persists, at a software key tier (see below).
-            // java.management → only for a non-default KSafeSecurityPolicy (debugger probe).
+            // OS-backed key custody: JNA + DataStore's protobuf need sun.misc.Unsafe (jlink trims it).
+            // java.management → only for a non-default KSafeSecurityPolicy.
             modules("jdk.unsupported", "java.management")
-            // …your other settings
         }
     }
 }
 ```
 
-Without the module KSafe doesn't crash — it persists through the same Jetpack DataStore engine + AES-256-GCM with the key in a `0700` file (the `SOFTWARE` tier), and migrates forward automatically when you add it. **Details + the off-host key-file risk: [docs/JVM_PROTECTION.md](docs/JVM_PROTECTION.md#compose-desktop-release-distributables-jdkunsupported).**
-
-Working example: [**KSafeDemo**](https://github.com/ioannisa/KSafeDemo) — see `composeApp/build.gradle.kts` for the `modules(...)` line in context, and the demo's **Security screen** renders `KSafe.protectionInfo` live (green = OS vault healthy; red `jvm_os_vault_unavailable` = software fallback in effect).
+Without it KSafe still persists (at a software key tier) and migrates your data forward when you add the module — the trade-off and the key-file risk are in **[docs/JVM_PROTECTION.md](docs/JVM_PROTECTION.md#compose-desktop-release-distributables-jdkunsupported)**; [KSafeDemo](https://github.com/ioannisa/KSafeDemo) shows it live on its Security screen.
 
 ***
 
