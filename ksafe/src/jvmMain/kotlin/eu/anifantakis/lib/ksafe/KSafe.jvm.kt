@@ -3,8 +3,8 @@ package eu.anifantakis.lib.ksafe
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import eu.anifantakis.lib.ksafe.internal.DataStoreJsonStorage
 import eu.anifantakis.lib.ksafe.internal.DataStoreStorage
-import eu.anifantakis.lib.ksafe.internal.JsonFileStorage
 import eu.anifantakis.lib.ksafe.internal.JvmSoftwareEncryption
 import eu.anifantakis.lib.ksafe.internal.KSafeCore
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
@@ -171,7 +171,7 @@ private fun buildJvmKSafe(
         warnUsingJsonFileFallbackOnce()
         val jsonFile = File(resolvedBaseDir, "$baseFileName.ksafe.json")
         val keysFile = File(resolvedBaseDir, "$baseFileName.ksafe-keys.json")
-        storage = JsonFileStorage(jsonFile)
+        storage = DataStoreJsonStorage(jsonFile, storageScope)
         engine = JvmSoftwareEncryption(
             config = config,
             vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFile)),

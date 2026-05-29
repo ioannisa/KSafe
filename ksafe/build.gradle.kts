@@ -142,6 +142,12 @@ kotlin {
             dependsOn(datastoreMain)
             dependencies {
                 implementation(libs.androidx.datastore.preferences)
+                // The no-`sun.misc.Unsafe` JSON fallback (DataStoreJsonStorage)
+                // rides on datastore-core's java.io Serializer + produceFile path
+                // — a custom JSON serializer instead of the Preferences protobuf
+                // that needs jdk.unsupported. datastore-core is already on the
+                // classpath transitively via datastore-preferences (no okio: its
+                // multi-release jar fails verification on jlink-trimmed runtimes).
                 // JVM-only OS secret-store interop. `api` is intentional: the
                 // public diagnostic surface (which vault is active) never leaks
                 // JNA types, but consumers that subclass/replace the engine may

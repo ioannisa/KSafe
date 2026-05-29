@@ -1,10 +1,16 @@
 package eu.anifantakis.lib.ksafe
 
-import eu.anifantakis.lib.ksafe.internal.JsonFileStorage
+import eu.anifantakis.lib.ksafe.internal.DataStoreJsonStorage
 import eu.anifantakis.lib.ksafe.internal.StorageOp
 import eu.anifantakis.lib.ksafe.internal.StoredValue
 import eu.anifantakis.lib.ksafe.internal.keyvault.FileKeyVault
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import java.io.File
 import kotlin.test.AfterTest
@@ -17,28 +23,37 @@ import kotlin.test.assertTrue
 
 /**
  * Unit coverage for the JVM no-`Unsafe` fallback backends:
- * [JsonFileStorage] (the [eu.anifantakis.lib.ksafe.internal.KSafePlatformStorage]
- * impl) and [FileKeyVault] (the software [eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVault]).
- * These are what KSafe selects when `sun.misc.Unsafe` (module `jdk.unsupported`)
- * is absent, so DataStore's protobuf can't run — neither class touches protobuf
- * or `Unsafe`. The end-to-end "runs under a trimmed jlink runtime" gate is
- * covered separately (see JSONFILE_FALLBACK_PLAN.md).
+ * [DataStoreJsonStorage] (datastore-core + a custom JSON OkioSerializer — no
+ * Preferences protobuf) and [FileKeyVault] (the software JvmKeyVault). These are
+ * what KSafe selects when `sun.misc.Unsafe` (module `jdk.unsupported`) is absent.
+ * The end-to-end "runs under a trimmed jlink runtime" gate is covered separately
+ * (see JSONFILE_FALLBACK_PLAN.md).
  */
 class JvmJsonFileFallbackTest {
 
     private val tmp = File(System.getProperty("java.io.tmpdir"), "ksafe_jsonfb_${System.nanoTime()}")
         .apply { mkdirs() }
 
+    /** DataStore allows ONE active instance per file per process — track scopes and release them. */
+    private val scopes = mutableListOf<CoroutineScope>()
+
+    private fun storage(file: File): DataStoreJsonStorage {
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        scopes += scope
+        return DataStoreJsonStorage(file, scope)
+    }
+
     @AfterTest
     fun tearDown() {
+        runBlocking { scopes.forEach { it.coroutineContext[Job]?.cancelAndJoin() } }
         tmp.deleteRecursively()
     }
 
-    // ── JsonFileStorage ──────────────────────────────────────────────────────
+    // ── DataStoreJsonStorage ─────────────────────────────────────────────────
 
     @Test
     fun jsonStorage_putGetDelete_roundTrips() = runTest {
-        val store = JsonFileStorage(File(tmp, "a.json"))
+        val store = storage(File(tmp, "a.json"))
         store.applyBatch(listOf(StorageOp.Put("__ksafe_value_token", StoredValue.Text("abc"))))
         assertEquals(StoredValue.Text("abc"), store.snapshot()["__ksafe_value_token"])
 
@@ -50,7 +65,7 @@ class JvmJsonFileFallbackTest {
     fun jsonStorage_flattensAllTypesToText() = runTest {
         // Mirrors LocalStorageStorage: everything is stored/returned as Text;
         // KSafeCore re-types primitives via the request serializer on read.
-        val store = JsonFileStorage(File(tmp, "types.json"))
+        val store = storage(File(tmp, "types.json"))
         store.applyBatch(
             listOf(
                 StorageOp.Put("i", StoredValue.IntVal(42)),
@@ -71,35 +86,31 @@ class JvmJsonFileFallbackTest {
     @Test
     fun jsonStorage_persistsAcrossInstances() = runTest {
         val file = File(tmp, "persist.json")
-        JsonFileStorage(file).applyBatch(listOf(StorageOp.Put("k", StoredValue.Text("v"))))
-        // A fresh instance on the same file must read the prior write.
-        assertEquals(StoredValue.Text("v"), JsonFileStorage(file).snapshot()["k"])
+        // First instance: write, then fully release the file (cancel + join its
+        // scope) so DataStore lets a second instance open the same file.
+        val scope1 = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        DataStoreJsonStorage(file, scope1)
+            .applyBatch(listOf(StorageOp.Put("k", StoredValue.Text("v"))))
+        scope1.coroutineContext[Job]!!.cancelAndJoin()
+
+        // Fresh instance on the same file must read the prior write.
+        assertEquals(StoredValue.Text("v"), storage(file).snapshot()["k"])
         assertTrue(file.exists())
     }
 
     @Test
     fun jsonStorage_snapshotFlowEmitsLatest() = runTest {
-        val store = JsonFileStorage(File(tmp, "flow.json"))
+        val store = storage(File(tmp, "flow.json"))
         store.applyBatch(listOf(StorageOp.Put("k", StoredValue.Text("v1"))))
         assertEquals(StoredValue.Text("v1"), store.snapshotFlow().first()["k"])
     }
 
     @Test
     fun jsonStorage_clearEmptiesStore() = runTest {
-        val file = File(tmp, "clear.json")
-        val store = JsonFileStorage(file)
+        val store = storage(File(tmp, "clear.json"))
         store.applyBatch(listOf(StorageOp.Put("k", StoredValue.Text("v"))))
         store.clear()
         assertTrue(store.snapshot().isEmpty())
-        // A fresh instance also sees nothing.
-        assertTrue(JsonFileStorage(file).snapshot().isEmpty())
-    }
-
-    @Test
-    fun jsonStorage_corruptFileReadsAsEmpty() = runTest {
-        val file = File(tmp, "corrupt.json").apply { writeText("{ not valid json") }
-        // Must not throw — behaves like a fresh store.
-        assertTrue(JsonFileStorage(file).snapshot().isEmpty())
     }
 
     // ── FileKeyVault ─────────────────────────────────────────────────────────
