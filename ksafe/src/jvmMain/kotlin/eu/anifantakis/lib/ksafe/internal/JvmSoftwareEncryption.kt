@@ -3,6 +3,7 @@ package eu.anifantakis.lib.ksafe.internal
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import eu.anifantakis.lib.ksafe.KSafeConfig
+import eu.anifantakis.lib.ksafe.internal.keyvault.DataStoreKeyVault
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVault
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVaultProvider
 import eu.anifantakis.lib.ksafe.internal.keyvault.resolveJvmAppNamespace
@@ -41,8 +42,12 @@ import javax.crypto.spec.SecretKeySpec
 @PublishedApi
 internal class JvmSoftwareEncryption(
     private val config: KSafeConfig = KSafeConfig(),
-    dataStore: DataStore<Preferences>,
-    /** Test seam: inject a vault provider and bypass OS detection. */
+    /**
+     * Nullable for the no-DataStore JSON-file fallback path: there a
+     * [vaultProvider] (file-backed) is supplied instead.
+     */
+    dataStore: DataStore<Preferences>? = null,
+    /** Test seam / fallback wiring: inject a vault provider and bypass OS detection. */
     vaultProvider: JvmKeyVaultProvider? = null,
 ) : KSafeEncryption {
 
@@ -53,7 +58,9 @@ internal class JvmSoftwareEncryption(
 
     private val vaults: JvmKeyVaultProvider =
         vaultProvider ?: JvmKeyVaultProvider(
-            dataStore,
+            requireNotNull(dataStore) {
+                "JvmSoftwareEncryption requires a dataStore unless a vaultProvider is provided"
+            },
             resolveJvmAppNamespace(config.appNamespace),
         )
 
@@ -298,8 +305,13 @@ internal class JvmSoftwareEncryption(
      */
     override suspend fun migrateLegacyKeysSuspend() {
         if (vaults.active === vaults.legacy || !vaults.active.isOsBacked) return
+        // legacyAliases() is DataStoreKeyVault-specific (the migration source).
+        // In the JSON-file fallback the legacy vault is a FileKeyVault and the
+        // guard above already returned (active === legacy, !isOsBacked), so this
+        // cast is only ever reached on the DataStore path.
+        val legacyStore = vaults.legacy as? DataStoreKeyVault ?: return
         withContext(Dispatchers.IO) {
-            for (alias in vaults.legacy.legacyAliases()) {
+            for (alias in legacyStore.legacyAliases()) {
                 // A LinkageError on any one alias is sticky for the whole
                 // engine (same JNA classloader), so stop the sweep instead of
                 // grinding through every alias. degradeToLegacy flips

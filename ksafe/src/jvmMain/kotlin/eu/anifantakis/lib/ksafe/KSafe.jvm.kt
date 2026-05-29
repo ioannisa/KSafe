@@ -4,10 +4,14 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import eu.anifantakis.lib.ksafe.internal.DataStoreStorage
+import eu.anifantakis.lib.ksafe.internal.JsonFileStorage
 import eu.anifantakis.lib.ksafe.internal.JvmSoftwareEncryption
 import eu.anifantakis.lib.ksafe.internal.KSafeCore
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
+import eu.anifantakis.lib.ksafe.internal.KSafePlatformStorage
 import eu.anifantakis.lib.ksafe.internal.StoredValue
+import eu.anifantakis.lib.ksafe.internal.keyvault.FileKeyVault
+import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVaultProvider
 import eu.anifantakis.lib.ksafe.internal.validateSecurityPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -129,7 +133,6 @@ private fun buildJvmKSafe(
     if (fileName != null && !fileName.matches(fileNameRegex)) {
         throw IllegalArgumentException("File name must start with a lowercase letter and contain only lowercase letters, digits, or underscores")
     }
-    warnIfUnsafeMissing()
     validateSecurityPolicy(securityPolicy)
 
     // Resolve the storage directory once. Both the produceFile lambda and the
@@ -147,24 +150,56 @@ private fun buildJvmKSafe(
 
     val baseFileName = fileName?.let { "eu_anifantakis_ksafe_datastore_$it" }
         ?: "eu_anifantakis_ksafe_datastore"
-    val datastoreFile = File(resolvedBaseDir, "$baseFileName.preferences_pb")
 
     // DataStore launches its own coroutines on the scope we hand it; we
-    // hold a reference so KSafe.close() can cancel it. Without this the
-    // scope (and its anchored DataStore + cached Preferences + file
-    // handle) stays alive on Dispatchers.IO for the rest of the process,
-    // which is harmless for a singleton KSafe but accumulates fast in
-    // tests that build one instance per case.
+    // hold a reference so KSafe.close() can cancel it. (Unused by the
+    // JSON-file fallback, but cheap and harmless.)
     val storageScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
-        scope = storageScope,
-        produceFile = { datastoreFile }
-    )
 
-    val engine: KSafeEncryption = testEngine ?: JvmSoftwareEncryption(config, dataStore)
+    val storage: KSafePlatformStorage
+    val engine: KSafeEncryption
+    val clearAllCleanup: suspend () -> Unit
+
+    if (testEngine == null && !isSunMiscUnsafePresent()) {
+        // ── JSON-file fallback ───────────────────────────────────────────────
+        // `sun.misc.Unsafe` (JDK module `jdk.unsupported`) is missing — typically
+        // a Compose Desktop release distributable whose jlink runtime was trimmed.
+        // Jetpack DataStore's protobuf hard-requires Unsafe and would crash, so we
+        // persist to a plain JSON file instead (software-encrypted; no OS-backed
+        // keys, but data is NOT lost). Add modules("jdk.unsupported") to restore
+        // the DataStore + OS-keyvault path.
+        warnUsingJsonFileFallbackOnce()
+        val jsonFile = File(resolvedBaseDir, "$baseFileName.ksafe.json")
+        val keysFile = File(resolvedBaseDir, "$baseFileName.ksafe-keys.json")
+        storage = JsonFileStorage(jsonFile)
+        engine = JvmSoftwareEncryption(
+            config = config,
+            vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFile)),
+        )
+        clearAllCleanup = {
+            runCatching { if (jsonFile.exists()) jsonFile.delete() }
+            runCatching { if (keysFile.exists()) keysFile.delete() }
+        }
+    } else {
+        // ── Normal DataStore path (Unsafe present, or a test engine injected) ──
+        val datastoreFile = File(resolvedBaseDir, "$baseFileName.preferences_pb")
+        val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
+            scope = storageScope,
+            produceFile = { datastoreFile }
+        )
+        storage = DataStoreStorage(dataStore)
+        engine = testEngine ?: JvmSoftwareEncryption(config, dataStore)
+        clearAllCleanup = {
+            // Belt-and-braces: also remove the physical DataStore file after
+            // `core.clearAll()` (DataStore's own `clear()` leaves an empty file).
+            try {
+                if (datastoreFile.exists()) datastoreFile.delete()
+            } catch (_: Exception) { /* best-effort */ }
+        }
+    }
 
     val core = KSafeCore(
-        storage = DataStoreStorage(dataStore),
+        storage = storage,
         engineProvider = { engine },
         config = config,
         memoryPolicy = memoryPolicy,
@@ -197,14 +232,7 @@ private fun buildJvmKSafe(
         // Desktop release distributable hitting LinkageError) is reflected
         // in the public `KSafe.protectionInfo` getter.
         protectionInfoProvider = { jvmProtectionInfo(engine) },
-        // Belt-and-braces: also remove the physical DataStore file after
-        // `core.clearAll()`. Some tests assert on file absence, and
-        // `DataStore.edit { clear() }` leaves an empty protobuf behind.
-        onClearAllCleanup = {
-            try {
-                if (datastoreFile.exists()) datastoreFile.delete()
-            } catch (_: Exception) { /* best-effort */ }
-        },
+        onClearAllCleanup = clearAllCleanup,
     )
 }
 
@@ -249,42 +277,39 @@ private const val ENV_KEY_VAULT = "KSAFE_JVM_KEY_VAULT"
 private val OPT_OUT_VALUES = setOf("software", "datastore", "off", "false", "none")
 
 /**
- * One-time, fail-fast diagnostic for the single most common JVM-desktop
- * packaging mistake. KSafe persists through Jetpack DataStore, whose protobuf
- * layer (`androidx.datastore.preferences.protobuf.*`) hard-requires
- * `sun.misc.Unsafe` (JDK module `jdk.unsupported`) to parse its files. A
- * Compose Desktop release distributable built without
- * `modules("jdk.unsupported")` ships a `jlink`-trimmed runtime that omits it,
- * and DataStore then throws `NoClassDefFoundError: sun/misc/Unsafe` deep on a
- * background coroutine when it first reads/writes — crashing the app with a
- * cryptic stack KSafe cannot catch (it's inside DataStore, not KSafe).
- *
- * KSafe's own OS-keyvault path degrades gracefully when JNA can't link, but it
- * cannot rescue DataStore's storage layer. So we detect the missing class at
- * construction and print a clear, actionable message up front, before the
- * inevitable async crash — turning "sun/misc/Unsafe" into a fix.
+ * True iff `sun.misc.Unsafe` (JDK module `jdk.unsupported`) is on the runtime.
+ * Drives the JVM storage-backend selection in [buildJvmKSafe]: Jetpack
+ * DataStore's protobuf hard-requires `sun.misc.Unsafe`, so on a `jlink`-trimmed
+ * runtime that omits it (Compose Desktop release distributable) KSafe falls back
+ * to [JsonFileStorage] instead of crashing inside DataStore.
  */
-private val unsafeMissingWarned = java.util.concurrent.atomic.AtomicBoolean(false)
+private fun isSunMiscUnsafePresent(): Boolean = try {
+    Class.forName("sun.misc.Unsafe", false, KSafe::class.java.classLoader)
+    true
+} catch (_: Throwable) {
+    false
+}
 
-private fun warnIfUnsafeMissing() {
-    val present = try {
-        Class.forName("sun.misc.Unsafe", false, KSafe::class.java.classLoader)
-        true
-    } catch (_: Throwable) {
-        false
-    }
-    if (!present && unsafeMissingWarned.compareAndSet(false, true)) {
+private val jsonFallbackWarned = java.util.concurrent.atomic.AtomicBoolean(false)
+
+/**
+ * One-time notice that KSafe is running on the JSON-file fallback because
+ * `sun.misc.Unsafe` is unavailable. Not fatal — data persists (software-
+ * encrypted); the user just loses OS-backed key custody and the DataStore
+ * backend until they add the module.
+ */
+private fun warnUsingJsonFileFallbackOnce() {
+    if (jsonFallbackWarned.compareAndSet(false, true)) {
         System.err.println(
-            "KSafe FATAL RISK: `sun.misc.Unsafe` (JDK module `jdk.unsupported`) is " +
-                "missing from this runtime. KSafe persists via Jetpack DataStore, " +
-                "whose protobuf layer REQUIRES it — DataStore will throw " +
-                "NoClassDefFoundError on first read/write and your app will crash; " +
-                "KSafe cannot work around this. This almost always means a Compose " +
-                "Desktop release distributable whose jlink runtime was trimmed. FIX: " +
-                "add `modules(\"jdk.unsupported\")` to your " +
-                "`compose.desktop.application.nativeDistributions` block " +
-                "(add `\"java.management\"` too if you use a non-default " +
-                "KSafeSecurityPolicy). See docs/JVM_PROTECTION.md."
+            "KSafe NOTICE: `sun.misc.Unsafe` (JDK module `jdk.unsupported`) is " +
+                "missing — using the JSON-file storage fallback. Data still " +
+                "persists (software-encrypted in a plain JSON file), but without " +
+                "the Jetpack DataStore backend or OS-backed key custody. This is " +
+                "usually a Compose Desktop release distributable whose jlink " +
+                "runtime was trimmed; add `modules(\"jdk.unsupported\")` to your " +
+                "`compose.desktop.application.nativeDistributions` block to restore " +
+                "DataStore + the OS keyvault (add `\"java.management\"` too if you " +
+                "use a non-default KSafeSecurityPolicy). See docs/JVM_PROTECTION.md."
         )
     }
 }

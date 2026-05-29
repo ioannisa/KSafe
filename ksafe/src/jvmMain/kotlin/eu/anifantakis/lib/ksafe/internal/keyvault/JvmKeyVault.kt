@@ -141,7 +141,13 @@ internal class DataStoreKeyVault(
  * fallback rather than failing every encrypt/decrypt.
  */
 internal class JvmKeyVaultProvider(
-    dataStore: DataStore<Preferences>,
+    /**
+     * DataStore backing the legacy [DataStoreKeyVault] and the OS-vault
+     * detection ([pick]). Nullable for the no-DataStore JSON-file fallback
+     * path (when `sun.misc.Unsafe` is unavailable): there a [legacyOverride]
+     * ([FileKeyVault]) is supplied and no DataStore exists.
+     */
+    dataStore: DataStore<Preferences>? = null,
     /**
      * App-isolation namespace applied to the OS-vault **destination** only
      * (Keychain service / DPAPI blob prefix / Secret Service attribute) so
@@ -154,9 +160,18 @@ internal class JvmKeyVaultProvider(
     private val appNamespace: String = "",
     /** Test seam: force a specific vault and skip OS detection. */
     forced: JvmKeyVault? = null,
+    /**
+     * Replaces the default [DataStoreKeyVault] software vault. Used by the
+     * JSON-file fallback to supply a [FileKeyVault] when there's no DataStore.
+     */
+    legacyOverride: JvmKeyVault? = null,
 ) {
-    /** Legacy store — migration source and last-resort fallback. */
-    val legacy: DataStoreKeyVault = DataStoreKeyVault(dataStore)
+    /** Legacy / software store — migration source and last-resort fallback. */
+    val legacy: JvmKeyVault = legacyOverride ?: DataStoreKeyVault(
+        requireNotNull(dataStore) {
+            "JvmKeyVaultProvider requires a dataStore unless legacyOverride is provided"
+        }
+    )
 
     /**
      * Picked at construction (after OS detection + self-test). May still
@@ -169,7 +184,8 @@ internal class JvmKeyVaultProvider(
      * protection but keeping data persistence working instead of silently
      * dropping every write.
      */
-    private val picked: JvmKeyVault = forced ?: pick(dataStore)
+    private val picked: JvmKeyVault =
+        forced ?: if (dataStore != null) pick(dataStore) else legacy
     private val degraded = AtomicBoolean(false)
 
     /** The vault the engine should use for new keys. */
