@@ -20,23 +20,32 @@ import kotlin.io.encoding.ExperimentalEncodingApi
  *
  * When a previous run persisted through the no-`sun.misc.Unsafe` fallback
  * ([DataStoreJsonStorage] + a [FileKeyVault] software key) and the app is now
- * starting on the normal OS-backed DataStore path **for the first time** (no
- * `.preferences_pb` yet — typically the user added `modules("jdk.unsupported")`
- * and rebuilt), this carries the user's data forward instead of letting it look
- * empty: every fallback entry is decrypted with the old software key and
- * re-encrypted under the OS-backed key, then written into the DataStore.
+ * running on the normal OS-backed DataStore path (the user added
+ * `modules("jdk.unsupported")` and rebuilt), this carries the user's data
+ * forward instead of letting it look empty: every fallback entry is decrypted
+ * with the old software key and re-encrypted under the OS-backed key, then
+ * written into the DataStore.
  *
  * Re-encryption — not a raw copy — is deliberate: the data ends up protected by
  * a freshly minted OS-backed key, and the old software master key is never
  * imported into the OS keychain. Per-entry [KSafeProtection], envelope version,
- * and unlock policy are preserved (metadata is carried over verbatim). The
- * source files are **renamed** to `*.migrated`, never deleted, so the original
- * encrypted data + keys stay recoverable and the migration cannot re-fire.
+ * and unlock policy are preserved (metadata carried over verbatim).
  *
- * Best-effort and non-fatal: any failure (a single bad entry, or the whole
- * pass) is swallowed so it can never block construction. Runs synchronously
- * (`runBlocking`) so the data is in place before [KSafeCore] preloads — but only
- * when fallback files actually exist, so the common path pays nothing.
+ * **The fallback wins:** at the moment of this transition the fallback file is
+ * the store the user was *just* using, so its values are the most recent — the
+ * migration drains every fallback entry into the OS-backed store, overwriting
+ * any stale value an earlier migration left there. (The OS store can't hold
+ * anything newer for these keys: reaching it the first time already drained and
+ * archived the fallback.) After a clean pass (no per-entry failures) the source
+ * files are **renamed** to `*.migrated`, never deleted — so the data drains
+ * exactly once, the originals stay recoverable, and the migration stops
+ * re-scanning. This also fixes the toggle case (turn `modules` off, change a
+ * value, turn it back on): the changed value carries across.
+ *
+ * Best-effort and non-fatal: any failure is swallowed so it can never block
+ * construction. Runs synchronously (`runBlocking`) so the data is in place
+ * before [KSafeCore] preloads — but only when a fallback file exists, so the
+ * common path pays nothing.
  */
 internal fun migrateJsonFallbackToOsBacked(
     config: KSafeConfig,
@@ -49,19 +58,8 @@ internal fun migrateJsonFallbackToOsBacked(
 ) {
     runCatching {
         runBlocking {
-            // Only migrate into an *empty* OS-backed store. This is the first-
-            // launch signal — and crucially it still fires when a prior launch
-            // already created an empty `.preferences_pb` (file present but no
-            // user data). It never clobbers a store that already holds real
-            // data: in that case the user has moved on, and silently overwriting
-            // it with older fallback data would be the worse outcome.
-            val targetHasUserData = target.snapshot().keys.any {
-                it.startsWith(KeySafeMetadataManager.VALUE_PREFIX)
-            }
-            if (targetHasUserData) return@runBlocking
-
             val migScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-            val migrated = try {
+            val result = try {
                 val source = DataStoreJsonStorage(jsonFallback, migScope)
                 val sourceEngine = JvmSoftwareEncryption(
                     config = config,
@@ -73,21 +71,25 @@ internal fun migrateJsonFallbackToOsBacked(
                 migScope.coroutineContext[Job]?.cancelAndJoin()
             }
 
-            if (migrated > 0) {
-                // Archive (not delete): keep the originals recoverable and stop
-                // the migration from re-triggering on the next launch.
+            // Archive (not delete) only after a clean pass — a per-entry failure
+            // leaves the source in place so the next launch can retry it. Retries
+            // are idempotent (re-draining writes the same values again).
+            if (result.failed == 0) {
                 runCatching { jsonFallback.renameTo(File(jsonFallback.parentFile, jsonFallback.name + ".migrated")) }
                 runCatching { keysFallback.renameTo(File(keysFallback.parentFile, keysFallback.name + ".migrated")) }
-                warnMigratedFromFallbackOnce(migrated)
             }
+            if (result.migrated > 0) warnMigratedFromFallbackOnce(result.migrated)
         }
     }
 }
 
+private data class MigrationResult(val migrated: Int, val failed: Int)
+
 /**
  * Re-encrypts every user entry from [source]/[sourceEngine] into
  * [target]/[targetEngine] under the **same** key alias (only the key store
- * changes). Returns the number of user entries carried over.
+ * changes), overwriting any existing target value. Returns the counts of
+ * migrated and failed entries.
  */
 @OptIn(ExperimentalEncodingApi::class)
 private suspend fun reEncryptAll(
@@ -97,14 +99,16 @@ private suspend fun reEncryptAll(
     targetEngine: KSafeEncryption,
     keyAlias: (String) -> String,
     masterAlias: (Boolean) -> String,
-): Int {
-    val snap = source.snapshot()
+): MigrationResult {
+    val srcSnap = source.snapshot()
     val ops = mutableListOf<StorageOp>()
-    var count = 0
+    var migrated = 0
+    var failed = 0
 
-    for ((rawKey, stored) in snap) {
+    for ((rawKey, stored) in srcSnap) {
         val userKey = KeySafeMetadataManager.tryExtractCanonicalValueKey(rawKey) ?: continue
-        val metaRaw = (snap[KeySafeMetadataManager.metadataRawKey(userKey)] as? StoredValue.Text)?.value
+
+        val metaRaw = (srcSnap[KeySafeMetadataManager.metadataRawKey(userKey)] as? StoredValue.Text)?.value
         val protection = KeySafeMetadataManager.parseProtection(metaRaw)
 
         if (protection == null) {
@@ -113,11 +117,17 @@ private suspend fun reEncryptAll(
             if (metaRaw != null) {
                 ops += StorageOp.Put(KeySafeMetadataManager.metadataRawKey(userKey), StoredValue.Text(metaRaw))
             }
-            count++
+            migrated++
             continue
         }
 
-        val cipherB64 = (stored as? StoredValue.Text)?.value ?: continue
+        val cipherB64 = (stored as? StoredValue.Text)?.value
+        if (cipherB64 == null) {
+            // Encrypted entry without text ciphertext — unexpected; treat as a
+            // failure so we don't archive (and lose) it.
+            failed++
+            continue
+        }
         val version = KeySafeMetadataManager.parseEnvelopeVersion(metaRaw)
         val requireUnlocked = KeySafeMetadataManager.parseRequireUnlockedDevice(metaRaw)
         // Same alias formula as KSafeCore.aliasForRead / aliasForWrite: a v2
@@ -144,11 +154,11 @@ private suspend fun reEncryptAll(
             ops += StorageOp.Put(KeySafeMetadataManager.valueRawKey(userKey), StoredValue.Text(Base64.encode(reCipher)))
             ops += StorageOp.Put(KeySafeMetadataManager.metadataRawKey(userKey), StoredValue.Text(metaRaw!!))
         }.isSuccess
-        if (ok) count++
+        if (ok) migrated++ else failed++
     }
 
     if (ops.isNotEmpty()) target.applyBatch(ops)
-    return count
+    return MigrationResult(migrated, failed)
 }
 
 private val migratedWarned = AtomicBoolean(false)

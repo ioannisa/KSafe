@@ -237,6 +237,125 @@ class JvmFallbackMigrationTest {
     }
 
     @Test
+    fun fallbackWins_overwritesExistingKeys_andAddsNewOnes() {
+        // Reproduces the "toggle modules off, change a value, toggle back on" case
+        // (e.g. the count2 counter): the OS-backed store holds a stale value from
+        // an earlier migration, and the fallback now has a newer value for that
+        // same key PLUS a new key. The fallback was the just-active store, so its
+        // values win — the stale key is overwritten and the new key is added.
+        val jsonFallback = File(tmp, "fw.ksafe.json")
+        val keysFallback = File(tmp, "fw.ksafe-keys.json")
+        val cfg = KSafeConfig()
+
+        val targetScope = newScope()
+        val target = DataStoreJsonStorage(File(tmp, "fw-target.json"), targetScope)
+        val targetEngine = JvmSoftwareEncryption(
+            config = cfg,
+            vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(File(tmp, "fw-target-keys.json"))),
+        )
+        // Target holds a STALE "existing" = "stale".
+        runBlocking {
+            target.applyBatch(
+                listOf(
+                    StorageOp.Put(KeySafeMetadataManager.valueRawKey("existing"), StoredValue.Text("stale")),
+                    StorageOp.Put(
+                        KeySafeMetadataManager.metadataRawKey("existing"),
+                        StoredValue.Text(KeySafeMetadataManager.buildMetadataJson(protection = null, accessPolicy = null)),
+                    ),
+                )
+            )
+        }
+
+        // Fallback has the newer "existing" = "fresh" + a new "added".
+        val srcScope = newScope()
+        runBlocking {
+            val src = DataStoreJsonStorage(jsonFallback, srcScope)
+            src.applyBatch(
+                listOf(
+                    StorageOp.Put(KeySafeMetadataManager.valueRawKey("existing"), StoredValue.Text("fresh")),
+                    StorageOp.Put(
+                        KeySafeMetadataManager.metadataRawKey("existing"),
+                        StoredValue.Text(KeySafeMetadataManager.buildMetadataJson(protection = null, accessPolicy = null)),
+                    ),
+                    StorageOp.Put(KeySafeMetadataManager.valueRawKey("added"), StoredValue.Text("addedValue")),
+                    StorageOp.Put(
+                        KeySafeMetadataManager.metadataRawKey("added"),
+                        StoredValue.Text(KeySafeMetadataManager.buildMetadataJson(protection = null, accessPolicy = null)),
+                    ),
+                )
+            )
+        }
+        runBlocking { srcScope.coroutineContext[Job]!!.cancelAndJoin() }
+
+        migrateJsonFallbackToOsBacked(cfg, jsonFallback, keysFallback, target, targetEngine, keyAlias, masterAlias)
+
+        runBlocking {
+            val snap = target.snapshot()
+            assertEquals(
+                "fresh",
+                (snap[KeySafeMetadataManager.valueRawKey("existing")] as StoredValue.Text).value,
+                "fallback (just-active store) must overwrite the stale OS-backed value",
+            )
+            assertEquals(
+                "addedValue",
+                (snap[KeySafeMetadataManager.valueRawKey("added")] as StoredValue.Text).value,
+                "fallback-only key must be added",
+            )
+        }
+        assertTrue(File(tmp, "fw.ksafe.json.migrated").exists(), "clean pass should archive the source")
+    }
+
+    @Test
+    fun realKSafe_fallbackValueOverwritesStaleOsBackedValue() {
+        // The count2 case end-to-end: the OS-backed store already holds a stale
+        // value, the fallback holds a fresher one. After re-construction the
+        // fresher (just-active) fallback value must win, read back via the API.
+        val baseDir = File(tmp, "ovr").apply { mkdirs() }
+        val base = "eu_anifantakis_ksafe_datastore_ovr"
+        val cfg = KSafeConfig()
+
+        // 1. A real KSafe writes a STALE count2 to the OS-backed store, then closes.
+        val k1 = KSafe(fileName = "ovr", baseDir = baseDir)
+        runBlocking { k1.put("count2", 2000) }
+        k1.close()
+        assertTrue(File(baseDir, "$base.preferences_pb").exists())
+
+        // 2. Seed a fallback with a FRESHER count2 (as the no-Unsafe path would).
+        val jsonFile = File(baseDir, "$base.ksafe.json")
+        val keysFile = File(baseDir, "$base.ksafe-keys.json")
+        val seedScope = newScope()
+        runBlocking {
+            val storage = DataStoreJsonStorage(jsonFile, seedScope)
+            val engine = JvmSoftwareEncryption(
+                config = cfg,
+                vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFile)),
+            )
+            val ct = engine.encryptSuspend("ovr:__ksafe_master__", "2010".encodeToByteArray())
+            storage.applyBatch(
+                listOf(
+                    StorageOp.Put(KeySafeMetadataManager.valueRawKey("count2"), StoredValue.Text(Base64.encode(ct))),
+                    StorageOp.Put(
+                        KeySafeMetadataManager.metadataRawKey("count2"),
+                        StoredValue.Text(KeySafeMetadataManager.buildMetadataJson(KSafeProtection.DEFAULT, accessPolicy = null)),
+                    ),
+                )
+            )
+        }
+        runBlocking { seedScope.coroutineContext[Job]!!.cancelAndJoin() }
+
+        // 3. Re-construct → migration drains the fallback, overwriting the stale value.
+        val k2 = KSafe(fileName = "ovr", baseDir = baseDir)
+        try {
+            runBlocking {
+                assertEquals(2010, k2.get("count2", 0), "fresher fallback value must overwrite the stale OS-backed one")
+            }
+        } finally {
+            k2.close()
+        }
+        assertTrue(File(baseDir, "$base.ksafe.json.migrated").exists())
+    }
+
+    @Test
     fun noFallbackData_isNoOp() {
         // Calling with a non-existent source must not throw and must not create files.
         val jsonFallback = File(tmp, "absent.ksafe.json")
