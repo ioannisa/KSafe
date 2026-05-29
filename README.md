@@ -388,23 +388,16 @@ Production desktop apps should set it explicitly. Only the key-store destination
 
 ## Compose Desktop release builds — strongly recommend `modules("jdk.unsupported")`
 
-If you ship a Compose Desktop app via `runReleaseDistributable` / `packageReleaseDistributable` (or any `package*Distributable` task), add `modules("jdk.unsupported", "java.management")` to your `nativeDistributions` block. It's the difference between **OS-backed key custody** (the macOS login Keychain / Windows DPAPI / Linux Secret Service) and **software-only keys** — and OS-backed custody is a core KSafe guarantee, so you should add it for any production build:
+For any production Compose Desktop release build, add `modules("jdk.unsupported", "java.management")` to your `nativeDistributions` block — it restores **OS-backed key custody** (Keychain / DPAPI / Secret Service), a core KSafe guarantee:
 
 ```Kotlin
 compose.desktop {
     application {
         nativeDistributions {
-            // STRONGLY RECOMMENDED. Lets KSafe reach the OS key store (via JNA)
-            // and use its native Jetpack DataStore backend — both need
-            // sun.misc.Unsafe, which lives in jdk.unsupported and which jlink
-            // can't detect statically. Without it KSafe still persists your data
-            // (software-encrypted JSON fallback, see below) but keys are
-            // software-protected, not OS-backed.
-            //
-            // java.management → add ONLY if you use a non-default KSafeSecurityPolicy
-            //   (WarnOnly / Strict / custom). SecurityChecker reads
-            //   java.lang.management.ManagementFactory to detect a debugger.
-            //   On the default IGNORE-everything policy you can omit it.
+            // STRONGLY RECOMMENDED — restores OS-backed key custody (JNA + DataStore's
+            // protobuf both need sun.misc.Unsafe, which jlink trims). Without it KSafe
+            // still persists, at a software key tier (see below).
+            // java.management → only for a non-default KSafeSecurityPolicy (debugger probe).
             modules("jdk.unsupported", "java.management")
             // …your other settings
         }
@@ -412,9 +405,7 @@ compose.desktop {
 }
 ```
 
-**What happens without it.** Compose Desktop's release task uses `jlink` to bundle a trimmed JRE, including only the JDK modules it can statically detect in your bytecode. Two things KSafe relies on need `sun.misc.Unsafe` (which lives in `jdk.unsupported`) and neither is statically detectable: **(1) JNA**, which reaches the OS Keychain/DPAPI/Secret Service, and **(2) Jetpack DataStore's embedded protobuf**, KSafe's normal storage backend. Rather than crash (the pre-2.1.1 behavior — [issue #32](https://github.com/ioannisa/KSafe/issues/32)), **2.1.1 detects the missing module at construction and falls back to a software-encrypted JSON store**: your data still persists (AES-256-GCM, key in a local file at POSIX `0700`), reads and writes work, and KSafe logs a one-time `KSafe NOTICE`. You lose OS-backed key custody until you add the module — `KSafe.protectionInfo.effectiveLevel` reports `SOFTWARE`, so you can assert on it in code.
-
-**Your data is never stranded.** When you later add `modules("jdk.unsupported")` and rebuild, KSafe automatically **migrates the fallback data forward** on first launch — decrypting each entry with the software key and re-encrypting it under a freshly minted OS-backed key — so nothing is lost in the transition. The old fallback files are renamed to `*.migrated` (recoverable, never deleted). Dev/debug runs (`./gradlew run`, IDE run) are unaffected — they use your full local JDK. Full background, the migration, and the crash-vs-silent-drop history: **[docs/JVM_PROTECTION.md](docs/JVM_PROTECTION.md#compose-desktop-release-distributables-jdkunsupported)**.
+Without the module KSafe doesn't crash — it persists through the same Jetpack DataStore engine + AES-256-GCM with the key in a `0700` file (the `SOFTWARE` tier), and migrates forward automatically when you add it. **Details + the off-host key-file risk: [docs/JVM_PROTECTION.md](docs/JVM_PROTECTION.md#compose-desktop-release-distributables-jdkunsupported).**
 
 Working example: [**KSafeDemo**](https://github.com/ioannisa/KSafeDemo) — see `composeApp/build.gradle.kts` for the `modules(...)` line in context, and the demo's **Security screen** renders `KSafe.protectionInfo` live (green = OS vault healthy; red `jvm_os_vault_unavailable` = software fallback in effect).
 

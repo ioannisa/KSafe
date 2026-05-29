@@ -385,76 +385,79 @@ keyring, check:
 
 ## Compose Desktop release distributables: `jdk.unsupported`
 
-**Strongly recommend adding `modules("jdk.unsupported")` to Compose Desktop
-release distributables.** It's what gives KSafe **OS-backed key custody**
-(Keychain / DPAPI / Secret Service) and its native Jetpack DataStore backend.
-Without it your data is still safe — KSafe falls back to a software-encrypted
-store (below) — but keys are software-protected rather than OS-backed, so add
-it for any production build.
+**Strongly recommend adding `modules("jdk.unsupported", "java.management")` to
+Compose Desktop release distributables.** It's what gives KSafe **OS-backed key
+custody** (macOS Keychain / Windows DPAPI / Linux Secret Service). Without it
+your data is still safe and fully functional — only key custody drops to a
+software tier — so add it for any production build.
 
-If you ship a Compose Desktop app via `runReleaseDistributable`,
-`packageReleaseDistributable`, or `createReleaseDistributable`, the build
-uses `jlink` to assemble a **trimmed custom JRE** bundled inside your app.
-`jlink` only includes JDK modules it can statically detect in your
-bytecode. **Two** things KSafe depends on need `sun.misc.Unsafe` (which
-lives in `jdk.unsupported`), and neither is statically detectable:
+These tasks use `jlink` to bundle a **trimmed JRE**, including only JDK modules
+it can statically detect. Two things KSafe uses need `sun.misc.Unsafe` (in
+`jdk.unsupported`) and neither is statically detectable: **JNA** (the OS
+keyvaults) and **Jetpack DataStore's embedded protobuf** (its normal storage
+serializer, `androidx.datastore.preferences.protobuf.MessageSchema`).
 
-1. **JNA** — used by the OS keyvaults (Keychain / DPAPI / Secret Service).
-   KSafe handles a runtime `LinkageError` here by degrading key custody to
-   the software vault.
-2. **Jetpack DataStore's embedded protobuf** — KSafe's *normal* storage
-   backend on JVM/Desktop. `androidx.datastore.preferences.protobuf.MessageSchema`
-   references `sun.misc.Unsafe`.
+### What changes without the module (2.1.1+)
 
-### What KSafe does when the module is missing (2.1.1+)
+At construction KSafe probes for `sun.misc.Unsafe`; if it's absent it switches
+to a no-`Unsafe` backend instead of letting the protobuf crash. **Only the key
+location changes — the storage engine and the encryption do not:**
 
-At `KSafe(...)` construction KSafe probes for `sun.misc.Unsafe`. If it's
-absent, rather than letting DataStore's protobuf crash deep on a background
-coroutine, KSafe selects a **no-`Unsafe` software backend** for that instance:
+- **Storage** is still Jetpack **`datastore-core`** (the same library behind the
+  normal path — same atomic writes, single-process coordinator, corruption
+  handling, fsync). Only the *serializer* differs: a custom JSON one
+  (`DataStoreJsonStorage`) instead of the Preferences protobuf, so the classes
+  that need `Unsafe` are never loaded. (It uses the `java.io` serializer path,
+  not okio — okio 3.x's multi-release jar fails bytecode verification on a
+  trimmed runtime.)
+- **Encryption** is still **AES-256-GCM** via `javax.crypto`, unchanged.
+- **The AES key** drops from the OS secret store to a local file
+  (`FileKeyVault` — Base64 in `…ksafe-keys.json` at POSIX `0700`). This is
+  KSafe's existing **`SOFTWARE`** tier — the *same* one it already falls back to
+  when no OS keyring is reachable, not a new or worse degrade.
+  `protectionInfo.effectiveLevel` reports `SOFTWARE` (note
+  `jvm_os_vault_unavailable`) and a one-time `KSafe NOTICE` explains it.
 
-- **Storage** → `DataStoreJsonStorage`: Jetpack **`datastore-core`** (which
-  does *not* need `Unsafe`) driving a custom JSON serializer instead of the
-  Preferences protobuf. It keeps DataStore's atomic-write / single-process
-  coordinator / corruption-handling / fsync machinery — it just never loads
-  the protobuf classes. (It uses datastore-core's `java.io` serializer path,
-  not the okio one: okio 3.x's multi-release jar fails bytecode verification
-  — `VerifyError` — on the trimmed runtime.)
-- **Keys** → `FileKeyVault`: the AES key in a local JSON file at POSIX `0700`,
-  software-protected (no OS key store).
+### The risk of the software key tier
 
-So **data persists** (AES-256-GCM throughout), reads and writes work, and
-KSafe logs a one-time `KSafe NOTICE` describing the fallback. The only thing
-you give up until you add the module is OS-backed key custody —
-`KSafe.protectionInfo.effectiveLevel` reports `SOFTWARE` with note
-`jvm_os_vault_unavailable`.
+In this mode `~/.eu_anifantakis_ksafe/` (POSIX `0700`) holds two files:
 
-### Automatic forward migration when you add the module
+- `…ksafe.json` — the data: encrypted values as Base64 **ciphertext**, plus
+  metadata. (Values written `KSafeWriteMode.Plain` are cleartext — they opted
+  out of encryption.)
+- `…ksafe-keys.json` — the key vault: the raw AES key, **Base64-encoded in the
+  clear** (Base64 is encoding, not encryption).
 
-When you later add `modules("jdk.unsupported")` and rebuild, the next launch
-runs on the normal OS-backed path and KSafe **migrates the fallback data
-forward automatically**: it decrypts every entry with the old software key
-and re-encrypts it under a freshly minted OS-backed key, preserving each
-entry's protection level and metadata. The just-used fallback values win
-(they're the most recent), so a value you changed while on the fallback —
-even after an earlier partial migration — carries across. The source files
-are renamed to `*.migrated` (recoverable, never deleted), so the drain runs
-exactly once and nothing is stranded in the transition.
+The data file alone doesn't expose encrypted secrets — they're ciphertext. But
+**anyone who can read both files has the key *and* the ciphertext and can
+decrypt everything**; the only barrier is the `0700` permission. The realistic
+exposure is off-host or same-user — an unencrypted backup, a copied/synced home
+directory, a stolen drive without full-disk encryption, or a process running as
+the same OS user. The key travels with the data. OS-backed custody closes
+exactly this: DPAPI wraps the key to the Windows login, the macOS Keychain
+stores it device-bound, libsecret keeps it in the login keyring — none
+recoverable by simply reading a file. (Same posture KSafe has always documented
+for its software fallback and its pre-2.0 JVM scheme.)
 
-### History: the #32 crash-vs-silent-drop (pre-2.1.1)
+### Adding the module later migrates your data forward
 
-Before the fallback existed, the symptom varied by DataStore build. KSafe's
-write path is **`encrypt` (JNA) → `DataStore.write` (protobuf)**:
+When you add the module and rebuild, the next launch runs on the OS-backed path
+and KSafe migrates the fallback data forward automatically: each entry is
+decrypted with the software key and re-encrypted under a freshly minted
+OS-backed key (protection level + metadata preserved; the just-used fallback
+values win, so a value you changed on the fallback carries across). The source
+files are renamed to `*.migrated` — recoverable, drained exactly once.
 
-- On a DataStore build that tolerated a missing `Unsafe`, the original
-  [#32](https://github.com/ioannisa/KSafe/issues/32) report saw `encrypt` hit
-  JNA first → `processBatch` caught it and dropped the write → **no crash,
-  data silently not persisted.**
-- On a build whose protobuf hard-requires `Unsafe` (the version KSafe
-  bundles), the startup read `snapshotFlow().collect` threw
-  `NoClassDefFoundError: sun/misc/Unsafe` uncaught → **app crash.**
+<details>
+<summary>History: the pre-2.1.1 #32 crash-vs-silent-drop</summary>
 
-2.1.1's JSON fallback removes both failure modes: no protobuf is ever loaded,
-so there is nothing to crash on and nothing to silently drop.
+Before the fallback, the symptom varied by DataStore build (write path is
+`encrypt` (JNA) → `DataStore.write` (protobuf)): a build tolerating missing
+`Unsafe` dropped the write silently (the original
+[#32](https://github.com/ioannisa/KSafe/issues/32) report), while a build whose
+protobuf hard-requires it crashed on the first read. 2.1.1's JSON fallback loads
+no protobuf, so neither happens.
+</details>
 
 **Recommended setup** — declare the module(s) in your app's Compose Desktop block:
 
@@ -464,11 +467,11 @@ compose.desktop {
         nativeDistributions {
             // `jdk.unsupported` — STRONGLY RECOMMENDED. DataStore's protobuf
             //                    and JNA both need sun.misc.Unsafe. With it you
-            //                    get OS-backed key custody + the DataStore
-            //                    backend. Without it KSafe falls back to a
-            //                    software-encrypted JSON store (data persists;
-            //                    keys software-protected) and migrates forward
-            //                    automatically once you add it.
+            //                    get OS-backed key custody. Without it KSafe
+            //                    still persists (same DataStore engine + AES-GCM;
+            //                    the AES key just drops to a 0700 file — the
+            //                    SOFTWARE tier) and migrates forward when you
+            //                    add it.
             // `java.management` — only required when a non-IGNORE
             //                    `KSafeSecurityPolicy` is in use (e.g.
             //                    `KSafeSecurityPolicy.WarnOnly` /

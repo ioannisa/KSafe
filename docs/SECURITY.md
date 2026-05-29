@@ -402,6 +402,7 @@ Migration is lazy and safe:
 * AES-256-GCM encryption via standard javax.crypto
 * The AES key is held by the host **OS secret store** — Windows DPAPI, macOS Keychain, or Linux Secret Service (libsecret) — via the `JvmKeyVault` abstraction (JNA). The key is bound to the OS user login
 * When no secret store is reachable (e.g. headless Linux with no keyring), it falls back to a key Base64-encoded in the DataStore file under `~/.eu_anifantakis_ksafe/` (POSIX `0700`) and logs a one-time security warning
+* **No-`sun.misc.Unsafe` fallback (2.1.1+):** on a trimmed Compose Desktop release distributable that omits `jdk.unsupported`, KSafe persists through the same DataStore engine under the same AES-256-GCM but with the key in a `0700` file (`…ksafe-keys.json`) — the same `SOFTWARE` tier as the no-keyring case above. The key is recoverable by anyone who can read that file, so the off-host caveat below applies; adding the module migrates the data forward and restores OS-backed custody. Full risk + mechanism: [JVM_PROTECTION.md](JVM_PROTECTION.md#compose-desktop-release-distributables-jdkunsupported)
 * Keys written by KSafe ≤ 2.0 are migrated into the OS store on first read (scrubbed only after read-back verification). Opt out with `-Dksafe.jvm.keyVault=software`
 * Suitable for desktop applications and server-side use
 * Full per-platform deep dive — what each store actually is, threat model, fallback behaviour, self-test, namespace resolution: **[docs/JVM_PROTECTION.md](JVM_PROTECTION.md)**
