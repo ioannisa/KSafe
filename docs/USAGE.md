@@ -442,6 +442,31 @@ authInfo = authInfo.copy(accessToken = "newToken")
 
 > Seeing "Serializer for class X' is not found"? Add `@Serializable` and make sure you have added the Serialization plugin to your app.
 
+### Example: Ktor bearer auth with zero encryption boilerplate
+
+Persisting a whole auth-token object is one line — it's encrypted, persisted, and JSON-serialized for you. Reads come from the hot cache (~0.002 ms; no disk, no `suspend`):
+
+```Kotlin
+@Serializable
+data class AuthTokens(val accessToken: String = "", val refreshToken: String = "")
+
+var tokens by ksafe(AuthTokens())   // one line: encrypt + persist + serialize
+
+install(Auth) {
+  bearer {
+    loadTokens {
+      BearerTokens(tokens.accessToken, tokens.refreshToken)
+    }
+    refreshTokens {
+      val newInfo = api.refreshAuth(tokens.refreshToken)
+      // Atomic update: encrypts & persists as JSON in the background
+      tokens = AuthTokens(newInfo.accessToken, newInfo.refreshToken)
+      BearerTokens(tokens.accessToken, tokens.refreshToken)
+    }
+  }
+}
+```
+
 ## Nullable Values
 
 KSafe fully supports nullable types:
@@ -491,6 +516,16 @@ data class UserProfile(
 > // ✅ Correct — typed property drives inference
 > var token: String? by ksafe(null)
 > ```
+
+Nullability flows through **every** delegate shape — Compose state and Flows included, not just `get`/`put`. The persisted `null` survives process death and emits correctly through Flow observers (give each an explicit type so reified inference has something to work with):
+
+```Kotlin
+var token: String? by ksafe(null)                                       // plain delegate
+var profile: User? by ksafe.mutableStateOf(null)                        // Compose state
+val user: StateFlow<User?> by ksafe.asStateFlow(null, scope)            // read-only StateFlow
+private val _state by ksafe.asMutableStateFlow<User?>(null, scope)      // read/write MutableStateFlow
+val theme: WritableKSafeFlow<ThemeMode?> by ksafe.asWritableFlow(null)  // read/write Flow, no scope
+```
 
 ## Deleting Data
 

@@ -11,9 +11,10 @@
 
 ## 🤖 KSafe Skill for AI agents
 
-KSafe ships [**KSAFE_SKILL.md**](KSAFE_SKILL.md) — an [agentskills.io](https://agentskills.io)-compatible skill that teaches any AI agent (Claude Code, Codex, Gemini CLI, Copilot CLI, Junie) the patterns, anti-patterns, and gotchas for KSafe.
+KSafe ships [**KSAFE_SKILL.md**](KSAFE_SKILL.md) — an [agentskills.io](https://agentskills.io)-compatible skill that teaches any AI agent (Claude Code, Codex, Gemini CLI, Copilot CLI, Junie) KSafe's patterns, anti-patterns, and gotchas. Restart your agent session after installing — skills load at session start.
 
-**Install** — copies the skill into every supported agent's skills directory:
+<details>
+<summary><b>Install</b> — copy the skill into every supported agent's skills directory</summary>
 
 ```bash
 for agent in claude codex gemini copilot junie; do
@@ -24,178 +25,40 @@ done
 ```
 
 Edit the loop to skip agents you don't use. If you've already cloned this repo, `cp KSAFE_SKILL.md "$HOME/.<agent>/skills/ksafe/SKILL.md"` works too (faster, offline).
-
-**Restart your agent session** after installing — skills load at session start.
-
----
-
-## Demo Application
-KSafe in action across multiple scenarios: [Demo CMP App Using KSafe](https://github.com/ioannisa/KSafeDemo).
-
-## YouTube Demos
-From the author and the community:
-
-| Author's Video | Philipp Lackner's Video | Jimmy Plazas's Video |
-|:--------------:|:---------------:|:---------------:|
-| [<img width="200" alt="image" src="https://github.com/user-attachments/assets/8c317a36-4baa-491e-8c88-4c44b8545bad" />](https://youtu.be/mFKGx0DMZEA) | [<img width="200" alt="image" src="https://github.com/user-attachments/assets/59cce32b-634e-4b17-bb5f-5e084dff899f" />](https://youtu.be/cLyxWGV6GKg) | [<img width="200" alt="image" src="https://github.com/user-attachments/assets/65dba780-9c80-470c-9ad0-927a86510a26" />](https://youtu.be/M4U06OnAl-I) | 
-| [KSafe - Kotlin Multiplatform Encrypted DataStore Persistence Library](https://youtu.be/mFKGx0DMZEA) | [How to Encrypt Local Preferences In KMP With KSafe](https://youtu.be/cLyxWGV6GKg) | [Encripta datos localmente en Kotlin Multiplatform con KSafe - Ejemplo + Arquitectura](https://youtu.be/M4U06OnAl-I) |
-
+</details>
 
 ## What is KSafe?
 
-KSafe is a secure-by-default Kotlin Multiplatform key/value persistence library.
-
-It lets you persist ordinary Kotlin variables, Compose `MutableState`, and `MutableStateFlow` across app restarts using one API across Android, iOS, macOS, JVM/Desktop, WASM, and Kotlin/JS.
-
-Encrypted storage is the default. Plain storage is available per entry with `mode = KSafeWriteMode.Plain`.
-
-**Fast. Easy. Synchronous or asynchronous. Encrypted or plain.**
-
-KSafe gives you a complete persistence layer for Kotlin Multiplatform: property delegates or coroutines, encrypted or plain storage, hot in-memory reads, atomic DataStore writes, automatic serialization, and one API across platforms.
-
-- **Easy?** ✔ Yes — one-line setup, property-delegate API
-- **Encrypted by default?** ✔ Yes — AES-256-GCM by default
-- **Plain storage?** ✔ Yes — opt out with one parameter
-- **Synchronous?** ✔ Yes — non-blocking hot-cache reads when you do not want coroutines
-- **Asynchronous?** ✔ Yes — full suspend API when you want guaranteed disk flushes
-**Extras when you encrypt:**
-
-* **Biometrics?** ✔ Yes — Face ID / Touch ID / Fingerprint on Android + iOS + macOS, with auth caching. Ships as the standalone optional `ksafe-biometrics` module so apps that don't need it pay nothing.
-* **Root/jailbreak detection?** ✔ Yes — configurable WARN/BLOCK actions + analytics callback
-* **Memory policy?** ✔ Yes — three RAM modes trading security vs performance
-* **Database passphrase in one line?** ✔ Yes — hardware-isolated 256-bit secret for SQLCipher / SQLDelight / Room
-
-## Where KSafe fits
-
-KSafe brings together two things that are usually separate in Kotlin Multiplatform: 
-1) effortless key/value persistence 
-2) and serious encrypted storage.
-
-Use it as a general-purpose persistence layer for settings, preferences, app state, Compose `MutableState`, and `MutableStateFlow`. 
-
-* By default, KSafe stores values with AES-256-GCM encryption, backed by platform security primitives where available. 
-* When encryption is not required for a specific entry, you can opt into plain storage with `mode = KSafeWriteMode.Plain`.
-
-This gives you the best of both worlds: the simplicity of ordinary key/value storage and the protection of a secure storage layer, without changing APIs or rewriting your persistence model.
-### One line. Encrypted by default.
+KSafe is a secure-by-default Kotlin Multiplatform key/value persistence library. Persist ordinary Kotlin variables, Compose `MutableState`, `MutableStateFlow`, and `@Serializable` objects across app restarts with **one API** on Android, iOS, macOS, JVM/Desktop, WASM, and Kotlin/JS. **Encrypted (AES-256-GCM) by default; plain per-entry with `mode = KSafeWriteMode.Plain`.**
 
 ```kotlin
 var counter by ksafe(0)
 counter++   // auto-encrypted (AES-256-GCM), auto-persisted, survives process death
 ```
 
-Read and write it like any normal Kotlin variable — no `suspend`, no `runBlocking`, no DataStore boilerplate, no explicit `encrypt`/`decrypt`. Reads hit a hot in-memory cache (~0.002ms); writes encrypt and flush in the background.
+Read and write it like any normal Kotlin variable — no `suspend`, no `runBlocking`, no DataStore boilerplate, no explicit `encrypt`/`decrypt`. Reads hit a hot in-memory cache (~0.002 ms); writes encrypt and flush in the background — **synchronous, but never blocking**. Reach for the `suspend` API (`get` / `put`) only when *you* want to await the disk flush.
 
-### Don't need encryption? Same one-liner.
+- **Easy?** ✔ one-line setup, property-delegate API
+- **Encrypted by default?** ✔ AES-256-GCM, hardware-backed where available
+- **Plain storage?** ✔ opt out with one parameter
+- **Synchronous?** ✔ non-blocking hot-cache reads
+- **Asynchronous?** ✔ full suspend API for guaranteed disk flushes
 
-```kotlin
-var counter by ksafe(0, mode = KSafeWriteMode.Plain)
-```
+**Extras when you encrypt:** biometrics (Face ID / Touch ID / Fingerprint — optional standalone `ksafe-biometrics` module) · root/jailbreak detection (WARN/BLOCK + analytics callback) · memory policy (RAM-exposure modes) · a one-line hardware-isolated DB passphrase for SQLCipher / SQLDelight / Room.
 
-One argument change and you have the simplicity of `SharedPreferences` / `NSUserDefaults` — multiplatform, type-safe, object-aware, backed by atomic DataStore writes.
+## Demo & Videos
 
-### Compose `MutableState`? `MutableStateFlow`? Plain delegate? All persisted.
+KSafe in action across many scenarios: **[KSafeDemo — Compose Multiplatform app](https://github.com/ioannisa/KSafeDemo)**.
 
-Every persistence shape you reach for, with the same guarantees behind each:
-
-```kotlin
-// 1. Plain property delegate — no Compose, no Flow, no coroutines required
-var token by ksafe("")
-
-// 2. Compose MutableState (ViewModel / class field) — reactive UI, persisted, encrypted
-var username by ksafe.mutableStateOf("Guest")
-
-// 3. Compose MutableState (inside a @Composable body) — rememberSaveable, but persists across app restarts
-//    No ViewModel required for trivial UI state like this. Storage key auto-resolves to the property name.
-@Composable
-fun TabbedScreen(ksafe: KSafe) {
-    var currentTab by ksafe.rememberKSafeState(Tab.Home)
-}
-
-// 4. Read-only StateFlow — observe from anywhere, writes go through ksafe.put()
-val user: StateFlow<User> by ksafe.asStateFlow(User(), viewModelScope)
-
-// 5. Read/write MutableStateFlow — the classic _state / state pattern, persisted
-private val _state by ksafe.asMutableStateFlow(MoviesState(), viewModelScope)
-val state = _state.asStateFlow()
-
-// 6. Read-only Flow alone — the simplest reactive shape; pair with a plain `ksafe(...)` delegate
-//    when you also need to write back to the same key (two bindings, kept in sync by the matching key)
-val theme: Flow<ThemeMode> by ksafe.asFlow(ThemeMode.DEVICE, key = "theme")
-private var themeWriter: ThemeMode by ksafe(ThemeMode.DEVICE, key = "theme")
-fun setTheme(mode: ThemeMode) { themeWriter = mode }   // collectors of `theme` see the new value
-
-// 7. Read/write Flow — collapses (6) into a single declaration: one binding instead of two,
-//    no scope needed, no key sync to keep right
-val theme: WritableKSafeFlow<ThemeMode> by ksafe.asWritableFlow(ThemeMode.DEVICE)
-theme.set(ThemeMode.NIGHT) // persists; collectors see it on the next emission
-```
-
-All seven survive process death, are AES-256-GCM encrypted by default (except `rememberKSafeState`, which defaults to plain since it's typically UI ephemera — pass `mode = KSafeWriteMode.Encrypted(...)` to opt in), and can be made plain with `mode = KSafeWriteMode.Plain`. **Zero boilerplate, on every target.**
-
-> **DataStore without the coroutines tax.** The property delegate, `mutableStateOf`, `rememberKSafeState`, and `getDirect`/`putDirect` are fully synchronous — **but never blocking**. Reads come from a hot in-memory cache; writes update the cache immediately and enqueue the encrypt-and-flush onto a background thread. Call sites return instantly. Use the `suspend` API (`get` / `put`) only when *you* want to.
-
-### Prefer coroutines? `put` and `get` too.
-
-```kotlin
-// inside any coroutine / suspend function
-ksafe.put("profile", user)                       // awaits the disk flush
-val profile: User = ksafe.get("profile", User())
-```
-
-Same encryption, same cache, same DataStore — just an API shape that awaits the write instead of enqueueing it. Reach for this when you want a guaranteed flush (payments, critical writes) or when the call site is already a coroutine.
-
-### Need a passphrase to encrypt databases? Also one line. (v1.8.0)
-
-KSafe isn't just for key/value pairs — it's the simplest way to bootstrap an encrypted SQLCipher / SQLDelight / Room database too:
-
-```kotlin
-// Generates a 256-bit secret on first call, returns the same one thereafter.
-// Stored hardware-isolated (StrongBox on Android, Secure Enclave on iOS / Apple Silicon and T2-equipped Macs).
-val passphrase = ksafe.getOrCreateSecret("main.db")
-
-Room.databaseBuilder(context, AppDatabase::class.java, "main.db")
-    .openHelperFactory(SupportFactory(passphrase))
-    .build()
-```
-
-One line replaces: secure random generation, hardware-backed key storage, persistence, and retrieval.
-
-### Complex Objects? Of course.
-
-Ktor bearer authentication with **zero encryption boilerplate**:
-
-```kotlin
-@Serializable
-data class AuthTokens(val accessToken: String = "", val refreshToken: String = "")
-
-// One line to encrypt, persist, and serialize the whole object — that's it.
-var tokens by ksafe(AuthTokens())
-
-install(Auth) {
-  bearer {
-    loadTokens {
-      // Reads atomic object from hot cache (~0.002ms). No disk. No suspend.
-      BearerTokens(tokens.accessToken, tokens.refreshToken)
-    }
-    refreshTokens {
-      val newInfo = api.refreshAuth(tokens.refreshToken)
-
-      // Atomic update: encrypts & persists as JSON in background (~11μs under v2 master-key)
-      tokens = AuthTokens(newInfo.accessToken, newInfo.refreshToken)
-
-      BearerTokens(tokens.accessToken, tokens.refreshToken)
-    }
-  }
-}
-```
-
-Under the hood, each platform uses its native crypto engine — Android Keystore, Apple Keychain + CryptoKit (shared by iOS and native macOS), JVM's `javax.crypto`, browser WebCrypto (on both Kotlin/WASM and Kotlin/JS) — unified behind one API. Values are AES-256-GCM encrypted and persisted to DataStore (localStorage on the web targets). Cross-screen sync (`scope =`), biometric auth, memory policies, and runtime security detection are all built in.
+| Author's Video | Philipp Lackner's Video | Jimmy Plazas's Video |
+|:--------------:|:---------------:|:---------------:|
+| [<img width="200" alt="image" src="https://github.com/user-attachments/assets/8c317a36-4baa-491e-8c88-4c44b8545bad" />](https://youtu.be/mFKGx0DMZEA) | [<img width="200" alt="image" src="https://github.com/user-attachments/assets/59cce32b-634e-4b17-bb5f-5e084dff899f" />](https://youtu.be/cLyxWGV6GKg) | [<img width="200" alt="image" src="https://github.com/user-attachments/assets/65dba780-9c80-470c-9ad0-927a86510a26" />](https://youtu.be/M4U06OnAl-I) |
+| [KSafe - Kotlin Multiplatform Encrypted DataStore Persistence Library](https://youtu.be/mFKGx0DMZEA) | [How to Encrypt Local Preferences In KMP With KSafe](https://youtu.be/cLyxWGV6GKg) | [Encripta datos localmente en Kotlin Multiplatform con KSafe - Ejemplo + Arquitectura](https://youtu.be/M4U06OnAl-I) |
 
 ## Table of Contents
 
 - [🤖 KSafe Skill for AI agents](#ksafe-skill-for-ai-agents) — [KSAFE_SKILL.md](KSAFE_SKILL.md)
-- [Quickstart](#quickstart)
+- [What is KSafe?](#what-is-ksafe)
 - [Setup](#setup)
 - [Basic Usage](#basic-usage) — full reference in [docs/USAGE.md](docs/USAGE.md)
 - [Custom JSON Serialization](#custom-json-serialization) — full guide in [docs/SERIALIZATION.md](docs/SERIALIZATION.md)
@@ -208,43 +71,6 @@ Under the hood, each platform uses its native crypto engine — Android Keystore
 - [Runtime Security Policy](#runtime-security-policy)
 - [Memory Security Policy](#memory-security-policy)
 - [Deep-Dive Documentation](#deep-dive-documentation)
-
-***
-
-## Quickstart
-
-```kotlin
-// 1. Create instance (Android needs context, others don't)
-val ksafe = KSafe(context) // Android
-val ksafe = KSafe()        // iOS / macOS / JVM / WASM / JS
-
-// 2. Store & retrieve with property delegation
-var counter by ksafe(0)
-counter++  // Auto-encrypted, auto-persisted
-
-// 3. Compose state (read/write, reactive to external changes)
-var username by ksafe.mutableStateOf("Guest", scope = viewModelScope)
-
-// 4. Reactive flows — read-only StateFlow, read/write MutableStateFlow, or read/write WritableKSafeFlow (no scope)
-val user: StateFlow<User> by ksafe.asStateFlow(User(), viewModelScope)
-private val _state by ksafe.asMutableStateFlow(UiState(), viewModelScope)
-val state = _state.asStateFlow()
-val themeMode: WritableKSafeFlow<ThemeMode> by ksafe.asWritableFlow(ThemeMode.DEVICE)
-// themeMode.set(ThemeMode.NIGHT)
-
-// 5. Or use suspend API
-viewModelScope.launch {
-    ksafe.put("user_token", token)
-    val token = ksafe.get("user_token", "")
-}
-
-// 6. Protect actions with biometrics (optional — add `ksafe-biometrics`)
-KSafeBiometrics.verifyBiometricDirect("Confirm payment") { success ->
-    if (success) processPayment()
-}
-```
-
-Data is now AES-256-GCM encrypted — keys in Android Keystore, Apple Keychain (iOS / macOS), the OS secret store on JVM (Windows DPAPI / macOS Keychain / Linux Secret Service, with a software fallback), and a non-extractable WebCrypto key in IndexedDB on the browser targets (Kotlin/WASM and Kotlin/JS).
 
 ***
 
@@ -312,7 +138,6 @@ actual val platformModule = module {
 
 Multi-instance setups, web `awaitCacheReady()` (wasmJs + js), full per-platform Koin examples, the **custom storage directory** option (`baseDir` on JVM/Android, `directory` on iOS / macOS — for example to align with `$XDG_DATA_HOME`, `noBackupFilesDir`, or a sandboxed Mac app's container), and the optional `KSafe.close()` for apps that re-create instances mid-process: [docs/SETUP.md](docs/SETUP.md).
 
-
 ## Basic Usage
 
 A handful of examples cover 95% of real-world use. Full reference (Compose `policy`, cross-screen sync, write modes, nullables, deletion, full ViewModel): **[docs/USAGE.md](docs/USAGE.md)**.
@@ -334,13 +159,13 @@ private val _state by ksafe.asMutableStateFlow(MoviesState(), viewModelScope)  /
 val state = _state.asStateFlow()
 val themeMode: WritableKSafeFlow<ThemeMode> by ksafe.asWritableFlow(ThemeMode.DEVICE) // read/write, cold; set() to write
 
-// 4. Suspend API — when you want to await the disk flush
+// 5. Suspend API — when you want to await the disk flush
 viewModelScope.launch {
     ksafe.put("profile", user)
     val loaded: User = ksafe.get("profile", User())
 }
 
-// 5. Direct API — non-suspend, hot-cache reads, background-flushed writes (~1000x faster for bulk ops)
+// 6. Direct API — non-suspend, hot-cache reads, background-flushed writes (~1000x faster for bulk ops)
 ksafe.putDirect("counter", 42)
 val n = ksafe.getDirect("counter", 0)
 ```
@@ -370,7 +195,6 @@ authInfo = authInfo.copy(accessToken = "newToken")
 ```
 
 > **Note:** The property delegate works with **any** KSafe instance — `var x by myKsafe(default)` makes `myKsafe` the storage backend. The bare `var x by ksafe(default)` form requires an in-scope `ksafe` (the conventional name, typically your default instance). See [docs/SETUP.md](docs/SETUP.md#multiple-instances) for the multi-instance pattern.
-
 
 ## Custom JSON Serialization
 
@@ -457,30 +281,7 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 | **Hot cache** | :white_check_mark: Synchronized `HashMap` | :x: No (Flow only) | :white_check_mark: Platform-native cache | :x: No | :white_check_mark: `ConcurrentHashMap` + optimistic writes |
 | **Write batching** | :x: No | :x: No | :x: No | :x: No | :white_check_mark: 16ms coalescing |
 
-> **\* "Primitives + objects + delegates"** — nullability flows uniformly through every API shape and every type KSafe stores, not just scalar getters. Specifically:
->
-> - **Primitives** — `Boolean?`, `Int?`, `Long?`, `Float?`, `Double?`, `String?` all round-trip through `get` / `put` / `getDirect` / `putDirect` / `getFlow`. `null` is a distinct state, not "missing"; it's preserved on reads and persisted on writes.
->   ```kotlin
->   ksafe.putDirect("nickname", null as String?)   // stored as null, not "default"
->   val nickname: String? = ksafe.getDirect("nickname", "Guest")  // returns null, NOT "Guest"
->   ```
-> - **Objects** — any `@Serializable` class can be stored nullably. `null` round-trips through the same encrypted JSON path as the payload; no extra boilerplate.
->   ```kotlin
->   @Serializable data class User(val id: String, val name: String)
->   var currentUser: User? by ksafe(null)          // encrypted, persisted, nullable
->   currentUser = User("u1", "Alice")              // -> encrypted JSON
->   currentUser = null                              // -> null sentinel, round-trips
->   ```
-> - **Delegates** — every delegate shape accepts a nullable default, including Compose state and `MutableStateFlow`. The persisted null survives process death and emits correctly through Flow observers.
->   ```kotlin
->   var token: String? by ksafe(null)                                       // plain delegate
->   var profile: User? by ksafe.mutableStateOf(null)                        // Compose state
->   val user: StateFlow<User?> by ksafe.asStateFlow(null, scope)            // read-only StateFlow
->   private val _state by ksafe.asMutableStateFlow<User?>(null, scope)      // read/write MutableStateFlow
->   val themeMode: WritableKSafeFlow<ThemeMode?> by ksafe.asWritableFlow(null)    // read/write Flow, no scope
->   ```
->
-> By contrast, `multiplatform-settings` exposes nullability only through separate `getStringOrNull` / `getIntOrNull` scalar getters — there is no nullable support for custom types, property delegates, or Compose state, because the library has no serialization or delegate layer. KVault is similar: nullable return types on its primitive getters, no object or delegate support.
+> **\*** Nullability flows uniformly through every API shape — primitives, `@Serializable` objects, and all delegate / Compose / Flow forms. `null` is a distinct, persisted state, not "missing." Full examples: **[docs/USAGE.md#nullable-values](docs/USAGE.md#nullable-values)**.
 
 ***
 
@@ -494,7 +295,6 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 **vs competitors (encrypted):** ~21× faster reads than KVault and ~24× faster than EncryptedSharedPreferences; ~127× faster encrypted writes than KVault and ~14× faster than EncryptedSharedPreferences. Unencrypted writes are **~3× faster than MMKV** and ~3× faster than SharedPreferences.
 
 > Numbers reflect the **v2 envelope** introduced in 2.0 (per-datastore master AES key cached in-process, eliminating per-entry Keystore IPC for non-isolated encrypted ops). Measured on an AOSP Emulator (API 37) running on a MacBook Pro (Apple Silicon). Suspend API benchmarks issue all iterations as concurrent coroutines (`GlobalScope.launch` + `joinAll`) — the natural usage pattern when multiple coroutines persist values in parallel. Real-world numbers depend on device, workload, and data size — see [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the methodology, full tables, cold-start numbers, and architecture notes.
-
 
 ## Compatibility
 
