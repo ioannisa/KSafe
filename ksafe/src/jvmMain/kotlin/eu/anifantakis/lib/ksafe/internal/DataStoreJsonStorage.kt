@@ -1,8 +1,10 @@
 package eu.anifantakis.lib.ksafe.internal
 
+import androidx.datastore.core.CorruptionException
 import androidx.datastore.core.DataStore
 import androidx.datastore.core.DataStoreFactory
 import androidx.datastore.core.Serializer
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -50,6 +52,20 @@ internal class DataStoreJsonStorage(
 
     private val dataStore: DataStore<Map<String, String>> = DataStoreFactory.create(
         serializer = JsonMapSerializer,
+        // On genuine corruption (non-blank but unparseable JSON), the serializer
+        // throws CorruptionException; preserve the unparseable bytes for recovery
+        // by copying the file aside, then let the store continue empty. Without
+        // this, the old "return emptyMap() on parse failure" silently discarded
+        // the data and the next write overwrote the recoverable file.
+        corruptionHandler = ReplaceFileCorruptionHandler {
+            runCatching {
+                file.copyTo(
+                    File(file.parentFile, "${file.name}.corrupt-${System.currentTimeMillis()}"),
+                    overwrite = false,
+                )
+            }
+            emptyMap()
+        },
         scope = scope,
         produceFile = { file },
     )
@@ -106,10 +122,13 @@ internal class DataStoreJsonStorage(
             }
             return try {
                 if (text.isBlank()) emptyMap() else json.decodeFromString(mapSer, text)
-            } catch (_: SerializationException) {
-                // Corrupt/partial content → behave like a fresh store rather than
-                // surfacing a CorruptionException as a read-path crash.
-                emptyMap()
+            } catch (e: SerializationException) {
+                // Non-blank but unparseable = real corruption. Do NOT silently
+                // treat it as empty: that lets the next write overwrite still-
+                // recoverable bytes. Signal corruption so DataStore routes to the
+                // corruptionHandler (which quarantines the file) instead of
+                // discarding data. A blank file is handled above as a fresh store.
+                throw CorruptionException("KSafe JSON store is corrupt: unparseable content", e)
             }
         }
 

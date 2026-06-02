@@ -378,4 +378,61 @@ class JvmFallbackMigrationTest {
         )
         runBlocking { assertTrue(target.snapshot().isEmpty()) }
     }
+
+    @Test
+    fun orphanedEncryptedMetadata_doesNotBlockArchival() {
+        // Regression for #5: an encrypted-metadata row whose VALUE row is gone
+        // (orphaned) used to be counted as a migration failure, leaving the source
+        // un-archived so the blocking migration re-ran on EVERY launch. It must now
+        // be skipped, so a clean pass still archives.
+        val jsonFallback = File(tmp, "orphan.ksafe.json")
+        val keysFallback = File(tmp, "orphan.ksafe-keys.json")
+        val targetFile = File(tmp, "orphan.preferences.json")
+        val config = KSafeConfig()
+
+        // Seed: one good plain entry + an ORPHANED encrypted entry (metadata only,
+        // no value row). Then release the source handle.
+        val srcScope = newScope()
+        runBlocking {
+            val src = DataStoreJsonStorage(jsonFallback, srcScope)
+            putPlain(src, "theme", "dark")
+            src.applyBatch(
+                listOf(
+                    StorageOp.Put(
+                        KeySafeMetadataManager.metadataRawKey("ghost"),
+                        StoredValue.Text(
+                            KeySafeMetadataManager.buildMetadataJson(KSafeProtection.DEFAULT, accessPolicy = null)
+                        ),
+                    ),
+                )
+            )
+        }
+        runBlocking { srcScope.coroutineContext[Job]!!.cancelAndJoin() }
+
+        val targetScope = newScope()
+        val target = DataStoreJsonStorage(targetFile, targetScope)
+        migrateJsonFallbackToOsBacked(
+            config = config,
+            jsonFallback = jsonFallback,
+            keysFallback = keysFallback,
+            target = target,
+            targetEngine = JvmSoftwareEncryption(
+                config = config,
+                vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(File(tmp, "orphan.target-keys.json"))),
+            ),
+            keyAlias = keyAlias,
+            masterAlias = masterAlias,
+        )
+
+        // Clean pass despite the orphan → source archived (orphan skipped, not failed).
+        assertFalse(jsonFallback.exists(), "orphaned metadata must not block archival")
+        assertTrue(File(tmp, "orphan.ksafe.json.migrated").exists(), "source should be archived")
+        // The good plain entry still migrated.
+        runBlocking {
+            assertEquals(
+                "dark",
+                (target.snapshot()[KeySafeMetadataManager.valueRawKey("theme")] as StoredValue.Text).value,
+            )
+        }
+    }
 }

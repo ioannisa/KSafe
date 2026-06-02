@@ -1160,6 +1160,13 @@ internal class KSafeCore(
     }
 
     suspend fun clearAll() {
+        // The per-entry key deletion below reads protectionMap to learn which
+        // keys exist, so the cache must be populated first. Without this, a
+        // clearAll() on a lazyLoad instance — or one called before the first
+        // snapshot has populated the map — sees an empty protectionMap and
+        // silently skips deleting per-entry engine keys, leaking them on JVM
+        // (OS vault) and web (IndexedDB) exactly as before this guard existed.
+        ensureCacheReadySuspend()
         // Delete per-entry engine keys BEFORE clearing protectionMap (which is
         // what tells us which keys exist). This covers HARDWARE_ISOLATED v2
         // entries (per-entry alias) and ALL legacy v1 entries (which used a
@@ -1405,6 +1412,18 @@ internal class KSafeCore(
 
     private fun isTransientDecryptFailure(e: Throwable): Boolean {
         val msg = e.message ?: return false
+        // KSafe's OWN definitive results — "key absent" and "vault unavailable /
+        // degraded" — are never transient-retryable, even when the alias / file
+        // name happens to contain a word like "keystore". Exclude them first, so a
+        // store named e.g. "keystore" doesn't get its missing-key (or degraded)
+        // reads misclassified as a retryable platform hiccup, which would throw
+        // instead of returning the caller's default.
+        if (msg.contains("No encryption key found", ignoreCase = true) ||
+            msg.contains("key not found", ignoreCase = true) ||
+            msg.contains("vault unavailable", ignoreCase = true)
+        ) {
+            return false
+        }
         // Android Keystore (device locked, Keystore process crashed) and iOS
         // Keychain (Secure Enclave busy) both surface through message strings
         // we can recognise. JVM software encryption never produces these —

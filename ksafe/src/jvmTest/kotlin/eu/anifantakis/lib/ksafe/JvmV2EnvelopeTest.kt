@@ -240,4 +240,36 @@ class JvmV2EnvelopeTest {
             "clearAll must still delete the master key; deleted=${fake.deletedKeys}",
         )
     }
+
+    @Test
+    fun clearAll_onFreshLazyInstance_stillDeletesPerEntryKeys() = runTest {
+        // Regression for the lazyLoad gap: clearAll reads protectionMap to find
+        // per-entry engine keys. If the cache isn't preloaded (lazyLoad, or
+        // before the first snapshot), that map is empty and the keys leak. The
+        // fix calls ensureCacheReadySuspend() first. Here we seed a
+        // HARDWARE_ISOLATED entry on disk, reopen LAZILY, and call clearAll() as
+        // the very first operation — it must still delete the per-entry key.
+        val fileName = JvmKSafeTest.generateUniqueFileName()
+
+        val seed = KSafe(fileName = fileName, testEngine = FakeEncryption())
+        seed.put(
+            "hwSecret", "b",
+            mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED),
+        )
+        delay(300)
+        seed.close()
+        delay(200)
+
+        // Fresh, lazy instance: protectionMap stays empty until something loads it.
+        val fake = FakeEncryption()
+        val reopened = KSafe(fileName = fileName, lazyLoad = true, testEngine = fake)
+        reopened.clearAll() // FIRST op — must still see the on-disk HW-isolated entry
+        delay(200)
+
+        assertTrue(
+            fake.deletedKeys.contains(keyAliasFor(fileName, "hwSecret")),
+            "clearAll on a fresh lazyLoad instance must still delete the per-entry " +
+                "HARDWARE_ISOLATED key; deleted=${fake.deletedKeys}",
+        )
+    }
 }

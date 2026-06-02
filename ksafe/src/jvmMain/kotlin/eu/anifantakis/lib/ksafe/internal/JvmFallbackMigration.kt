@@ -75,8 +75,8 @@ internal fun migrateJsonFallbackToOsBacked(
             // leaves the source in place so the next launch can retry it. Retries
             // are idempotent (re-draining writes the same values again).
             if (result.failed == 0) {
-                runCatching { jsonFallback.renameTo(File(jsonFallback.parentFile, jsonFallback.name + ".migrated")) }
-                runCatching { keysFallback.renameTo(File(keysFallback.parentFile, keysFallback.name + ".migrated")) }
+                archiveOrMark(jsonFallback)
+                archiveOrMark(keysFallback)
             }
             if (result.migrated > 0) warnMigratedFromFallbackOnce(result.migrated)
         }
@@ -123,9 +123,11 @@ private suspend fun reEncryptAll(
 
         val cipherB64 = (stored as? StoredValue.Text)?.value
         if (cipherB64 == null) {
-            // Encrypted entry without text ciphertext — unexpected; treat as a
-            // failure so we don't archive (and lose) it.
-            failed++
+            // Encrypted metadata but no text ciphertext: the value row is gone
+            // (orphaned metadata) or a non-Text remnant. There is nothing
+            // decryptable to carry forward, and it is a PERMANENT state — counting
+            // it as a failure would block archiving forever and re-run the whole
+            // (blocking) migration on every launch. Skip it; nothing is lost.
             continue
         }
         val version = KeySafeMetadataManager.parseEnvelopeVersion(metaRaw)
@@ -159,6 +161,21 @@ private suspend fun reEncryptAll(
 
     if (ops.isNotEmpty()) target.applyBatch(ops)
     return MigrationResult(migrated, failed)
+}
+
+/**
+ * Archives a drained fallback file to `<name>.migrated`. Renames when possible
+ * (preserving the original, recoverable). If the rename is blocked — e.g. a
+ * lingering Windows file handle just after `cancelAndJoin` — it copies to the
+ * `.migrated` marker instead, leaving the (now-redundant) original in place.
+ * Either way the marker exists afterwards, so `buildJvmKSafe`'s gate does not
+ * re-run the blocking migration on every launch. Best-effort throughout.
+ */
+private fun archiveOrMark(f: File) {
+    if (!f.exists()) return
+    val archived = File(f.parentFile, f.name + ".migrated")
+    if (f.renameTo(archived)) return
+    runCatching { f.copyTo(archived, overwrite = true) }
 }
 
 private val migratedWarned = AtomicBoolean(false)

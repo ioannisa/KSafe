@@ -6,6 +6,7 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.nio.file.attribute.PosixFilePermissions
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -36,12 +37,25 @@ internal class FileKeyVault(
 
     @Synchronized
     private fun read(): MutableMap<String, String> {
+        // A missing file genuinely means "no keys yet" — empty is correct.
         if (!file.exists()) return mutableMapOf()
+        // A file that EXISTS but can't be read or parsed is NOT "no keys": it's
+        // transient/permanent unavailability (lock, I/O error, partial write,
+        // tampering). Returning an empty map here would make every key look
+        // absent, and KSafeCore's startup orphan sweep — which reclaims entries
+        // whose decrypt throws "No encryption key found" — would then delete the
+        // still-recoverable ciphertext. Surface it instead, so the failure does
+        // NOT masquerade as an empty vault.
+        val text = try {
+            file.readText()
+        } catch (e: Throwable) {
+            throw IllegalStateException("KSafe: key vault file unreadable: ${file.name}", e)
+        }
+        if (text.isBlank()) return mutableMapOf()
         return try {
-            val text = file.readText()
-            if (text.isBlank()) mutableMapOf() else json.decodeFromString(ser, text).toMutableMap()
-        } catch (_: Throwable) {
-            mutableMapOf()
+            json.decodeFromString(ser, text).toMutableMap()
+        } catch (e: Throwable) {
+            throw IllegalStateException("KSafe: key vault file corrupt: ${file.name}", e)
         }
     }
 
@@ -49,10 +63,16 @@ internal class FileKeyVault(
     private fun write(map: Map<String, String>) {
         val parent = file.parentFile
         if (parent != null && !parent.exists()) parent.mkdirs()
-        val tmp = File.createTempFile(file.name, ".tmp", parent)
+        // Create the temp file owner-only (rw-------) ATOMICALLY where the
+        // filesystem supports POSIX permissions, so the plaintext AES key is
+        // never written into a momentarily group/world-readable file. On
+        // non-POSIX filesystems (Windows) there is no perm-on-create; the parent
+        // directory is already locked down (0700 / user ACL) — the same
+        // protection the key file itself relies on. ATOMIC_MOVE preserves the
+        // temp file's permissions onto the destination.
+        val tmp = createOwnerOnlyTempFile(parent)
         try {
             tmp.writeText(json.encodeToString(ser, map))
-            runCatching { tmp.setReadable(true, true); tmp.setWritable(true, true) }
             Files.move(
                 tmp.toPath(),
                 file.toPath(),
@@ -62,6 +82,22 @@ internal class FileKeyVault(
         } catch (e: Throwable) {
             runCatching { tmp.delete() }
             throw e
+        }
+    }
+
+    private fun createOwnerOnlyTempFile(parent: File?): File {
+        val dir = parent ?: file.absoluteFile.parentFile
+        return try {
+            Files.createTempFile(
+                dir.toPath(),
+                file.name,
+                ".tmp",
+                PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")),
+            ).toFile()
+        } catch (_: UnsupportedOperationException) {
+            // Non-POSIX filesystem (e.g. Windows): no atomic perm-on-create. The
+            // parent directory's 0700 / ACL is the protection here.
+            File.createTempFile(file.name, ".tmp", parent)
         }
     }
 

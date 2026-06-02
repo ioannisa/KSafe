@@ -165,14 +165,26 @@ internal class JvmSoftwareEncryption(
         secretKey(alias, create = true)!!
 
     /**
-     * Decrypt-only lookup: returns the existing key, or throws the same
-     * "No encryption key found" message Android/Apple use so the orphan
-     * sweep can reclaim a JVM orphan and we never mint a junk key on a
-     * failed decrypt. NEVER creates.
+     * Decrypt-only lookup: returns the existing key, or throws. NEVER creates.
+     *
+     * When the vault is healthy and the key is genuinely absent it throws the
+     * same "No encryption key found" message Android/Apple use, so the orphan
+     * sweep can reclaim a true JVM orphan and we never mint a junk key on a
+     * failed decrypt. When the provider has degraded (a runtime OS-vault
+     * failure forced the software fallback) a null lookup is ambiguous — the
+     * key may live only in the now-unreachable OS vault — so it throws an
+     * "unavailable" message the orphan sweep does NOT treat as an orphan,
+     * leaving recoverable ciphertext intact until the OS vault is reachable.
      */
     private fun getExistingSecretKey(alias: String): SecretKey =
         secretKey(alias, create = false)
-            ?: throw IllegalStateException("KSafe: No encryption key found for identifier: $alias")
+            ?: if (vaults.hasDegraded) {
+                throw IllegalStateException(
+                    "KSafe: key vault unavailable (degraded); cannot resolve key for identifier: $alias"
+                )
+            } else {
+                throw IllegalStateException("KSafe: No encryption key found for identifier: $alias")
+            }
 
     /**
      * Cache-checked, per-alias-locked key resolution with the runtime

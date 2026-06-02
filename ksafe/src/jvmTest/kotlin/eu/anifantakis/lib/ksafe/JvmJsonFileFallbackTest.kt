@@ -16,6 +16,7 @@ import java.io.File
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
@@ -113,6 +114,30 @@ class JvmJsonFileFallbackTest {
         assertTrue(store.snapshot().isEmpty())
     }
 
+    @Test
+    fun jsonStorage_corruptFile_isQuarantinedNotSilentlyDiscarded() = runTest {
+        // Regression: a non-blank but unparseable store used to read back as
+        // emptyMap(), so the next write silently overwrote recoverable bytes.
+        // It must now be quarantined (a .corrupt-* sibling) while the store
+        // continues empty — corruption surfaced, data preserved.
+        val file = File(tmp, "corrupt.json")
+        file.writeText("{ this is not valid json")
+        assertTrue(storage(file).snapshot().isEmpty())
+        val quarantined = tmp.listFiles().orEmpty()
+            .filter { it.name.startsWith("corrupt.json.corrupt-") }
+        assertTrue(quarantined.isNotEmpty(), "corrupt file must be quarantined, not discarded")
+        assertEquals("{ this is not valid json", quarantined.first().readText())
+    }
+
+    @Test
+    fun jsonStorage_blankFile_isFreshStore_notQuarantined() = runTest {
+        // A blank file is legitimately "no data yet" — empty, NOT corruption.
+        val file = File(tmp, "blank.json")
+        file.writeText("   ")
+        assertTrue(storage(file).snapshot().isEmpty())
+        assertTrue(tmp.listFiles().orEmpty().none { it.name.contains(".corrupt-") })
+    }
+
     // ── FileKeyVault ─────────────────────────────────────────────────────────
 
     @Test
@@ -134,5 +159,43 @@ class JvmJsonFileFallbackTest {
         assertContentEquals(key, reopened.get("a"))
         assertFalse(reopened.isOsBacked)
         assertNull(reopened.get("missing"))
+    }
+
+    @Test
+    fun fileKeyVault_unreadableFile_throwsRatherThanReportingEmpty() {
+        // A present-but-unparseable keys file must NOT read back as "no keys" —
+        // that would make every key look absent and let KSafe's orphan sweep
+        // delete recoverable ciphertext. Surface it instead of returning null.
+        val file = File(tmp, "corruptkeys.json")
+        file.writeText("{ not valid json")
+        assertFailsWith<IllegalStateException> { FileKeyVault(file).get("anything") }
+    }
+
+    @Test
+    fun fileKeyVault_absentFile_isEmptyNotError() {
+        // A genuinely missing file is "no keys yet" — null, not an error.
+        assertNull(FileKeyVault(File(tmp, "nope.json")).get("anything"))
+    }
+
+    @Test
+    fun fileKeyVault_keyFileIsOwnerOnly_onPosix() {
+        // #7: the plaintext key file must be created owner-only (rw-------) so the
+        // AES key is never written into a momentarily group/world-readable file.
+        // POSIX-only; skipped on filesystems without POSIX permissions (Windows).
+        val file = File(tmp, "perms.ksafe-keys.json")
+        FileKeyVault(file).put("alias", ByteArray(32) { it.toByte() })
+        val view = java.nio.file.Files.getFileAttributeView(
+            file.toPath(),
+            java.nio.file.attribute.PosixFileAttributeView::class.java,
+        ) ?: return // non-POSIX: nothing to assert
+        val perms = view.readAttributes().permissions()
+        assertEquals(
+            setOf(
+                java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
+            ),
+            perms,
+            "key file must be owner read/write only; was $perms",
+        )
     }
 }

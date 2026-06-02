@@ -211,7 +211,12 @@ private fun buildJvmKSafe(
         // test-injected engines.
         if (testEngine == null) {
             val jsonFallback = File(resolvedBaseDir, "$baseFileName.ksafe.json")
-            if (jsonFallback.exists()) {
+            val migrationMarker = File(resolvedBaseDir, "$baseFileName.ksafe.json.migrated")
+            // Gate on the marker as well as the source: if a prior clean pass
+            // couldn't rename the source away (e.g. a lingering Windows handle),
+            // it still leaves a `.migrated` marker — so we don't re-run the
+            // blocking migration on every launch.
+            if (jsonFallback.exists() && !migrationMarker.exists()) {
                 migrateJsonFallbackToOsBacked(
                     config = config,
                     jsonFallback = jsonFallback,

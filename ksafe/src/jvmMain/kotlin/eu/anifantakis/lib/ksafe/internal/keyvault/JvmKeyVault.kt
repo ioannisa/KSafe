@@ -193,6 +193,16 @@ internal class JvmKeyVaultProvider(
         get() = if (degraded.get()) legacy else picked
 
     /**
+     * True once a runtime OS-vault failure has forced the software fallback
+     * (see [degradeToLegacy]). When degraded, a null key lookup is ambiguous —
+     * the key may live only in the now-unreachable OS vault — so callers must
+     * report "vault unavailable" rather than "key absent", to keep the orphan
+     * sweep from deleting still-recoverable ciphertext.
+     */
+    val hasDegraded: Boolean
+        get() = degraded.get()
+
+    /**
      * Flips the provider into degraded mode after a runtime JNA failure on
      * [picked]: subsequent reads of [active] return [legacy]. Emits a
      * one-time loud warning naming the cause so the operator can install

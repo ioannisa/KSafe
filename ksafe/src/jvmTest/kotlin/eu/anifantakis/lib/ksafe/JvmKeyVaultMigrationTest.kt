@@ -19,6 +19,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -397,5 +398,39 @@ class JvmKeyVaultMigrationTest {
 
         // 4. …and must NOT have minted a key into the vault.
         assertNull(emptyVault.store[alias], "decrypt must not create a key for orphaned ciphertext")
+    }
+
+    @Test
+    fun degradedVault_decryptOfUnresolvableKey_reportsUnavailableNotOrphan() {
+        // Regression for the orphan-sweep data-loss interaction: after a runtime
+        // OS-vault LinkageError forces the software fallback, a key that lives
+        // ONLY in the now-unreachable OS vault must NOT surface as "No encryption
+        // key found" — that is the message KSafeCore's orphan sweep DELETES on.
+        // It must report "unavailable", so recoverable ciphertext survives until
+        // the OS vault is reachable again.
+        val alias = "user:token"
+
+        // Ciphertext exists; its key value is irrelevant — we assert on the error
+        // CLASS when the key is unresolvable, not on a recovered plaintext.
+        val ciphertext = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = FakeOsVault()),
+        ).encrypt(alias, "secret".toByteArray())
+
+        // Fresh engine whose OS vault fails at runtime, with an empty legacy
+        // DataStore — so after the degrade the key is genuinely unresolvable.
+        val osVault = LinkErrorOsVault().also { it.armed = true }
+        val provider = JvmKeyVaultProvider(dataStore, forced = osVault)
+        val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+
+        val ex = assertFailsWith<IllegalStateException> { engine.decrypt(alias, ciphertext) }
+        assertTrue(provider.hasDegraded, "precondition: the runtime failure must degrade the provider")
+        val msg = ex.message.orEmpty()
+        assertFalse(
+            msg.contains("No encryption key found", ignoreCase = true) ||
+                msg.contains("key not found", ignoreCase = true),
+            "degraded decrypt must NOT use the orphan-sweep delete message; was: $msg",
+        )
+        assertTrue(msg.contains("unavailable", ignoreCase = true), "should report vault unavailable; was: $msg")
     }
 }
