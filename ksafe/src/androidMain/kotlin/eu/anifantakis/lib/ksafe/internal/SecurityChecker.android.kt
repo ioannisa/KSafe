@@ -18,12 +18,14 @@ import java.io.File
  * In addition to the file/package probes (which modern Android's app sandbox
  * frequently defeats — `File.exists("/system/xbin/su")` returns false even when
  * the binary is present, because SELinux denies the `untrusted_app` domain access
- * to `su_exec`), this checker treats `userdebug`/`eng` builds and
- * `test-keys`/`dev-keys` signing as rooted. Such images — including Google-APIs
- * emulator system images and engineering devices — ship `su` and permit
- * `adb root` by construction. These build signals are read from the public
- * [Build] fields and `android.os.SystemProperties` (not a `getprop` subprocess),
- * so they survive the app sandbox where the path probes do not.
+ * to `su_exec`), this checker treats `userdebug`/`eng` builds (and `test-keys`
+ * signing) as rooted. Such images — Google-APIs emulator system images and
+ * engineering devices — ship `su` and permit `adb root` by construction. These
+ * build signals are read from the public [Build] fields and
+ * `android.os.SystemProperties` (not a `getprop` subprocess), so they survive the
+ * app sandbox where the path probes do not. Note that `user`-build emulators
+ * (Google Play / foldable images) are signed `dev-keys` yet are *not* rooted — the
+ * build *type*, not the signing tag, is what distinguishes them.
  */
 internal actual object SecurityChecker {
 
@@ -237,10 +239,10 @@ internal actual object SecurityChecker {
     }
 
     /**
-     * Treats `userdebug`/`eng` builds and `test-keys`/`dev-keys` signing as a
-     * rooted-capable environment. Reads only the public [Build.TYPE]/[Build.TAGS]
-     * fields, so — unlike the file probes — it is unaffected by the app sandbox.
-     * Delegates to the pure [isRootIndicatingBuild] for deterministic testing.
+     * Treats `userdebug`/`eng` builds (and `test-keys` signing) as a rooted-capable
+     * environment. Reads only the public [Build.TYPE]/[Build.TAGS] fields, so —
+     * unlike the file probes — it is unaffected by the app sandbox. Delegates to the
+     * pure [isRootIndicatingBuild] for deterministic testing.
      */
     private fun checkRootIndicatingBuild(): Boolean =
         isRootIndicatingBuild(Build.TYPE, Build.TAGS)
@@ -271,19 +273,22 @@ internal actual object SecurityChecker {
 /**
  * Pure predicate: do this build's type/tags indicate a rooted-capable image?
  *
- * `userdebug`/`eng` system builds and `test-keys`/`dev-keys` signing ship `su`,
- * allow `adb root`, and expose writable system partitions by construction — this
- * is true of Google-APIs emulator system images and engineering devices.
- * Extracted as a top-level function over the public [Build] fields so it is
- * deterministically unit-testable without depending on the host image.
+ * The reliable signal is the **build type**: `userdebug`/`eng` system builds ship
+ * `su`, allow `adb root`, and expose writable system partitions by construction —
+ * that is exactly what a Google-APIs emulator image or an engineering device is.
+ * `test-keys` signing (an AOSP/custom ROM signed with the public test keys, never a
+ * retail device) is kept as a secondary indicator.
  *
- * Note: `dev-keys` is the signing used by modern Google emulator system images;
- * matching only `test-keys` (the older AOSP convention) let rooted emulators slip
- * through as "not rooted".
+ * Deliberately does **not** key off `dev-keys`: modern Google emulator system
+ * images are signed `dev-keys` for *both* `user` and `userdebug` builds, so the tag
+ * says nothing about root. A `user`-build emulator (Google Play / "Pixel … Fold"
+ * images — no `su`, `ro.debuggable=0`, `adb root` refused) is not rooted and must
+ * not be flagged; only the build *type* separates it from a rooted `userdebug`
+ * image. Extracted as a top-level function over the public [Build] fields so it is
+ * deterministically unit-testable.
  */
 internal fun isRootIndicatingBuild(buildType: String?, buildTags: String?): Boolean {
     val dangerousType = buildType == "userdebug" || buildType == "eng"
-    val dangerousTags = buildTags != null &&
-            (buildTags.contains("test-keys") || buildTags.contains("dev-keys"))
+    val dangerousTags = buildTags != null && buildTags.contains("test-keys")
     return dangerousType || dangerousTags
 }
