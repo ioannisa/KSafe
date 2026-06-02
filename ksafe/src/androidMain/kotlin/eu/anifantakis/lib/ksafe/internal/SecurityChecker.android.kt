@@ -1,5 +1,6 @@
 package eu.anifantakis.lib.ksafe.internal
 
+import android.annotation.SuppressLint
 import android.os.Build
 import android.os.Debug
 import java.io.File
@@ -13,6 +14,16 @@ import java.io.File
  * rooting but cannot guarantee detection against determined users with advanced
  * hiding tools. For high-security applications, consider additional measures
  * like Google Play Integrity API.
+ *
+ * In addition to the file/package probes (which modern Android's app sandbox
+ * frequently defeats — `File.exists("/system/xbin/su")` returns false even when
+ * the binary is present, because SELinux denies the `untrusted_app` domain access
+ * to `su_exec`), this checker treats `userdebug`/`eng` builds and
+ * `test-keys`/`dev-keys` signing as rooted. Such images — including Google-APIs
+ * emulator system images and engineering devices — ship `su` and permit
+ * `adb root` by construction. These build signals are read from the public
+ * [Build] fields and `android.os.SystemProperties` (not a `getprop` subprocess),
+ * so they survive the app sandbox where the path probes do not.
  */
 internal actual object SecurityChecker {
 
@@ -103,7 +114,7 @@ internal actual object SecurityChecker {
                 checkBusyBox() ||
                 checkXposed() ||
                 checkRootPackages() ||
-                checkBuildTags() ||
+                checkRootIndicatingBuild() ||
                 checkDangerousProps()
     }
 
@@ -225,20 +236,54 @@ internal actual object SecurityChecker {
         }
     }
 
-    private fun checkBuildTags(): Boolean {
-        val tags = Build.TAGS
-        return tags != null && tags.contains("test-keys")
-    }
+    /**
+     * Treats `userdebug`/`eng` builds and `test-keys`/`dev-keys` signing as a
+     * rooted-capable environment. Reads only the public [Build.TYPE]/[Build.TAGS]
+     * fields, so — unlike the file probes — it is unaffected by the app sandbox.
+     * Delegates to the pure [isRootIndicatingBuild] for deterministic testing.
+     */
+    private fun checkRootIndicatingBuild(): Boolean =
+        isRootIndicatingBuild(Build.TYPE, Build.TAGS)
 
     private fun checkDangerousProps(): Boolean {
-        return try {
-            dangerousProps.any { (prop, dangerousValue) ->
-                val process = Runtime.getRuntime().exec("getprop $prop")
-                val value = process.inputStream.bufferedReader().readLine()
-                value == dangerousValue
-            }
-        } catch (_: Exception) {
-            false
+        return dangerousProps.any { (prop, dangerousValue) ->
+            readSystemProperty(prop) == dangerousValue
         }
     }
+
+    /**
+     * Reads a system property via `android.os.SystemProperties.get` through
+     * reflection. This reads the native property area directly and therefore
+     * works from the app sandbox, unlike `Runtime.exec("getprop")`, which modern
+     * SELinux policy denies to the `untrusted_app` domain. Returns `null` on any
+     * failure (missing/empty/blocked) so callers fail safe.
+     */
+    @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
+    private fun readSystemProperty(name: String): String? = try {
+        val clazz = Class.forName("android.os.SystemProperties")
+        val getter = clazz.getMethod("get", String::class.java)
+        (getter.invoke(null, name) as? String)?.takeIf { it.isNotEmpty() }
+    } catch (_: Throwable) {
+        null
+    }
+}
+
+/**
+ * Pure predicate: do this build's type/tags indicate a rooted-capable image?
+ *
+ * `userdebug`/`eng` system builds and `test-keys`/`dev-keys` signing ship `su`,
+ * allow `adb root`, and expose writable system partitions by construction — this
+ * is true of Google-APIs emulator system images and engineering devices.
+ * Extracted as a top-level function over the public [Build] fields so it is
+ * deterministically unit-testable without depending on the host image.
+ *
+ * Note: `dev-keys` is the signing used by modern Google emulator system images;
+ * matching only `test-keys` (the older AOSP convention) let rooted emulators slip
+ * through as "not rooted".
+ */
+internal fun isRootIndicatingBuild(buildType: String?, buildTags: String?): Boolean {
+    val dangerousType = buildType == "userdebug" || buildType == "eng"
+    val dangerousTags = buildTags != null &&
+            (buildTags.contains("test-keys") || buildTags.contains("dev-keys"))
+    return dangerousType || dangerousTags
 }
