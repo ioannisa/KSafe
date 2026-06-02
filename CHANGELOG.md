@@ -2,7 +2,7 @@
 
 All notable changes to KSafe will be documented in this file.
 
-## [2.1.1] - 2026-05-29
+## [2.1.1] - 2026-06-02
 
 Hardening and diagnostic-API release. **Drop-in upgrade from 2.1.0** — on-disk format is unchanged.
 
