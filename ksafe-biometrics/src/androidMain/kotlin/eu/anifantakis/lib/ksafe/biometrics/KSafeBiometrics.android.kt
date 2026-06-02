@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.time.TimeSource
 
 /**
  * Android implementation of [KSafeBiometrics] platform helpers.
@@ -21,6 +22,13 @@ import java.util.concurrent.atomic.AtomicReference
  * valid for the given scope.
  */
 private val biometricAuthSessions = AtomicReference<Map<String, Long>>(emptyMap())
+
+// Monotonic clock for the authorization TTL: a backward wall-clock jump (NTP
+// correction, timezone/manual change) must NOT extend a cached authorization.
+// TimeSource.Monotonic never goes backward, so stored "timestamps" are
+// monotonic elapsed-millis from this origin rather than wall-clock millis.
+private val biometricClockOrigin = TimeSource.Monotonic.markNow()
+private fun monotonicNowMs(): Long = biometricClockOrigin.elapsedNow().inWholeMilliseconds
 
 private fun updateBiometricSession(scope: String, timestamp: Long) {
     while (true) {
@@ -38,7 +46,7 @@ internal actual suspend fun platformVerifyBiometric(
     if (authorizationDuration != null && authorizationDuration.duration > 0) {
         val scope = authorizationDuration.scope ?: ""
         val lastAuth = biometricAuthSessions.get()[scope] ?: 0L
-        val now = System.currentTimeMillis()
+        val now = monotonicNowMs()
         if (lastAuth > 0 && (now - lastAuth) < authorizationDuration.duration) {
             return true
         }
@@ -47,7 +55,7 @@ internal actual suspend fun platformVerifyBiometric(
     return try {
         BiometricHelper.authenticate(reason, allowDeviceCredentialFallback)
         if (authorizationDuration != null) {
-            updateBiometricSession(authorizationDuration.scope ?: "", System.currentTimeMillis())
+            updateBiometricSession(authorizationDuration.scope ?: "", monotonicNowMs())
         }
         true
     } catch (e: BiometricAuthException) {

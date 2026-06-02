@@ -5,8 +5,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
-import platform.CoreFoundation.CFAbsoluteTimeGetCurrent
 import platform.Foundation.NSProcessInfo
+import kotlin.time.TimeSource
 import kotlin.concurrent.AtomicReference
 import kotlin.experimental.ExperimentalNativeApi
 import kotlin.native.OsFamily
@@ -24,9 +24,12 @@ import kotlin.native.Platform
 
 private val biometricAuthSessions = AtomicReference<Map<String, Long>>(emptyMap())
 
-@OptIn(ExperimentalForeignApi::class)
-private fun currentTimeMillis(): Long =
-    ((CFAbsoluteTimeGetCurrent() + 978307200.0) * 1000).toLong()
+// Monotonic clock for the authorization TTL: a backward wall-clock jump (NTP
+// correction or manual change) must NOT extend a cached biometric
+// authorization. TimeSource.Monotonic never goes backward, so stored
+// "timestamps" are monotonic elapsed-millis from this origin.
+private val biometricClockOrigin = TimeSource.Monotonic.markNow()
+private fun monotonicNowMs(): Long = biometricClockOrigin.elapsedNow().inWholeMilliseconds
 
 @OptIn(ExperimentalForeignApi::class)
 private fun isSimulator(): Boolean =
@@ -48,7 +51,7 @@ internal actual suspend fun platformVerifyBiometric(
     if (authorizationDuration != null && authorizationDuration.duration > 0) {
         val scope = authorizationDuration.scope ?: ""
         val lastAuth = biometricAuthSessions.value[scope] ?: 0L
-        val now = currentTimeMillis()
+        val now = monotonicNowMs()
         if (lastAuth > 0 && (now - lastAuth) < authorizationDuration.duration) {
             return true
         }
@@ -56,7 +59,7 @@ internal actual suspend fun platformVerifyBiometric(
 
     if (isSimulator()) {
         if (authorizationDuration != null) {
-            updateBiometricSession(authorizationDuration.scope ?: "", currentTimeMillis())
+            updateBiometricSession(authorizationDuration.scope ?: "", monotonicNowMs())
         }
         return true
     }
@@ -71,7 +74,7 @@ internal actual suspend fun platformVerifyBiometric(
         CoroutineScope(Dispatchers.Main).launch {
             runLAContextEvaluate(context, reason, allowDeviceCredentialFallback) { success ->
                 if (success && authorizationDuration != null) {
-                    updateBiometricSession(authorizationDuration.scope ?: "", currentTimeMillis())
+                    updateBiometricSession(authorizationDuration.scope ?: "", monotonicNowMs())
                 }
                 if (continuation.isActive) continuation.resumeWith(Result.success(success))
             }
@@ -89,7 +92,7 @@ internal actual fun platformVerifyBiometricDirect(
         if (authorizationDuration != null && authorizationDuration.duration > 0) {
             val scope = authorizationDuration.scope ?: ""
             val lastAuth = biometricAuthSessions.value[scope] ?: 0L
-            val now = currentTimeMillis()
+            val now = monotonicNowMs()
             if (lastAuth > 0 && (now - lastAuth) < authorizationDuration.duration) {
                 onResult(true)
                 return@launch
@@ -97,14 +100,14 @@ internal actual fun platformVerifyBiometricDirect(
         }
         if (isSimulator()) {
             if (authorizationDuration != null) {
-                updateBiometricSession(authorizationDuration.scope ?: "", currentTimeMillis())
+                updateBiometricSession(authorizationDuration.scope ?: "", monotonicNowMs())
             }
             onResult(true)
             return@launch
         }
         runLAContextEvaluate(platform.LocalAuthentication.LAContext(), reason, allowDeviceCredentialFallback) { success ->
             if (success && authorizationDuration != null) {
-                updateBiometricSession(authorizationDuration.scope ?: "", currentTimeMillis())
+                updateBiometricSession(authorizationDuration.scope ?: "", monotonicNowMs())
             }
             onResult(success)
         }

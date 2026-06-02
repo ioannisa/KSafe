@@ -351,6 +351,18 @@ internal class KSafeCore(
             override val rawCacheKey: String,
             override val completion: CompletableDeferred<Unit>? = null,
         ) : PendingWrite()
+
+        /**
+         * Routes [clearAll] through the write channel so the wipe is serialized
+         * (FIFO) with concurrent writes. Carries no user key — handled as a batch
+         * boundary in [processBatchBody], ahead of the per-key coalescing.
+         */
+        data class ClearAll(
+            override val completion: CompletableDeferred<Unit>? = null,
+        ) : PendingWrite() {
+            override val userKey: String get() = "__ksafe_clear_all__"
+            override val rawCacheKey: String get() = "__ksafe_clear_all__"
+        }
     }
 
     // ---- key/metadata helpers (thin shims over KeySafeMetadataManager) ----
@@ -813,6 +825,52 @@ internal class KSafeCore(
     }
 
     private suspend fun processBatchBody(batch: List<PendingWrite>) {
+        // A clearAll() routed through the channel acts as a batch boundary:
+        // everything up to and including the last ClearAll in this batch is
+        // wiped, and only writes enqueued AFTER it survive. Going through the
+        // single-consumer FIFO channel is what serializes clearAll against
+        // concurrent writes — a put/delete enqueued before clearAll() is ordered
+        // before the wipe and can no longer land after it and resurrect data.
+        val lastClear = batch.indexOfLast { it is PendingWrite.ClearAll }
+        if (lastClear >= 0) {
+            performClearAll()
+            val after = batch.subList(lastClear + 1, batch.size)
+            if (after.isNotEmpty()) processWrites(after)
+            return
+        }
+        processWrites(batch)
+    }
+
+    /**
+     * The wipe performed by [clearAll], run on the write consumer so it is
+     * serialized with every other write. Mirrors the former clearAll() body.
+     */
+    private suspend fun performClearAll() {
+        // Delete per-entry engine keys BEFORE clearing protectionMap (which tells
+        // us which keys exist). Covers HARDWARE_ISOLATED v2 entries and ALL legacy
+        // v1 entries (per-entry alias even for DEFAULT). For v2 DEFAULT entries —
+        // which share the master — keyAlias(userKey) has no entry, so the delete
+        // is a harmless no-op. Best-effort.
+        val encryptedUserKeys = protectionMap.snapshot()
+            .filterValues { KeySafeMetadataManager.parseProtection(it) != null }
+            .keys
+        for (userKey in encryptedUserKeys) {
+            runCatching { engine.deleteKeySuspend(keyAlias(userKey)) }
+                .onFailure { if (it is CancellationException) throw it }
+        }
+        storage.clear()
+        memoryCache.clear()
+        plaintextCache.clear()
+        protectionMap.clear()
+        encMetaMap.clear()
+        // Drop both master keys so the next datastore use starts from scratch.
+        for (reqUnlocked in listOf(false, true)) {
+            runCatching { engine.deleteKeySuspend(masterAlias(reqUnlocked)) }
+                .onFailure { if (it is CancellationException) throw it }
+        }
+    }
+
+    private suspend fun processWrites(batch: List<PendingWrite>) {
         val aliasesToDelete = mutableListOf<String>()
         val encryptedCiphertext = mutableMapOf<String, ByteArray>()
 
@@ -896,6 +954,9 @@ internal class KSafeCore(
                     ops += StorageOp.Delete(legacyProtectionRawKey(key))
                     aliasesToDelete += keyAlias(key)
                 }
+                // Handled as a batch boundary in processBatchBody; never reaches
+                // here (this branch only satisfies `when` exhaustiveness).
+                is PendingWrite.ClearAll -> Unit
             }
         }
 
@@ -1164,40 +1225,20 @@ internal class KSafeCore(
     }
 
     suspend fun clearAll() {
-        // The per-entry key deletion below reads protectionMap to learn which
-        // keys exist, so the cache must be populated first. Without this, a
-        // clearAll() on a lazyLoad instance — or one called before the first
-        // snapshot has populated the map — sees an empty protectionMap and
-        // silently skips deleting per-entry engine keys, leaking them on JVM
-        // (OS vault) and web (IndexedDB) exactly as before this guard existed.
+        // Populate the cache first so performClearAll() (which runs on the write
+        // consumer) can read protectionMap to learn which per-entry engine keys
+        // to delete — covers clearAll() on a fresh/lazyLoad instance, before the
+        // first snapshot has populated the map.
         ensureCacheReadySuspend()
-        // Delete per-entry engine keys BEFORE clearing protectionMap (which is
-        // what tells us which keys exist). This covers HARDWARE_ISOLATED v2
-        // entries (per-entry alias) and ALL legacy v1 entries (which used a
-        // per-entry key even for DEFAULT). For v2 DEFAULT entries — which share
-        // the master key — `keyAlias(userKey)` has no entry, so the delete is a
-        // harmless no-op. Without this, web (IndexedDB) and JVM (OS vault) leak
-        // these keys across clearAll() cycles: unlike Android/Apple they have no
-        // startup orphan sweep for the engine's own keys, and after the storage
-        // is cleared there is nothing left to cross-reference. Best-effort.
-        val encryptedUserKeys = protectionMap.snapshot()
-            .filterValues { KeySafeMetadataManager.parseProtection(it) != null }
-            .keys
-        for (userKey in encryptedUserKeys) {
-            runCatching { engine.deleteKeySuspend(keyAlias(userKey)) }
-                .onFailure { if (it is CancellationException) throw it }
-        }
-
-        storage.clear()
-        memoryCache.clear()
-        plaintextCache.clear()
-        protectionMap.clear()
-        encMetaMap.clear()
-        // Drop both master keys so the next datastore use starts from scratch.
-        for (reqUnlocked in listOf(false, true)) {
-            runCatching { engine.deleteKeySuspend(masterAlias(reqUnlocked)) }
-                .onFailure { if (it is CancellationException) throw it }
-        }
+        // Route the wipe THROUGH the write channel (instead of clearing storage
+        // directly) so it is serialized with concurrent writes by the single
+        // consumer: a put/delete enqueued before this call is ordered before the
+        // wipe and can no longer be applied after it and resurrect data. Like the
+        // suspend put/delete paths, this awaits the consumer (don't call it on a
+        // closed instance).
+        val deferred = CompletableDeferred<Unit>()
+        writeChannel.send(PendingWrite.ClearAll(completion = deferred))
+        deferred.await()
     }
 
     fun getKeyInfo(key: String): KSafeKeyInfo? {
