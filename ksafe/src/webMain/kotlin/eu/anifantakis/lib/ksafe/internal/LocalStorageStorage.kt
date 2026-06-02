@@ -34,17 +34,41 @@ internal class LocalStorageStorage(
 
     override suspend fun applyBatch(ops: List<StorageOp>) {
         if (ops.isEmpty()) return
-        for (op in ops) when (op) {
-            is StorageOp.Put -> safeLocalStorageSet(storagePrefix + op.rawKey, op.value.asString())
-            is StorageOp.Delete -> localStorageRemove(storagePrefix + op.rawKey)
+        // localStorage has no transaction API, so emulate the all-or-nothing
+        // semantics the DataStore backends get from `edit {}`: snapshot the prior
+        // value of every key the batch touches, and on any failure (typically a
+        // QuotaExceededError mid-batch) restore them. Without this a partial batch
+        // can persist a value without its metadata — which a later read
+        // misclassifies as plaintext and hands back as the raw ciphertext string.
+        val priors = HashMap<String, String?>()
+        for (op in ops) {
+            val fullKey = storagePrefix + op.rawKey
+            if (fullKey !in priors) priors[fullKey] = localStorageGet(fullKey)
         }
-        changes.value = readSnapshotSync()
-        // Browsers are single-threaded: without yielding, downstream
-        // collectors (Flow/StateFlow observers) don't run until the current
-        // coroutine fully returns. Tests call `put()` and immediately
-        // subscribe — they need the collector to have already propagated the
-        // new value by then. `yield()` gives the event loop a tick.
-        yield()
+        try {
+            for (op in ops) when (op) {
+                is StorageOp.Put -> safeLocalStorageSet(storagePrefix + op.rawKey, op.value.asString())
+                is StorageOp.Delete -> localStorageRemove(storagePrefix + op.rawKey)
+            }
+        } catch (e: Throwable) {
+            // Best-effort rollback to the pre-batch state. Restoring a value that
+            // already fit cannot itself exceed quota, so this won't cascade.
+            for ((fullKey, prior) in priors) {
+                runCatching {
+                    if (prior == null) localStorageRemove(fullKey) else localStorageSet(fullKey, prior)
+                }
+            }
+            throw e
+        } finally {
+            // Re-emit on both success (new state) and failure (rolled-back state).
+            changes.value = readSnapshotSync()
+            // Browsers are single-threaded: without yielding, downstream
+            // collectors (Flow/StateFlow observers) don't run until the current
+            // coroutine fully returns. Tests call `put()` and immediately
+            // subscribe — they need the collector to have already propagated the
+            // new value by then. `yield()` gives the event loop a tick.
+            yield()
+        }
     }
 
     /** Catches QuotaExceededError and rethrows with actionable context. */

@@ -4,6 +4,7 @@ import com.sun.jna.Library
 import com.sun.jna.Native
 import com.sun.jna.Pointer
 import com.sun.jna.Structure
+import com.sun.jna.ptr.PointerByReference
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -47,10 +48,32 @@ internal class LinuxSecretServiceKeyVault(
 
     @OptIn(ExperimentalEncodingApi::class)
     override fun get(alias: String): ByteArray? {
+        // Pass a real GError** out-param. libsecret returns NULL both when the
+        // key is genuinely absent AND when the lookup fails (login keyring
+        // locked, keyring daemon / D-Bus unreachable, …). With the error
+        // out-param passed as null those two were indistinguishable, so a
+        // transient keyring outage masqueraded as "key absent" — after which
+        // KSafe's orphan sweep DELETES the still-recoverable ciphertext. The
+        // GError disambiguates: error set ⇒ unavailable, error unset + NULL ⇒
+        // genuinely absent.
+        val errorRef = PointerByReference()
         val ptr: Pointer? = SECRET.secret_password_lookup_sync(
-            schema(), null, null,
+            schema(), null, errorRef,
             ATTR_ALIAS, nsAlias(alias), null,
         )
+        errorRef.value?.let { gerror ->
+            // Free the GError best-effort (GLib may be unmappable on a stripped
+            // host — never let that turn a clean error into a crash), then
+            // report "vault unavailable", NOT "key absent". KSafeCore treats the
+            // "vault unavailable" wording as non-deletable (orphan sweep skips
+            // it) and returns the caller's default rather than reaping the
+            // ciphertext, leaving it recoverable once the keyring is back.
+            runCatching { GLIB?.g_error_free(gerror) }
+            throw IllegalStateException(
+                "KSafe: key vault unavailable — Linux Secret Service lookup failed for " +
+                    "alias \"$alias\" (login keyring locked or unreachable)."
+            )
+        }
         ptr ?: return null
         return try {
             val b64 = ptr.getString(0)
@@ -134,7 +157,10 @@ internal class LinuxSecretServiceKeyVault(
         fun secret_password_lookup_sync(
             schema: SecretSchema,
             cancellable: Pointer?,
-            error: Pointer?,
+            // GError** out-param: JNA writes the GError* libsecret allocates on
+            // failure here (left NULL on success / not-found) so the caller can
+            // tell a keyring error apart from a genuinely-absent key.
+            error: PointerByReference?,
             vararg attributes: Any?,
         ): Pointer?
 
@@ -158,6 +184,11 @@ internal class LinuxSecretServiceKeyVault(
         fun secret_password_free(password: Pointer?)
     }
 
+    /** Minimal GLib binding — only `g_error_free`, to release a GError. */
+    private interface GLibLibrary : Library {
+        fun g_error_free(error: Pointer)
+    }
+
     private companion object {
         const val SCHEMA_NAME = "eu.anifantakis.ksafe"
         const val ATTR_ALIAS = "alias"
@@ -167,5 +198,15 @@ internal class LinuxSecretServiceKeyVault(
         const val SECRET_SCHEMA_ATTRIBUTE_STRING = 0
 
         val SECRET: SecretLibrary = Native.load("secret-1", SecretLibrary::class.java)
+
+        /**
+         * Best-effort GError free. libsecret links GLib, so whenever `secret-1`
+         * loaded GLib is already in-process; we still load it defensively
+         * (nullable) so a missing/odd soname can never break the critical
+         * "throw on keyring error instead of reporting absent" path — worst case
+         * we skip freeing a tiny GError on the (rare) error path.
+         */
+        val GLIB: GLibLibrary? =
+            runCatching { Native.load("glib-2.0", GLibLibrary::class.java) }.getOrNull()
     }
 }

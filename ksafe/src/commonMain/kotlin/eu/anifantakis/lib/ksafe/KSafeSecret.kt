@@ -17,6 +17,11 @@ private val secretMutex = Mutex()
  * - **Stored using KSafe's hardware-backed encryption**, respecting the requested protection tier.
  * - **Generated once** on first call and retrieved on subsequent calls.
  * - **Tied to a logical key** so each secret is isolated.
+ * - **Never silently rotated.** If a secret was created before but can't be
+ *   read back now — the backing key was invalidated/rotated/wiped, the key
+ *   vault is temporarily unavailable, or the stored value is corrupt — this
+ *   throws rather than minting a new secret. Overwriting it would permanently
+ *   orphan everything encrypted under the old one (e.g. a SQLCipher database).
  *
  * By default it uses [KSafeEncryptedProtection.HARDWARE_ISOLATED] (StrongBox on Android,
  * Secure Enclave on iOS), falling back to the platform default when hardware isolation
@@ -48,6 +53,10 @@ private val secretMutex = Mutex()
  * @param requireUnlockedDevice Whether the device must be unlocked to read the secret.
  * @return The secret as a [ByteArray].
  * @throws IllegalArgumentException if [key] is blank or [size] is not positive.
+ * @throws IllegalStateException if a secret for [key] already exists but cannot
+ *   be read back (see "Never silently rotated" above). Resolve the underlying
+ *   vault/key problem and retry, or delete the existing secret first to
+ *   intentionally rotate it.
  */
 @OptIn(ExperimentalEncodingApi::class)
 suspend fun KSafe.getOrCreateSecret(
@@ -63,19 +72,43 @@ suspend fun KSafe.getOrCreateSecret(
 
     return secretMutex.withLock {
         val stored = get<String>(storageKey, defaultValue = "")
-        if (stored.isNotEmpty()) {
-            Base64.decode(stored)
-        } else {
-            val secret = secureRandomBytes(size)
-            put(
-                key = storageKey,
-                value = Base64.encode(secret),
-                mode = KSafeWriteMode.Encrypted(
-                    protection = protection,
-                    requireUnlockedDevice = requireUnlockedDevice
-                )
+        when {
+            stored.isNotEmpty() -> Base64.decode(stored)
+
+            // Empty value but the entry EXISTS on disk ⇒ the secret was created
+            // before but can't be read back now: the backing encryption key was
+            // invalidated/rotated/wiped, the key vault is temporarily unavailable,
+            // or the stored ciphertext is corrupt/tampered. `get` collapses all of
+            // these to the "" default (a transient "device is locked" failure would
+            // instead have thrown out of `get` before reaching here). Silently
+            // regenerating would mint a brand-new secret and PERMANENTLY orphan
+            // everything encrypted under the old one — e.g. a SQLCipher database or
+            // an HMAC chain becomes undecryptable, with no signal to the caller.
+            // Refuse and surface the condition instead (KSafe's "never silent data
+            // loss" contract).
+            getKeyInfo(storageKey) != null -> throw IllegalStateException(
+                "KSafe.getOrCreateSecret: a secret for key \"$key\" exists but could not be " +
+                    "read back — the backing encryption key may have been invalidated or " +
+                    "rotated, the OS key vault may be temporarily unavailable, or the stored " +
+                    "value may be corrupt. Refusing to overwrite it: generating a new secret " +
+                    "would permanently orphan any data encrypted under the existing one (e.g. " +
+                    "a SQLCipher database). Resolve the vault/key problem and retry, or call " +
+                    "delete(\"$storageKey\") first to intentionally discard the old secret."
             )
-            secret
+
+            else -> {
+                // Genuinely absent (no on-disk entry) — first-time generation.
+                val secret = secureRandomBytes(size)
+                put(
+                    key = storageKey,
+                    value = Base64.encode(secret),
+                    mode = KSafeWriteMode.Encrypted(
+                        protection = protection,
+                        requireUnlockedDevice = requireUnlockedDevice
+                    )
+                )
+                secret
+            }
         }
     }
 }

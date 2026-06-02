@@ -173,17 +173,26 @@ inline fun <reified T> KSafe.mutableStateOf(
  * automatically persisted back. This function calls KSafe's `inline reified T`
  * [KSafe.getDirect] and [KSafe.putDirect] methods safely.
  *
- * **Usage:**
+ * **Usage — ViewModel / class properties only.** This delegate is created once
+ * and lives for the owner's lifetime:
  * ```kotlin
- * // In a Composable or ViewModel
- * var username by ksafe.mutableStateOf("Guest")
- * var counter by ksafe.mutableStateOf(0, key = "my_counter")
- * var settings by ksafe.mutableStateOf(Settings(), mode = KSafeWriteMode.Plain)
- * var secret by ksafe.mutableStateOf(
- *     "",
- *     mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED)
- * )
+ * class MyViewModel(ksafe: KSafe) : ViewModel() {
+ *     var username by ksafe.mutableStateOf("Guest")
+ *     var counter  by ksafe.mutableStateOf(0, key = "my_counter")
+ *     var settings by ksafe.mutableStateOf(Settings(), mode = KSafeWriteMode.Plain)
+ *     var secret   by ksafe.mutableStateOf(
+ *         "",
+ *         mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED),
+ *     )
+ * }
  * ```
+ *
+ * ⚠️ **Do not call this in a `@Composable` function body.** It is not
+ * `remember`-wrapped, so each recomposition would re-create the state — re-reading
+ * storage and discarding in-progress edits — and, on a cold-start key, launch a
+ * background `CoroutineScope` not tied to the composition. For composable-body
+ * state use [rememberKSafeState], which is `remember`-scoped and
+ * `LaunchedEffect`-driven.
  *
  * **For biometric protection**, use [KSafe.verifyBiometric] or [KSafe.verifyBiometricDirect]
  * before modifying the value:

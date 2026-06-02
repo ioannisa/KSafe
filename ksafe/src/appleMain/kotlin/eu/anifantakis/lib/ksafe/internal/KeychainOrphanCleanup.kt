@@ -58,6 +58,17 @@ import platform.Security.kSecReturnAttributes
  *
  * Failures are swallowed by the caller — a locked device or a transient
  * Keychain error must never block `KSafe` initialization.
+ *
+ * [reservedKeyIds] lists key-id segments that are KSafe infrastructure rather
+ * than per-value keys and must NEVER be swept — currently the v2 envelope's
+ * shared master-key sentinels (`__ksafe_master__` / `__ksafe_master_locked__`).
+ * A master key is referenced by every `DEFAULT`-protected value collectively,
+ * not by any single user key, so it never appears in [validKeys]. Without this
+ * guard the sweep would classify the master as an orphan and delete it on the
+ * launch after the first `DEFAULT` write — rendering ALL `DEFAULT` ciphertext
+ * permanently undecryptable (and then reaped by the DataStore orphan sweep).
+ * Reserved keys are infrastructure: a stale one is harmless clutter, reclaimed
+ * only by `clearAll()` (or reused by the next `DEFAULT` write).
  */
 @OptIn(ExperimentalForeignApi::class)
 internal suspend fun cleanupOrphanedKeychainEntries(
@@ -68,6 +79,7 @@ internal suspend fun cleanupOrphanedKeychainEntries(
     fileName: String?,
     legacyEncryptedPrefix: String,
     seKeyTagPrefix: String,
+    reservedKeyIds: Set<String>,
 ) {
     val snapshot = storage.snapshot()
 
@@ -127,21 +139,13 @@ internal suspend fun cleanupOrphanedKeychainEntries(
                     val dict = array.objectAtIndex(i.toULong()) as? NSDictionary ?: continue
                     val account = dict.objectForKey(kSecAttrAccount as Any) as? String ?: continue
 
-                    // Plain keys: "{prefix}.{keyId}"
-                    if (account.startsWith(prefixWithDelimiter)) {
-                        val keyId = account.removePrefix(prefixWithDelimiter)
-                        // When no fileName is set, prefix is "eu.anifantakis.ksafe." —
-                        // be conservative and skip entries that look like they belong
-                        // to a fileName-scoped instance (they contain a further ".").
-                        if (fileName == null && keyId.contains('.')) continue
-                        if (keyId !in validKeys) orphanedKeyIds.add(keyId)
-                    }
-                    // SE-wrapped keys: "se.{prefix}.{keyId}"
-                    else if (account.startsWith(sePrefixWithDelimiter)) {
-                        val keyId = account.removePrefix(sePrefixWithDelimiter)
-                        if (fileName == null && keyId.contains('.')) continue
-                        if (keyId !in validKeys) orphanedKeyIds.add(keyId)
-                    }
+                    // Plain keys: "{prefix}.{keyId}"; SE-wrapped keys:
+                    // "se.{prefix}.{keyId}". The two prefixes are mutually
+                    // exclusive, so at most one classifier matches.
+                    val orphan =
+                        keychainOrphanKeyId(account, prefixWithDelimiter, fileName, validKeys, reservedKeyIds)
+                            ?: keychainOrphanKeyId(account, sePrefixWithDelimiter, fileName, validKeys, reservedKeyIds)
+                    if (orphan != null) orphanedKeyIds.add(orphan)
                 }
             }
         }
@@ -177,11 +181,8 @@ internal suspend fun cleanupOrphanedKeychainEntries(
                     val tag = tagBytes.decodeToString()
 
                     // SE tags: "se.{prefix}.{keyId}"
-                    if (tag.startsWith(sePrefixWithDelimiter)) {
-                        val keyId = tag.removePrefix(sePrefixWithDelimiter)
-                        if (fileName == null && keyId.contains('.')) continue
-                        if (keyId !in validKeys) orphanedKeyIds.add(keyId)
-                    }
+                    keychainOrphanKeyId(tag, sePrefixWithDelimiter, fileName, validKeys, reservedKeyIds)
+                        ?.let { orphanedKeyIds.add(it) }
                 }
             }
         }

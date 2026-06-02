@@ -326,6 +326,11 @@ private fun buildAppleKSafe(
                 fileName = fileName,
                 legacyEncryptedPrefix = iosLegacyEncryptedPrefix(),
                 seKeyTagPrefix = AppleKeychainEncryption.SE_KEY_TAG_PREFIX,
+                // The v2 envelope's shared master keys are referenced by every
+                // DEFAULT value collectively, never by a single user key, so they
+                // never appear in the sweep's valid-key set. Reserve them so the
+                // sweep can't delete the master and orphan all DEFAULT ciphertext.
+                reservedKeyIds = setOf(MASTER_KEY_DEFAULT, MASTER_KEY_LOCKED),
             )
         }.onFailure { t ->
             if (t is CancellationException) throw t

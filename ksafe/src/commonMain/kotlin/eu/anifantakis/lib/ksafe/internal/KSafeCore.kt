@@ -816,16 +816,20 @@ internal class KSafeCore(
         val aliasesToDelete = mutableListOf<String>()
         val encryptedCiphertext = mutableMapOf<String, ByteArray>()
 
-        // Dedupe by userKey: when a caller issues multiple `put`s for the same
-        // key inside one coalesce window, only the latest write needs to be
-        // encrypted. The downstream loop still emits a StorageOp for every
-        // duplicate (so legacy-cleanup deletes still fire), and the storage
-        // backend resolves duplicates by last-applied-wins — which matches the
-        // previous serial-overwrite semantics.
-        val latestEncryptedByKey = LinkedHashMap<String, PendingWrite.Encrypted>()
-        for (op in batch) {
-            if (op is PendingWrite.Encrypted) latestEncryptedByKey[op.userKey] = op
-        }
+        // Coalesce to the LAST write per userKey. A put and a delete are each
+        // absolute (every op fully determines a key's final state), so applying
+        // a 16ms window in order is equivalent to applying only the last op per
+        // key. That equivalence is also the fix for the delete+put race: a
+        // delete and a put for the same key in one batch must NOT both take
+        // effect. The old code emitted the put's ciphertext AND then ran the
+        // delete's `engine.deleteKey(keyAlias)` afterward, instantly orphaning a
+        // just-written HARDWARE_ISOLATED entry (its per-entry key was deleted).
+        // Letting the final op win prevents that.
+        val finalByKey = LinkedHashMap<String, PendingWrite>()
+        for (op in batch) finalByKey[op.userKey] = op
+
+        // Only keys whose FINAL op is an encrypted write need encrypting.
+        val toEncrypt = finalByKey.values.filterIsInstance<PendingWrite.Encrypted>()
 
         // Encrypt the deduped set concurrently. v2 envelope routes DEFAULT
         // entries through the datastore's master alias (one of two — locked or
@@ -834,10 +838,10 @@ internal class KSafeCore(
         // engines never contend across distinct identifiers, so DEFAULT writes
         // serialise on the master alias's lock (cheap, in-process) while
         // HARDWARE_ISOLATED encrypts pipeline freely.
-        if (latestEncryptedByKey.isNotEmpty()) {
+        if (toEncrypt.isNotEmpty()) {
             val gate = Semaphore(maxParallelEncrypts)
             coroutineScope {
-                latestEncryptedByKey.values.map { op ->
+                toEncrypt.map { op ->
                     async {
                         gate.withPermit {
                             val alias = aliasForWrite(op.userKey, op.protection, op.requireUnlockedDevice)
@@ -854,7 +858,7 @@ internal class KSafeCore(
         }
 
         val ops = mutableListOf<StorageOp>()
-        for (op in batch) {
+        for (op in finalByKey.values) {
             when (op) {
                 is PendingWrite.Plain -> {
                     val key = op.userKey
@@ -905,7 +909,7 @@ internal class KSafeCore(
         // plaintext available for fast reads under ENCRYPTED_WITH_TIMED_CACHE and
         // LAZY_PLAIN_TEXT.
         if (cacheHoldsCiphertext) {
-            for (op in batch) {
+            for (op in finalByKey.values) {
                 if (op is PendingWrite.Encrypted) {
                     val base64 = b64Encode(encryptedCiphertext[op.userKey]!!)
                     memoryCache.replaceIf(op.rawCacheKey, op.jsonString, base64)

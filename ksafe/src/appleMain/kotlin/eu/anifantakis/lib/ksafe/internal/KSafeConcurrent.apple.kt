@@ -51,7 +51,18 @@ internal actual class KSafeConcurrentMap<V : Any> actual constructor() {
     }
 
     actual fun containsKey(key: String): Boolean = ref.value.containsKey(key)
-    actual fun clear() { ref.value = emptyMap() }
+
+    actual fun clear() {
+        // CAS loop, consistent with set/remove/replaceIf. A plain volatile write
+        // here is the only non-atomic mutator; pairing it against the CAS-based
+        // writers keeps `clear()` from being silently undone by a concurrent
+        // mutation that retries against the pre-clear snapshot.
+        while (true) {
+            val current = ref.value
+            if (ref.compareAndSet(current, emptyMap())) return
+        }
+    }
+
     actual fun snapshot(): Map<String, V> = ref.value
 
     actual fun replaceIf(key: String, expected: V, new: V): Boolean {

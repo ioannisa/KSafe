@@ -51,6 +51,16 @@ internal class DataStoreStorage(
     }
 
     private fun writeOne(prefs: MutablePreferences, rawKey: String, value: StoredValue) {
+        // A DataStore Preferences.Key is identified by (name, type), so writing a
+        // value of one type does NOT overwrite an existing value of a DIFFERENT
+        // type under the same name. Without purging first, a key written once
+        // plain (e.g. IntVal → intPreferencesKey) and once encrypted (Text →
+        // stringPreferencesKey) would leave BOTH on disk: nondeterministic reads
+        // (snapshot() collapses entries by name, last-iterated wins) and —
+        // switching plain→encrypted — the plaintext lingering in the file. Purge
+        // every same-name entry first so a Put fully replaces, whatever the
+        // previous type was.
+        removeByName(prefs, rawKey)
         when (value) {
             is StoredValue.BoolVal -> prefs[booleanPreferencesKey(rawKey)] = value.value
             is StoredValue.IntVal -> prefs[intPreferencesKey(rawKey)] = value.value
@@ -61,11 +71,16 @@ internal class DataStoreStorage(
         }
     }
 
+    /**
+     * Removes EVERY typed [Preferences.Key] with this name. There can be more
+     * than one (same name, different type) for a key that was ever written under
+     * two [StoredValue] types; the previous `firstOrNull` left the other behind,
+     * so a delete could remove only one representation.
+     */
     @Suppress("UNCHECKED_CAST")
     private fun removeByName(prefs: MutablePreferences, rawKey: String) {
-        prefs.asMap().keys.firstOrNull { it.name == rawKey }?.let {
-            prefs.remove(it as Preferences.Key<Any?>)
-        }
+        val matches = prefs.asMap().keys.filter { it.name == rawKey }
+        for (k in matches) prefs.remove(k as Preferences.Key<Any?>)
     }
 
     private fun toStoredMap(prefs: Preferences): Map<String, StoredValue> {

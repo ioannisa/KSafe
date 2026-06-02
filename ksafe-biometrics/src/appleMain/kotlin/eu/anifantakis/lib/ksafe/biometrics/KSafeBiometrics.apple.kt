@@ -62,12 +62,18 @@ internal actual suspend fun platformVerifyBiometric(
     }
 
     return suspendCancellableCoroutine { continuation ->
+        // Own the LAContext here so a cancelled coroutine can abort the pending
+        // system prompt (invalidate), and guard the resume so a late or repeated
+        // callback can never resume an already-resumed/cancelled continuation
+        // (which would crash with "already resumed").
+        val context = platform.LocalAuthentication.LAContext()
+        continuation.invokeOnCancellation { runCatching { context.invalidate() } }
         CoroutineScope(Dispatchers.Main).launch {
-            runLAContextEvaluate(reason, allowDeviceCredentialFallback) { success ->
+            runLAContextEvaluate(context, reason, allowDeviceCredentialFallback) { success ->
                 if (success && authorizationDuration != null) {
                     updateBiometricSession(authorizationDuration.scope ?: "", currentTimeMillis())
                 }
-                continuation.resumeWith(Result.success(success))
+                if (continuation.isActive) continuation.resumeWith(Result.success(success))
             }
         }
     }
@@ -96,7 +102,7 @@ internal actual fun platformVerifyBiometricDirect(
             onResult(true)
             return@launch
         }
-        runLAContextEvaluate(reason, allowDeviceCredentialFallback) { success ->
+        runLAContextEvaluate(platform.LocalAuthentication.LAContext(), reason, allowDeviceCredentialFallback) { success ->
             if (success && authorizationDuration != null) {
                 updateBiometricSession(authorizationDuration.scope ?: "", currentTimeMillis())
             }
@@ -119,11 +125,11 @@ internal actual fun platformClearBiometricAuth(scope: String?) {
 
 @OptIn(ExperimentalForeignApi::class, ExperimentalNativeApi::class)
 private fun runLAContextEvaluate(
+    context: platform.LocalAuthentication.LAContext,
     reason: String,
     allowDeviceCredentialFallback: Boolean,
     onResult: (Boolean) -> Unit,
 ) {
-    val context = platform.LocalAuthentication.LAContext()
     // Choose policy based on platform defaults and the caller's credential-fallback preference.
     // macOS default is DeviceOwnerAuthentication (Touch ID + password + Apple Watch) because
     // many Macs have no Touch ID; biometrics-only is still available when the caller opts in.
