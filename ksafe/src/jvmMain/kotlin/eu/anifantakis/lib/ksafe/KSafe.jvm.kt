@@ -152,6 +152,35 @@ private fun buildJvmKSafe(
     val baseFileName = fileName?.let { "eu_anifantakis_ksafe_datastore_$it" }
         ?: "eu_anifantakis_ksafe_datastore"
 
+    // #6: when appNamespace is explicitly set, isolate the DATA FILE by it (not
+    // just the OS-vault keys), so two apps sharing a `fileName` on one OS account
+    // don't clobber a single DataStore/JSON file. Files go in a per-namespace
+    // subdirectory; apps that DON'T set appNamespace keep the historical
+    // un-namespaced path unchanged (no path change, no migration for them).
+    val explicitNamespace = config.appNamespace
+        ?.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        ?.trimStart('.')          // never "." / ".." → no path traversal
+        ?.take(120)
+        ?.takeIf { it.isNotBlank() }
+    val storageDir: File = if (explicitNamespace != null) {
+        File(resolvedBaseDir, explicitNamespace).also { nsDir ->
+            if (!nsDir.exists()) nsDir.mkdirs()
+            secureDirectory(nsDir)
+            // One-time, best-effort COPY of any pre-existing un-namespaced files
+            // into the subdir so existing appNamespace users keep their data.
+            // COPY (not move): one app can't steal another's shared file, and
+            // cross-app entries that don't decrypt with this app's keys just read
+            // back as defaults — no data loss either way.
+            for (suffix in listOf(".preferences_pb", ".ksafe.json", ".ksafe-keys.json", ".ksafe.json.migrated")) {
+                val src = File(resolvedBaseDir, baseFileName + suffix)
+                val dst = File(nsDir, baseFileName + suffix)
+                if (src.exists() && !dst.exists()) runCatching { src.copyTo(dst, overwrite = false) }
+            }
+        }
+    } else {
+        resolvedBaseDir
+    }
+
     // DataStore launches its own coroutines on the scope we hand it; we
     // hold a reference so KSafe.close() can cancel it. (Unused by the
     // JSON-file fallback, but cheap and harmless.)
@@ -175,8 +204,8 @@ private fun buildJvmKSafe(
         // keys, but data is NOT lost). Add modules("jdk.unsupported") to restore
         // the DataStore + OS-keyvault path.
         warnUsingJsonFileFallbackOnce()
-        val jsonFile = File(resolvedBaseDir, "$baseFileName.ksafe.json")
-        val keysFile = File(resolvedBaseDir, "$baseFileName.ksafe-keys.json")
+        val jsonFile = File(storageDir, "$baseFileName.ksafe.json")
+        val keysFile = File(storageDir, "$baseFileName.ksafe-keys.json")
         storage = DataStoreJsonStorage(jsonFile, storageScope)
         engine = JvmSoftwareEncryption(
             config = config,
@@ -188,7 +217,7 @@ private fun buildJvmKSafe(
         }
     } else {
         // ── Normal DataStore path (Unsafe present, or a test engine injected) ──
-        val datastoreFile = File(resolvedBaseDir, "$baseFileName.preferences_pb")
+        val datastoreFile = File(storageDir, "$baseFileName.preferences_pb")
         val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
             scope = storageScope,
             produceFile = { datastoreFile }
@@ -210,8 +239,8 @@ private fun buildJvmKSafe(
         // proceeds when the OS-backed store has no user data yet. Skipped for
         // test-injected engines.
         if (testEngine == null) {
-            val jsonFallback = File(resolvedBaseDir, "$baseFileName.ksafe.json")
-            val migrationMarker = File(resolvedBaseDir, "$baseFileName.ksafe.json.migrated")
+            val jsonFallback = File(storageDir, "$baseFileName.ksafe.json")
+            val migrationMarker = File(storageDir, "$baseFileName.ksafe.json.migrated")
             // Gate on the marker as well as the source: if a prior clean pass
             // couldn't rename the source away (e.g. a lingering Windows handle),
             // it still leaves a `.migrated` marker — so we don't re-run the
@@ -220,7 +249,7 @@ private fun buildJvmKSafe(
                 migrateJsonFallbackToOsBacked(
                     config = config,
                     jsonFallback = jsonFallback,
-                    keysFallback = File(resolvedBaseDir, "$baseFileName.ksafe-keys.json"),
+                    keysFallback = File(storageDir, "$baseFileName.ksafe-keys.json"),
                     target = storage,
                     targetEngine = engine,
                     keyAlias = keyAlias,
