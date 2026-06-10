@@ -344,6 +344,7 @@ private fun createJvmBackend(
         clearAllCleanup = {
             runCatching { if (jsonFile.exists()) jsonFile.delete() }
             runCatching { if (keysFile.exists()) keysFile.delete() }
+            deleteResidualFallbackFiles(storageDir, baseFileName)
         }
     } else {
         // ── Normal DataStore path (Unsafe present, or a test engine injected) ──
@@ -360,6 +361,9 @@ private fun createJvmBackend(
             try {
                 if (datastoreFile.exists()) datastoreFile.delete()
             } catch (_: Exception) { /* best-effort */ }
+            // Even on the OS-backed path, a PRIOR run's JSON fallback may have left
+            // recoverable residue in this dir; clearAll() must wipe it too (#35).
+            deleteResidualFallbackFiles(storageDir, baseFileName)
         }
 
         // One-time forward migration: if an earlier run persisted through the
@@ -390,6 +394,28 @@ private fun createJvmBackend(
     }
 
     return JvmBackend(storage, storageScope, engine, clearAllCleanup)
+}
+
+/**
+ * Deletes residual JVM-fallback files that still hold recoverable secrets — the
+ * `*.migrated` archives left by a completed JSON→OS-backed migration (the keys archive is
+ * the **plaintext** AES bytes, the JSON archive the ciphertext they decrypt) and the
+ * `*.corrupt-<ts>` quarantine copies [DataStoreJsonStorage] makes on corruption. `clearAll()`
+ * promises a full wipe including key deletion, but these siblings of the live store were left
+ * behind, so anyone with file access could decrypt every pre-migration secret offline —
+ * defeating the wipe (deep-review #35). Matched precisely by the `<baseFileName>.ksafe`
+ * prefix so a sibling safe's files in the same dir aren't touched. Best-effort.
+ */
+private fun deleteResidualFallbackFiles(storageDir: File, baseFileName: String) {
+    runCatching {
+        val prefix = "$baseFileName.ksafe"
+        storageDir.listFiles()?.forEach { f ->
+            val n = f.name
+            if (n.startsWith(prefix) && (n.endsWith(".migrated") || n.contains(".corrupt-"))) {
+                runCatching { f.delete() }
+            }
+        }
+    }
 }
 
 /**
