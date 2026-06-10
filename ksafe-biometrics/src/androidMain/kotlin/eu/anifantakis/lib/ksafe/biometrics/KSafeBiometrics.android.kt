@@ -4,9 +4,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import android.os.SystemClock
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
-import kotlin.time.TimeSource
 
 /**
  * Android implementation of [KSafeBiometrics] platform helpers.
@@ -23,12 +23,15 @@ import kotlin.time.TimeSource
  */
 private val biometricAuthSessions = AtomicReference<Map<String, Long>>(emptyMap())
 
-// Monotonic clock for the authorization TTL: a backward wall-clock jump (NTP
-// correction, timezone/manual change) must NOT extend a cached authorization.
-// TimeSource.Monotonic never goes backward, so stored "timestamps" are
-// monotonic elapsed-millis from this origin rather than wall-clock millis.
-private val biometricClockOrigin = TimeSource.Monotonic.markNow()
-private fun monotonicNowMs(): Long = biometricClockOrigin.elapsedNow().inWholeMilliseconds
+// Clock for the authorization TTL. Requirements: (a) never go backward — a
+// backward wall-clock jump (NTP correction, manual/timezone change) must not
+// extend a cached authorization; (b) count time while the device is asleep —
+// otherwise a "60s" window becomes "60s of awake time" and survives arbitrarily
+// long deep sleep (a pocketed phone), silently honoring expired authorization
+// (deep-review #13). `System.nanoTime()` / `TimeSource.Monotonic` satisfies (a)
+// but NOT (b): it freezes while the SoC is suspended. `SystemClock.elapsedRealtime()`
+// (CLOCK_BOOTTIME) satisfies both — monotonic AND suspend-inclusive.
+private fun monotonicNowMs(): Long = SystemClock.elapsedRealtime()
 
 private fun updateBiometricSession(scope: String, timestamp: Long) {
     while (true) {
