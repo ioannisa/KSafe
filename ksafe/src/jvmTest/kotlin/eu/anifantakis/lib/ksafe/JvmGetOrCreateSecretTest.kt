@@ -120,4 +120,72 @@ class JvmGetOrCreateSecretTest {
 
         ksafe.close()
     }
+
+    /** Encrypts like the XOR [FakeEncryption], but `decrypt` always fails — as if
+     *  the backing key were invalidated/unreadable on a later cold start. */
+    private class AlwaysFailDecryptEngine : KSafeEncryption {
+        private val xor = FakeEncryption()
+        override fun encrypt(
+            identifier: String,
+            data: ByteArray,
+            hardwareIsolated: Boolean,
+            requireUnlockedDevice: Boolean?,
+        ): ByteArray = xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
+
+        override fun decrypt(identifier: String, data: ByteArray): ByteArray =
+            throw IllegalStateException("KSafe: simulated unreadable secret (key invalidated)")
+
+        override fun deleteKey(identifier: String) { /* no-op */ }
+    }
+
+    @Test
+    fun underPlainTextPolicy_unreadableSecretOnColdStart_throwsInsteadOfRotating() = runTest {
+        // Deep-review #5: under KSafeMemoryPolicy.PLAIN_TEXT the secret is
+        // decrypted at cold-start load; if that fails the entry is dropped from
+        // memoryCache. getKeyInfo used to read existence only from memoryCache,
+        // so the never-rotate guard saw "absent" and minted a replacement,
+        // permanently orphaning the original. The fix consults protectionMap
+        // (on-disk metadata, populated regardless of decryptability), so the
+        // guard correctly throws.
+        val fileName = JvmKSafeTest.generateUniqueFileName()
+
+        // Instance 1 — create the secret successfully under PLAIN_TEXT.
+        val k1 = KSafe(
+            fileName = fileName,
+            memoryPolicy = KSafeMemoryPolicy.PLAIN_TEXT,
+            testEngine = FakeEncryption(),
+        )
+        val original = k1.getOrCreateSecret("main_db")
+        assertEquals(32, original.size)
+        k1.close()
+
+        // Instance 2 — cold start where the secret can't be decrypted. Under
+        // PLAIN_TEXT this drops it from memoryCache; the guard must still detect
+        // the entry exists (via protectionMap) and throw, NOT rotate.
+        val k2 = KSafe(
+            fileName = fileName,
+            memoryPolicy = KSafeMemoryPolicy.PLAIN_TEXT,
+            testEngine = AlwaysFailDecryptEngine(),
+        )
+        val ex = assertFailsWith<IllegalStateException> { k2.getOrCreateSecret("main_db") }
+        assertTrue(
+            ex.message?.contains("exists but could not be read back") == true,
+            "must refuse to rotate the unreadable secret; was: ${ex.message}",
+        )
+        k2.close()
+
+        // Instance 3 — vault healthy again: the ORIGINAL secret must be intact,
+        // proving instance 2 did not silently overwrite it.
+        val k3 = KSafe(
+            fileName = fileName,
+            memoryPolicy = KSafeMemoryPolicy.PLAIN_TEXT,
+            testEngine = FakeEncryption(),
+        )
+        val recovered = k3.getOrCreateSecret("main_db")
+        assertContentEquals(
+            original, recovered,
+            "secret must survive an unreadable cold-start session unrotated (no silent data loss)",
+        )
+        k3.close()
+    }
 }

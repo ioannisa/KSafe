@@ -1333,7 +1333,18 @@ internal class KSafeCore(
         ensureCacheReadyBlocking()
         val hasEncrypted = memoryCache.containsKey(legacyEncryptedRawKey(key))
         val hasPlain = memoryCache.containsKey(key)
-        if (!hasEncrypted && !hasPlain) return null
+        // An entry can EXIST on disk yet be absent from memoryCache: under
+        // KSafeMemoryPolicy.PLAIN_TEXT, updateCache decrypts encrypted entries at
+        // load and drops any that fail to decrypt (locked device / unavailable
+        // vault / corrupt blob) from the cache — but it still syncs their
+        // protection metadata into protectionMap, independent of decryptability
+        // and memory policy. Treating "not in memoryCache" as "absent" makes
+        // getOrCreateSecret mint a NEW secret and overwrite the still-present
+        // (merely unreadable) one, permanently orphaning everything encrypted
+        // under it (deep-review #5). protectionMap tracks on-disk existence, so
+        // consult it too.
+        val hasMetadata = protectionMap.containsKey(key)
+        if (!hasEncrypted && !hasPlain && !hasMetadata) return null
         val protection = KeySafeMetadataManager.parseProtection(protectionMap[key])
             ?: if (hasEncrypted) KSafeProtection.DEFAULT else null
         @Suppress("DEPRECATION")
