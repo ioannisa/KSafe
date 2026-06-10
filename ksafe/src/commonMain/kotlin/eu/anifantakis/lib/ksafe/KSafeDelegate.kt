@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import eu.anifantakis.lib.ksafe.internal.KSafeAtomicFlag
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.serializer
 import kotlin.properties.ReadOnlyProperty
@@ -274,16 +275,24 @@ internal class KSafeMutableStateFlow<T>(
 
     private val delegate = MutableStateFlow(initialValue)
 
+    // Set once the user writes through this StateFlow (value/emit/tryEmit/compareAndSet).
+    // After that, stale disk echoes from the observer flow must not revert the write.
+    private val userHasWritten = KSafeAtomicFlag(false)
+
     override var value: T
         get() = delegate.value
         set(newValue) {
+            userHasWritten.set(true)
             delegate.value = newValue
             persist(newValue)
         }
 
     override fun compareAndSet(expect: T, update: T): Boolean {
         val changed = delegate.compareAndSet(expect, update)
-        if (changed) persist(update)
+        if (changed) {
+            userHasWritten.set(true)
+            persist(update)
+        }
         return changed
     }
 
@@ -307,10 +316,22 @@ internal class KSafeMutableStateFlow<T>(
     override fun resetReplayCache() = delegate.resetReplayCache()
 
     /**
-     * Updates the value from a flow emission without triggering persistence.
+     * Updates the value from an observer-flow emission without triggering persistence.
+     *
+     * Skipped once the user has written through this StateFlow. The observer flow
+     * ([KSafe.getFlow] → `KSafeCore.getFlowRaw`) is disk-derived and lags optimistic
+     * writes by the coalescing window + commit (+ decrypt), so a snapshot emitted
+     * before the user's write commits carries an OLDER value; applying it would
+     * revert the StateFlow under collectors and `value` readers — and if that write's
+     * batch fails, no corrective emission ever arrives, leaving the StateFlow
+     * permanently disagreeing with `getDirect` (deep-review #56). Mirrors the Compose
+     * live-observe guard (#15) and the core's `updateCache` dirty-key skip. External
+     * changes still reflect for a StateFlow the user has not written through.
      */
     internal fun updateFromFlow(newValue: T) {
-        delegate.value = newValue
+        if (!userHasWritten.get()) {
+            delegate.value = newValue
+        }
     }
 }
 
