@@ -48,8 +48,8 @@ internal actual suspend fun platformVerifyBiometric(
     authorizationDuration: BiometricAuthorizationDuration?,
     allowDeviceCredentialFallback: Boolean,
 ): Boolean {
-    if (authorizationDuration != null && authorizationDuration.duration > 0) {
-        val scope = authorizationDuration.scope ?: ""
+    if (BiometricAuthSession.shouldCache(authorizationDuration)) {
+        val scope = BiometricAuthSession.sessionKey(authorizationDuration!!.scope)
         val lastAuth = biometricAuthSessions.get()[scope] ?: 0L
         val now = monotonicNowMs()
         if (lastAuth > 0 && (now - lastAuth) < authorizationDuration.duration) {
@@ -59,8 +59,11 @@ internal actual suspend fun platformVerifyBiometric(
 
     return try {
         BiometricHelper.authenticate(reason, allowDeviceCredentialFallback)
-        if (authorizationDuration != null) {
-            updateBiometricSession(authorizationDuration.scope ?: "", monotonicNowMs())
+        // Only seed the cache when the caller actually opted into caching
+        // (duration > 0). Recording a session for a duration <= 0 opt-out call
+        // would let a later, longer-window call reuse it without a prompt (#40).
+        if (BiometricAuthSession.shouldCache(authorizationDuration)) {
+            updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope), monotonicNowMs())
         }
         true
     } catch (e: BiometricAuthException) {
@@ -103,9 +106,10 @@ internal actual fun platformClearBiometricAuth(scope: String?) {
         biometricAuthSessions.set(emptyMap())
         return
     }
+    val key = BiometricAuthSession.sessionKey(scope)
     while (true) {
         val current = biometricAuthSessions.get()
-        val updated = current - scope
+        val updated = current - key
         if (biometricAuthSessions.compareAndSet(current, updated)) break
     }
 }

@@ -48,8 +48,8 @@ internal actual suspend fun platformVerifyBiometric(
     authorizationDuration: BiometricAuthorizationDuration?,
     allowDeviceCredentialFallback: Boolean,
 ): Boolean {
-    if (authorizationDuration != null && authorizationDuration.duration > 0) {
-        val scope = authorizationDuration.scope ?: ""
+    if (BiometricAuthSession.shouldCache(authorizationDuration)) {
+        val scope = BiometricAuthSession.sessionKey(authorizationDuration!!.scope)
         val lastAuth = biometricAuthSessions.value[scope] ?: 0L
         val now = monotonicNowMs()
         if (lastAuth > 0 && (now - lastAuth) < authorizationDuration.duration) {
@@ -58,8 +58,8 @@ internal actual suspend fun platformVerifyBiometric(
     }
 
     if (isSimulator()) {
-        if (authorizationDuration != null) {
-            updateBiometricSession(authorizationDuration.scope ?: "", monotonicNowMs())
+        if (BiometricAuthSession.shouldCache(authorizationDuration)) {
+            updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope), monotonicNowMs())
         }
         return true
     }
@@ -73,8 +73,8 @@ internal actual suspend fun platformVerifyBiometric(
         continuation.invokeOnCancellation { runCatching { context.invalidate() } }
         CoroutineScope(Dispatchers.Main).launch {
             runLAContextEvaluate(context, reason, allowDeviceCredentialFallback) { success ->
-                if (success && authorizationDuration != null) {
-                    updateBiometricSession(authorizationDuration.scope ?: "", monotonicNowMs())
+                if (success && BiometricAuthSession.shouldCache(authorizationDuration)) {
+                    updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope), monotonicNowMs())
                 }
                 if (continuation.isActive) continuation.resumeWith(Result.success(success))
             }
@@ -89,8 +89,8 @@ internal actual fun platformVerifyBiometricDirect(
     onResult: (Boolean) -> Unit,
 ) {
     CoroutineScope(Dispatchers.Main).launch {
-        if (authorizationDuration != null && authorizationDuration.duration > 0) {
-            val scope = authorizationDuration.scope ?: ""
+        if (BiometricAuthSession.shouldCache(authorizationDuration)) {
+            val scope = BiometricAuthSession.sessionKey(authorizationDuration!!.scope)
             val lastAuth = biometricAuthSessions.value[scope] ?: 0L
             val now = monotonicNowMs()
             if (lastAuth > 0 && (now - lastAuth) < authorizationDuration.duration) {
@@ -99,15 +99,15 @@ internal actual fun platformVerifyBiometricDirect(
             }
         }
         if (isSimulator()) {
-            if (authorizationDuration != null) {
-                updateBiometricSession(authorizationDuration.scope ?: "", monotonicNowMs())
+            if (BiometricAuthSession.shouldCache(authorizationDuration)) {
+                updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope), monotonicNowMs())
             }
             onResult(true)
             return@launch
         }
         runLAContextEvaluate(platform.LocalAuthentication.LAContext(), reason, allowDeviceCredentialFallback) { success ->
-            if (success && authorizationDuration != null) {
-                updateBiometricSession(authorizationDuration.scope ?: "", monotonicNowMs())
+            if (success && BiometricAuthSession.shouldCache(authorizationDuration)) {
+                updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope), monotonicNowMs())
             }
             onResult(success)
         }
@@ -119,9 +119,10 @@ internal actual fun platformClearBiometricAuth(scope: String?) {
         biometricAuthSessions.value = emptyMap()
         return
     }
+    val key = BiometricAuthSession.sessionKey(scope)
     while (true) {
         val current = biometricAuthSessions.value
-        val updated = current - scope
+        val updated = current - key
         if (biometricAuthSessions.compareAndSet(current, updated)) break
     }
 }
