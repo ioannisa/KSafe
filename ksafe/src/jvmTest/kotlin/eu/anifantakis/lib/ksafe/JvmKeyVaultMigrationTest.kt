@@ -7,6 +7,7 @@ import eu.anifantakis.lib.ksafe.internal.JvmSoftwareEncryption
 import eu.anifantakis.lib.ksafe.internal.keyvault.DataStoreKeyVault
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVault
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVaultProvider
+import eu.anifantakis.lib.ksafe.internal.keyvault.legacyDerivedJvmNamespace
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -626,5 +627,147 @@ class JvmKeyVaultMigrationTest {
             "degraded decrypt must NOT use the orphan-sweep delete message; was: $msg",
         )
         assertTrue(msg.contains("unavailable", ignoreCase = true), "should report vault unavailable; was: $msg")
+    }
+
+    // ── 2.1.0/2.1.1 → 2.1.2 namespace upgrade recovery (review R6) ──────────
+    //
+    // Released 2.1.0/2.1.1 derived the default OS-vault namespace from
+    // `sun.java.command`; 2.1.2 made it the constant "shared". A stable-launcher
+    // app upgrading therefore holds its real keys under the OLD derived
+    // namespace — without a read-fallback every decrypt throws "No encryption
+    // key found" and the orphan sweep deletes the user's data.
+
+    /** OS-vault stand-in whose writes fail (migration target unwritable). */
+    private class ReadOnlyOsVault : JvmKeyVault {
+        val store = ConcurrentHashMap<String, ByteArray>()
+        override val name = "ReadOnlyOsVault (test)"
+        override val isOsBacked = true
+        override fun get(alias: String): ByteArray? = store[alias]?.copyOf()
+        override fun put(alias: String, keyBytes: ByteArray): Unit =
+            throw IllegalStateException("put refused (test)")
+        override fun delete(alias: String) { store.remove(alias) }
+    }
+
+    @Test
+    fun namespaceUpgrade_keyUnderDerivedNamespace_isRecoveredAndMigrated() {
+        val alias = "user:token"
+        val payload = "namespace-upgrade".toByteArray()
+
+        // "2.1.1 install": the key lives under the derived-namespace location.
+        val derivedNsVault = FakeOsVault()
+        val ciphertextAtRest = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = derivedNsVault),
+        ).encrypt(alias, payload)
+        val realKey = derivedNsVault.store[alias]
+        assertNotNull(realKey)
+
+        // "2.1.2 launch": lookups go to the (empty) "shared" namespace; the
+        // legacy-namespace twin holds the real key.
+        val sharedVault = FakeOsVault()
+        val provider = JvmKeyVaultProvider(
+            dataStore,
+            forced = sharedVault,
+            legacyNamespaceCandidateForTest = derivedNsVault,
+        )
+        val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+
+        // Without the fallback this throws "No encryption key found" → the
+        // orphan sweep would then permanently delete the user's ciphertext.
+        assertContentEquals(payload, engine.decrypt(alias, ciphertextAtRest))
+
+        // Migrated: written to the new namespace, scrubbed from the old one.
+        assertContentEquals(realKey, sharedVault.store[alias], "key must migrate into the new namespace")
+        assertNull(derivedNsVault.store[alias], "old-namespace entry must be deleted after a verified write")
+    }
+
+    @Test
+    fun namespaceUpgrade_migrationWriteFails_keyStillServed_andOldEntryKept() {
+        val alias = "user:token"
+        val payload = "still-decrypts".toByteArray()
+
+        val derivedNsVault = FakeOsVault()
+        val ciphertextAtRest = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = derivedNsVault),
+        ).encrypt(alias, payload)
+
+        // New-namespace vault refuses writes: migration can't be finalised.
+        val provider = JvmKeyVaultProvider(
+            dataStore,
+            forced = ReadOnlyOsVault(),
+            legacyNamespaceCandidateForTest = derivedNsVault,
+        )
+        val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+
+        // The recovered key must still serve this session…
+        assertContentEquals(payload, engine.decrypt(alias, ciphertextAtRest))
+        // …and the ONLY copy must not be destroyed (migration retries later).
+        assertNotNull(derivedNsVault.store[alias], "old-namespace key must survive a failed migration write")
+    }
+
+    @Test
+    fun namespaceUpgrade_noTwin_trueMissStillReportsNoKeyFound() {
+        // Without a twin (no derived namespace to probe) a miss is a TRUE miss:
+        // the orphan-sweep contract ("No encryption key found") must be intact,
+        // and the seam-mode provider must never touch a real OS store.
+        val alias = "user:token"
+        val ciphertext = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = FakeOsVault()),
+        ).encrypt(alias, "secret".toByteArray())
+
+        val engine = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = FakeOsVault()),
+        )
+        val ex = assertFailsWith<IllegalStateException> { engine.decrypt(alias, ciphertext) }
+        assertTrue(ex.message.orEmpty().contains("No encryption key found"))
+    }
+
+    @Test
+    fun namespaceUpgrade_deleteKey_alsoScrubsDerivedNamespace() {
+        val alias = "user:token"
+        val derivedNsVault = FakeOsVault().apply { store[alias] = ByteArray(32) { 1 } }
+        val sharedVault = FakeOsVault()
+        val provider = JvmKeyVaultProvider(
+            dataStore,
+            forced = sharedVault,
+            legacyNamespaceCandidateForTest = derivedNsVault,
+        )
+        val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+
+        engine.encrypt(alias, "v".toByteArray()) // mints into shared… or recovers old
+        engine.deleteKey(alias)
+
+        assertNull(sharedVault.store[alias], "deleteKey must remove from the active vault")
+        assertNull(
+            derivedNsVault.store[alias],
+            "deleteKey must also scrub the derived-namespace twin, or a recreate resurrects the old key",
+        )
+    }
+
+    @Test
+    fun legacyDerivedJvmNamespace_reproduces211Derivation() {
+        val prop = "sun.java.command"
+        val original = System.getProperty(prop)
+        try {
+            System.setProperty(prop, "com.example.MainKt --some-arg")
+            assertEquals("com.example.MainKt", legacyDerivedJvmNamespace())
+
+            System.setProperty(prop, "/opt/app/my-app-1.2.3.jar --flag")
+            assertEquals("my-app-1.2.3", legacyDerivedJvmNamespace())
+
+            System.setProperty(prop, "C:\\Program\\app.jar")
+            assertEquals("app", legacyDerivedJvmNamespace())
+
+            // Nothing distinct to probe → null.
+            System.setProperty(prop, "")
+            assertNull(legacyDerivedJvmNamespace())
+            System.setProperty(prop, "shared")
+            assertNull(legacyDerivedJvmNamespace())
+        } finally {
+            if (original == null) System.clearProperty(prop) else System.setProperty(prop, original)
+        }
     }
 }

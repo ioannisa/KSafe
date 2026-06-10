@@ -146,6 +146,10 @@ internal class JvmSoftwareEncryption(
             if (activeAtStart !== vaults.legacy) {
                 runCatching { vaults.legacy.delete(identifier) }
             }
+            // Also scrub the 2.1.0/2.1.1 derived-namespace location, so a
+            // recreate after delete can't resurrect the pre-upgrade key via
+            // the namespace read-fallback.
+            vaults.deleteFromLegacyNamespace(identifier)
         }
     }
 
@@ -252,7 +256,16 @@ internal class JvmSoftwareEncryption(
     private fun resolveKeyVia(active: JvmKeyVault, alias: String, create: Boolean): SecretKey? {
         val keyBytes: ByteArray? =
             if (active !== vaults.legacy) {
-                migrateLegacyLocked(alias) ?: active.get(alias)
+                // Last probe before declaring the key absent: released
+                // 2.1.0/2.1.1 derived the OS-vault namespace from the launcher,
+                // so a stable-launcher app upgrading to the constant default
+                // namespace finds its real keys only under the OLD derived
+                // namespace. recoverFromLegacyNamespace migrates on hit; a true
+                // miss everywhere is what makes "No encryption key found" (and
+                // the orphan sweep it triggers) safe to report (review R6).
+                migrateLegacyLocked(alias)
+                    ?: active.get(alias)
+                    ?: vaults.recoverFromLegacyNamespace(alias)
             } else {
                 active.get(alias)
             }

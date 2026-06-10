@@ -173,7 +173,26 @@ internal class JvmKeyVaultProvider(
      * still runs through [pick] (and therefore [selfTest]).
      */
     private val osCandidateForTest: JvmKeyVault? = null,
+    /**
+     * Test seam: stands in for the lazily-built legacy-derived-namespace twin
+     * (see [legacyNamespaceVault]) so the 2.1.0/2.1.1 namespace-upgrade
+     * recovery can be tested without a real OS secret store.
+     */
+    private val legacyNamespaceCandidateForTest: JvmKeyVault? = null,
 ) {
+    /**
+     * Retained for [legacyNamespaceVault]: the Windows DPAPI twin needs the
+     * same DataStore (it stores the wrapped blob there).
+     */
+    private val dataStoreForTwin: DataStore<Preferences>? = dataStore
+
+    /**
+     * True when a test injected the active vault or the OS candidate. Guards
+     * [legacyNamespaceVault] from lazily constructing a REAL OS vault (and
+     * probing the developer's actual Keychain/keyring) inside unit tests that
+     * only stubbed the primary path.
+     */
+    private val usingTestSeams: Boolean = forced != null || osCandidateForTest != null
     /** Legacy / software store — migration source and last-resort fallback. */
     val legacy: JvmKeyVault = legacyOverride ?: DataStoreKeyVault(
         requireNotNull(dataStore) {
@@ -287,21 +306,11 @@ internal class JvmKeyVaultProvider(
         }
 
         val os = System.getProperty("os.name").orEmpty().lowercase()
-        val candidate: JvmKeyVault? = osCandidateForTest ?: try {
-            when {
-                os.contains("win") -> WindowsDpapiKeyVault(dataStore, appNamespace)
-                os.contains("mac") || os.contains("darwin") -> MacosKeychainKeyVault(appNamespace)
-                os.contains("nux") || os.contains("nix") || os.contains("aix") ->
-                    LinuxSecretServiceKeyVault(appNamespace)
-                else -> null
-            }
-        } catch (t: Throwable) {
-            // JNA class-load / native-link failure, missing platform jar, etc.
-            // The OS vault never came up in-process (like the runtime LinkageError
-            // case): there is no reachable OS key to overwrite later, so treating
-            // the legacy/software store as the legitimate home is safe.
-            null
-        }
+        // A construction failure (JNA class-load / native-link failure, missing
+        // platform jar, …) yields null: the OS vault never came up in-process
+        // (like the runtime LinkageError case), so there is no reachable OS key
+        // to overwrite later and the legacy/software store is a safe home.
+        val candidate: JvmKeyVault? = osCandidateForTest ?: buildOsVault(os, appNamespace, dataStore)
 
         if (candidate != null) {
             if (selfTest(candidate)) return candidate
@@ -323,6 +332,101 @@ internal class JvmKeyVaultProvider(
         // legitimate, permanent home (no reachable OS key to protect).
         warnFallbackOnce(os)
         return legacy
+    }
+
+    /** OS-detected vault construction, shared by [pick] and [legacyNamespaceVault]. */
+    private fun buildOsVault(
+        os: String,
+        namespace: String,
+        dataStore: DataStore<Preferences>?,
+    ): JvmKeyVault? = try {
+        when {
+            os.contains("win") -> dataStore?.let { WindowsDpapiKeyVault(it, namespace) }
+            os.contains("mac") || os.contains("darwin") -> MacosKeychainKeyVault(namespace)
+            os.contains("nux") || os.contains("nix") || os.contains("aix") ->
+                LinuxSecretServiceKeyVault(namespace)
+            else -> null
+        }
+    } catch (t: Throwable) {
+        null
+    }
+
+    /**
+     * Twin of the picked OS vault under the **legacy 2.1.0/2.1.1 derived
+     * namespace**, used as a read-fallback migration source. Those releases
+     * derived the default namespace from `sun.java.command`; 2.1.2 made the
+     * default a stable constant ([DEFAULT_JVM_NAMESPACE]) so the namespace can
+     * never silently move again — but an app shipped on 2.1.0/2.1.1 with a
+     * *stable* launcher (jpackage main class, non-versioned jar) holds its real
+     * OS-vault keys under the old derived namespace. Without this probe those
+     * keys become invisible on upgrade, every decrypt throws "No encryption key
+     * found", and the startup orphan sweep permanently deletes the user's
+     * ciphertext (review R6).
+     *
+     * Built lazily and only when it can actually matter: production wiring
+     * (no test seams), the default namespace in effect (an explicit namespace
+     * was identical on 2.1.x, so old keys are already where we look), an
+     * OS-backed pick, and a derived candidate that differs from the default.
+     */
+    private val legacyNamespaceVault: JvmKeyVault? by lazy {
+        legacyNamespaceCandidateForTest ?: run {
+            if (usingTestSeams) return@run null
+            if (appNamespace != DEFAULT_JVM_NAMESPACE) return@run null
+            if (!picked.isOsBacked) return@run null
+            val legacyNs = legacyDerivedJvmNamespace() ?: return@run null
+            buildOsVault(
+                System.getProperty("os.name").orEmpty().lowercase(),
+                legacyNs,
+                dataStoreForTwin,
+            )
+        }
+    }
+
+    /**
+     * Read-fallback for a key that misses under the current (default)
+     * namespace: probes the legacy 2.1.0/2.1.1 derived namespace and, on a
+     * hit, migrates the key to the active vault — write, read-back-verify,
+     * and only then delete the old entry (mirroring the legacy-DataStore
+     * migration's hardening). On any migration hiccup the bytes are still
+     * returned so this session decrypts normally and the migration retries
+     * on a later launch; the old entry is never deleted unverified.
+     *
+     * Callers reach this only after a successful-but-null [active] lookup, so
+     * the vault is healthy here — no degraded/self-test gating needed (those
+     * states never route to the OS vault in the first place).
+     */
+    internal fun recoverFromLegacyNamespace(alias: String): ByteArray? {
+        val source = legacyNamespaceVault ?: return null
+        val bytes = try {
+            source.get(alias)
+        } catch (e: LinkageError) {
+            throw e
+        } catch (_: Throwable) {
+            null
+        } ?: return null
+        try {
+            picked.put(alias, bytes)
+            if (picked.get(alias)?.contentEquals(bytes) == true) {
+                runCatching { source.delete(alias) }
+            }
+        } catch (e: LinkageError) {
+            throw e
+        } catch (_: Throwable) {
+            // Keep serving the recovered bytes; the un-deleted old entry makes
+            // the migration retry next launch.
+        }
+        return bytes
+    }
+
+    /**
+     * Best-effort delete from the legacy-namespace twin, so a delete-then-
+     * recreate of the same alias cannot resurrect the pre-upgrade key via
+     * [recoverFromLegacyNamespace] (the same guarantee deleteKey already
+     * gives for the legacy DataStore vault).
+     */
+    internal fun deleteFromLegacyNamespace(alias: String) {
+        val twin = legacyNamespaceVault ?: return
+        runCatching { twin.delete(alias) }
     }
 
     /** Round-trips a canary value to confirm the native store actually works. */
@@ -433,18 +537,45 @@ internal class JvmKeyVaultProvider(
  * (Two default-config apps under one OS account already share the un-namespaced
  * data file, so the constant default doesn't make that pre-existing collision worse.)
  */
-internal fun resolveJvmAppNamespace(override: String?): String {
-    fun String?.clean(): String? =
-        this?.trim()?.takeIf { it.isNotEmpty() }
-            ?.replace(Regex("[^A-Za-z0-9._-]"), "_")
-            ?.take(120)
-            ?.takeIf { it.isNotEmpty() }
+/**
+ * The stable default OS-vault namespace (2.1.2+). Never derived from the
+ * launcher, so it cannot silently move between runs/releases.
+ */
+internal const val DEFAULT_JVM_NAMESPACE = "shared"
 
-    override.clean()?.let { return it }
-    System.getProperty("ksafe.appNamespace").clean()?.let { return it }
-    System.getenv("KSAFE_APP_NAMESPACE").clean()?.let { return it }
+private fun String?.cleanNamespaceToken(): String? =
+    this?.trim()?.takeIf { it.isNotEmpty() }
+        ?.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        ?.take(120)
+        ?.takeIf { it.isNotEmpty() }
+
+internal fun resolveJvmAppNamespace(override: String?): String {
+    override.cleanNamespaceToken()?.let { return it }
+    System.getProperty("ksafe.appNamespace").cleanNamespaceToken()?.let { return it }
+    System.getenv("KSAFE_APP_NAMESPACE").cleanNamespaceToken()?.let { return it }
 
     // Deliberately NO `sun.java.command` derivation — see the KDoc: it changed
     // with the launcher and silently orphaned/deleted the user's data on upgrade.
-    return "shared"
+    // Keys written by released 2.1.0/2.1.1 under the old derived namespace are
+    // recovered on read by [JvmKeyVaultProvider.recoverFromLegacyNamespace].
+    return DEFAULT_JVM_NAMESPACE
+}
+
+/**
+ * Reproduces — byte for byte — the default-namespace derivation that released
+ * 2.1.0/2.1.1 used (`sun.java.command` first token; jar path → bare jar name;
+ * same sanitization), so [JvmKeyVaultProvider.recoverFromLegacyNamespace] can
+ * probe exactly where those releases stored a stable-launcher app's keys.
+ * Returns null when no launcher token is available or when the derivation
+ * lands on [DEFAULT_JVM_NAMESPACE] itself (nothing distinct to probe).
+ */
+internal fun legacyDerivedJvmNamespace(): String? {
+    val cmd = System.getProperty("sun.java.command").orEmpty().trim().substringBefore(' ')
+    val launcher = when {
+        cmd.isEmpty() -> null
+        cmd.endsWith(".jar", ignoreCase = true) ->
+            cmd.replace('\\', '/').substringAfterLast('/').removeSuffix(".jar")
+        else -> cmd
+    }
+    return launcher.cleanNamespaceToken()?.takeIf { it != DEFAULT_JVM_NAMESPACE }
 }
