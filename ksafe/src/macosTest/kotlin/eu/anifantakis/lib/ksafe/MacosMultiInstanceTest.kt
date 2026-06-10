@@ -1,0 +1,65 @@
+package eu.anifantakis.lib.ksafe
+
+import kotlinx.coroutines.runBlocking
+import kotlin.test.AfterTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.uuid.ExperimentalUuidApi
+
+/**
+ * Regression test for deep-review #19: the Apple factory used to create a fresh DataStore on
+ * every construction, so co-existing [KSafe] instances on the same file — or a quick
+ * close()-then-recreate — tripped native DataStore's "multiple DataStores active for the same
+ * file" guard. The second instance then silently served defaults and dropped writes. The
+ * factory now shares one ref-counted DataStore per file path (matching Android/JVM). Runs
+ * natively on macOS with [FakeEncryption] (no real Keychain in the unit-test runner).
+ */
+@OptIn(ExperimentalUuidApi::class)
+class MacosMultiInstanceTest {
+
+    private val tempDirs = mutableListOf<String>()
+
+    private fun dir(): String = MacosTestPaths.uniqueTempDir("macos-multi").also { tempDirs += it }
+
+    @AfterTest
+    fun cleanup() {
+        tempDirs.forEach { runCatching { MacosTestPaths.deleteRecursively(it) } }
+        tempDirs.clear()
+    }
+
+    @Test
+    fun twoLiveInstances_sameFile_bothReadAndWrite() = runBlocking {
+        val file = "multi"
+        val d = dir()
+        val a = KSafe(fileName = file, directory = d, testEngine = FakeEncryption())
+        val b = KSafe(fileName = file, directory = d, testEngine = FakeEncryption())
+
+        // Pre-fix, b's DataStore is a second active instance on the same file → its first read
+        // throws, is swallowed, and b serves defaults / drops writes.
+        a.put("ka", "va")
+        assertEquals("va", b.get("ka", "none"), "a co-existing same-file instance must read the shared store")
+
+        b.put("kb", "vb")
+        a.close(); b.close()
+
+        val c = KSafe(fileName = file, directory = d, testEngine = FakeEncryption())
+        assertEquals("va", c.get("ka", "none"))
+        assertEquals("vb", c.get("kb", "none"), "the second instance's write must have persisted")
+        c.close()
+    }
+
+    @Test
+    fun closeThenRecreate_sameFile_dataPersists() = runBlocking {
+        val file = "recreate"
+        val d = dir()
+        repeat(15) { i ->
+            val ks = KSafe(fileName = file, directory = d, testEngine = FakeEncryption())
+            ks.put("counter", "v$i")
+            assertEquals("v$i", ks.get("counter", "none"))
+            ks.close()
+        }
+        val reopened = KSafe(fileName = file, directory = d, testEngine = FakeEncryption())
+        assertEquals("v14", reopened.get("counter", "none"), "data must persist across close→recreate")
+        reopened.close()
+    }
+}

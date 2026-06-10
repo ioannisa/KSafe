@@ -8,6 +8,7 @@ import dev.whyoleg.cryptography.algorithms.AES
 import dev.whyoleg.cryptography.providers.cryptokit.CryptoKit
 import eu.anifantakis.lib.ksafe.internal.DataStoreStorage
 import eu.anifantakis.lib.ksafe.internal.AppleKeychainEncryption
+import eu.anifantakis.lib.ksafe.internal.KSafeAtomicFlag
 import eu.anifantakis.lib.ksafe.internal.KSafeCore
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
 import eu.anifantakis.lib.ksafe.internal.KeySafeMetadataManager
@@ -16,9 +17,13 @@ import eu.anifantakis.lib.ksafe.internal.validateSecurityPolicy
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import okio.Path.Companion.toPath
+import platform.Foundation.NSLock
 import platform.Foundation.NSApplicationSupportDirectory
 import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.NSFileManager
@@ -169,6 +174,81 @@ internal fun KSafe(
     testEngine = testEngine,
 )
 
+/**
+ * Per-file shared backend for the Apple factory. Native DataStore refuses two active
+ * instances on the same file ("There are multiple DataStores active for the same file") and
+ * frees a file only once the owning scope's [Job] completes. Constructing a fresh DataStore
+ * per [KSafe] therefore broke a second same-file instance (its first read threw, was swallowed
+ * by the cache-load guard → silent default reads + dropped writes) and raced teardown on
+ * close()-then-recreate. This registry shares ONE DataStore + engine per resolved path,
+ * ref-counted (only the last close tears the scope down) with a bounded prior-scope await on
+ * recreate — mirroring the Android and JVM factories (deep-review #19).
+ */
+private class AppleBackend(
+    val dataStore: DataStore<Preferences>,
+    val scope: CoroutineScope,
+) {
+    var refCount: Int = 0
+    private var engine: KSafeEncryption? = null
+
+    /** The single shared production engine, created lazily on first use (never for tests). */
+    fun engineOrCreate(create: () -> KSafeEncryption): KSafeEncryption {
+        appleRegistryLock.lock()
+        try {
+            return engine ?: create().also { engine = it }
+        } finally {
+            appleRegistryLock.unlock()
+        }
+    }
+}
+
+/** Guards the backend registry + each backend's refCount/engine. Native DataStore registry
+ *  ops are rare (construction/close), so a single non-reentrant lock is sufficient. */
+private val appleRegistryLock = NSLock()
+private val appleBackends = mutableMapOf<String, AppleBackend>()
+private val appleTerminatingScopes = mutableMapOf<String, CoroutineScope>()
+
+/**
+ * Returns the shared backend for [path], creating it (atomically) on first use and
+ * incrementing its ref-count. A recreate after the previous owner closed awaits that owner's
+ * teardown first (bounded), since DataStore frees the file only once its scope completes.
+ */
+private fun acquireAppleBackend(
+    path: String,
+    createDataStore: (CoroutineScope) -> DataStore<Preferences>,
+): AppleBackend {
+    appleRegistryLock.lock()
+    try {
+        appleBackends[path]?.let { it.refCount++; return it }
+        appleTerminatingScopes.remove(path)?.coroutineContext?.get(Job)?.let { priorJob ->
+            runBlocking { withTimeoutOrNull(2_000) { priorJob.join() } }
+        }
+        val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val backend = AppleBackend(createDataStore(scope), scope).also { it.refCount = 1 }
+        appleBackends[path] = backend
+        return backend
+    } finally {
+        appleRegistryLock.unlock()
+    }
+}
+
+/** Drops one ref; the last release evicts the entry, parks the scope for a later recreate to
+ *  await, and cancels it. Each [KSafe] must call this at most once (caller-guarded). */
+private fun releaseAppleBackend(path: String) {
+    appleRegistryLock.lock()
+    try {
+        val backend = appleBackends[path] ?: return
+        backend.refCount--
+        if (backend.refCount <= 0) {
+            appleBackends.remove(path)
+            appleTerminatingScopes[path] = backend.scope
+            backend.scope.cancel()
+        }
+    } finally {
+        appleRegistryLock.unlock()
+    }
+}
+
 @OptIn(ExperimentalForeignApi::class)
 private fun buildAppleKSafe(
     fileName: String?,
@@ -256,21 +336,29 @@ private fun buildAppleKSafe(
         }
     }
 
-    // DataStore launches its own coroutines on the scope it's given; we
-    // hold one we control so close() can dispose it. Kotlin/Native does
-    // not expose `Dispatchers.IO`, so use `Default` — DataStore's I/O
-    // path on iOS is non-blocking (NSFileManager / okio) and doesn't
-    // need a thread-pool isolation hint.
-    val storageScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-    val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.createWithPath(
-        corruptionHandler = null,
-        migrations = emptyList(),
-        scope = storageScope,
-        produceFile = { datastoreFilePath.toPath() },
-    )
+    // Acquire the per-file shared backend (DataStore + scope + engine), ref-counted so that
+    // co-existing instances on the same file share one DataStore and only the last close tears
+    // the scope down, with a bounded prior-scope await on recreate (deep-review #19). The scope
+    // uses Dispatchers.Default — Kotlin/Native has no Dispatchers.IO, and DataStore's iOS I/O
+    // path (NSFileManager / okio) is non-blocking.
+    val backend = acquireAppleBackend(datastoreFilePath) { scope ->
+        PreferenceDataStoreFactory.createWithPath(
+            corruptionHandler = null,
+            migrations = emptyList(),
+            scope = scope,
+            produceFile = { datastoreFilePath.toPath() },
+        )
+    }
+    val dataStore: DataStore<Preferences> = backend.dataStore
+    val storage = DataStoreStorage(dataStore)
 
+    // Share the production engine per file too (created lazily on the backend, never for
+    // tests), so co-existing same-file instances don't race master-key creation in the Keychain.
     val engine: KSafeEncryption =
-        testEngine ?: AppleKeychainEncryption(config = config, serviceName = SERVICE_NAME)
+        testEngine ?: backend.engineOrCreate { AppleKeychainEncryption(config = config, serviceName = SERVICE_NAME) }
+
+    // Guards this instance's single backend release (KSafeCore.cancel() is idempotent).
+    val released = KSafeAtomicFlag(false)
 
     fun iosKeyAlias(userKey: String): String =
         listOfNotNull(KEY_PREFIX, fileName, userKey).joinToString(".")
@@ -319,7 +407,7 @@ private fun buildAppleKSafe(
     suspend fun cleanupOrphanedKeychainEntriesSafe() {
         runCatching {
             cleanupOrphanedKeychainEntries(
-                storage = DataStoreStorage(dataStore),
+                storage = storage,
                 engine = engine,
                 serviceName = SERVICE_NAME,
                 keyPrefix = KEY_PREFIX,
@@ -339,7 +427,7 @@ private fun buildAppleKSafe(
     }
 
     val core = KSafeCore(
-        storage = DataStoreStorage(dataStore),
+        storage = storage,
         engineProvider = { engine },
         config = config,
         memoryPolicy = memoryPolicy,
@@ -353,7 +441,10 @@ private fun buildAppleKSafe(
         legacyEncryptedPrefix = iosLegacyEncryptedPrefix(),
         legacyEncryptedKeyFor = ::iosLegacyEncryptedKey,
         modeTransformer = ::promoteMode,
-        onCancel = { storageScope.cancel() },
+        // Ref-counted release: only the last live instance on this file cancels the shared
+        // scope, so closing one instance can't cancel the DataStore out from under another
+        // (deep-review #19). KSafeCore.cancel() is idempotent → guard to one release.
+        onCancel = { if (released.compareAndSet(false, true)) releaseAppleBackend(datastoreFilePath) },
     )
 
     // Apple custody can't change after construction, so the provider
