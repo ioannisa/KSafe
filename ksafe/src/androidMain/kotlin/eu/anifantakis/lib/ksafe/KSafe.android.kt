@@ -48,15 +48,91 @@ const val KEY_ALIAS_PREFIX: String = "eu.anifantakis.ksafe"
 private const val MASTER_KEY_DEFAULT: String = "__ksafe_master__"
 private const val MASTER_KEY_LOCKED: String = "__ksafe_master_locked__"
 
-private val dataStoreCache = ConcurrentHashMap<String, DataStore<Preferences>>()
+/**
+ * Per-datastore-path shared backend. Co-existing [KSafe] instances on the same file share
+ * ONE backend, so they share one [DataStore] **and** one [AndroidKeystoreEncryption] engine
+ * — i.e. one in-memory DEK cache and one per-alias lock map over the single persisted
+ * wrapped-DEK slot. Creating a fresh engine per instance (the old behaviour) let those DEK
+ * caches diverge from the one on-disk slot, silently and permanently losing data after a
+ * `clearAll()` on one instance or a concurrent first-write race across two (deep-review
+ * #7 / #46).
+ *
+ * The backend is **ref-counted**: its scope is cancelled and the entry evicted only when
+ * the *last* instance on the path closes, so closing one instance can't cancel the
+ * DataStore out from under another live one (deep-review #50). All creation / acquisition /
+ * release for a given path is serialized by [pathLock], which also makes creation atomic —
+ * a non-atomic `getOrPut` could open two DataStores for one file (DataStore then throws
+ * "multiple DataStores active for the same file"; deep-review #27 / #49).
+ */
+private class AndroidBackend(
+    val dataStore: DataStore<Preferences>,
+    val scope: CoroutineScope,
+) {
+    /** Live [KSafe] instances sharing this backend. Evicted when it hits 0. */
+    val refCount = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** The single shared engine, created lazily on first production use (never for tests). */
+    @Volatile
+    var engine: AndroidKeystoreEncryption? = null
+
+    fun engineOrCreate(create: () -> AndroidKeystoreEncryption): AndroidKeystoreEncryption {
+        engine?.let { return it }
+        return synchronized(this) { engine ?: create().also { engine = it } }
+    }
+}
+
+/** Live backends keyed by absolute datastore path. Structurally safe across paths
+ *  (ConcurrentHashMap); the check-then-act for a single path is serialized by [pathLock]. */
+private val backends = ConcurrentHashMap<String, AndroidBackend>()
 
 /**
- * The owning [CoroutineScope] per datastore path. Kept so that a `close()`-then-recreate
- * on the same file (common in tests and DI re-init) can await the prior owner's teardown:
- * DataStore only releases a file once that scope's [Job] completes, so awaiting it avoids
- * the "multiple DataStores active for the same file" guard.
+ * Scope of the most-recently-evicted backend per path, awaited (bounded) before a recreate
+ * opens a new DataStore on the same file: DataStore frees a file only once its scope's [Job]
+ * completes, so awaiting it avoids the "multiple DataStores active for the same file" guard.
  */
-private val dataStoreScopes = ConcurrentHashMap<String, CoroutineScope>()
+private val terminatingScopes = ConcurrentHashMap<String, CoroutineScope>()
+
+/** One monitor per datastore path — serializes acquire/release (and the prior-scope await)
+ *  so a single file never has two DataStores constructed concurrently. */
+private val pathLocks = ConcurrentHashMap<String, Any>()
+private fun pathLock(path: String): Any = pathLocks.computeIfAbsent(path) { Any() }
+
+/**
+ * Returns the shared backend for [path], creating it (atomically, per path) on first use
+ * and incrementing its ref-count. A recreate after the previous owner closed awaits that
+ * owner's teardown first (bounded), since DataStore releases the file only once its scope
+ * completes.
+ */
+private fun acquireBackend(
+    path: String,
+    createDataStore: (CoroutineScope) -> DataStore<Preferences>,
+): AndroidBackend = synchronized(pathLock(path)) {
+    backends[path]?.let {
+        it.refCount.incrementAndGet()
+        return it
+    }
+    terminatingScopes.remove(path)?.coroutineContext?.get(Job)?.let { priorJob ->
+        runBlocking { withTimeoutOrNull(2_000) { priorJob.join() } }
+    }
+    val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    val backend = AndroidBackend(createDataStore(scope), scope).also { it.refCount.set(1) }
+    backends[path] = backend
+    backend
+}
+
+/**
+ * Drops one ref to the backend for [path]; when the last instance releases, evicts the
+ * entry, parks the scope for the next recreate to await, and cancels it. Idempotency is the
+ * caller's responsibility (each [KSafe] releases exactly once via an [java.util.concurrent.atomic.AtomicBoolean]).
+ */
+private fun releaseBackend(path: String) = synchronized(pathLock(path)) {
+    val backend = backends[path] ?: return
+    if (backend.refCount.decrementAndGet() <= 0) {
+        backends.remove(path)
+        terminatingScopes[path] = backend.scope
+        backend.scope.cancel()
+    }
+}
 
 /**
  * Android factory for [KSafe]. Resolves to the same call syntax as the pre-2.0
@@ -182,40 +258,24 @@ private fun buildAndroidKSafe(
         context.preferencesDataStoreFile(baseFileName)
     }
 
-    // DataStore launches its own coroutines on the scope it's given; we
-    // hold one we control so close() can dispose it. The Android-only
-    // process-static `dataStoreCache` exists to dedupe instances per
-    // file path (DataStore refuses multiple active instances per file);
-    // entries used to stay forever, so each test left both the cache
-    // entry and its DataStore + scope pinned. We now evict the entry
-    // and cancel the scope from `onCancel` below — but only if the
-    // factory actually created a fresh entry on this call (otherwise
-    // we'd close another caller's still-active DataStore).
+    // Acquire the per-path shared backend (DataStore + scope + engine), ref-counted so
+    // that co-existing instances on the same file share one DataStore AND one engine, and
+    // only the last to close tears the scope down. Creation is atomic per path. See
+    // [AndroidBackend] / [acquireBackend].
     val datastorePath = datastoreFile.absolutePath
-    var ownedScope: CoroutineScope? = null
-    val dataStore: DataStore<Preferences> = dataStoreCache.getOrPut(datastorePath) {
-        // A prior owner of this path may have just been closed: its scope is cancelling,
-        // but DataStore releases the file only once that scope's Job fully completes.
-        // Await it (bounded) before opening a new DataStore on the same file, so a
-        // close()-then-recreate can't trip DataStore's "multiple DataStores active for
-        // the same file" guard. No prior scope (the common case) → no wait.
-        dataStoreScopes.remove(datastorePath)?.coroutineContext?.get(Job)?.let { priorJob ->
-            runBlocking { withTimeoutOrNull(2_000) { priorJob.join() } }
-        }
-        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-        ownedScope = scope
-        dataStoreScopes[datastorePath] = scope
-        PreferenceDataStoreFactory.create(
-            scope = scope,
-            produceFile = { datastoreFile }
-        )
+    val backend = acquireBackend(datastorePath) { scope ->
+        PreferenceDataStoreFactory.create(scope = scope, produceFile = { datastoreFile })
     }
 
     // One storage instance shared by the engine (for its wrapped DEK) and the core, so
-    // each safe's DEK lives in that safe's own DataStore — not in SharedPreferences.
-    val storage = DataStoreStorage(dataStore)
+    // each safe's DEK lives in that safe's own DataStore — not in SharedPreferences. The
+    // shared production engine is created lazily on the backend (never for tests), so all
+    // instances on this file share one DEK cache / lock map over the single wrapped-DEK slot.
+    val storage = DataStoreStorage(backend.dataStore)
     val engine: KSafeEncryption = testEngine
-        ?: AndroidKeystoreEncryption(config = config, dekStore = DataStoreDekStore(storage))
+        ?: backend.engineOrCreate {
+            AndroidKeystoreEncryption(config = config, dekStore = DataStoreDekStore(storage))
+        }
 
     fun resolveKeyStorageTier(userKey: String, protection: KSafeProtection?): KSafeKeyStorage {
         if (protection == null) return KSafeKeyStorage.SOFTWARE
@@ -247,6 +307,9 @@ private fun buildAndroidKSafe(
         )
     }
 
+    // Guards this instance's single backend release (KSafeCore.cancel() is idempotent).
+    val released = java.util.concurrent.atomic.AtomicBoolean(false)
+
     val core = KSafeCore(
         storage = storage,
         engineProvider = { engine },
@@ -265,13 +328,12 @@ private fun buildAndroidKSafe(
         },
         modeTransformer = ::promoteMode,
         onCancel = {
-            val scope = ownedScope
-            if (scope != null) {
-                dataStoreCache.remove(datastorePath)
-                // Leave the (now cancelling) scope registered under the path so a later
-                // recreate awaits its teardown before opening a new DataStore on the file.
-                scope.cancel()
-            }
+            // Drop this instance's ref to the shared backend. Only the last instance on
+            // the path actually cancels the scope + evicts the entry (ref-counted), so
+            // closing one instance can't cancel the DataStore out from under another live
+            // one. KSafeCore.cancel() is idempotent and may call this more than once, so
+            // guard the release to exactly one decrement per instance.
+            if (released.compareAndSet(false, true)) releaseBackend(datastorePath)
         },
     )
 
