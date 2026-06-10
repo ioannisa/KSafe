@@ -4,6 +4,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
@@ -86,7 +88,13 @@ internal actual fun platformVerifyBiometricDirect(
     onResult: (Boolean) -> Unit,
 ) {
     CoroutineScope(Dispatchers.Default + SupervisorJob()).launch {
-        onResult(platformVerifyBiometric(reason, authorizationDuration, allowDeviceCredentialFallback))
+        val ok = platformVerifyBiometric(reason, authorizationDuration, allowDeviceCredentialFallback)
+        // Deliver onResult on the MAIN thread, matching the Apple implementation. The verify
+        // coroutine runs on Dispatchers.Default, so without this the callback fires on a
+        // background thread — a View-based consumer that touches the UI from it crashes
+        // ("Only the original thread that created a view hierarchy can touch its views",
+        // deep-review #39). Compose consumers happen to be tolerant; View ones are not.
+        Handler(Looper.getMainLooper()).post { onResult(ok) }
     }
 }
 

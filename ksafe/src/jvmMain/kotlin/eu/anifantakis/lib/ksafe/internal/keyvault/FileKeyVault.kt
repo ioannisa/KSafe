@@ -72,7 +72,20 @@ internal class FileKeyVault(
         // temp file's permissions onto the destination.
         val tmp = createOwnerOnlyTempFile(parent)
         try {
-            tmp.writeText(json.encodeToString(ser, map))
+            // Write the bytes AND force them to stable storage (fsync) BEFORE the
+            // atomic rename. Without the fsync, a journaling filesystem can persist
+            // the rename metadata before the temp file's data blocks, so a power
+            // loss / OS crash right after the move leaves the destination zero-length.
+            // This file holds the ONLY copy of the master AES key, and a blank file
+            // is indistinguishable from "no keys yet" → getExistingSecretKey throws
+            // "No encryption key found" → the startup orphan sweep deletes every
+            // encrypted entry. (datastore-core's FileStorage fsyncs before its move
+            // for exactly this reason.) See deep-review #34.
+            java.io.FileOutputStream(tmp).use { out ->
+                out.write(json.encodeToString(ser, map).encodeToByteArray())
+                out.flush()
+                out.fd.sync()
+            }
             Files.move(
                 tmp.toPath(),
                 file.toPath(),

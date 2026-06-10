@@ -7,6 +7,7 @@ import androidx.compose.runtime.SnapshotMutationPolicy
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.structuralEqualityPolicy
+import kotlin.concurrent.Volatile
 import eu.anifantakis.lib.ksafe.KSafe
 import eu.anifantakis.lib.ksafe.KSafeWriteMode
 import kotlinx.coroutines.CoroutineScope
@@ -39,6 +40,15 @@ class KSafeComposeState<T>(
 ) : MutableState<T>, ReadWriteProperty<Any?, T> {
 
     private var _internalState: MutableState<T> = mutableStateOf(initialValue, policy)
+
+    // @Volatile for cross-thread visibility: with `scope = null` + a cold-start key the
+    // self-heal runs on a detached Dispatchers.Default coroutine while the setter runs on the
+    // caller's thread (typically main). As a plain `var` the heal thread could miss the
+    // setter's `userHasWritten = true` (no happens-before), then overwrite the user's value
+    // with the persisted default — UI/disk divergence for the owner's lifetime (deep-review
+    // #42 / #62). @Volatile is multiplatform (JVM/Native volatile; a no-op on single-threaded
+    // JS/Wasm). The residual check-then-act window is negligible vs. the prior visibility gap.
+    @Volatile
     private var userHasWritten = false
 
     override var value: T

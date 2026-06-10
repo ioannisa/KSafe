@@ -59,6 +59,43 @@ class JvmObservableFlowResilienceTest {
         ksafe.close()
     }
 
+    /** decrypt fails with an Apple-Keychain-shaped transient error whose message contains
+     *  "Keychain" but NOT "device is locked"/"Keystore" — deep-review #59. */
+    private class KeychainErrorEngine : KSafeEncryption {
+        @Volatile var fail = false
+        private val xor = FakeEncryption()
+        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray =
+            xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
+        override fun decrypt(identifier: String, data: ByteArray): ByteArray {
+            if (fail) throw IllegalStateException("KSafe: Keychain error -25308 for account $identifier")
+            return xor.decrypt(identifier, data)
+        }
+        override fun deleteKey(identifier: String) {}
+    }
+
+    @Test
+    fun keychainTransientError_isClassifiedTransient_andSkipped() = runBlocking {
+        // #59: a transient Apple Keychain error ("Keychain error …", no "device is locked"/
+        // "Keystore") must be treated as transient — skipped on the flow path, not emitted as
+        // the default. Pre-fix isTransientDecryptFailure didn't match "Keychain", so the flow
+        // emitted the default ("def") instead of skipping.
+        val engine = KeychainErrorEngine()
+        val ksafe = KSafe(
+            fileName = JvmKSafeTest.generateUniqueFileName(),
+            memoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+            lazyLoad = true,
+            testEngine = engine,
+        )
+        ksafe.put("k", "v1", KSafeWriteMode.Encrypted())
+        assertEquals("v1", withTimeoutOrNull(2_000) { ksafe.getFlow<String>("k", "def").first() })
+
+        engine.fail = true
+        val result = withTimeoutOrNull(500) { ksafe.getFlow<String>("k", "def").first() }
+        assertNull(result, "a transient Keychain error must be skipped (transient), not emitted as the default (#59)")
+
+        ksafe.close()
+    }
+
     @Test
     fun getFlow_staysAlive_afterTransientSkip_andEmitsNextGoodValue() = runBlocking {
         val engine = ToggleTransientEngine()

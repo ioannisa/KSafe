@@ -1029,7 +1029,15 @@ internal class KSafeCore(
             }
         }
 
-        for (alias in aliasesToDelete) engine.deleteKeySuspend(alias)
+        // Per-entry key deletion is best-effort cleanup that runs AFTER the batch is already
+        // committed to disk. A failure here must NOT fail the (successful) batch — otherwise an
+        // awaiting put/delete caller is told its write failed even though it persisted, and the
+        // ciphertext cache swap below is skipped, leaving stale plaintext in the cache
+        // (deep-review #64). A stranded engine key is harmless (reclaimed by the orphan sweep).
+        for (alias in aliasesToDelete) {
+            runCatching { engine.deleteKeySuspend(alias) }
+                .onFailure { if (it is CancellationException) throw it }
+        }
 
         // For ciphertext-at-rest policies: swap plaintext → ciphertext in cache.
         // CAS guard prevents overwriting a newer `putDirect` issued mid-batch.
@@ -1663,11 +1671,16 @@ internal class KSafeCore(
             return false
         }
         // Android Keystore (device locked, Keystore process crashed) and iOS
-        // Keychain (Secure Enclave busy) both surface through message strings
-        // we can recognise. JVM software encryption never produces these —
-        // there it's a no-op.
+        // Keychain (locked keychain / Secure Enclave busy) both surface through
+        // message strings we can recognise. JVM software encryption never
+        // produces these — there it's a no-op. "Keychain" is matched alongside
+        // "Keystore" so a transient Apple Keychain error (e.g. errSecInteraction-
+        // NotAllowed surfaced as "Keychain error -25308") is treated as retryable
+        // rather than silently returning the default (deep-review #59); KSafe's own
+        // "No encryption key found" / "vault unavailable" results are excluded above.
         return msg.contains("device is locked", ignoreCase = true) ||
-            msg.contains("Keystore", ignoreCase = true)
+            msg.contains("Keystore", ignoreCase = true) ||
+            msg.contains("Keychain", ignoreCase = true)
     }
 
     companion object {
