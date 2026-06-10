@@ -33,9 +33,31 @@ import platform.Security.kSecClassKey
 import platform.Security.kSecMatchLimit
 import platform.Security.kSecMatchLimitAll
 import platform.Security.kSecReturnAttributes
+import kotlin.experimental.ExperimentalNativeApi
+import kotlin.native.OsFamily
+import kotlin.native.Platform
 
 /**
- * iOS-only Keychain orphan sweep.
+ * Whether the Keychain orphan sweep is safe to run on [osFamily].
+ *
+ * The sweep enumerates every Keychain item under the library's hardcoded service and
+ * deletes those with no surviving DataStore counterpart. That is only safe where the
+ * Keychain is **app-private** — the iOS/tvOS/watchOS sandbox. On **macOS** items land in
+ * the shared per-user *login* keychain with no app-identity in the namespace (KSafe sets
+ * no access group / data-protection keychain), so one KSafe-using app's sweep would
+ * enumerate and DELETE another KSafe-using app's keys, permanently corrupting its data
+ * every launch (deep-review #9). Disable the sweep there: stale macOS Keychain entries are
+ * harmless clutter, reclaimed by `clearAll()`.
+ *
+ * Pure + parameterized so it's unit-testable without a live Keychain.
+ */
+@OptIn(ExperimentalNativeApi::class)
+internal fun keychainOrphanSweepEnabled(osFamily: OsFamily): Boolean =
+    osFamily != OsFamily.MACOSX
+
+/**
+ * iOS-only Keychain orphan sweep. **Enforced** via [keychainOrphanSweepEnabled]: this is a
+ * no-op on macOS, whose shared login keychain would otherwise let it delete other apps' keys.
  *
  * DataStore's orphan-ciphertext cleanup (in [KSafeCore.cleanupOrphanedCiphertext])
  * handles the "Keystore wiped but DataStore restored from backup" case — the
@@ -70,7 +92,7 @@ import platform.Security.kSecReturnAttributes
  * Reserved keys are infrastructure: a stale one is harmless clutter, reclaimed
  * only by `clearAll()` (or reused by the next `DEFAULT` write).
  */
-@OptIn(ExperimentalForeignApi::class)
+@OptIn(ExperimentalForeignApi::class, ExperimentalNativeApi::class)
 internal suspend fun cleanupOrphanedKeychainEntries(
     storage: KSafePlatformStorage,
     engine: KSafeEncryption,
@@ -81,6 +103,11 @@ internal suspend fun cleanupOrphanedKeychainEntries(
     seKeyTagPrefix: String,
     reservedKeyIds: Set<String>,
 ) {
+    // Never sweep on macOS: the shared login keychain has no app-identity scoping, so we'd
+    // delete other KSafe-using apps' keys (deep-review #9). No-op before touching storage or
+    // the Keychain so nothing else in this function can run there.
+    if (!keychainOrphanSweepEnabled(Platform.osFamily)) return
+
     val snapshot = storage.snapshot()
 
     // Pass 1 — collect protection metadata from `__ksafe_meta_*__` and legacy
