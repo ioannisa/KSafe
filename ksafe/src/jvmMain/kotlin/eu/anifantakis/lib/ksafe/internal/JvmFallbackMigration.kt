@@ -36,10 +36,15 @@ import kotlin.io.encoding.ExperimentalEncodingApi
  * migration drains every fallback entry into the OS-backed store, overwriting
  * any stale value an earlier migration left there. (The OS store can't hold
  * anything newer for these keys: reaching it the first time already drained and
- * archived the fallback.) After a clean pass (no per-entry failures) the source
- * files are **renamed** to `*.migrated`, never deleted — so the data drains
+ * archived the fallback.) The source files are **renamed** to `*.migrated`
+ * (never deleted) once the pass has no *transient* failure — so the data drains
  * exactly once, the originals stay recoverable, and the migration stops
- * re-scanning. This also fixes the toggle case (turn `modules` off, change a
+ * re-scanning. A *permanently* unmigratable entry (corrupt source ciphertext or
+ * a lost software key) does **not** block archiving: it would otherwise re-run
+ * the blocking migration every launch and roll the user's newer OS-backed writes
+ * back to stale fallback data. Only a *transient* target-vault failure blocks
+ * archiving, and then nothing is applied, so the retry has no partial state to
+ * roll back. This also fixes the toggle case (turn `modules` off, change a
  * value, turn it back on): the changed value carries across.
  *
  * Best-effort and non-fatal: any failure is swallowed so it can never block
@@ -71,10 +76,18 @@ internal fun migrateJsonFallbackToOsBacked(
                 migScope.coroutineContext[Job]?.cancelAndJoin()
             }
 
-            // Archive (not delete) only after a clean pass — a per-entry failure
-            // leaves the source in place so the next launch can retry it. Retries
-            // are idempotent (re-draining writes the same values again).
-            if (result.failed == 0) {
+            // Archive (→ marker) unless a TRANSIENT failure occurred. Permanent
+            // per-entry failures (corrupt source ciphertext, a lost software key)
+            // must NOT block archiving: they fail identically every launch, so
+            // leaving the source in place would re-run the blocking migration
+            // forever and — because the migration overwrites with the frozen
+            // fallback values — silently roll the user's newer OS-backed writes
+            // back to stale data on every launch (deep-review #10). Only a
+            // transient target-vault failure (OS keychain temporarily
+            // unavailable / device locked) warrants a retry — and in that case
+            // reEncryptAll applied nothing, so there is no partial state to roll
+            // back when it re-runs.
+            if (result.transientFailed == 0) {
                 archiveOrMark(jsonFallback)
                 archiveOrMark(keysFallback)
             }
@@ -83,7 +96,13 @@ internal fun migrateJsonFallbackToOsBacked(
     }
 }
 
-private data class MigrationResult(val migrated: Int, val failed: Int)
+private data class MigrationResult(
+    val migrated: Int,
+    /** Entries permanently unmigratable (corrupt source / lost software key). Do NOT block archiving. */
+    val permanentlySkipped: Int,
+    /** Entries that failed for a transient reason (OS vault unavailable). Block archiving → retry. */
+    val transientFailed: Int,
+)
 
 /**
  * Re-encrypts every user entry from [source]/[sourceEngine] into
@@ -103,7 +122,8 @@ private suspend fun reEncryptAll(
     val srcSnap = source.snapshot()
     val ops = mutableListOf<StorageOp>()
     var migrated = 0
-    var failed = 0
+    var permanentlySkipped = 0
+    var transientFailed = 0
 
     for ((rawKey, stored) in srcSnap) {
         val userKey = KeySafeMetadataManager.tryExtractCanonicalValueKey(rawKey) ?: continue
@@ -145,22 +165,47 @@ private suspend fun reEncryptAll(
             keyAlias(userKey)
         }
 
-        val ok = runCatching {
-            val plain = sourceEngine.decryptSuspend(alias, Base64.decode(cipherB64))
-            val reCipher = targetEngine.encryptSuspend(
+        // Source decrypt: the fallback is a static file, so a failure here
+        // (corrupt ciphertext/base64, or a lost/rotated software key) is
+        // PERMANENT — it fails identically every launch. Skip it; counting it as
+        // a retryable failure would block archiving forever and re-drain stale
+        // values over the user's newer writes (deep-review #10). The entry stays
+        // in the .migrated archive, recoverable.
+        val plain = try {
+            sourceEngine.decryptSuspend(alias, Base64.decode(cipherB64))
+        } catch (e: Throwable) {
+            permanentlySkipped++
+            continue
+        }
+
+        // Target re-encrypt: the OS-backed vault. A failure here is typically
+        // TRANSIENT (vault temporarily unavailable / device locked). Block
+        // archiving so the migration retries next launch — and because the apply
+        // below is gated on `transientFailed == 0`, nothing is written this
+        // launch, so the retry can't roll a newer write back over a partial state.
+        val reCipher = try {
+            targetEngine.encryptSuspend(
                 identifier = alias,
                 data = plain,
                 hardwareIsolated = protection == KSafeProtection.HARDWARE_ISOLATED,
                 requireUnlockedDevice = requireUnlocked,
             )
-            ops += StorageOp.Put(KeySafeMetadataManager.valueRawKey(userKey), StoredValue.Text(Base64.encode(reCipher)))
-            ops += StorageOp.Put(KeySafeMetadataManager.metadataRawKey(userKey), StoredValue.Text(metaRaw!!))
-        }.isSuccess
-        if (ok) migrated++ else failed++
+        } catch (e: Throwable) {
+            transientFailed++
+            continue
+        }
+
+        ops += StorageOp.Put(KeySafeMetadataManager.valueRawKey(userKey), StoredValue.Text(Base64.encode(reCipher)))
+        ops += StorageOp.Put(KeySafeMetadataManager.metadataRawKey(userKey), StoredValue.Text(metaRaw!!))
+        migrated++
     }
 
-    if (ops.isNotEmpty()) target.applyBatch(ops)
-    return MigrationResult(migrated, failed)
+    // All-or-nothing on a transient failure: if any entry needs a retry, apply
+    // NOTHING this launch (no partial drain that a re-run could later roll back).
+    // Permanent skips don't block the apply — the successful entries land and the
+    // source gets archived so the migration never re-runs.
+    if (transientFailed == 0 && ops.isNotEmpty()) target.applyBatch(ops)
+    return MigrationResult(migrated = migrated, permanentlySkipped = permanentlySkipped, transientFailed = transientFailed)
 }
 
 /**

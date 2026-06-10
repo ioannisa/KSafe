@@ -435,4 +435,108 @@ class JvmFallbackMigrationTest {
             )
         }
     }
+
+    @Test
+    fun permanentlyUndecryptableEntry_doesNotBlockArchival_andGoodEntryMigrates() {
+        // Regression for #10: an encrypted entry whose source ciphertext can't be
+        // decrypted (corrupt/lost software key) is a PERMANENT failure — it would
+        // fail identically every launch. Pre-fix it was counted as a retryable
+        // failure, so the source was never archived and the blocking migration
+        // re-ran every launch, re-draining the frozen fallback over the user's
+        // newer OS-backed writes. It must now be skipped so a pass still archives.
+        val jsonFallback = File(tmp, "perm.ksafe.json")
+        val keysFallback = File(tmp, "perm.ksafe-keys.json")
+        val targetFile = File(tmp, "perm.target.json")
+        val config = KSafeConfig()
+
+        val srcScope = newScope()
+        runBlocking {
+            val src = DataStoreJsonStorage(jsonFallback, srcScope)
+            val srcEngine = JvmSoftwareEncryption(
+                config = config,
+                vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFallback)),
+            )
+            // A good DEFAULT entry that decrypts cleanly under the source key.
+            putEncrypted(src, srcEngine, "good", "v1", KSafeProtection.DEFAULT)
+            // A corrupt DEFAULT entry: invalid base64 ciphertext → permanent decrypt failure.
+            src.applyBatch(
+                listOf(
+                    StorageOp.Put(KeySafeMetadataManager.valueRawKey("bad"), StoredValue.Text("@@@not-base64@@@")),
+                    StorageOp.Put(
+                        KeySafeMetadataManager.metadataRawKey("bad"),
+                        StoredValue.Text(KeySafeMetadataManager.buildMetadataJson(KSafeProtection.DEFAULT, accessPolicy = null)),
+                    ),
+                )
+            )
+        }
+        runBlocking { srcScope.coroutineContext[Job]!!.cancelAndJoin() }
+
+        val targetScope = newScope()
+        val target = DataStoreJsonStorage(targetFile, targetScope)
+        val targetEngine = JvmSoftwareEncryption(
+            config = config,
+            vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(File(tmp, "perm.target-keys.json"))),
+        )
+        migrateJsonFallbackToOsBacked(config, jsonFallback, keysFallback, target, targetEngine, keyAlias, masterAlias)
+
+        // The good entry migrated…
+        runBlocking {
+            val c = (target.snapshot()[KeySafeMetadataManager.valueRawKey("good")] as StoredValue.Text).value
+            assertEquals("v1", targetEngine.decryptSuspend(masterAlias(false), Base64.decode(c)).decodeToString())
+        }
+        // …and crucially the source is ARCHIVED despite the permanent failure, so the
+        // gate (`jsonFallback.exists() && !marker.exists()`) won't re-run the migration
+        // and roll back the user's later writes to "good".
+        assertFalse(jsonFallback.exists(), "permanent failure must not block archival (deep-review #10)")
+        assertTrue(File(tmp, "perm.ksafe.json.migrated").exists(), "source must be archived → migration won't re-run")
+    }
+
+    /** Target engine whose every encrypt fails as if the OS vault were transiently down. */
+    private class TransientFailTargetEngine : KSafeEncryption {
+        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray =
+            throw IllegalStateException("KSafe: OS key vault is unavailable (test transient)")
+        override fun decrypt(identifier: String, data: ByteArray): ByteArray =
+            throw IllegalStateException("unused")
+        override fun deleteKey(identifier: String) {}
+    }
+
+    @Test
+    fun transientTargetFailure_appliesNothing_andDoesNotArchive_soItRetries() {
+        // Regression for #10: a TRANSIENT target-vault failure must abort the whole
+        // migration this launch — write nothing, archive nothing — so the retry next
+        // launch is a clean full migration, never a partial re-drain that rolls back
+        // a newer write.
+        val jsonFallback = File(tmp, "tr.ksafe.json")
+        val keysFallback = File(tmp, "tr.ksafe-keys.json")
+        val targetFile = File(tmp, "tr.target.json")
+        val config = KSafeConfig()
+
+        val srcScope = newScope()
+        runBlocking {
+            val src = DataStoreJsonStorage(jsonFallback, srcScope)
+            val srcEngine = JvmSoftwareEncryption(
+                config = config,
+                vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFallback)),
+            )
+            putEncrypted(src, srcEngine, "good", "v1", KSafeProtection.DEFAULT)
+        }
+        runBlocking { srcScope.coroutineContext[Job]!!.cancelAndJoin() }
+
+        val targetScope = newScope()
+        val target = DataStoreJsonStorage(targetFile, targetScope)
+        migrateJsonFallbackToOsBacked(
+            config, jsonFallback, keysFallback, target,
+            targetEngine = TransientFailTargetEngine(),
+            keyAlias = keyAlias, masterAlias = masterAlias,
+        )
+
+        runBlocking {
+            assertFalse(
+                target.snapshot().containsKey(KeySafeMetadataManager.valueRawKey("good")),
+                "a transient target failure must apply NOTHING (no partial drain)",
+            )
+        }
+        assertTrue(jsonFallback.exists(), "transient failure must NOT archive — the source stays for a clean retry")
+        assertFalse(File(tmp, "tr.ksafe.json.migrated").exists(), "no marker on transient failure")
+    }
 }
