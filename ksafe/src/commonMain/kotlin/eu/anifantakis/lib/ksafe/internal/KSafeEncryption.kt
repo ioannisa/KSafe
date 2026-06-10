@@ -124,6 +124,25 @@ internal interface KSafeEncryption {
     suspend fun deleteKeySuspend(identifier: String) = deleteKey(identifier)
 
     /**
+     * Warms the key material for [identifier] so the first real encrypt doesn't pay the
+     * cold-start key-generation cost. Default: a throwaway encrypt of empty bytes — exactly
+     * what [KSafeCore]'s prewarm used to do, which on Keychain/OS-vault engines primes the
+     * in-memory key cache.
+     *
+     * Engines may override to warm **only** what's needed and avoid side effects. The Android
+     * engine overrides this to create just the wrapping KEK: it deliberately does **not**
+     * generate or persist a DEK at prewarm, so an unencrypted-only safe never writes one and
+     * prewarm performs no DataStore I/O (the DEK is created lazily on the first real encrypt).
+     */
+    suspend fun prewarmKey(
+        identifier: String,
+        hardwareIsolated: Boolean = false,
+        requireUnlockedDevice: Boolean? = null,
+    ) {
+        encryptSuspend(identifier, ByteArray(0), hardwareIsolated, requireUnlockedDevice)
+    }
+
+    /**
      * One-time, best-effort **eager** sweep of legacy (pre-2.1) key material
      * out of the weak storage location into the engine's secure store.
      *

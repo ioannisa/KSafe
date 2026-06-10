@@ -2,113 +2,100 @@
 
 Here are benchmark results comparing KSafe against popular Android persistence libraries.
 
-> **2.0 release headline:** these numbers reflect the **v2 envelope** introduced in 2.0 — a single per-datastore master AES key (held in-process after first unwrap) replaces per-entry Keystore keys for `KSafeProtection.DEFAULT` writes. Every encrypted op that used to round-trip the Android Keystore now runs as in-process AES-GCM against cached key bytes. The biggest gains land on the IPC-bound paths: `ENCRYPTED`-memory reads dropped 45×, suspend `put` of encrypted values dropped 5–10×. `HARDWARE_ISOLATED` writes still use per-entry keys (StrongBox isolation requires it) and are unchanged.
+> **2.1.2 release headline — Android software-DEK fast path.** Before 2.1.2, `ENCRYPTED`-memory "decrypt on every read" ran its AES-GCM *inside* the Android Keystore (TEE) on every call, so each read was a hardware round-trip — ~8 ms/op on a real Galaxy S24 Ultra (an emulator's software keystore hid this; it looked like ~0.2 ms). 2.1.2 keeps the per-datastore master key (the **KEK**) non-exportable in the TEE but uses it to wrap a **data-encryption key (DEK)** that is unwrapped **once** into process memory; per-value AES-GCM then runs in **userspace**. Result: `ENCRYPTED`-memory decrypt-every-read dropped from **~8 ms → ~0.014 ms** on the S24 Ultra — KSafe now *beats* EncryptedSharedPreferences and KVault even on the decrypt-every-read path. This brings Android in line with the Apple (CryptoKit) and JVM (JCE) engines, which already held raw key bytes in memory and did userspace AES. `HARDWARE_ISOLATED` writes and the strict `requireUnlockedDevice` master keep keys inside the TEE on every op (unchanged).
 >
-> The default memory policy is **`LAZY_PLAIN_TEXT`** in 2.0. Its read profile matches `PLAIN_TEXT` after first access (plaintext cached permanently in the side cache) and matches `ENCRYPTED` cold-start (no bulk decrypt at startup). The first read of each key under `LAZY_PLAIN_TEXT` pays one decrypt — comparable to a single `ENCRYPTED`-memory read.
+> The default memory policy is **`LAZY_PLAIN_TEXT`**. Its read profile matches `PLAIN_TEXT` after first access (plaintext cached in the side cache) and matches `ENCRYPTED` cold-start (no bulk decrypt at startup). The first read of each key under `LAZY_PLAIN_TEXT` pays one decrypt — comparable to a single `ENCRYPTED`-memory read.
 
 ### Benchmark Environment
 
-- **Device:** AOSP Emulator, API 37, running on a MacBook Pro (Apple Silicon).
-- **Test:** 500 read/write operations per library, exercised in their natural usage pattern.
-- **Reported numbers:** values from a representative steady-state run after the workload reaches stable JIT behavior.
-- **Libraries tested:** KSafe, SharedPreferences, EncryptedSharedPreferences, MMKV, DataStore, Multiplatform Settings, KVault.
+- **Device:** Samsung Galaxy S24 Ultra (`SM-S928B`), Android 16, release build.
+- **Library:** KSafe 2.1.2.
+- **Test:** 500 read/write operations per library, exercised in their natural usage pattern, after a full warmup of every code path.
+- **Reported numbers:** values from a representative steady-state run.
 
-> **Emulator caveat:** an emulator on Apple Silicon is not a physical Android device. Host-CPU encryption performance, IPC routing through `binder` emulation, and storage I/O all behave somewhat differently from a real Pixel or Galaxy. Treat absolute numbers as indicative; the **relative comparisons between libraries on the same emulator** are the meaningful signal. Run-to-run variance at µs scale can reach ±20–30%; the numbers below are typical, not best-case.
+> **Real-device note.** The S24 Ultra is a high-end flagship; mid-range and older devices will be slower in absolute terms, and the per-read AES cost scales with value size. The **relative comparisons between libraries on the same device** are the meaningful signal. Run-to-run variance at µs scale can reach ±20–30%; the numbers below are typical, not best-case. Numbers are reported in a single unit (ms) throughout.
 
 ### Results Summary
+
+KSafe exposes three API shapes. **Direct** (`getDirect`/`putDirect`) is the canonical hot-cache API and the one quoted below; the **Delegated** (`by ksafe(...)`) path routes through the same code and performs equivalently; the **Coroutine** (suspend `get`/`put`) path awaits the DataStore disk commit (durable) and is fired concurrently, so its figures are throughput, not per-op latency.
 
 #### Unencrypted Operations
 
 | Library | Read | Write |
 |---------|------|-------|
-| MMKV | 0.0006 ms | 0.0132 ms |
-| SharedPreferences | 0.0007 ms | 0.0131 ms |
-| Multiplatform Settings | 0.0009 ms | 0.0132 ms |
-| **KSafe (Delegated)** | **0.0021 ms** | **0.0043 ms** |
-| **KSafe (Direct)** | 0.0094 ms | 0.0067 ms |
-| KSafe (Coroutine) | 0.0208 ms | 0.6204 ms |
-| DataStore | 0.3386 ms | 2.87 ms |
+| SharedPreferences | 0.00017 ms | 0.0123 ms |
+| Multiplatform Settings | 0.00030 ms | 0.0138 ms |
+| MMKV | 0.00051 ms | 0.0131 ms |
+| **KSafe (Direct)** | **0.0015 ms** | **0.0010 ms** |
+| KSafe (Coroutine, durable) | 0.0024 ms | 0.86 ms |
+| DataStore | 0.3254 ms | 1.68 ms |
 
-> **Note:** KSafe unencrypted reads are ~3× slower than MMKV in absolute terms (2.1 µs vs 0.6 µs) — the cost of cross-platform generics and `kotlinx-serialization`-driven type widening. Both numbers are well below human perception thresholds. Writes are excellent: KSafe Delegated is **~3× faster than MMKV** (4.3 µs vs 13.2 µs) and **~3× faster than SharedPreferences**.
+> **Note:** KSafe unencrypted reads are ~9× slower than SharedPreferences in absolute terms (1.5 µs vs 0.17 µs) — the cost of cross-platform generics and `kotlinx-serialization`-driven type widening. Both are far below human perception. Writes are excellent: KSafe `putDirect()` is **~12× faster than SharedPreferences** and ~13× faster than MMKV (1.0 µs vs 12–13 µs), because the write returns immediately and the durable commit is coalesced in the background.
 
 #### Encrypted Read Operations
 
 | Library | Time | vs KSafe |
 |---------|------|----------|
-| **KSafe (PLAIN_TEXT memory, Delegated)** | **0.0044 ms** | — |
-| KSafe (PLAIN_TEXT memory, Direct) | 0.0090 ms | — |
-| KSafe (PLAIN_TEXT memory, Coroutine) | 0.0262 ms | — |
-| KVault | 0.0916 ms | KSafe is **~21× faster** |
-| EncryptedSharedPreferences | 0.1077 ms | KSafe is **~24× faster** |
-| KSafe (ENCRYPTED memory, Delegated) | 0.1421 ms | *(real AES-GCM decryption on every read, master-key-cached)* |
-| KSafe (ENCRYPTED memory, Coroutine) | 0.2299 ms | |
-| KSafe (ENCRYPTED memory, Direct) | 0.2372 ms | |
+| **KSafe (PLAIN_TEXT memory, Direct)** | **0.0013 ms** | — *(cached plaintext, decrypt once)* |
+| KSafe (PLAIN_TEXT memory, Coroutine) | 0.0141 ms | |
+| **KSafe (ENCRYPTED memory, Direct)** | **0.0144 ms** | *(real AES-GCM decryption on **every** read — userspace DEK)* |
+| KSafe (ENCRYPTED memory, Coroutine) | 0.0213 ms | |
+| KVault | 0.0378 ms | KSafe ENCRYPTED is **~2.6× faster**; PLAIN_TEXT **~28× faster** |
+| EncryptedSharedPreferences | 0.0496 ms | KSafe ENCRYPTED is **~3.4× faster**; PLAIN_TEXT **~37× faster** |
 
-> **Note on ENCRYPTED memory policy:** This policy keeps ciphertext in RAM and performs real AES-GCM decryption on every read. Under v2, the master AES key lives in the engine's in-process cache after construction, so each decrypt is a pure-CPU op — no Keystore IPC. Result: ENCRYPTED-memory reads are now ~45× faster than they were under v1's per-entry-key scheme (10.6 ms → 0.24 ms on this benchmark). For most use cases the default `LAZY_PLAIN_TEXT` is still preferable (first read decrypts, subsequent reads are O(1) memory lookups), but ENCRYPTED is no longer a "you'll regret it under bursty reads" choice.
+> **Note on the `ENCRYPTED` memory policy.** This policy keeps ciphertext in RAM and performs real AES-GCM decryption on **every** read. Under 2.1.2 the decrypt is a pure-CPU operation against the in-memory DEK — no per-read Keystore/TEE round-trip — so even the decrypt-every-read path (the fair, apples-to-apples comparison against ESP/KVault, which also decrypt every read) is now **faster than both**. Before 2.1.2 this same path cost ~8 ms/op on this device. For most use cases the default `LAZY_PLAIN_TEXT` is still preferable (first read decrypts, subsequent reads are O(1) memory lookups), but `ENCRYPTED` is no longer expensive under bursty reads.
 
 #### Encrypted Write Operations
 
 | Library | Time | vs KSafe |
 |---------|------|----------|
-| **KSafe (PLAIN_TEXT memory, Delegated)** | **0.0095 ms** | — |
-| KSafe (ENCRYPTED memory, Direct) | 0.0111 ms | — |
-| KSafe (ENCRYPTED memory, Delegated) | 0.0114 ms | — |
-| KSafe (PLAIN_TEXT memory, Direct) | 0.0176 ms | — |
-| EncryptedSharedPreferences | 0.1361 ms | KSafe is **~14× faster** |
-| KSafe (ENCRYPTED memory, Coroutine) | 0.7791 ms | *(awaits disk commit)* |
-| KSafe (PLAIN_TEXT memory, Coroutine) | 1.19 ms | *(awaits disk commit)* |
-| KVault | 1.21 ms | KSafe is **~127× faster** |
+| **KSafe (PLAIN_TEXT memory, Direct `putDirect`)** | **0.0020 ms** | — *(queue + return)* |
+| KSafe (ENCRYPTED memory, Direct `putDirect`) | 0.0041 ms | — |
+| EncryptedSharedPreferences | 0.0604 ms | KSafe is **~31× faster** |
+| KSafe (ENCRYPTED memory, Coroutine, durable) | 0.57 ms | *(awaits disk commit)* |
+| KVault | 0.7525 ms | KSafe is **~383× faster** |
+| KSafe (PLAIN_TEXT memory, Coroutine, durable) | 1.22 ms | *(awaits disk commit)* |
 
-> **v2 impact on suspend writes.** Coroutine-API encrypted writes that wait for the disk commit dropped from 3.84 ms (v1) → 0.78 ms (v2) for ENCRYPTED memory and from 4.26 ms → 1.19 ms for PLAIN_TEXT — a 4–5× speedup. The dominant cost in v1 was per-entry Keystore IPC inside the encrypt batch; v2 collapses that to a single in-process AES op against the cached master key. Direct-API writes (which return immediately and let the coalescer flush in the background) were already fast and are now marginally faster.
+> Direct-API encrypted writes return immediately and let the coalescer flush in the background; ESP/KVault `apply()`-style writes are the fair fire-and-forget counterpart. The Coroutine rows wait for the actual disk commit and are fired concurrently (durable throughput), which is the workload KSafe's write-coalescer is designed for.
 
 ### Key Performance Highlights
 
 **vs DataStore (KSafe's backend):**
-- :zap: **~673× faster writes** (2.87 ms → 0.0043 ms)
-- :zap: **~163× faster reads** (0.339 ms → 0.0021 ms)
-
-**vs KVault (encrypted KMP storage):**
-- :zap: **~21× faster encrypted reads** (0.092 ms → 0.0044 ms with PLAIN_TEXT memory)
-- :zap: **~127× faster encrypted writes** (1.21 ms → 0.0095 ms)
+- :zap: **~211× faster reads** (`getDirect()` hot-cache 0.0015 ms vs DataStore flow read 0.3254 ms)
+- :zap: **~2× faster durable writes** (coalesced `put()` 0.86 ms vs `DataStore.edit()` 1.68 ms — both durable; KSafe batches concurrent puts in a ~16 ms window, DataStore is measured one-at-a-time, so this is not strictly like-for-like). For fire-and-forget, `putDirect()` (0.0010 ms) returns ~1600× sooner than a durable `DataStore.edit()`.
 
 **vs EncryptedSharedPreferences:**
-- :zap: **~24× faster encrypted reads** (0.108 ms → 0.0044 ms with PLAIN_TEXT memory)
-- :zap: **~14× faster encrypted writes** (0.136 ms → 0.0095 ms)
+- :zap: **~3.4× faster encrypted reads** even decrypt-every-read (`ENCRYPTED` memory, 0.0144 ms vs 0.0496 ms); **~37× faster** with `PLAIN_TEXT` memory (cached)
+- :zap: **~31× faster encrypted writes** (0.0020 ms vs 0.0604 ms)
 
-**vs SharedPreferences (unencrypted baseline):**
-- KSafe unencrypted writes are **~3× faster** than SharedPreferences (0.0043 ms vs 0.0131 ms)
-- Reads are ~3× slower (0.0021 ms vs 0.0007 ms) — the cost of type-safe generics and cross-platform API
+**vs KVault (encrypted KMP storage):**
+- :zap: **~2.6× faster encrypted reads** decrypt-every-read; **~28× faster** cached
+- :zap: **~383× faster encrypted writes** (0.0020 ms vs 0.7525 ms)
 
-**vs multiplatform-settings (Russell Wolf):**
-- KSafe writes ~3× faster (0.0043 ms vs 0.0132 ms)
-- KSafe reads ~2× slower (0.0021 ms vs 0.0009 ms)
-- KSafe adds: encryption, biometrics, type-safe serialization, hardware isolation
+**vs SharedPreferences / multiplatform-settings (unencrypted baselines):**
+- KSafe unencrypted `putDirect()` is **~12× faster than SharedPreferences** and ~14× faster than multiplatform-settings
+- Reads are ~9× slower in absolute µs (cost of type-safe generics + cross-platform API) — still ~1.5 µs
 
 **Direct vs Suspend API (within KSafe):**
-- `getDirect()` is **~10× faster** than suspend `get()` for reads (hot cache vs DataStore round-trip): Delegated 0.0021 ms vs Coroutine 0.0208 ms.
-- `putDirect()` is **~144× faster** than suspend `put()` for writes (queue + return vs await disk commit), measured against the Delegated API: 0.0043 ms vs 0.6204 ms. The Direct API's `putDirect` (0.0067 ms) is ~93× faster than suspend `put()` — same coalescer, slightly higher overhead from the explicit API surface.
+- `getDirect()` is **~10× faster** than suspend `get()` for encrypted reads (hot cache vs DataStore round-trip), ~1.5× for unencrypted.
+- `putDirect()` is **~800× faster** than suspend `put()` for writes (queue + return vs await disk commit). Reach for suspend `get`/`put` only when you must guarantee the value has hit disk.
 
 ### Cold Start Performance
 
-How quickly each library is ready to serve reads after the in-process cache is cleared and forced to repopulate. The KSafe instance is reused (DataStore is a singleton) — the harness clears `memoryCache` and times the next `getDirect()` that triggers the reload.
+How quickly each library is ready to serve reads after the in-process cache is cleared and forced to repopulate. The KSafe instance is reused (DataStore is a singleton) — the harness clears the cache and times re-population, taking the **median of several cycles** (a single sample is dominated by GC and collector-thread timing).
 
-| Library | Keys | Time |
-|---------|------|------|
-| SharedPreferences | 501 | 0.024 ms |
-| **KSafe (PLAIN_TEXT memory)** | 3006 (1500 encrypted + 1506 plain) | **0.031 ms** |
-| Multiplatform Settings | 501 | 0.032 ms |
-| MMKV | 501 | 0.050 ms |
-| DataStore | 501 | 0.495 ms |
-| EncryptedSharedPrefs | 501 | 8.24 ms |
-| KVault | 650 | 9.91 ms |
-| **KSafe (ENCRYPTED memory)** | 1503 (1500 encrypted + 3 plain) | **12.70 ms** |
+| Library | Keys | Time | Per key |
+|---------|------|------|---------|
+| SharedPreferences | 501 | 0.032 ms | 0.06 µs |
+| MMKV | 501 | 0.047 ms | 0.09 µs |
+| Multiplatform Settings | 501 | 0.049 ms | 0.10 µs |
+| DataStore | 501 | 0.43 ms | 0.85 µs |
+| **KSafe (ENCRYPTED memory)** | 1503 | **8.54 ms** | **5.7 µs** |
+| **KSafe (PLAIN_TEXT memory)** | 3006 | **17.19 ms** | **5.7 µs** |
+| KVault | 650 | 29.14 ms | 45 µs |
+| EncryptedSharedPrefs | 501 | 34.24 ms | 68 µs |
 
-> **Reading these numbers honestly.** The harness measures cache-repopulation throughput, not first-launch process boot. Both KSafe modes benefit from the v2 master key being in the engine cache (it's pre-warmed once at construction); per-key Keystore IPC during repopulation is gone. The per-key asymmetry between the two modes reflects what they actually do during the reload:
->
-> - **`ENCRYPTED` memory mode** stashes ciphertext into the cache and does an orphan-cleanup probe (one decrypt round-trip per encrypted key, parallelised eight-at-a-time via `Semaphore(8)`). With 1500 encrypted entries, that probe dominates the 12.7 ms total at ~8.5 µs/key.
-> - **`PLAIN_TEXT` memory mode** decrypts every encrypted entry into the cache eagerly. Despite reloading more keys (3006 vs 1503), it lands at 0.031 ms because the harness is timing one `getDirect()` after the reload completes — the rebuild work happens inside the collector coroutine and the timed call is a hashmap hit.
->
-> Real cold-start (process restart) under `ENCRYPTED` and `LAZY_PLAIN_TEXT` is ~free regardless of key count: the cache holds ciphertext, no eager decryption happens. `PLAIN_TEXT` pays the bulk-decrypt up-front; under v2 with the master key cached, that's microseconds-per-key amortised. Both modes still destroy `EncryptedSharedPreferences` (8.24 ms for 501 keys = ~16 µs/key, serial Keystore IPC) and `KVault` (9.91 ms for 650 keys = ~15 µs/key, serial) on a per-key basis — both libraries serialise their hardware-backed crypto and pay one IPC per entry on every cold start.
+> **Reading these numbers honestly.** The two KSafe modes repopulate at the same **~5.7 µs/key** — the difference in their totals is purely key count (the PLAIN_TEXT instance also holds all the unencrypted keys in this suite). Both decrypt their stored entries with the in-memory DEK at cold start (`PLAIN_TEXT` eagerly into the plaintext cache; `ENCRYPTED` via an integrity probe), now pure-CPU rather than per-key Keystore IPC. On a **per-key** basis KSafe is **~8–12× faster than KVault and EncryptedSharedPreferences**, both of which serialise hardware-backed crypto and pay one round-trip per entry on every cold start. Real first-launch cost under `LAZY_PLAIN_TEXT` (the default) is near-free regardless of key count: the cache holds ciphertext and nothing is eagerly decrypted.
 
 ### How KSafe Achieves This Performance
 
@@ -116,34 +103,32 @@ KSafe uses a **hot cache architecture** similar to SharedPreferences, but built 
 
 ```
 Vanilla DataStore:
-  Read:  suspend → Flow.first() → disk I/O → ~0.34 ms
-  Write: suspend → edit{} → serialize → disk I/O → ~2.9 ms
+  Read:  suspend → Flow.first() → disk I/O → ~0.33 ms
+  Write: suspend → edit{} → serialize → disk I/O → ~1.7 ms
 
 KSafe with Hot Cache:
-  Read:  getDirect() → ConcurrentHashMap lookup → ~0.002 ms (no disk!)
-  Write: putDirect() → update HashMap + queue → ~0.004 ms (returns immediately)
+  Read:  getDirect() → ConcurrentHashMap lookup → ~0.0015 ms (no disk!)
+  Write: putDirect() → update HashMap + queue → ~0.001 ms (returns immediately)
          Background: batched, parallelised DataStore.edit() (user doesn't wait)
 ```
 
 **Key optimizations:**
 
-1. **ConcurrentHashMap cache** — O(1) per-key reads and writes
-2. **v2 master-key envelope (new in 2.0)** — `KSafeProtection.DEFAULT` writes encrypt against a single per-datastore AES key cached in-process after first unwrap, instead of a per-entry Keystore key. Eliminates the Keystore IPC round-trip from every encrypt and decrypt of non-isolated values. `HARDWARE_ISOLATED` writes still get per-entry keys.
-3. **Write coalescing** — batches writes within a 16 ms window into a single DataStore edit; concurrent suspend `put()` calls from independent coroutines coalesce automatically
-4. **Parallel encryption inside the batch** — encrypts up to 8 entries concurrently per batch via `coroutineScope` + `Semaphore(8)`; under v2 this still helps `HARDWARE_ISOLATED` IPC pipelining and parallelises the (now CPU-only) AES work for `DEFAULT` entries
-5. **Parallel decryption at cold start** — `PLAIN_TEXT` memory mode populates the cache by decrypting all stored entries through the same `coroutineScope` + `Semaphore(8)` pattern; under v2 these decrypts are pure-CPU AES, not IPC
-6. **Deferred encryption** — encryption work moved to background; the UI thread returns instantly from `putDirect`
-7. **SecretKey caching (per-engine, in-process)** — Android, Apple, and JVM engines all hold the unwrapped key bytes in a process-static map keyed by alias. Combined with v2's master alias, the entire datastore's encryption flow needs zero IPC after the first unwrap
-8. **Auto-protection-detection** — readers don't have to remember whether a key is encrypted; the library figures it out from per-key metadata. Stores with no encrypted entries short-circuit the lookup via an atomic flag, so plain-only consumers pay zero overhead. Mixed stores pay a single sub-microsecond `ConcurrentHashMap` lookup per read. Eliminates a class of "wrote encrypted, read plain" bugs
+1. **ConcurrentHashMap cache** — O(1) per-key reads and writes.
+2. **Per-datastore master-key envelope** — `KSafeProtection.DEFAULT` writes encrypt against a single per-datastore key cached in-process, instead of a per-entry Keystore key, eliminating per-entry key lookups.
+3. **Userspace AES via a wrapped DEK (Android, 2.1.2)** — the master key (KEK) stays non-exportable in the TEE and wraps a random data-encryption key (DEK); the DEK is unwrapped **once** into memory, after which every encrypt/decrypt of a `DEFAULT` value is pure-CPU AES-GCM with no Keystore/TEE round-trip. This matches what the Apple (CryptoKit) and JVM (JCE) engines already do. The wrapped DEK is stored at rest; the unwrapped DEK lives in process memory after first use — the same posture as EncryptedSharedPreferences/Tink. `HARDWARE_ISOLATED` and the strict `requireUnlockedDevice` master keep keys inside the TEE and decrypt there on every op.
+4. **Write coalescing** — batches writes within a 16 ms window into a single DataStore edit; concurrent suspend `put()` calls coalesce automatically.
+5. **Deferred encryption** — encryption work moves to the background; the UI thread returns instantly from `putDirect`.
+6. **Auto-protection-detection** — readers don't have to remember whether a key is encrypted; the library figures it out from per-key metadata. Plain-only stores short-circuit the lookup via an atomic flag.
 
 This means KSafe gives you DataStore's safety guarantees (atomic transactions, type-safe) with SharedPreferences-class read latency and **faster writes than any other compared library**.
 
 ### Methodology Notes
 
-- **Read benchmarks** for the suspend API issue all 500 reads as concurrent `GlobalScope.launch` jobs and wait via `joinAll()`. This represents real-app usage where multiple coroutines read from KSafe in parallel (Compose recompositions, Flow collectors, repository fan-out). The reported per-op time is the amortised wall-clock cost when the workload genuinely overlaps.
-- **Write benchmarks** for the suspend API use the same concurrent pattern. KSafe's write coalescer sees the burst of N writes in its channel, batches them into a small number of `applyBatch` transactions, and amortises the disk-flush cost across all callers. This is **the architectural feature suspend `put` was designed to enable** — the previous "1 sequential await per call" pattern was effectively single-threading a multi-threaded primitive.
-- **Direct (`getDirect`/`putDirect`) and Delegated (`var x by ksafe(0)`)** variants of KSafe perform similarly on the hot path. On encrypted reads under `ENCRYPTED` memory, Delegated tends to land slightly faster than Direct in the table — that's because the Delegated path's first call seeds the plaintext side cache, so subsequent reads hit RAM instead of running another decrypt; whereas the Direct cell here is repeatedly forcing the decrypt path. Both paths use the master-key cache.
-- **Coroutine encrypted ops show the largest v2 wins** — they wait for the actual encrypt or decrypt to complete, so removing the Keystore IPC dropped them 4–80× depending on the cell. Coroutine encrypted READ under PLAIN_TEXT (2.13 ms → 0.026 ms) is the biggest absolute reduction in the suite.
-- **Total benchmark runtime is now ~11 seconds** for 500 iterations across all cells (down from ~23 seconds pre-v2). Most of that is still encrypted writes (where the disk-commit await dominates per-batch time on the Coroutine API) and the cold-start orphan-cleanup probe under ENCRYPTED memory.
+- **Warmup.** Every KSafe code path (both memory-policy instances, plain + encrypted, Direct + Delegated + suspend) is exercised before any timed benchmark, so benchmark order does not bias per-op numbers. Direct and Delegated therefore land close together (they share the same `core` path); the canonical figures quoted above use the **Direct** API.
+- **Read/write benchmarks** for the suspend API issue all 500 operations as concurrent `GlobalScope.launch` jobs awaited with `joinAll()`. This represents real-app usage where many coroutines hit KSafe in parallel and exercises the write-coalescer. The reported per-op time is amortised concurrent throughput, **not** sequential per-op latency — so it is not directly comparable to the Direct API's sequential numbers.
+- **`ENCRYPTED`-memory reads** decrypt on every read. Under 2.1.2 (Android) this is in-process AES-GCM against the cached DEK, so the decrypt-every-read figure is a fair apples-to-apples comparison against ESP/KVault (which also decrypt every read) — and KSafe now wins it.
+- **Cold start** is reported as the median of several clear→reload cycles to remove single-sample GC/collector-thread noise.
+- **Total benchmark runtime is now ~4.6 s wall-clock** for 500 iterations across all cells (down from ~17–25 s before the 2.1.2 DEK fast path, which is where most of the old time went — the per-read TEE round-trips).
 
 ***

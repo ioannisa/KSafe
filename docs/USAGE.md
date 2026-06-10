@@ -373,10 +373,10 @@ val n = ksafe.getDirect("counter", 0)
 
 | API | Read | Write | Best For |
 |-----|------|-------|----------|
-| `getDirect`/`putDirect` | 0.002 ms | 0.004 ms | UI thread, fire-and-forget, hot cache |
-| `get`/`put` (suspend) | 0.021 ms | 0.62 ms | Guaranteed persistence; multiple concurrent callers |
+| `getDirect`/`putDirect` | 0.0015 ms | 0.0010 ms | UI thread, fire-and-forget, hot cache |
+| `get`/`put` (suspend) | 0.0024 ms | 0.86 ms | Guaranteed persistence; multiple concurrent callers |
 
-> Numbers from the unencrypted-operations table in [BENCHMARKS.md](BENCHMARKS.md) (Delegated API row, rounded). See that doc for methodology, hardware, and the full table.
+> Numbers from the unencrypted-operations table in [BENCHMARKS.md](BENCHMARKS.md) (Direct API row, rounded; Samsung Galaxy S24 Ultra, KSafe 2.1.2). See that doc for methodology, hardware, and the full table.
 
 ## Write Mode API (Per-Entry Unlock Policy)
 

@@ -66,7 +66,7 @@ comparison.
 |---|---|
 | `SOFTWARE` | (almost none — key bytes are recoverable from the DataStore file by anyone with disk read as the same OS user; backups and copies expose it intact) |
 | `SANDBOX_PROTECTED` | Direct disk read of the key; stolen-disk theft; cross-sandbox access (other origin / other OS user); accidental backups. Same-sandbox code (same origin tab / same-OS-user process) can still ask the runtime for the key. |
-| `HARDWARE_BACKED` | Above, plus key extraction from app memory — key operations happen on-chip; raw key never enters userspace. |
+| `HARDWARE_BACKED` | Above, plus extraction of the *durable* key from disk, backups, or a powered-off device — it is wrapped by a non-exportable hardware key (TEE / Keychain / OS vault), so what's at rest is useless without the device. The working AES key is unwrapped into app memory for userspace crypto (the standard envelope model — Apple/JVM always, Android since 2.1.2), so a *live* process-memory compromise is **not** stopped at this rung — that's `HARDWARE_ISOLATED`. |
 | `HARDWARE_ISOLATED` | Above, plus side-channel attacks on the main SoC — key lives on a physically separate chip. |
 
 The `SANDBOX_PROTECTED` rung deliberately lumps two different sandbox

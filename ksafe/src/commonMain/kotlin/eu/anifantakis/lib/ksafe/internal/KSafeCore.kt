@@ -282,10 +282,11 @@ internal class KSafeCore(
      * is one extra Keystore IPC inside the engine's `getOrCreateSecretKey`
      * lock — same outcome as the lazy-create path.
      *
-     * The probe is a single `encryptSuspend(masterAlias, emptyBytes)` per
-     * variant: it triggers `getOrCreateSecretKey` (creating the alias if
-     * missing) and primes the engine's in-process key cache. The ciphertext
-     * is discarded.
+     * This calls `engine.prewarmKey(masterAlias)` per variant, which creates the
+     * alias if missing and primes the engine's in-process key cache. Engines warm
+     * only what's needed — the Android engine creates just the wrapping KEK and does
+     * **not** persist a DEK here (so prewarm performs no DataStore I/O; the DEK is
+     * created lazily on the first real encrypt).
      *
      * Failures are swallowed — typical reasons are a locked device on first
      * launch (the strict variant requires unlock) or Keychain interaction-
@@ -294,12 +295,10 @@ internal class KSafeCore(
      */
     private fun prewarmMasterKeys() {
         writeScope.launch {
-            val probe = ByteArray(0)
             for (requireUnlocked in listOf(false, true)) {
                 try {
-                    engine.encryptSuspend(
+                    engine.prewarmKey(
                         identifier = masterAlias(requireUnlocked),
-                        data = probe,
                         hardwareIsolated = false,
                         requireUnlockedDevice = requireUnlocked,
                     )
@@ -1343,25 +1342,53 @@ internal class KSafeCore(
                 is String -> storedValue.toBooleanStrictOrNull() ?: defaultValue
                 else -> defaultValue
             }
+            // Numeric kinds coerce across the whole Int/Long/Float/Double matrix so a
+            // key's declared type can change between app versions without losing data.
+            // The rule mirrors the original Long->Int guard: coerce when the value is
+            // faithfully representable in the target; fall back to the default when it
+            // is not — an out-of-range integer, an overflowing decimal, or a decimal
+            // with a fractional part read as an integer — never silently truncate or
+            // wrap. Widening conversions (Int->Long, Int/Long->Double, Float->Double)
+            // are exact or, for large magnitudes, lose only precision (the normal cost).
             kotlinx.serialization.descriptors.PrimitiveKind.INT -> when (storedValue) {
                 is Int -> storedValue
                 is Long -> if (storedValue in Int.MIN_VALUE..Int.MAX_VALUE) storedValue.toInt() else defaultValue
+                is Float -> storedValue.toDouble().toLongExactOrNull()
+                    ?.let { if (it in Int.MIN_VALUE..Int.MAX_VALUE) it.toInt() else null } ?: defaultValue
+                is Double -> storedValue.toLongExactOrNull()
+                    ?.let { if (it in Int.MIN_VALUE..Int.MAX_VALUE) it.toInt() else null } ?: defaultValue
                 is String -> storedValue.toIntOrNull() ?: defaultValue
                 else -> defaultValue
             }
             kotlinx.serialization.descriptors.PrimitiveKind.LONG -> when (storedValue) {
                 is Long -> storedValue
                 is Int -> storedValue.toLong()
+                is Float -> storedValue.toDouble().toLongExactOrNull() ?: defaultValue
+                is Double -> storedValue.toLongExactOrNull() ?: defaultValue
                 is String -> storedValue.toLongOrNull() ?: defaultValue
                 else -> defaultValue
             }
             kotlinx.serialization.descriptors.PrimitiveKind.FLOAT -> when (storedValue) {
                 is Float -> storedValue
+                // Narrowing Double -> Float, mirroring the Long -> Int guard: a finite
+                // Double that overflows Float's range falls back to the default rather
+                // than silently becoming Infinity.
+                is Double -> {
+                    val f = storedValue.toFloat()
+                    if (f.isInfinite() && storedValue.isFinite()) defaultValue else f
+                }
+                // Int / Long -> Float never overflows Float's range; large magnitudes
+                // lose precision, which is the expected narrowing cost.
+                is Int -> storedValue.toFloat()
+                is Long -> storedValue.toFloat()
                 is String -> storedValue.toFloatOrNull() ?: defaultValue
                 else -> defaultValue
             }
             kotlinx.serialization.descriptors.PrimitiveKind.DOUBLE -> when (storedValue) {
                 is Double -> storedValue
+                is Float -> storedValue.toDouble()   // widening — lossless
+                is Int -> storedValue.toDouble()     // exact — Int fits Double's 53-bit mantissa
+                is Long -> storedValue.toDouble()    // representable; magnitudes > 2^53 lose precision (expected)
                 is String -> storedValue.toDoubleOrNull() ?: defaultValue
                 else -> defaultValue
             }
@@ -1381,6 +1408,20 @@ internal class KSafeCore(
                 }
             }
         }
+    }
+
+    /**
+     * Returns this Double as a Long if it is finite, has no fractional part, and
+     * fits within Long's range; otherwise null. Used for decimal -> integer reads
+     * (see [convertStoredValue]) so a fractional or out-of-range decimal falls back
+     * to the caller's default instead of being silently truncated or wrapped.
+     */
+    private fun Double.toLongExactOrNull(): Long? {
+        if (!isFinite() || this != kotlin.math.floor(this)) return null
+        // Long.MAX_VALUE.toDouble() rounds up to 2^63 (out of Long range), so the
+        // upper bound is strict; Long.MIN_VALUE (-2^63) is exactly representable.
+        if (this < Long.MIN_VALUE.toDouble() || this >= Long.MAX_VALUE.toDouble()) return null
+        return toLong()
     }
 
     private fun primitiveOrTextStoredValue(value: Any): StoredValue = when (value) {

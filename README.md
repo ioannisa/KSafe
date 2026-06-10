@@ -289,12 +289,12 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 
 | API | Read | Write | Best For |
 |-----|------|-------|----------|
-| `getDirect`/`putDirect` | 0.002 ms | 0.004 ms | UI, hot cache, fire-and-forget |
-| `get`/`put` (suspend) | 0.021 ms | 0.62 ms | Must guarantee persistence; multiple concurrent callers |
+| `getDirect`/`putDirect` | 0.0015 ms | 0.0010 ms | UI, hot cache, fire-and-forget |
+| `get`/`put` (suspend) | 0.0024 ms | 0.86 ms | Must guarantee persistence; multiple concurrent callers |
 
-**vs competitors (encrypted):** ~21× faster reads than KVault and ~24× faster than EncryptedSharedPreferences; ~127× faster encrypted writes than KVault and ~14× faster than EncryptedSharedPreferences. Unencrypted writes are **~3× faster than MMKV** and ~3× faster than SharedPreferences.
+**vs competitors (encrypted):** encrypted reads are **faster than EncryptedSharedPreferences and KVault even decrypting on every read** (~3.4× / ~2.6×), and ~37× / ~28× faster with cached (`PLAIN_TEXT`) memory; encrypted writes are **~31× faster than EncryptedSharedPreferences** and ~383× faster than KVault. Unencrypted `putDirect()` is **~12× faster than SharedPreferences**. Reads are ~9× slower than SharedPreferences in absolute µs (the cost of type-safe generics) — still ~1.5 µs.
 
-> Numbers reflect the **v2 envelope** introduced in 2.0 (per-datastore master AES key cached in-process, eliminating per-entry Keystore IPC for non-isolated encrypted ops). Measured on an AOSP Emulator (API 37) running on a MacBook Pro (Apple Silicon). Suspend API benchmarks issue all iterations as concurrent coroutines (`GlobalScope.launch` + `joinAll`) — the natural usage pattern when multiple coroutines persist values in parallel. Real-world numbers depend on device, workload, and data size — see [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the methodology, full tables, cold-start numbers, and architecture notes.
+> Measured on a **Samsung Galaxy S24 Ultra** (release build, KSafe 2.1.2, 500 iterations). 2.1.2 adds an Android software-DEK fast path: the per-datastore master key stays non-exportable in the TEE and wraps a data-encryption key that is unwrapped once into memory, so per-value AES-GCM runs in userspace — `ENCRYPTED`-memory decrypt-every-read dropped from ~8 ms to ~0.014 ms on real hardware. Suspend-API benchmarks issue all iterations as concurrent coroutines (`GlobalScope.launch` + `joinAll`). Real-world numbers depend on device, workload, and data size — see [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for methodology, full tables, cold-start numbers, and architecture notes.
 
 ## Compatibility
 

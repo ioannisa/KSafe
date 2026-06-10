@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStoreFile
 import eu.anifantakis.lib.ksafe.internal.AndroidKeystoreEncryption
+import eu.anifantakis.lib.ksafe.internal.DataStoreDekStore
 import eu.anifantakis.lib.ksafe.internal.DataStoreStorage
 import eu.anifantakis.lib.ksafe.internal.KSafeCore
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
@@ -15,8 +16,11 @@ import eu.anifantakis.lib.ksafe.internal.SecurityChecker
 import eu.anifantakis.lib.ksafe.internal.validateSecurityPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.io.encoding.Base64
@@ -45,6 +49,14 @@ private const val MASTER_KEY_DEFAULT: String = "__ksafe_master__"
 private const val MASTER_KEY_LOCKED: String = "__ksafe_master_locked__"
 
 private val dataStoreCache = ConcurrentHashMap<String, DataStore<Preferences>>()
+
+/**
+ * The owning [CoroutineScope] per datastore path. Kept so that a `close()`-then-recreate
+ * on the same file (common in tests and DI re-init) can await the prior owner's teardown:
+ * DataStore only releases a file once that scope's [Job] completes, so awaiting it avoids
+ * the "multiple DataStores active for the same file" guard.
+ */
+private val dataStoreScopes = ConcurrentHashMap<String, CoroutineScope>()
 
 /**
  * Android factory for [KSafe]. Resolves to the same call syntax as the pre-2.0
@@ -180,17 +192,30 @@ private fun buildAndroidKSafe(
     // factory actually created a fresh entry on this call (otherwise
     // we'd close another caller's still-active DataStore).
     val datastorePath = datastoreFile.absolutePath
-    val storageScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    var ownsDataStore = false
+    var ownedScope: CoroutineScope? = null
     val dataStore: DataStore<Preferences> = dataStoreCache.getOrPut(datastorePath) {
-        ownsDataStore = true
+        // A prior owner of this path may have just been closed: its scope is cancelling,
+        // but DataStore releases the file only once that scope's Job fully completes.
+        // Await it (bounded) before opening a new DataStore on the same file, so a
+        // close()-then-recreate can't trip DataStore's "multiple DataStores active for
+        // the same file" guard. No prior scope (the common case) → no wait.
+        dataStoreScopes.remove(datastorePath)?.coroutineContext?.get(Job)?.let { priorJob ->
+            runBlocking { withTimeoutOrNull(2_000) { priorJob.join() } }
+        }
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        ownedScope = scope
+        dataStoreScopes[datastorePath] = scope
         PreferenceDataStoreFactory.create(
-            scope = storageScope,
+            scope = scope,
             produceFile = { datastoreFile }
         )
     }
 
-    val engine: KSafeEncryption = testEngine ?: AndroidKeystoreEncryption(config)
+    // One storage instance shared by the engine (for its wrapped DEK) and the core, so
+    // each safe's DEK lives in that safe's own DataStore — not in SharedPreferences.
+    val storage = DataStoreStorage(dataStore)
+    val engine: KSafeEncryption = testEngine
+        ?: AndroidKeystoreEncryption(config = config, dekStore = DataStoreDekStore(storage))
 
     fun resolveKeyStorageTier(userKey: String, protection: KSafeProtection?): KSafeKeyStorage {
         if (protection == null) return KSafeKeyStorage.SOFTWARE
@@ -223,7 +248,7 @@ private fun buildAndroidKSafe(
     }
 
     val core = KSafeCore(
-        storage = DataStoreStorage(dataStore),
+        storage = storage,
         engineProvider = { engine },
         config = config,
         memoryPolicy = memoryPolicy,
@@ -240,9 +265,12 @@ private fun buildAndroidKSafe(
         },
         modeTransformer = ::promoteMode,
         onCancel = {
-            if (ownsDataStore) {
+            val scope = ownedScope
+            if (scope != null) {
                 dataStoreCache.remove(datastorePath)
-                storageScope.cancel()
+                // Leave the (now cancelling) scope registered under the path so a later
+                // recreate awaits its teardown before opening a new DataStore on the file.
+                scope.cancel()
             }
         },
     )
@@ -253,11 +281,19 @@ private fun buildAndroidKSafe(
         intendedLevel = KSafeProtectionLevel.HARDWARE_BACKED,
         effectiveLevel = KSafeProtectionLevel.HARDWARE_BACKED,
         custody = if (hasStrongBox) {
-            "Android Keystore (TEE; StrongBox available per-write)"
+            "Android Keystore (TEE; StrongBox available per-write; relaxed DEFAULT values use a TEE-wrapped AES key held in memory)"
         } else {
-            "Android Keystore (TEE)"
+            "Android Keystore (TEE; relaxed DEFAULT values use a TEE-wrapped AES key held in memory)"
         },
-        notes = if (hasStrongBox) emptyList() else listOf("android_strongbox_absent"),
+        notes = buildList {
+            if (!hasStrongBox) add("android_strongbox_absent")
+            // Relaxed DEFAULT entries are decrypted in userspace via a data-encryption
+            // key wrapped by the (non-exportable) TEE master key. The wrapped DEK is at
+            // rest; the unwrapped DEK lives in process memory after first use — the same
+            // posture as the Apple/JVM engines. HARDWARE_ISOLATED and the strict
+            // requireUnlockedDevice master keep keys inside the TEE on every op.
+            add("relaxed_default_uses_software_dek")
+        },
     )
     return KSafe(
         core = core,
