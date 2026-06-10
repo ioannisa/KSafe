@@ -98,8 +98,8 @@ KSafeConfig(
 
 ## Recommended DI setup (Koin) — the `prefs` / `vault` two-instance pattern
 
-Encryption adds per-write overhead (AES-GCM + Keystore/Keychain round-trip). For
-non-secret data — theme, last screen, UI flags — that overhead is wasted. The
+Encryption adds per-value overhead (AES-GCM + JSON envelope; ~µs since 2.1.2, but never
+free). For non-secret data — theme, last screen, UI flags — that overhead is wasted. The
 recommended pattern is **two named singletons**: a fast plain `prefs` and an encrypted
 `vault`.
 
@@ -143,8 +143,12 @@ actual val platformModule = module { single { KSafe(/* androidApplication() on A
 
 ## Multiple instances — the rules
 
-- **Each `KSafe(fileName=...)` must be a singleton.** Create once (via DI), reuse everywhere.
-- **Never create two instances pointing at the same `fileName`** — causes data inconsistency.
+- **Each `KSafe(fileName=...)` should be a singleton.** Create once (via DI), reuse everywhere.
+- Since 2.1.2, two live instances on the same `fileName` are **safe on Android / iOS / macOS / JVM**
+  (they share one ref-counted backend; only the last `close()` tears it down) — but it's still
+  wasteful and still **broken on web** (per-instance caches diverge). Keep the singleton pattern.
+- **One process only.** KSafe is DataStore-backed — never touch the same `fileName` from a second
+  process (widget, foreground service, push process). Give other processes their own `fileName`.
 - **`fileName` must match `[a-z][a-z0-9_]*`** — start lowercase, then lowercase/digits/underscores.
   Valid: `"userdata"`, `"settings"`, `"data_v2"`. Invalid: spaces, dots, slashes, hyphens, uppercase.
 
@@ -183,8 +187,10 @@ sensitive data on Android.
 The app-lifetime singleton never needs disposal (the OS reclaims everything at exit).
 `close()` exists for account/profile switching that changes `fileName`, long-running JVM
 services building per-session instances, or dev-time hot-reload. It cancels background
-coroutines and releases the DataStore scope/file handle. Idempotent; after `close()` the
-instance can't read or write — discard it.
+coroutines and releases the DataStore scope/file handle — ref-counted since 2.1.2, so
+closing one instance never breaks another still using the same `fileName`. Idempotent;
+after `close()` discard the instance — suspend calls on a closed instance can suspend
+indefinitely rather than fail fast.
 
 ## Web ONLY — `awaitCacheReady()`
 
@@ -355,6 +361,7 @@ class VM(private val ksafe: KSafe) : ViewModel() {
 
     // Hot MutableStateFlow<T> — .value = / .update {} persist automatically.
     // Drop-in for the standard MutableStateFlow pattern, but persisted + reactive.
+    // Once you write through it, your value wins over stale storage echoes (2.1.2+).
     private val _state by ksafe.asMutableStateFlow(MoviesState(), viewModelScope)
     val state = _state.asStateFlow()
 
@@ -380,6 +387,9 @@ class CounterViewModel(private val ksafe: KSafe) : ViewModel() {
 
     // Optional `scope` = live cross-screen sync (auto-updates when ANY writer changes
     // the key). Without scope: reads once at init, writes persist, but no live sync.
+    // Since 2.1.2: once you write THROUGH a live state, your value is authoritative —
+    // external emissions no longer revert in-flight edits (a pure-observer state the
+    // user never writes still live-updates as before).
     var username by ksafe.mutableStateOf("Guest", scope = viewModelScope)
 }
 
@@ -411,9 +421,15 @@ Domain data shared across screens stays in a ViewModel with `mutableStateOf`.
 | Policy | Behaviour |
 |---|---|
 | `LAZY_PLAIN_TEXT` (default) | First read of a key decrypts on demand, then caches plaintext permanently. Cold start does no bulk decrypt; steady-state reads are O(1). Best general choice. |
-| `ENCRYPTED` | Ciphertext stays in RAM; every read decrypts. Lowest plaintext-in-RAM exposure, highest read cost. |
+| `ENCRYPTED` | Ciphertext stays in RAM; every read decrypts. Lowest plaintext-in-RAM exposure. |
 | `ENCRYPTED_WITH_TIMED_CACHE` | Like `ENCRYPTED`, but decrypted plaintext is side-cached for a TTL window. |
 | `PLAIN_TEXT` | Eagerly decrypts everything at startup. Discouraged — pays full cold-start cost; same RAM exposure as `LAZY_PLAIN_TEXT` without the lazy benefit. |
+
+Since 2.1.2, `ENCRYPTED` reads are pure-CPU AES on **every** platform (~µs): Android uses a
+TEE-wrapped data-encryption key unwrapped once into memory, matching what Apple/JVM always
+did. `ENCRYPTED` is now a realistic default for security-sensitive apps, not a 100×
+Android penalty. (`HARDWARE_ISOLATED` entries and a `requireUnlockedDevice` master still
+decrypt inside the TEE on every op — that's the point of those tiers.)
 
 Web forces `PLAIN_TEXT` internally (WebCrypto async-only) — hence `awaitCacheReady()`.
 
@@ -434,7 +450,10 @@ viewModelScope.launch {
     if (KSafeBiometrics.verifyBiometric("Confirm transaction")) proceed()
 }
 
-// Avoid re-prompts within a window
+// Avoid re-prompts within a window. duration MUST be > 0 — a duration <= 0 is the
+// opt-out and never caches (enforced since 2.1.2). scope = null is the global session,
+// distinct from every named scope (including ""). The window counts real elapsed time,
+// including device sleep.
 KSafeBiometrics.verifyBiometric(
     reason = "Reauth",
     authorizationDuration = BiometricAuthorizationDuration(duration = 60_000L, scope = "MyScope"),
@@ -444,11 +463,14 @@ KSafeBiometrics.verifyBiometric(
 KSafeBiometrics.verifyBiometric("Step-up", allowDeviceCredentialFallback = false)
 ```
 
-`verifyBiometric` is `suspend`; `verifyBiometricDirect` is callback-based. On macOS the
-LAPolicy depends on `allowDeviceCredentialFallback`: default `true` →
-`LAPolicyDeviceOwnerAuthentication` (always prompts); `false` →
+`verifyBiometric` is `suspend`; `verifyBiometricDirect` is callback-based and delivers
+`onResult` on the **main thread** on Android and Apple (2.1.2+) — safe to touch UI from it.
+Concurrent calls are serialized: a second prompt queues behind the first instead of
+stomping it. On macOS the LAPolicy depends on `allowDeviceCredentialFallback`: default
+`true` → `LAPolicyDeviceOwnerAuthentication` (always prompts); `false` →
 `...WithBiometrics` (Touch ID only, returns false on hardware-less Macs). JVM/JS/WasmJS
-return `true` so shared logic compiles.
+return `true` so shared logic compiles — **fail-open**: never let desktop/web builds rely
+on the biometric gate as a security boundary.
 
 ---
 
@@ -467,6 +489,11 @@ suspend fun openDatabase(): AppDatabase {
 
 Params: `getOrCreateSecret(key, size = 32, protection = KSafeEncryptedProtection.HARDWARE_ISOLATED, requireUnlockedDevice = false)`.
 Works the same for SQLDelight + SQLCipher.
+
+**It never silently rotates.** If a secret exists on disk but can't be decrypted *right
+now* (locked device at cold start, OS key vault momentarily unreachable), it **throws**
+instead of minting a replacement — a rotated secret would permanently orphan the database
+it keys. Catch and retry after unlock; don't catch-and-regenerate yourself.
 
 ---
 
@@ -568,8 +595,13 @@ Android/iOS keystores are sandboxed per-app. **JVM Desktop OS secret stores are 
 val ksafe = KSafe(fileName = "userdata", config = KSafeConfig(appNamespace = "com.example.myapp"))
 ```
 
-Production desktop apps should set it explicitly. Only the key-store destination is
-namespaced — legacy ≤ 2.0 data still migrates unchanged.
+Production desktop apps should set it explicitly. An explicit `appNamespace` namespaces
+**both** the key-store destination **and** the data file (a per-namespace subdirectory),
+so keys and ciphertext always move together. When unset, the namespace is a **stable
+shared constant** (since 2.1.2 it is never derived from the launcher/jar name — that
+derivation changed on every versioned release and orphaned the keys), so two no-namespace
+apps under the same OS user share a key namespace: that's exactly why production apps set
+it. Can also be set without code: `-Dksafe.appNamespace=…` or env `KSAFE_APP_NAMESPACE`.
 
 ---
 
@@ -607,6 +639,10 @@ namespaced — legacy ≤ 2.0 data still migrates unchanged.
 ❌ **Don't pass `Activity` context on Android.** Always `applicationContext`.
 
 ❌ **Don't create two `KSafe` instances for the same `fileName`.** Singletons via DI.
+   (Safe-but-wasteful on Android/iOS/macOS/JVM since 2.1.2; still diverges on web.)
+
+❌ **Don't access one `fileName` from two processes.** DataStore is single-process;
+   give a widget/service process its own `fileName`.
 
 ❌ **Don't forget `appNamespace` on JVM Desktop / web** if multiple apps share a `fileName`.
 
@@ -627,6 +663,16 @@ namespaced — legacy ≤ 2.0 data still migrates unchanged.
 6. Reading null despite a stored value? The reified-`null` trap — see Nullable values.
 7. From 2.1.1+, persistent write-consumer failures log `KSafe SEVERE` with the exception
    class. Search stderr.
+8. **JVM: encrypted writes throwing at launch?** The OS keyring was unreachable when the
+   instance was constructed (locked keychain, SSH/headless session, keyring not yet on
+   D-Bus). Since 2.1.2 KSafe **fails closed** instead of minting keys it would later
+   mistake for real ones — existing data is intact and readable again once the keyring is
+   back; reads meanwhile return defaults without deleting anything. A one-time actionable
+   warning is printed; `-Dksafe.jvm.keyVault=software` opts out for keyring-less hosts.
+9. **Store suddenly empty, but a `.corrupt-<timestamp>` file sits next to it?** The store
+   file was unreadable (truncated/garbled); since 2.1.2 KSafe quarantines the corrupt
+   bytes there and continues from an empty store instead of crashing forever. The original
+   bytes are preserved for manual recovery.
 
 ---
 
