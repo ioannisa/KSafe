@@ -157,19 +157,40 @@ internal class AndroidKeystoreEncryption(
         val dek = try {
             getOrCreateDek(alias)
         } catch (e: KeyPermanentlyInvalidatedException) {
-            // The KEK was invalidated (e.g. lock-screen change): the stored DEK can no
-            // longer be unwrapped. Discard it and mint a fresh DEK under a regenerated
-            // KEK so new writes succeed. (Old DEK ciphertext is unrecoverable — the same
-            // outcome a TEE-only scheme has after key invalidation.)
-            regenerateDek(alias)
+            // The KEK itself is permanently invalid (e.g. lock-screen credential removed):
+            // it cannot wrap anything anymore, so the KEK must be deleted and recreated.
+            // Old DEK ciphertext AND legacy TEE ciphertext under it are unrecoverable either
+            // way — the same outcome a TEE-only scheme has after key invalidation.
+            regenerateDek(alias, deleteKek = true)
         } catch (e: javax.crypto.AEADBadTagException) {
-            // The persisted wrapped DEK fails GCM auth — it is corrupt (e.g. partial disk
-            // corruption) or no longer matches its KEK, so it is unrecoverable just like an
-            // invalidated KEK. Self-heal identically: discard the bad DEK + KEK and mint a
-            // fresh pair so new writes succeed rather than failing the whole write batch
-            // forever. (Old DEK ciphertext was already unreadable.) This is deterministic —
-            // a transient failure surfaces as "device is locked", not AEADBadTagException.
-            regenerateDek(alias)
+            // The persisted wrapped DEK fails GCM auth — the 40-byte DEK blob is corrupt or
+            // was wrapped under a replaced key. This says NOTHING about the KEK's health, so
+            // mint a fresh DEK under the SAME (healthy) KEK — do NOT delete the KEK, or
+            // pre-upgrade legacy TEE ciphertext still encrypted directly under it would be
+            // destroyed (deep-review #25). A transient failure surfaces as "device is
+            // locked", not AEADBadTagException, so this is deterministic.
+            regenerateDek(alias, deleteKek = false)
+        } catch (e: IllegalArgumentException) {
+            // Malformed wrapped-DEK entry: invalid Base64 in load(), or a blob shorter than
+            // the GCM IV in unwrapDek. Without this it propagated and bricked every encrypted
+            // write forever (deep-review #26). Heal like a corrupt DEK — keep the KEK.
+            regenerateDek(alias, deleteKek = false)
+        } catch (e: IndexOutOfBoundsException) {
+            // Same malformed case via an out-of-range read in GCMParameterSpec/doFinal (#26).
+            regenerateDek(alias, deleteKek = false)
+        } catch (e: IllegalStateException) {
+            // The wrapped DEK is present but the KEK alias is ABSENT — e.g. Auto Backup
+            // restored the DataStore (with the DEK) to a device whose Keystore is empty, and
+            // an encrypted write beat the construction-time prewarm. getExistingSecretKey
+            // throws "No encryption key found"; recover by minting a fresh DEK (getOrCreateDek
+            // recreates the KEK too) instead of failing the whole batch forever (deep-review
+            // #24). A TRANSIENT "device is locked" ISE must NOT trigger destructive regen —
+            // rethrow it so the write retries once the device unlocks, with data intact.
+            if (e.message?.contains("No encryption key found", ignoreCase = true) == true) {
+                regenerateDek(alias, deleteKek = false)
+            } else {
+                throw e
+            }
         }
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(dek, KEY_ALGORITHM))
@@ -203,6 +224,23 @@ internal class AndroidKeystoreEncryption(
                 // Either genuinely corrupt DEK ciphertext, or (~2^-40) a legacy TEE blob
                 // whose random IV happened to start with our magic. Retry the legacy path
                 // on the ORIGINAL bytes; if that also fails, surface the original error.
+                try {
+                    decryptLegacy(identifier, data)
+                } catch (_: Throwable) {
+                    throw e
+                }
+            } catch (e: IllegalArgumentException) {
+                // Malformed wrapped-DEK entry (bad Base64 / too-short blob) surfaced while
+                // unwrapping the DEK to read this value. Don't let it propagate uncaught
+                // (deep-review #26): try the legacy path on the original bytes, else surface
+                // the error so the read returns its default (decrypt never creates keys; the
+                // next encrypt self-heals the DEK).
+                try {
+                    decryptLegacy(identifier, data)
+                } catch (_: Throwable) {
+                    throw e
+                }
+            } catch (e: IndexOutOfBoundsException) {
                 try {
                     decryptLegacy(identifier, data)
                 } catch (_: Throwable) {
@@ -424,27 +462,41 @@ internal class AndroidKeystoreEncryption(
     }
 
     /**
-     * Recovery for an unrecoverable DEK on the encrypt path: drop the stored DEK and its
-     * KEK, then mint a fresh pair. Used when the KEK is permanently invalidated or the
-     * persisted wrapped DEK fails to unwrap (corrupt / KEK mismatch). Old DEK ciphertext is
-     * unrecoverable either way; this keeps *new* writes working instead of failing forever.
+     * Recovery for an unrecoverable DEK on the encrypt path: drop the stored DEK and mint a
+     * fresh one, keeping new writes working instead of failing forever.
      *
-     * The whole discard + delete + recreate runs under a single [lockFor] acquisition so it
-     * is **atomic** — the inner calls re-enter the same reentrant monitor. Without this, two
-     * writers that both hit the same bad blob both land here and interleave: the second one's
-     * `discardDek` + `deleteKeyInternal` wipe the DEK (and KEK) the first just minted, *after*
-     * the first already encrypted and returned a value under it — silently losing an
-     * acknowledged write (deep-review #6). Atomicity alone isn't enough, though: the second
-     * writer must also NOT destroy the fresh DEK, so we **re-validate before discarding** —
-     * if a concurrent regenerate already produced a usable DEK, adopt it instead.
+     * [deleteKek] selects what's actually broken:
+     *  - `false` (the DEK is bad but the KEK is healthy — corrupt/malformed wrapped DEK, or a
+     *    DEK present whose KEK is merely absent): keep the KEK and mint a new DEK **wrapped by
+     *    the same KEK**. This preserves pre-upgrade legacy TEE ciphertext encrypted directly
+     *    under that KEK (deep-review #25); if the KEK is absent, [getOrCreateDek] recreates it.
+     *  - `true` (the KEK itself is permanently invalidated): delete the KEK and recreate the
+     *    whole pair — the only case where destroying the KEK is justified.
+     *
+     * The whole re-validate + discard + (delete) + recreate runs under a single [lockFor]
+     * acquisition so it is **atomic** — the inner calls re-enter the same reentrant monitor.
+     * Without this, two writers that both hit the same bad blob interleave and the second's
+     * discard wipes the DEK the first just minted *after* the first already encrypted a value
+     * under it — silently losing an acknowledged write (deep-review #6). Atomicity alone isn't
+     * enough, so we **re-validate before discarding**: if a concurrent regenerate already
+     * produced a usable DEK, adopt it instead.
      */
-    private fun regenerateDek(alias: String): ByteArray {
+    private fun regenerateDek(alias: String, deleteKek: Boolean): ByteArray {
         synchronized(lockFor(alias)) {
             // A concurrent regenerate may have already healed it while we were blocked on the
             // lock. Adopt the fresh DEK rather than discarding it (and the data just encrypted
-            // under it).
+            // under it). `load()` itself can throw on a malformed (bad-Base64) blob — treat
+            // that as "no usable stored DEK" and fall through to recreate (#26); only a
+            // genuine non-malformed load failure (rare DataStore read error) propagates.
             dekCache[alias]?.let { return it }
-            dekStore.load()?.let { stored ->
+            val stored = try {
+                dekStore.load()
+            } catch (_: IllegalArgumentException) {
+                null
+            } catch (_: IndexOutOfBoundsException) {
+                null
+            }
+            if (stored != null) {
                 try {
                     val dek = unwrapDek(alias, stored)
                     dekCache[alias] = dek
@@ -453,13 +505,22 @@ internal class AndroidKeystoreEncryption(
                     // Still unrecoverable — fall through to discard + recreate.
                 } catch (_: javax.crypto.AEADBadTagException) {
                     // Still unrecoverable — fall through to discard + recreate.
+                } catch (_: IllegalArgumentException) {
+                    // Malformed stored blob (too short) — fall through (#26).
+                } catch (_: IndexOutOfBoundsException) {
+                    // Malformed stored blob (out-of-range read) — fall through (#26).
+                } catch (e: IllegalStateException) {
+                    // KEK absent ("No encryption key found") — fall through to recreate (#24).
+                    // A TRANSIENT "device is locked" ISE is NOT a reason to destroy/recreate:
+                    // rethrow it so the caller retries later with the stored DEK intact.
+                    if (e.message?.contains("No encryption key found", ignoreCase = true) != true) throw e
                 }
-                // Any other failure (transient "device is locked", or a missing KEK) is NOT a
-                // reason to destroy keys: it propagates so the caller can retry once the
-                // condition clears, leaving the stored DEK intact.
             }
             discardDek(alias)
-            deleteKeyInternal(alias)
+            // Delete the KEK ONLY when it is the thing that's broken (permanent invalidation).
+            // For a bad/missing DEK the KEK is healthy and must survive so legacy TEE
+            // ciphertext under it stays decryptable (#25).
+            if (deleteKek) deleteKeyInternal(alias)
             return getOrCreateDek(alias)
         }
     }

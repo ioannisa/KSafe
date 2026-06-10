@@ -334,6 +334,123 @@ class AndroidSoftwareDekTest {
     }
 
     /**
+     * Deep-review #25: a corrupt wrapped DEK must self-heal by minting a fresh DEK under the
+     * SAME (healthy) KEK — it must NOT delete the KEK, or pre-upgrade legacy TEE ciphertext
+     * still encrypted directly under that KEK would be permanently destroyed.
+     */
+    @Test
+    fun corruptDek_selfHeals_withoutDestroyingLegacyTeeCiphertextUnderSameKek() {
+        val storage = newStorage()
+        val master = uniqueAlias()
+        try {
+            // Pre-upgrade: a legacy TEE blob encrypted DIRECTLY under the master KEK (DEK off).
+            val legacy = engine(storage, useSoftwareDek = false)
+            val legacyBlob = legacy.encrypt(master, "legacy-value".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
+            assertFalse(legacyBlob.startsWithMagic(), "precondition: legacy TEE blob has no DEK header")
+
+            // Upgrade: a DEK write wraps a fresh DEK under that same KEK.
+            val dekEngine = engine(storage, useSoftwareDek = true)
+            dekEngine.encrypt(master, "dek-value".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
+            assertTrue(dekPresent(storage))
+
+            // The wrapped DEK becomes corrupt (fails GCM auth) — but the KEK is fine.
+            runBlocking {
+                storage.applyBatch(
+                    listOf(
+                        StorageOp.Put(
+                            DataStoreDekStore.DEK_KEY,
+                            StoredValue.Text(Base64.encodeToString(ByteArray(40) { 0x7 }, Base64.NO_WRAP)),
+                        )
+                    )
+                )
+            }
+
+            // A cold engine self-heals on the next encrypt (mints a new DEK under the SAME KEK).
+            val fresh = engine(storage, useSoftwareDek = true)
+            val healed = fresh.encrypt(master, "after".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
+            assertContentEquals("after".encodeToByteArray(), fresh.decrypt(master, healed), "regenerated DEK must round-trip")
+
+            // THE point of #25: the legacy TEE ciphertext under the KEK must STILL decrypt —
+            // pre-fix the self-heal deleted the KEK and this threw "No encryption key found".
+            assertContentEquals(
+                "legacy-value".encodeToByteArray(),
+                fresh.decrypt(master, legacyBlob),
+                "legacy TEE ciphertext under the same KEK must survive a corrupt-DEK self-heal (#25)",
+            )
+        } finally {
+            engine(storage).deleteKey(master)
+        }
+    }
+
+    /**
+     * Deep-review #24: a wrapped DEK present while its KEK is ABSENT (Auto Backup restored the
+     * DataStore to a device with an empty Keystore, and an encrypted write beat the prewarm)
+     * must self-heal on the next encrypt, not brick every write with "No encryption key found".
+     */
+    @Test
+    fun wrappedDekPresent_butKekAbsent_selfHealsOnEncrypt() {
+        val storage = newStorage()
+        val master = uniqueAlias()
+        val e = engine(storage)
+        try {
+            e.encrypt(master, "v1".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
+            assertTrue(dekPresent(storage))
+
+            // deleteKey removes the KEK from the Keystore but LEAVES the persisted wrapped DEK
+            // (its storage key is fixed per safe) — exactly the restored-DataStore + empty-
+            // Keystore state.
+            e.deleteKey(master)
+            assertTrue(dekPresent(storage), "precondition: wrapped DEK still present after KEK deletion")
+
+            val fresh = engine(storage) // cold caches
+            val healed = fresh.encrypt(master, "v2".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
+            assertTrue(healed.startsWithMagic())
+            assertContentEquals(
+                "v2".encodeToByteArray(),
+                fresh.decrypt(master, healed),
+                "encrypt must self-heal when the KEK is absent but a wrapped DEK lingers (#24)",
+            )
+        } finally {
+            engine(storage).deleteKey(master)
+        }
+    }
+
+    /**
+     * Deep-review #26: a MALFORMED wrapped-DEK entry (invalid Base64 / blob shorter than the
+     * GCM IV) must self-heal like the corrupt-but-well-formed case — not bypass the recovery
+     * and brick encrypted writes forever.
+     */
+    @Test
+    fun malformedWrappedDek_selfHealsOnEncrypt() {
+        val storage = newStorage()
+        val master = uniqueAlias()
+        val e = engine(storage)
+        try {
+            e.encrypt(master, "v1".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
+            assertTrue(dekPresent(storage))
+
+            // Invalid Base64 → load() throws IllegalArgumentException (not AEADBadTagException),
+            // which pre-fix bypassed the self-heal and bricked every encrypted write.
+            runBlocking {
+                storage.applyBatch(
+                    listOf(StorageOp.Put(DataStoreDekStore.DEK_KEY, StoredValue.Text("@@@not-valid-base64@@@")))
+                )
+            }
+
+            val fresh = engine(storage)
+            val healed = fresh.encrypt(master, "v2".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
+            assertTrue(healed.startsWithMagic())
+            assertContentEquals(
+                "v2".encodeToByteArray(),
+                fresh.decrypt(master, healed),
+                "a malformed wrapped DEK must self-heal on the next encrypt (#26)",
+            )
+        } finally {
+            engine(storage).deleteKey(master)
+        }
+    }
+
+    /**
      * Lazy DEK: prewarm warms only the wrapping KEK and must NOT persist a DEK, so an
      * unencrypted-only safe never writes one. The DEK appears on the first real encrypt.
      */
