@@ -260,6 +260,28 @@ internal class JvmSoftwareEncryption(
         return when {
             keyBytes != null -> SecretKeySpec(keyBytes, "AES")
             !create -> null
+            vaults.osVaultUnavailable -> {
+                // An OS vault exists for this platform but was unreachable at
+                // construction (locked Keychain / login keyring not yet up).
+                // The real key for this alias most likely lives in that OS
+                // store. Minting a fresh key into the legacy DataStore here
+                // would (a) be persisted into the migration source and (b) be
+                // trusted as authoritative by the next healthy launch's
+                // legacy-first migration, overwriting the real OS-vault key and
+                // destroying everything encrypted under it (deep-review #2).
+                // Fail closed instead: the existing on-disk ciphertext stays
+                // intact and recovers on the next launch when the OS store is
+                // reachable. (A genuine pre-2.0 legacy key for this alias would
+                // have been returned above via `keyBytes`, so the upgrade path
+                // is unaffected.)
+                throw IllegalStateException(
+                    "KSafe: OS key vault is unavailable (locked/unreachable); " +
+                        "refusing to create a key for identifier: $alias to avoid " +
+                        "overwriting the real OS-vault key on a later healthy " +
+                        "launch. Retry once the OS store is reachable, or set " +
+                        "-Dksafe.jvm.keyVault=software to use software storage."
+                )
+            }
             else -> {
                 val keyGen = KeyGenerator.getInstance("AES")
                 keyGen.init(config.keySize)

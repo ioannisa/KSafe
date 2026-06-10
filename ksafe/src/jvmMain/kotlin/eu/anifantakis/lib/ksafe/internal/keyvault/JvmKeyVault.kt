@@ -165,6 +165,14 @@ internal class JvmKeyVaultProvider(
      * JSON-file fallback to supply a [FileKeyVault] when there's no DataStore.
      */
     legacyOverride: JvmKeyVault? = null,
+    /**
+     * Test seam: candidate OS vault for [pick] to self-test, in place of the
+     * real `os.name`-based detection. Lets tests drive both the self-test-pass
+     * and (the data-loss-critical) self-test-fail paths deterministically
+     * without touching a real Keychain / keyring. Unlike [forced], selection
+     * still runs through [pick] (and therefore [selfTest]).
+     */
+    private val osCandidateForTest: JvmKeyVault? = null,
 ) {
     /** Legacy / software store — migration source and last-resort fallback. */
     val legacy: JvmKeyVault = legacyOverride ?: DataStoreKeyVault(
@@ -174,33 +182,80 @@ internal class JvmKeyVaultProvider(
     )
 
     /**
-     * Picked at construction (after OS detection + self-test). May still
-     * fail at *runtime* — the canonical case is a Compose Desktop release
-     * distributable whose `jlink`-built JRE is missing `jdk.unsupported`,
-     * so JNA's first real call throws `NoClassDefFoundError: sun/misc/Unsafe`
-     * even though the host clearly has Keychain/DPAPI/Secret-Service.
-     * Runtime failures flip [degraded], after which [active] returns
-     * [legacy] for the rest of this engine's life — losing OS-level key
-     * protection but keeping data persistence working instead of silently
-     * dropping every write.
+     * Set when the OS vault [picked] at construction (after OS detection +
+     * self-test) later fails at *runtime* — the canonical case is a Compose
+     * Desktop release distributable whose `jlink`-built JRE is missing
+     * `jdk.unsupported`, so JNA's first real call throws
+     * `NoClassDefFoundError: sun/misc/Unsafe` even though the host clearly has
+     * Keychain/DPAPI/Secret-Service. Runtime failures flip this flag (see
+     * [degradeToLegacy]), after which [active] returns [legacy] for the rest of
+     * this engine's life — losing OS-level key protection but keeping data
+     * persistence working instead of silently dropping every write. Unlike
+     * [osVaultSelfTestFailed], the OS vault is dead *in-process* here, so there
+     * is no reachable OS key to overwrite later and persisting into the
+     * legacy/software store is safe.
+     */
+    private val degraded = AtomicBoolean(false)
+
+    /**
+     * Set when an OS vault *was constructible for this platform* but failed its
+     * construction-time [selfTest] — a locked Keychain, a login keyring not yet
+     * on D-Bus (headless / SSH / session autostart before unlock), etc. This is
+     * fundamentally different from "no OS store exists here" (genuinely headless
+     * Linux without a keyring, an unsupported OS, or the explicit
+     * `-Dksafe.jvm.keyVault=software` opt-out): the real keys almost certainly
+     * live in the OS store and it will be reachable again on a healthy launch.
+     *
+     * Silently treating the legacy software store as a healthy choice in this
+     * state destroys data two ways, so we flag it instead:
+     *  - a null key lookup becomes ambiguous, so reads must report
+     *    "unavailable" not "absent" ([hasDegraded]) — otherwise KSafeCore's
+     *    orphan sweep deletes still-recoverable OS-vault-only ciphertext
+     *    (deep-review finding #1);
+     *  - key *creation* must not mint into the legacy DataStore migration
+     *    source ([osVaultUnavailable]) — a junk key written there is trusted as
+     *    authoritative by the next healthy launch's legacy-first migration and
+     *    overwrites the real OS-vault key, destroying everything under it
+     *    (deep-review finding #2).
+     */
+    private val osVaultSelfTestFailed = AtomicBoolean(false)
+
+    /**
+     * Picked at construction (after OS detection + self-test). Declared *after*
+     * [degraded] / [osVaultSelfTestFailed] because [pick] writes the latter on a
+     * self-test failure — initialising it earlier would dereference a not-yet-
+     * constructed flag and NPE.
      */
     private val picked: JvmKeyVault =
         forced ?: if (dataStore != null) pick(dataStore) else legacy
-    private val degraded = AtomicBoolean(false)
 
     /** The vault the engine should use for new keys. */
     val active: JvmKeyVault
         get() = if (degraded.get()) legacy else picked
 
     /**
-     * True once a runtime OS-vault failure has forced the software fallback
-     * (see [degradeToLegacy]). When degraded, a null key lookup is ambiguous —
-     * the key may live only in the now-unreachable OS vault — so callers must
+     * True when the OS vault is known/expected to exist but is currently
+     * unreachable — either a runtime failure has forced the software fallback
+     * ([degradeToLegacy]) or the construction-time [selfTest] failed
+     * ([osVaultSelfTestFailed]). In both states a null key lookup is ambiguous
+     * (the key may live only in the now-unreachable OS vault), so callers must
      * report "vault unavailable" rather than "key absent", to keep the orphan
      * sweep from deleting still-recoverable ciphertext.
      */
     val hasDegraded: Boolean
-        get() = degraded.get()
+        get() = degraded.get() || osVaultSelfTestFailed.get()
+
+    /**
+     * True when an OS vault exists for this platform but was unavailable at
+     * construction (see [osVaultSelfTestFailed]). Callers must NOT mint new key
+     * material into the legacy DataStore migration source while this holds:
+     * doing so lets the next healthy launch's legacy-first migration overwrite
+     * the real OS-vault key. Distinct from [hasDegraded] because the runtime
+     * `LinkageError` degrade path (OS vault permanently dead in-process) *does*
+     * legitimately persist into the legacy/software store.
+     */
+    val osVaultUnavailable: Boolean
+        get() = osVaultSelfTestFailed.get()
 
     /**
      * Flips the provider into degraded mode after a runtime JNA failure on
@@ -232,7 +287,7 @@ internal class JvmKeyVaultProvider(
         }
 
         val os = System.getProperty("os.name").orEmpty().lowercase()
-        val candidate: JvmKeyVault? = try {
+        val candidate: JvmKeyVault? = osCandidateForTest ?: try {
             when {
                 os.contains("win") -> WindowsDpapiKeyVault(dataStore, appNamespace)
                 os.contains("mac") || os.contains("darwin") -> MacosKeychainKeyVault(appNamespace)
@@ -242,11 +297,30 @@ internal class JvmKeyVaultProvider(
             }
         } catch (t: Throwable) {
             // JNA class-load / native-link failure, missing platform jar, etc.
+            // The OS vault never came up in-process (like the runtime LinkageError
+            // case): there is no reachable OS key to overwrite later, so treating
+            // the legacy/software store as the legitimate home is safe.
             null
         }
 
-        if (candidate != null && selfTest(candidate)) return candidate
+        if (candidate != null) {
+            if (selfTest(candidate)) return candidate
+            // The OS vault platform exists but its self-test failed: the store is
+            // present-but-unreachable right now (locked Keychain, login keyring
+            // not yet unlocked / no D-Bus session, SSH/headless launch). Do NOT
+            // silently treat the legacy software store as healthy — that path
+            // lets the orphan sweep delete OS-vault-only ciphertext (#1) and
+            // mints junk keys into the migration source that overwrite the real
+            // OS key on the next healthy launch (#2). Flag it so the engine
+            // fails safe (reads report "unavailable"; key creation is refused)
+            // and the data survives until the OS store is reachable again.
+            osVaultSelfTestFailed.set(true)
+            warnOsVaultUnavailableOnce(os)
+            return legacy
+        }
 
+        // No OS vault for this platform at all — the legacy software store is the
+        // legitimate, permanent home (no reachable OS key to protect).
         warnFallbackOnce(os)
         return legacy
     }
@@ -270,6 +344,7 @@ internal class JvmKeyVaultProvider(
         val OPT_OUT_VALUES = setOf("software", "datastore", "off", "false", "none")
 
         val warned = AtomicBoolean(false)
+        val osUnavailableWarned = AtomicBoolean(false)
         val runtimeDegradeWarned = AtomicBoolean(false)
 
         fun warnFallbackOnce(os: String) {
@@ -283,6 +358,25 @@ internal class JvmKeyVaultProvider(
                         "(Linux: gnome-keyring/ksecretservice) or run on a host " +
                         "with DPAPI (Windows) / Keychain (macOS) for OS-backed " +
                         "key protection."
+                )
+            }
+        }
+
+        fun warnOsVaultUnavailableOnce(os: String) {
+            if (osUnavailableWarned.compareAndSet(false, true)) {
+                System.err.println(
+                    "KSafe SECURITY WARNING: an OS secret store exists on this " +
+                        "host (os=\"$os\") but is currently unreachable (locked " +
+                        "Keychain, login keyring not yet unlocked / no D-Bus " +
+                        "session, or an SSH/headless launch). KSafe will NOT fall " +
+                        "back to plaintext key storage this session: doing so " +
+                        "could permanently destroy keys already held in the OS " +
+                        "store, taking all data encrypted under them with it. " +
+                        "Encrypted reads return their defaults and encrypted " +
+                        "writes fail until the OS store is reachable again (e.g. " +
+                        "after interactive login). To deliberately use software " +
+                        "key storage instead, set -Dksafe.jvm.keyVault=software " +
+                        "(or env KSAFE_JVM_KEY_VAULT=software)."
                 )
             }
         }

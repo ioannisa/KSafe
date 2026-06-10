@@ -400,6 +400,138 @@ class JvmKeyVaultMigrationTest {
         assertNull(emptyVault.store[alias], "decrypt must not create a key for orphaned ciphertext")
     }
 
+    // ── Construction-time OS-vault unavailability (deep-review #1 & #2) ───────
+    //
+    // The data-destroying case the runtime-degrade tests above do NOT cover: at
+    // construction the OS vault platform exists but its self-test fails for a
+    // TRANSIENT reason — a locked macOS Keychain, a Linux login keyring not yet
+    // on D-Bus (SSH / headless / session-autostart before unlock). The real
+    // keys live in the OS store and it will be reachable on a healthy launch.
+    // Pre-fix, pick() silently selected the legacy software store with
+    // degraded=false, so (#1) the orphan sweep deleted OS-vault-only ciphertext
+    // and (#2) prewarm minted a junk key into the migration source that the next
+    // healthy launch then copied OVER the real OS-vault key.
+
+    /** OS-vault stand-in that is unreachable (locked Keychain / keyring down):
+     *  every operation throws, so the construction-time self-test fails. */
+    private class LockedOsVault : JvmKeyVault {
+        override val name = "LockedOsVault (test)"
+        override val isOsBacked = true
+        override fun get(alias: String): ByteArray? =
+            throw IllegalStateException("errSecInteractionNotAllowed (test)")
+        override fun put(alias: String, keyBytes: ByteArray): Unit =
+            throw IllegalStateException("errSecInteractionNotAllowed (test)")
+        override fun delete(alias: String): Unit =
+            throw IllegalStateException("errSecInteractionNotAllowed (test)")
+    }
+
+    @Test
+    fun osVaultSelfTestFailure_flagsUnavailable_andFallsBackToLegacy() {
+        val provider = JvmKeyVaultProvider(dataStore, osCandidateForTest = LockedOsVault())
+
+        assertTrue(provider.osVaultUnavailable, "a failed self-test must flag the OS vault unavailable")
+        assertTrue(provider.hasDegraded, "unavailable OS vault must make reads report 'unavailable' (not 'absent')")
+        assertEquals(provider.legacy, provider.active, "unreachable OS vault ⇒ legacy is the active vault this session")
+    }
+
+    @Test
+    fun healthyOsCandidate_selectsOsVault_viaSelfTestSeam() {
+        // Sanity-check the seam itself: a candidate that PASSES self-test is
+        // selected as the active OS vault and nothing is flagged unavailable.
+        val fake = FakeOsVault()
+        val provider = JvmKeyVaultProvider(dataStore, osCandidateForTest = fake)
+
+        assertFalse(provider.osVaultUnavailable)
+        assertFalse(provider.hasDegraded)
+        assertEquals(fake, provider.active)
+        assertTrue(provider.active.isOsBacked)
+    }
+
+    @Test
+    fun osVaultUnavailable_refusesToMintKeyIntoLegacyMigrationSource() {
+        // Deep-review #2: during an OS-vault-unavailable session, creating a key
+        // (the construction-time prewarm of the master alias, or any first
+        // encrypted write) must NOT persist key material into the legacy
+        // DataStore — that store is the migration source the next healthy launch
+        // trusts as authoritative and would copy OVER the real OS-vault key.
+        val alias = "user:token"
+        val provider = JvmKeyVaultProvider(dataStore, osCandidateForTest = LockedOsVault())
+        val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+
+        val ex = assertFailsWith<IllegalStateException> { engine.encrypt(alias, "data".toByteArray()) }
+        assertTrue(
+            ex.message?.contains("unavailable", ignoreCase = true) == true,
+            "key creation while the OS vault is unavailable must fail closed; was: ${ex.message}",
+        )
+        // The crux: nothing was written into the legacy migration source.
+        assertNull(
+            DataStoreKeyVault(dataStore).get(alias),
+            "no junk key may be minted into the legacy DataStore migration source",
+        )
+    }
+
+    @Test
+    fun osVaultUnavailable_decryptOfUnresolvableKey_reportsUnavailableNotOrphan() {
+        // Deep-review #1: a value whose key lives ONLY in the now-unreachable OS
+        // vault must report "unavailable", NOT "No encryption key found" — the
+        // latter is the message KSafeCore's orphan sweep DELETES on, which would
+        // permanently destroy still-recoverable ciphertext.
+        val alias = "user:token"
+
+        // Ciphertext produced earlier under a healthy OS vault (in-memory; its
+        // key is not present in the legacy DataStore).
+        val ciphertext = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = FakeOsVault()),
+        ).encrypt(alias, "secret".toByteArray())
+
+        // Fresh launch: OS vault unreachable at construction, legacy empty.
+        val provider = JvmKeyVaultProvider(dataStore, osCandidateForTest = LockedOsVault())
+        val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+
+        val ex = assertFailsWith<IllegalStateException> { engine.decrypt(alias, ciphertext) }
+        val msg = ex.message.orEmpty()
+        assertFalse(
+            msg.contains("No encryption key found", ignoreCase = true) ||
+                msg.contains("key not found", ignoreCase = true),
+            "unavailable-OS-vault decrypt must NOT use the orphan-sweep delete message; was: $msg",
+        )
+        assertTrue(msg.contains("unavailable", ignoreCase = true), "should report vault unavailable; was: $msg")
+    }
+
+    @Test
+    fun osVaultUnavailable_genuineLegacyKey_stillDecrypts_andIsNotScrubbed() {
+        // Failing closed must not break the 2.0 upgrade path: when the OS vault
+        // is unreachable but a GENUINE pre-2.0 legacy key exists in the
+        // DataStore, that key is authoritative and its data must still decrypt —
+        // and the key must be left in place (no migration possible) for the next
+        // healthy launch to migrate.
+        val alias = "settings:theme"
+        val payload = "dark".toByteArray()
+
+        // 2.0-style: key + ciphertext live in the legacy DataStore.
+        val v200 = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = DataStoreKeyVault(dataStore)),
+        )
+        val ciphertextAtRest = v200.encrypt(alias, payload)
+        val legacyKeyBefore = DataStoreKeyVault(dataStore).get(alias)
+        assertNotNull(legacyKeyBefore)
+
+        // Upgrade launch with the OS vault unreachable.
+        val provider = JvmKeyVaultProvider(dataStore, osCandidateForTest = LockedOsVault())
+        val v210 = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+
+        assertContentEquals(
+            payload, v210.decrypt(alias, ciphertextAtRest),
+            "a genuine legacy key must still decrypt even when the OS vault is unavailable",
+        )
+        assertContentEquals(
+            legacyKeyBefore, DataStoreKeyVault(dataStore).get(alias),
+            "the legacy key must be left in place (can't migrate to an unreachable OS vault)",
+        )
+    }
+
     @Test
     fun degradedVault_decryptOfUnresolvableKey_reportsUnavailableNotOrphan() {
         // Regression for the orphan-sweep data-loss interaction: after a runtime
