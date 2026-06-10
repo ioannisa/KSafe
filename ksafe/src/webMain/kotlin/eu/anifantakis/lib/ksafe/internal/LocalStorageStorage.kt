@@ -51,12 +51,19 @@ internal class LocalStorageStorage(
                 is StorageOp.Delete -> localStorageRemove(storagePrefix + op.rawKey)
             }
         } catch (e: Throwable) {
-            // Best-effort rollback to the pre-batch state. Restoring a value that
-            // already fit cannot itself exceed quota, so this won't cascade.
-            for ((fullKey, prior) in priors) {
-                runCatching {
-                    if (prior == null) localStorageRemove(fullKey) else localStorageSet(fullKey, prior)
-                }
+            // Roll back to the pre-batch state. See [rollbackPriors] for why the
+            // order matters (removals first) and why a failed restore must be
+            // surfaced rather than swallowed (deep-review #38).
+            try {
+                rollbackPriors(priors, ::localStorageSet, ::localStorageRemove)
+            } catch (rollbackError: Throwable) {
+                // The rollback itself could not fully restore — strictly worse
+                // than the original write failure (silent data loss), and the
+                // caller must hear about it instead of being told the batch
+                // atomically failed with nothing changed. Surface it, keeping
+                // the original write failure attached.
+                rollbackError.addSuppressed(e)
+                throw rollbackError
             }
             throw e
         } finally {
@@ -122,5 +129,54 @@ internal class LocalStorageStorage(
             out[short] = StoredValue.Text(value)
         }
         return out
+    }
+}
+
+/**
+ * Restores the pre-batch state captured in [priors] (full key → prior value, or
+ * `null` if the key did not exist) after an [LocalStorageStorage.applyBatch]
+ * failure. Extracted as a pure function over [set]/[remove] so the order and
+ * failure-handling contract can be tested without a real `localStorage`.
+ *
+ * Two things the naive `for ((k, v) in priors) { set-or-remove }` got wrong
+ * (deep-review #38):
+ *
+ *  1. **Order.** A coalesced batch routinely mixes Deletes and Puts of different
+ *     keys (every write also emits legacy-key Deletes, and a ~16 ms window
+ *     coalesces unrelated keys). Restoring in arbitrary [Map] iteration order can
+ *     try to re-add a large *deleted* key's value BEFORE removing a *newly put*
+ *     key that consumed the freed space — that `set` then hits the very quota
+ *     that failed the batch, and the deleted key's prior value is lost. So we
+ *     **remove every touched key first** (freeing all the space the partial
+ *     batch consumed), then restore the non-null priors; since those values fit
+ *     before the batch ran, they fit again.
+ *  2. **Swallowed failures.** A restore that still fails was caught and ignored,
+ *     so the caller was told the batch atomically failed (nothing changed) while
+ *     a key was actually gone. Any restore failure is now collected and
+ *     surfaced.
+ */
+internal fun rollbackPriors(
+    priors: Map<String, String?>,
+    set: (String, String) -> Unit,
+    remove: (String) -> Unit,
+) {
+    // 1. Free all space the partial batch consumed before restoring anything.
+    for (fullKey in priors.keys) {
+        runCatching { remove(fullKey) }
+    }
+    // 2. Restore prior values; collect (don't swallow) any that still fail.
+    val failures = ArrayList<Pair<String, Throwable>>()
+    for ((fullKey, prior) in priors) {
+        if (prior != null) {
+            runCatching { set(fullKey, prior) }.onFailure { failures.add(fullKey to it) }
+        }
+    }
+    if (failures.isNotEmpty()) {
+        throw IllegalStateException(
+            "KSafe: localStorage write failed and rollback could not restore " +
+                "${failures.size} key(s) (${failures.joinToString { it.first }}) — " +
+                "their previously stored values may be lost.",
+            failures.first().second,
+        )
     }
 }
