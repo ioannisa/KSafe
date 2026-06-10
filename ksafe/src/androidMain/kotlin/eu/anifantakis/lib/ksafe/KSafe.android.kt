@@ -4,8 +4,10 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.preferencesDataStoreFile
 import eu.anifantakis.lib.ksafe.internal.AndroidKeystoreEncryption
 import eu.anifantakis.lib.ksafe.internal.DataStoreDekStore
@@ -264,7 +266,23 @@ private fun buildAndroidKSafe(
     // [AndroidBackend] / [acquireBackend].
     val datastorePath = datastoreFile.absolutePath
     val backend = acquireBackend(datastorePath) { scope ->
-        PreferenceDataStoreFactory.create(scope = scope, produceFile = { datastoreFile })
+        PreferenceDataStoreFactory.create(
+            // Quarantine a corrupt .preferences_pb and continue from an empty store instead of
+            // throwing CorruptionException on every read forever — which crashes the background
+            // collector and makes getDirect silently return defaults (deep-review #23). The
+            // corrupt bytes are copied aside for recovery.
+            corruptionHandler = ReplaceFileCorruptionHandler {
+                runCatching {
+                    datastoreFile.copyTo(
+                        File(datastoreFile.parentFile, "${datastoreFile.name}.corrupt-${System.currentTimeMillis()}"),
+                        overwrite = false,
+                    )
+                }
+                emptyPreferences()
+            },
+            scope = scope,
+            produceFile = { datastoreFile },
+        )
     }
 
     // One storage instance shared by the engine (for its wrapped DEK) and the core, so

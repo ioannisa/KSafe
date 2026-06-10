@@ -1,8 +1,10 @@
 package eu.anifantakis.lib.ksafe
 
 import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.emptyPreferences
 import dev.whyoleg.cryptography.CryptographyProvider
 import dev.whyoleg.cryptography.algorithms.AES
 import dev.whyoleg.cryptography.providers.cryptokit.CryptoKit
@@ -343,7 +345,19 @@ private fun buildAppleKSafe(
     // path (NSFileManager / okio) is non-blocking.
     val backend = acquireAppleBackend(datastoreFilePath) { scope ->
         PreferenceDataStoreFactory.createWithPath(
-            corruptionHandler = null,
+            // Quarantine a corrupt .preferences_pb and continue from an empty store instead of
+            // throwing CorruptionException on every read forever — which crashes the background
+            // collector and makes getDirect silently return defaults (deep-review #23). The
+            // corrupt bytes are copied aside (best-effort) for recovery.
+            corruptionHandler = ReplaceFileCorruptionHandler {
+                runCatching {
+                    val dest = "$datastoreFilePath.corrupt"
+                    val fmgr = NSFileManager.defaultManager
+                    fmgr.removeItemAtPath(dest, error = null) // copyItem fails if dest exists
+                    fmgr.copyItemAtPath(datastoreFilePath, toPath = dest, error = null)
+                }
+                emptyPreferences()
+            },
             migrations = emptyList(),
             scope = scope,
             produceFile = { datastoreFilePath.toPath() },

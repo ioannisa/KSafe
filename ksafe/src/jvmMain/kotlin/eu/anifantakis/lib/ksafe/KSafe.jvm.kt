@@ -1,8 +1,10 @@
 package eu.anifantakis.lib.ksafe
 
 import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.emptyPreferences
 import eu.anifantakis.lib.ksafe.internal.DataStoreJsonStorage
 import eu.anifantakis.lib.ksafe.internal.DataStoreStorage
 import eu.anifantakis.lib.ksafe.internal.JvmSoftwareEncryption
@@ -350,6 +352,20 @@ private fun createJvmBackend(
         // ── Normal DataStore path (Unsafe present, or a test engine injected) ──
         val datastoreFile = File(storageDir, "$baseFileName.preferences_pb")
         val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
+            // A corrupt .preferences_pb otherwise throws CorruptionException on every read
+            // forever: the background collector crashes (uncaught in its scope) and getDirect
+            // silently returns defaults while suspend get() throws (deep-review #23). Quarantine
+            // the unreadable file (copy aside for recovery) and continue from an empty store —
+            // the same posture as the JSON-fallback backend. The corrupt bytes are preserved.
+            corruptionHandler = ReplaceFileCorruptionHandler {
+                runCatching {
+                    datastoreFile.copyTo(
+                        File(datastoreFile.parentFile, "${datastoreFile.name}.corrupt-${System.currentTimeMillis()}"),
+                        overwrite = false,
+                    )
+                }
+                emptyPreferences()
+            },
             scope = storageScope,
             produceFile = { datastoreFile }
         )
