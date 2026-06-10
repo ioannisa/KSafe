@@ -37,10 +37,11 @@ class ObserveFromStorageTest {
     /**
      * Live mode (`observeExternalChanges = true`): every flow emission is
      * propagated into the state via `updateFromFlow`, even after the user
-     * has written.
+     * has NOT yet written — but stops once the user writes, so a stale disk echo
+     * can't clobber an in-flight write (deep-review #15).
      */
     @Test
-    fun observeFromStorage_liveMode_propagatesEachEmission() = runTest {
+    fun observeFromStorage_liveMode_appliesUntilUserWrites_thenStopsClobbering() = runTest {
         val state = newState("initial")
         val flow = MutableSharedFlow<String>(replay = 0)
 
@@ -53,6 +54,7 @@ class ObserveFromStorageTest {
         }
         advanceUntilIdle()
 
+        // Before any local write, external emissions reflect.
         flow.emit("first")
         advanceUntilIdle()
         assertEquals("first", state.value)
@@ -61,11 +63,13 @@ class ObserveFromStorageTest {
         advanceUntilIdle()
         assertEquals("second", state.value)
 
-        // External writes always reflect — even after the user touched the state.
+        // After the user writes, a stale/older disk echo must NOT revert the write
+        // (the disk-derived flow lags optimistic writes). Pre-fix this clobbered
+        // "user_wrote" back to "stale_echo".
         state.value = "user_wrote"
-        flow.emit("third")
+        flow.emit("stale_echo")
         advanceUntilIdle()
-        assertEquals("third", state.value)
+        assertEquals("user_wrote", state.value, "a stale flow emission must not clobber the user's write")
 
         job.cancel()
     }

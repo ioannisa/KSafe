@@ -70,13 +70,25 @@ class KSafeComposeState<T>(
     }
 
     /**
-     * Updates the state from a flow emission without triggering persistence.
+     * Updates the state from a live flow emission without triggering persistence.
      * Used for continuous flow observation when a [CoroutineScope] is provided.
-     * Always applies the update (even after user writes) because external changes
-     * should be reflected regardless.
+     *
+     * **Skipped once the user has written through this state.** The observed flow
+     * ([KSafe.getFlow] → `KSafeCore.getFlowRaw`) is derived purely from disk
+     * snapshots and lags an optimistic write by the coalescing window + commit
+     * (+ a per-emission decrypt). So a snapshot emitted before the user's write
+     * commits carries an OLDER value; applying it would revert the visible state
+     * mid-gesture — clobbering an in-flight write and, in a `TextField`, dropping
+     * typed characters as the next `onValueChange` builds on the reverted text
+     * (deep-review #15). Respecting the user-write guard (like [updateFromStorage],
+     * and the core's `updateCache` dirty-key skip) makes the user's own writes
+     * authoritative. External changes still reflect for a state the user has not
+     * yet written.
      */
     @PublishedApi internal fun updateFromFlow(newValue: T) {
-        _internalState.value = newValue
+        if (!userHasWritten) {
+            _internalState.value = newValue
+        }
     }
 
     override fun getValue(thisRef: Any?, property: KProperty<*>): T {
@@ -106,9 +118,10 @@ internal const val SELF_HEAL_TIMEOUT_MS: Long = 5_000L
  * Single source of truth for the persistent-state observation lifecycle.
  *
  * Two modes — selected by [observeExternalChanges]:
- *  - `true` → indefinite [Flow.collect], every emission is propagated via
- *    [KSafeComposeState.updateFromFlow] (does not respect the user-write
- *    guard, so external writes always reflect).
+ *  - `true` → indefinite [Flow.collect], each emission propagated via
+ *    [KSafeComposeState.updateFromFlow] (which respects the user-write guard,
+ *    so external changes reflect until the user writes through this state — a
+ *    stale disk echo then can't clobber the in-flight write; deep-review #15).
  *  - `false` + [coldStart] → one-shot `flow.first()` with a [selfHealTimeoutMs]
  *    deadline, propagated via [KSafeComposeState.updateFromStorage] (respects
  *    the user-write guard so a pending self-heal cannot clobber a value the
