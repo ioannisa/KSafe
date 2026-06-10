@@ -64,6 +64,27 @@ class KeychainOrphanClassificationTest {
     }
 
     @Test
+    fun inFlightKeyIsNotAnOrphan_evenWhenAbsentFromValidKeys() {
+        // Deep-review #30: a key the engine just created for a still-in-flight write hasn't
+        // reached the DataStore snapshot (validKeys) yet — the sweep must NOT reap it, or it
+        // destroys the key for an acknowledged concurrent write. Without the guard "fresh"
+        // would be classified an orphan (absent from validKeys); the in-flight predicate
+        // preserves it.
+        assertEquals(
+            "fresh",
+            keychainOrphanKeyId("${prefix}fresh", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters),
+            "precondition: without the in-flight guard, an absent key is an orphan",
+        )
+        assertNull(
+            keychainOrphanKeyId(
+                "${prefix}fresh", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters,
+                isInFlight = { it == "fresh" },
+            ),
+            "a key for an in-flight write must be preserved, not reaped (#30)",
+        )
+    }
+
+    @Test
     fun accountForADifferentInstanceIsIgnored() {
         assertNull(
             keychainOrphanKeyId("eu.anifantakis.ksafe.other.token", prefix, "vault", validKeys = emptySet(), reservedKeyIds = masters),

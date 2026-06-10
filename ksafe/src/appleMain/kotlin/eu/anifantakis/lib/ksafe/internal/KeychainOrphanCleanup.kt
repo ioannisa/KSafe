@@ -102,6 +102,10 @@ internal suspend fun cleanupOrphanedKeychainEntries(
     legacyEncryptedPrefix: String,
     seKeyTagPrefix: String,
     reservedKeyIds: Set<String>,
+    /** Live in-flight check (KSafeCore's dirty-key set): a key for a not-yet-committed write
+     *  must not be reaped as an orphan (deep-review #30). Default false for callers/tests
+     *  that don't run concurrently with writes. */
+    isInFlight: (String) -> Boolean = { false },
 ) {
     // Never sweep on macOS: the shared login keychain has no app-identity scoping, so we'd
     // delete other KSafe-using apps' keys (deep-review #9). No-op before touching storage or
@@ -170,8 +174,8 @@ internal suspend fun cleanupOrphanedKeychainEntries(
                     // "se.{prefix}.{keyId}". The two prefixes are mutually
                     // exclusive, so at most one classifier matches.
                     val orphan =
-                        keychainOrphanKeyId(account, prefixWithDelimiter, fileName, validKeys, reservedKeyIds)
-                            ?: keychainOrphanKeyId(account, sePrefixWithDelimiter, fileName, validKeys, reservedKeyIds)
+                        keychainOrphanKeyId(account, prefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight)
+                            ?: keychainOrphanKeyId(account, sePrefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight)
                     if (orphan != null) orphanedKeyIds.add(orphan)
                 }
             }
@@ -208,7 +212,7 @@ internal suspend fun cleanupOrphanedKeychainEntries(
                     val tag = tagBytes.decodeToString()
 
                     // SE tags: "se.{prefix}.{keyId}"
-                    keychainOrphanKeyId(tag, sePrefixWithDelimiter, fileName, validKeys, reservedKeyIds)
+                    keychainOrphanKeyId(tag, sePrefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight)
                         ?.let { orphanedKeyIds.add(it) }
                 }
             }

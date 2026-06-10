@@ -404,7 +404,7 @@ private fun buildAppleKSafe(
      * counterpart is gone. Safe to call eagerly: failures are swallowed so a
      * locked device or transient Keychain error can't block startup.
      */
-    suspend fun cleanupOrphanedKeychainEntriesSafe() {
+    suspend fun cleanupOrphanedKeychainEntriesSafe(isUserKeyDirty: (String) -> Boolean) {
         runCatching {
             cleanupOrphanedKeychainEntries(
                 storage = storage,
@@ -419,6 +419,9 @@ private fun buildAppleKSafe(
                 // never appear in the sweep's valid-key set. Reserve them so the
                 // sweep can't delete the master and orphan all DEFAULT ciphertext.
                 reservedKeyIds = setOf(MASTER_KEY_DEFAULT, MASTER_KEY_LOCKED),
+                // Don't reap a key for a write that's in flight concurrently with the
+                // sweep — its DataStore commit lands after our snapshot (deep-review #30).
+                isInFlight = isUserKeyDirty,
             )
         }.onFailure { t ->
             if (t is CancellationException) throw t
@@ -434,7 +437,7 @@ private fun buildAppleKSafe(
         plaintextCacheTtl = plaintextCacheTtl,
         resolveKeyStorage = ::resolveKeyStorageTier,
         resolveKeyLevel = ::resolveKeyLevelTier,
-        migrateAccessPolicy = { cleanupOrphanedKeychainEntriesSafe() },
+        migrateAccessPolicy = { isUserKeyDirty -> cleanupOrphanedKeychainEntriesSafe(isUserKeyDirty) },
         lazyLoad = lazyLoad,
         keyAlias = ::iosKeyAlias,
         masterAlias = ::iosMasterAlias,

@@ -24,6 +24,11 @@ package eu.anifantakis.lib.ksafe.internal
  *    master sentinels (`__ksafe_master__` / `__ksafe_master_locked__`) are
  *    referenced by every `DEFAULT` value collectively and so never appear in
  *    [validKeys]; deleting one orphans ALL `DEFAULT` ciphertext;
+ *  - it isn't currently being written ([isInFlight]) — a key the engine created
+ *    moments ago for a still-in-flight write hasn't reached [validKeys] yet (its
+ *    DataStore commit lands after the sweep's snapshot), so the sweep would
+ *    otherwise delete a key for an acknowledged write made concurrently with it
+ *    (deep-review #30). Mirrors the dirty-key guard the DataStore orphan sweep uses;
  *  - it has no live DataStore counterpart ([validKeys]).
  */
 internal fun keychainOrphanKeyId(
@@ -32,11 +37,13 @@ internal fun keychainOrphanKeyId(
     fileName: String?,
     validKeys: Set<String>,
     reservedKeyIds: Set<String>,
+    isInFlight: (String) -> Boolean = { false },
 ): String? {
     if (!accountOrTag.startsWith(prefix)) return null
     val keyId = accountOrTag.removePrefix(prefix)
     if (fileName == null && keyId.contains('.')) return null
     if (keyId in reservedKeyIds) return null
     if (keyId in validKeys) return null
+    if (isInFlight(keyId)) return null
     return keyId
 }

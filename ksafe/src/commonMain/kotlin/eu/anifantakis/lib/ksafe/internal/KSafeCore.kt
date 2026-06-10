@@ -100,7 +100,7 @@ internal class KSafeCore(
      * orphan-ciphertext cleanup. iOS uses it to move keys between
      * accessibility tiers; JVM/WASM are no-ops.
      */
-    private val migrateAccessPolicy: suspend () -> Unit = {},
+    private val migrateAccessPolicy: suspend (isUserKeyDirty: (String) -> Boolean) -> Unit = {},
     lazyLoad: Boolean = false,
     /**
      * Builds the Keystore/Keychain alias for a given user key. Android uses
@@ -471,7 +471,7 @@ internal class KSafeCore(
                 updateCache(snapshot)
                 if (firstEmission) {
                     firstEmission = false
-                    runCatching { migrateAccessPolicy() }
+                    runCatching { migrateAccessPolicy(::isUserKeyDirty) }
                         .onFailure { if (it is CancellationException) throw it }
                     runCatching { cleanupOrphanedCiphertext() }
                         .onFailure { if (it is CancellationException) throw it }
