@@ -211,11 +211,22 @@ internal class AndroidKeystoreEncryption(
             return try {
                 decryptWithDek(identifier, data)
             } catch (e: KeyPermanentlyInvalidatedException) {
-                // KEK gone → DEK unrecoverable. Clear it and surface a definitive
-                // "no key" failure (NON-transient, so the caller gets its default and
-                // orphan cleanup reclaims the entry rather than retrying forever).
-                discardDek(identifier)
-                deleteKeyInternal(identifier)
+                // KEK gone → this value's DEK is unrecoverable. Clean up the stale DEK + KEK
+                // so future writes regenerate — but ONLY if a concurrent writer hasn't already
+                // healed them. A reader that observed the OLD KEK's invalidation must not blindly
+                // delete a DEK/KEK a writer just regenerated, or it would orphan brand-new writes
+                // made under the fresh DEK (deep-review #53). Re-validate under the alias lock:
+                // if the now-stored DEK unwraps cleanly (a concurrent regenerate replaced it),
+                // leave everything intact; only destroy when it's genuinely still broken.
+                synchronized(lockFor(identifier)) {
+                    val healed = runCatching {
+                        dekStore.load()?.let { unwrapDek(identifier, it) }
+                    }.getOrNull()
+                    if (healed == null) {
+                        discardDek(identifier)
+                        deleteKeyInternal(identifier)
+                    }
+                }
                 throw IllegalStateException(
                     "KSafe: No encryption key found for identifier: $identifier (key permanently invalidated)",
                     e
@@ -338,9 +349,19 @@ internal class AndroidKeystoreEncryption(
             // Double-check after acquiring lock
             keyCache[identifier]?.let { return it }
 
-            // `getKey` returns null for unknown aliases — single IPC
-            val key = (keyStore.getKey(identifier, null) as? SecretKey)
-                ?: throw IllegalStateException("KSafe: No encryption key found for identifier: $identifier")
+            // `getKey` returns null for unknown aliases — single IPC. It can also throw
+            // UnrecoverableKeyException when the alias EXISTS but its key blob can't be
+            // loaded (observed after OS upgrades / keymaster-HAL changes / partial keystore
+            // corruption). On the decrypt-only path we can't recreate, and the data is
+            // unrecoverable either way, so treat "present but unreadable" exactly like
+            // "absent": surface the canonical "No encryption key found" so the orphan sweep
+            // reclaims the entry and the encrypt path self-heals (deep-review #28). Without
+            // this the raw URE propagated uncaught and bricked every encrypted read/write.
+            val key = try {
+                keyStore.getKey(identifier, null) as? SecretKey
+            } catch (e: java.security.UnrecoverableKeyException) {
+                null
+            } ?: throw IllegalStateException("KSafe: No encryption key found for identifier: $identifier")
             keyCache[identifier] = key
             return key
         }
@@ -424,9 +445,20 @@ internal class AndroidKeystoreEncryption(
             // Double-check after acquiring lock
             keyCache[identifier]?.let { return it }
 
-            // `getKey` returns null when the alias is absent — one IPC call
-            val key = (keyStore.getKey(identifier, null) as? SecretKey)
-                ?: generateNewKey(identifier, hardwareIsolated, requireUnlockedDevice)
+            // `getKey` returns null when the alias is absent — one IPC call. It can also throw
+            // UnrecoverableKeyException when the alias exists but its blob is unreadable (OS
+            // upgrade / keymaster-HAL change / partial corruption). On this CREATE path we can
+            // self-heal: delete the unreadable blob and mint a fresh key, so encrypted writes
+            // recover instead of bricking forever (deep-review #28). The lock is reentrant, so
+            // deleteKeyInternal here is safe. (Old ciphertext under the unreadable key is
+            // unrecoverable regardless — the same outcome as key invalidation.)
+            val existing = try {
+                keyStore.getKey(identifier, null) as? SecretKey
+            } catch (e: java.security.UnrecoverableKeyException) {
+                deleteKeyInternal(identifier)
+                null
+            }
+            val key = existing ?: generateNewKey(identifier, hardwareIsolated, requireUnlockedDevice)
 
             // Cache the key for future use
             keyCache[identifier] = key
