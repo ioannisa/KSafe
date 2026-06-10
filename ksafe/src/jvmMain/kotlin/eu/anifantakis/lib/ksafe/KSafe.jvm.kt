@@ -16,8 +16,11 @@ import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVaultProvider
 import eu.anifantakis.lib.ksafe.internal.validateSecurityPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Paths
@@ -121,6 +124,63 @@ internal fun KSafe(
     testEngine = testEngine,
 )
 
+/**
+ * Per-file shared backend for the JVM factory. Jetpack DataStore (and the JSON-fallback
+ * `DataStoreFactory`) refuse two active instances on the same file — and release a file only
+ * once the owning scope's [Job] completes. Constructing a fresh storage/engine per [KSafe]
+ * therefore (1) trips the "multiple DataStores active for the same file" guard when two live
+ * instances share a `fileName` (swallowed by the cache-load catch → silent defaults + dropped
+ * writes), and (2) races teardown on close→recreate. This registry shares ONE backend per
+ * resolved path, ref-counted (only the last close tears the scope down) with a bounded
+ * prior-scope await before a recreate — mirroring the Android factory (deep-review #51).
+ */
+private class JvmBackend(
+    val storage: KSafePlatformStorage,
+    val scope: CoroutineScope,
+    val engine: KSafeEncryption,
+    val clearAllCleanup: suspend () -> Unit,
+) {
+    val refCount = java.util.concurrent.atomic.AtomicInteger(0)
+}
+
+private val jvmBackends = java.util.concurrent.ConcurrentHashMap<String, JvmBackend>()
+private val jvmTerminatingScopes = java.util.concurrent.ConcurrentHashMap<String, CoroutineScope>()
+private val jvmPathLocks = java.util.concurrent.ConcurrentHashMap<String, Any>()
+private fun jvmPathLock(path: String): Any = jvmPathLocks.computeIfAbsent(path) { Any() }
+
+/**
+ * Returns the shared backend for [path], creating it (atomically, per path) on first use and
+ * incrementing its ref-count. A recreate after the previous owner closed awaits that owner's
+ * teardown first (bounded), since DataStore frees a file only once its scope completes.
+ */
+private fun acquireJvmBackend(
+    path: String,
+    create: (CoroutineScope) -> JvmBackend,
+): JvmBackend = synchronized(jvmPathLock(path)) {
+    jvmBackends[path]?.let {
+        it.refCount.incrementAndGet()
+        return it
+    }
+    jvmTerminatingScopes.remove(path)?.coroutineContext?.get(Job)?.let { priorJob ->
+        runBlocking { withTimeoutOrNull(2_000) { priorJob.join() } }
+    }
+    val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    val backend = create(scope).also { it.refCount.set(1) }
+    jvmBackends[path] = backend
+    backend
+}
+
+/** Drops one ref; the last release evicts the entry, parks the scope for a later recreate to
+ *  await, and cancels it. Each [KSafe] must call this at most once (guarded by the caller). */
+private fun releaseJvmBackend(path: String) = synchronized(jvmPathLock(path)) {
+    val backend = jvmBackends[path] ?: return
+    if (backend.refCount.decrementAndGet() <= 0) {
+        jvmBackends.remove(path)
+        jvmTerminatingScopes[path] = backend.scope
+        backend.scope.cancel()
+    }
+}
+
 private fun buildJvmKSafe(
     fileName: String?,
     lazyLoad: Boolean,
@@ -181,16 +241,86 @@ private fun buildJvmKSafe(
         resolvedBaseDir
     }
 
-    // DataStore launches its own coroutines on the scope we hand it; we
-    // hold a reference so KSafe.close() can cancel it. (Unused by the
-    // JSON-file fallback, but cheap and harmless.)
-    val storageScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-
     // Key-alias scheme — defined once and shared by KSafeCore and the
     // fallback→OS-backed migration so both compute byte-identical aliases.
     val keyAlias: (String) -> String = { userKey -> fileName?.let { "$it:$userKey" } ?: userKey }
     val masterAlias: (Boolean) -> String = { _ -> fileName?.let { "$it:$MASTER_KEY_DEFAULT" } ?: MASTER_KEY_DEFAULT }
 
+    // Acquire the per-file shared backend (storage + scope + engine + clearAll cleanup),
+    // ref-counted so co-existing instances on one file share a single DataStore + engine and
+    // only the last close tears the scope down; creation is atomic per path and a recreate
+    // awaits the prior owner's teardown (deep-review #51). The path key identifies the safe
+    // regardless of which backend (DataStore vs JSON fallback) is selected.
+    val backendPath = File(storageDir, baseFileName).absolutePath
+    val backend = acquireJvmBackend(backendPath) { storageScope ->
+        createJvmBackend(
+            storageScope = storageScope,
+            storageDir = storageDir,
+            baseFileName = baseFileName,
+            config = config,
+            testEngine = testEngine,
+            keyAlias = keyAlias,
+            masterAlias = masterAlias,
+        )
+    }
+
+    // Guards this instance's single backend release (KSafeCore.cancel() is idempotent).
+    val released = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    val core = KSafeCore(
+        storage = backend.storage,
+        engineProvider = { backend.engine },
+        config = config,
+        memoryPolicy = memoryPolicy,
+        plaintextCacheTtl = plaintextCacheTtl,
+        resolveKeyStorage = { _, _ -> KSafeKeyStorage.SOFTWARE },
+        resolveKeyLevel = { _, protection ->
+            // No key for plain values → SOFTWARE (nothing to protect).
+            // Otherwise: the active vault decides — SANDBOX_PROTECTED when an
+            // OS vault holds the key, SOFTWARE when the fallback / opt-out is
+            // active. Matches the instance-level protectionInfo.effectiveLevel.
+            val eng = backend.engine
+            when {
+                protection == null -> KSafeProtectionLevel.SOFTWARE
+                eng is JvmSoftwareEncryption && eng.keyVaultIsOsBacked ->
+                    KSafeProtectionLevel.SANDBOX_PROTECTED
+                eng is JvmSoftwareEncryption ->
+                    KSafeProtectionLevel.SOFTWARE
+                else -> KSafeProtectionLevel.SANDBOX_PROTECTED   // test-injected engine: assume baseline
+            }
+        },
+        lazyLoad = lazyLoad,
+        keyAlias = keyAlias,
+        masterAlias = masterAlias,
+        onCancel = { if (released.compareAndSet(false, true)) releaseJvmBackend(backendPath) },
+    )
+
+    return KSafe(
+        core = core,
+        deviceKeyStorages = setOf(KSafeKeyStorage.SOFTWARE),
+        // Recomputed per-access so a runtime `degradeToLegacy` (Compose
+        // Desktop release distributable hitting LinkageError) is reflected
+        // in the public `KSafe.protectionInfo` getter.
+        protectionInfoProvider = { jvmProtectionInfo(backend.engine) },
+        onClearAllCleanup = backend.clearAllCleanup,
+    )
+}
+
+/**
+ * Builds the storage + engine + clearAll-cleanup for one file on the JVM, selecting the
+ * normal DataStore backend or the no-`sun.misc.Unsafe` JSON-file fallback, and running the
+ * one-time JSON→OS-backed forward migration. Invoked once per [JvmBackend] (i.e. once per
+ * file path), under that path's acquisition lock.
+ */
+private fun createJvmBackend(
+    storageScope: CoroutineScope,
+    storageDir: File,
+    baseFileName: String,
+    config: KSafeConfig,
+    testEngine: KSafeEncryption?,
+    keyAlias: (String) -> String,
+    masterAlias: (Boolean) -> String,
+): JvmBackend {
     val storage: KSafePlatformStorage
     val engine: KSafeEncryption
     val clearAllCleanup: suspend () -> Unit
@@ -259,42 +389,7 @@ private fun buildJvmKSafe(
         }
     }
 
-    val core = KSafeCore(
-        storage = storage,
-        engineProvider = { engine },
-        config = config,
-        memoryPolicy = memoryPolicy,
-        plaintextCacheTtl = plaintextCacheTtl,
-        resolveKeyStorage = { _, _ -> KSafeKeyStorage.SOFTWARE },
-        resolveKeyLevel = { _, protection ->
-            // No key for plain values → SOFTWARE (nothing to protect).
-            // Otherwise: the active vault decides — SANDBOX_PROTECTED when an
-            // OS vault holds the key, SOFTWARE when the fallback / opt-out is
-            // active. Matches the instance-level protectionInfo.effectiveLevel.
-            when {
-                protection == null -> KSafeProtectionLevel.SOFTWARE
-                engine is JvmSoftwareEncryption && engine.keyVaultIsOsBacked ->
-                    KSafeProtectionLevel.SANDBOX_PROTECTED
-                engine is JvmSoftwareEncryption ->
-                    KSafeProtectionLevel.SOFTWARE
-                else -> KSafeProtectionLevel.SANDBOX_PROTECTED   // test-injected engine: assume baseline
-            }
-        },
-        lazyLoad = lazyLoad,
-        keyAlias = keyAlias,
-        masterAlias = masterAlias,
-        onCancel = { storageScope.cancel() },
-    )
-
-    return KSafe(
-        core = core,
-        deviceKeyStorages = setOf(KSafeKeyStorage.SOFTWARE),
-        // Recomputed per-access so a runtime `degradeToLegacy` (Compose
-        // Desktop release distributable hitting LinkageError) is reflected
-        // in the public `KSafe.protectionInfo` getter.
-        protectionInfoProvider = { jvmProtectionInfo(engine) },
-        onClearAllCleanup = clearAllCleanup,
-    )
+    return JvmBackend(storage, storageScope, engine, clearAllCleanup)
 }
 
 /**
