@@ -413,15 +413,25 @@ internal class JvmKeyVaultProvider(
  * Resolves the effective app-isolation namespace for the JVM OS vaults.
  *
  * Priority: explicit [override] (`KSafeConfig.appNamespace`) →
- * `-Dksafe.appNamespace` → env `KSAFE_APP_NAMESPACE` → best-effort from the
- * app's launcher (`sun.java.command`) → `"shared"`. Sanitised to
- * `[A-Za-z0-9._-]` so it is safe as a Keychain service / DataStore key /
- * Secret Service attribute.
+ * `-Dksafe.appNamespace` → env `KSAFE_APP_NAMESPACE` → the stable constant
+ * `"shared"`. Sanitised to `[A-Za-z0-9._-]` so it is safe as a Keychain
+ * service / DataStore key / Secret Service attribute. A blank result is
+ * impossible.
  *
- * Best-effort auto-derivation favours **stability** (the entry-point class /
- * jar name is stable across runs and install locations) over uniqueness;
- * production apps should set `KSafeConfig.appNamespace` explicitly. A blank
- * result is impossible (falls back to `"shared"`).
+ * **The default MUST be stable across launches.** It used to be auto-derived
+ * from `sun.java.command` (the jar filename or main-class token), but that
+ * varies with the launcher — a versioned jar name (`myapp-1.2.3.jar` →
+ * `myapp-1.2.4.jar`) or IDE-vs-packaged runs change it. Because the default
+ * (unset-`appNamespace`) data file is **not** namespaced, the ciphertext stayed
+ * in one shared file while the OS-vault namespace moved with the launcher: every
+ * existing key became invisible under the new namespace, so the startup orphan
+ * sweep deleted the user's encrypted data on every versioned-jar upgrade
+ * (deep-review #11). A fixed `"shared"` keeps keys findable across launches.
+ *
+ * Apps that genuinely need per-app OS-vault isolation set `KSafeConfig.appNamespace`
+ * explicitly — which also namespaces the data file, so file and keys move together.
+ * (Two default-config apps under one OS account already share the un-namespaced
+ * data file, so the constant default doesn't make that pre-existing collision worse.)
  */
 internal fun resolveJvmAppNamespace(override: String?): String {
     fun String?.clean(): String? =
@@ -434,15 +444,7 @@ internal fun resolveJvmAppNamespace(override: String?): String {
     System.getProperty("ksafe.appNamespace").clean()?.let { return it }
     System.getenv("KSAFE_APP_NAMESPACE").clean()?.let { return it }
 
-    // `sun.java.command` = "<mainClass-or-jar> <args...>"; keep only the
-    // launcher token — the entry point is stable per app, args are not.
-    val cmd = System.getProperty("sun.java.command").orEmpty().trim().substringBefore(' ')
-    val launcher = when {
-        cmd.isEmpty() -> null
-        cmd.endsWith(".jar", ignoreCase = true) ->
-            cmd.replace('\\', '/').substringAfterLast('/').removeSuffix(".jar")
-        else -> cmd
-    }
-    launcher.clean()?.let { return it }
+    // Deliberately NO `sun.java.command` derivation — see the KDoc: it changed
+    // with the launcher and silently orphaned/deleted the user's data on upgrade.
     return "shared"
 }
