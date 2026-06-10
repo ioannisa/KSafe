@@ -10,11 +10,10 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Regression test for deep-review #56 (core twin of the Compose #15 fix): the
- * [KSafeMutableStateFlow] backing `asMutableStateFlow` must not let a stale,
- * disk-derived observer-flow emission clobber a value the user just wrote
- * through it. `updateFromFlow` now respects a user-write guard (mirroring the
- * Compose live-observe fix and the core's `updateCache` dirty-key skip).
+ * The [KSafeMutableStateFlow] backing `asMutableStateFlow` must not let a
+ * stale, disk-derived observer-flow emission clobber a value the user just
+ * wrote through it: `updateFromFlow` respects a user-write guard until the
+ * write's own echo arrives.
  */
 class KSafeStateFlowClobberTest {
 
@@ -45,11 +44,9 @@ class KSafeStateFlowClobberTest {
     }
 
     /**
-     * Review R19: the guard must be precise, not permanent. Once the observer
-     * flow catches up with the user's write (the echo arrives), genuinely newer
-     * external changes must reflect again — the public KDoc promises external-
-     * change reflection, and the old one-way latch silently disabled it forever
-     * after the first write.
+     * The guard must be precise, not permanent: once the observer flow catches
+     * up with the user's write (the echo arrives), genuinely newer external
+     * changes must reflect again, as the public KDoc promises.
      */
     @Test
     fun updateFromFlow_resumesExternalReflection_afterEchoCatchesUp() {

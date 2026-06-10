@@ -8,17 +8,17 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /**
- * Dedicated, **intentionally small** regression suite for issue #31:
- * retrieving a `@Serializable` class with a *nullable* default
- * (`null as T?`) must deserialize the value, not return the raw stored
- * JSON string (`ClassCastException: String cannot be cast to <Type>`).
+ * Dedicated, **intentionally small** suite pinning that retrieving a
+ * `@Serializable` class with a *nullable* default (`null as T?`) deserializes
+ * the value rather than returning the raw stored JSON string
+ * (`ClassCastException: String cannot be cast to <Type>`).
  *
  * This is deliberately NOT a method on [KSafeTest]. The legacy Kotlin/JS
  * `kotlin-test` runner silently truncates the trailing `@Test`s of that
- * oversized class (it stops registering past ~62), so a regression appended
- * there is compiled but never executed on Kotlin/JS — with zero failure
- * signal. Small focused classes register fully on every target (verified),
- * so cross-platform regressions belong here, one concern per class.
+ * oversized class (it stops registering past ~62), so a test appended there
+ * is compiled but never executed on Kotlin/JS — with zero failure signal.
+ * Small focused classes register fully on every target, so cross-platform
+ * regressions belong here, one concern per class.
  *
  * Subclasses supply a platform [KSafe] via [newKSafe], mirroring
  * [KSafeTest]'s contract.
@@ -48,7 +48,7 @@ abstract class KSafeNullableDefaultTest {
         val value = Issue31Data(name = "alice", count = 7)
 
         // Plain path — exercises convertStoredValue / primitiveKindOrNull,
-        // the exact regression site.
+        // where the nullable-default type detection happens.
         ksafe.put("issue31_plain", value, KSafeWriteMode.Plain)
         assertEquals(value, ksafe.get("issue31_plain", null as Issue31Data?))
         assertEquals(value, ksafe.getFlow("issue31_plain", null as Issue31Data?).first())

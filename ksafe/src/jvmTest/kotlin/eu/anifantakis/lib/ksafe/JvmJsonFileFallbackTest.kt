@@ -116,10 +116,10 @@ class JvmJsonFileFallbackTest {
 
     @Test
     fun jsonStorage_corruptFile_isQuarantinedNotSilentlyDiscarded() = runTest {
-        // Regression: a non-blank but unparseable store used to read back as
-        // emptyMap(), so the next write silently overwrote recoverable bytes.
-        // It must now be quarantined (a .corrupt-* sibling) while the store
-        // continues empty — corruption surfaced, data preserved.
+        // A non-blank but unparseable store must not read back as emptyMap() —
+        // the next write would silently overwrite recoverable bytes. It is
+        // quarantined (a .corrupt-* sibling) while the store continues empty:
+        // corruption surfaced, data preserved.
         val file = File(tmp, "corrupt.json")
         file.writeText("{ this is not valid json")
         assertTrue(storage(file).snapshot().isEmpty())
@@ -179,7 +179,7 @@ class JvmJsonFileFallbackTest {
 
     @Test
     fun fileKeyVault_keyFileIsOwnerOnly_onPosix() {
-        // #7: the plaintext key file must be created owner-only (rw-------) so the
+        // The plaintext key file must be created owner-only (rw-------) so the
         // AES key is never written into a momentarily group/world-readable file.
         // POSIX-only; skipped on filesystems without POSIX permissions (Windows).
         val file = File(tmp, "perms.ksafe-keys.json")

@@ -140,7 +140,7 @@ class JvmNumericTypeMigrationTest {
     }
 
     // ======================================================================
-    // GROUP C — Float <-> Double migration (the suspected gap)
+    // GROUP C — Float <-> Double migration
     // ======================================================================
 
     @Test

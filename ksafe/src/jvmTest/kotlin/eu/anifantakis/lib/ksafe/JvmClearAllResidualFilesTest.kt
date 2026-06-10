@@ -8,11 +8,12 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Regression test for deep-review #35: `clearAll()` must also wipe the residual JVM-fallback
- * files that hold recoverable secrets — the `*.migrated` archives left by a JSON→OS-backed
- * migration (`*.ksafe-keys.json.migrated` is **plaintext** AES bytes; `*.ksafe.json.migrated`
- * the ciphertext) and the `*.corrupt-<ts>` quarantine copies. Previously cleanup deleted only
- * the live store file, leaving those behind so a wiped secret was recoverable offline.
+ * `clearAll()` must also wipe the residual JVM-fallback files that hold
+ * recoverable secrets — the `*.migrated` archives left by a JSON→OS-backed
+ * migration (`*.ksafe-keys.json.migrated` is **plaintext** AES bytes;
+ * `*.ksafe.json.migrated` the ciphertext) and the `*.corrupt-<ts>` quarantine
+ * copies. Deleting only the live store file would leave a wiped secret
+ * recoverable offline.
  */
 class JvmClearAllResidualFilesTest {
 

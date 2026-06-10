@@ -33,10 +33,9 @@ internal actual object SecurityChecker {
      * where the jailbreak path probes trivially match (`/bin/sh`,
      * `/usr/bin/ssh`, … exist on every Mac) — while [isMacOs] is still `false`
      * (`Platform.osFamily` is a compile-time constant of the iosArm64 slice,
-     * not the host) and no `SIMULATOR_*` env vars are set. Without this check a
-     * perfectly clean Mac was classified as jailbroken, and the documented
-     * `KSafeSecurityPolicy.Strict` preset then threw at construction — secure
-     * storage entirely unusable on M-series Macs (review R1).
+     * not the host) and no `SIMULATOR_*` env vars are set. Without this check
+     * a clean Mac would classify as jailbroken and `KSafeSecurityPolicy.Strict`
+     * would throw at construction.
      *
      * `NSProcessInfo.iOSAppOnMac` exists from iOS 14 / macOS 11; the selector
      * guard keeps older runtimes safe (they cannot be iOS-on-Mac anyway), and
@@ -96,7 +95,7 @@ internal actual object SecurityChecker {
     actual fun isDeviceRooted(): Boolean {
         if (isMacOs) return false
         // iOS slice on an Apple Silicon Mac: same macOS filesystem, same
-        // false positives — same short-circuit (review R1).
+        // false positives — same short-circuit.
         if (isIosAppOnMac) return false
         // Don't check on simulator - it's expected to have different paths
         if (isEmulator()) return false

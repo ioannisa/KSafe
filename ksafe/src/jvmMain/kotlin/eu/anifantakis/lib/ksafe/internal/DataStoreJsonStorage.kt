@@ -52,10 +52,8 @@ internal class DataStoreJsonStorage(
     private val dataStore: DataStore<Map<String, String>> = DataStoreFactory.create(
         serializer = JsonMapSerializer,
         // On genuine corruption (non-blank but unparseable JSON), the serializer
-        // throws CorruptionException; preserve the unparseable bytes for recovery
-        // by copying the file aside, then let the store continue empty. Without
-        // this, the old "return emptyMap() on parse failure" silently discarded
-        // the data and the next write overwrote the recoverable file.
+        // throws CorruptionException; copy the unparseable bytes aside for
+        // recovery before letting the store continue empty.
         corruptionHandler = ReplaceFileCorruptionHandler {
             runCatching {
                 file.copyTo(
@@ -113,25 +111,19 @@ internal class DataStoreJsonStorage(
         override val defaultValue: Map<String, String> = emptyMap()
 
         override suspend fun readFrom(input: InputStream): Map<String, String> {
-            // Read the raw bytes. A mid-read IOException on an EXISTING file (disk
-            // error, network FS, AV interference) MUST propagate — never swallow it
-            // as an empty store. datastore-core caches readFrom's return as the
-            // current state, so returning emptyMap() here would make the very next
-            // write atomically overwrite the real file with that empty map, wiping
-            // every entry from a transient hiccup (deep-review #33). Letting the
-            // exception propagate leaves the file untouched (DataStore does not
-            // write on a failed read), so the data survives and the next read can
-            // recover. A missing file never reaches here — datastore-core handles
-            // FileNotFoundException upstream and yields the empty defaultValue.
+            // A mid-read IOException on an EXISTING file MUST propagate — never
+            // swallow it as an empty store. datastore-core caches readFrom's return
+            // as current state, so emptyMap() here would let the next write
+            // atomically wipe every entry over a transient hiccup; a propagated
+            // exception leaves the file untouched. A missing file never reaches
+            // here — datastore-core yields defaultValue for FileNotFoundException.
             val text = input.readBytes().decodeToString()
             return try {
                 if (text.isBlank()) emptyMap() else json.decodeFromString(mapSer, text)
             } catch (e: SerializationException) {
-                // Non-blank but unparseable = real corruption. Do NOT silently
-                // treat it as empty: that lets the next write overwrite still-
-                // recoverable bytes. Signal corruption so DataStore routes to the
-                // corruptionHandler (which quarantines the file) instead of
-                // discarding data. A blank file is handled above as a fresh store.
+                // Non-blank but unparseable = real corruption. Signal it so DataStore
+                // routes to the corruptionHandler (which quarantines the file) rather
+                // than treating still-recoverable bytes as an empty store.
                 throw CorruptionException("KSafe JSON store is corrupt: unparseable content", e)
             }
         }

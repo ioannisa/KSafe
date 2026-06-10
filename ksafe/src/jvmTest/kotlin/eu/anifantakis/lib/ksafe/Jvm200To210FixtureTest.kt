@@ -120,7 +120,7 @@ class Jvm200To210FixtureTest {
 
     @Test
     fun frozen2_0_0_decrypts_even_when_os_vault_holds_a_STALE_key() {
-        // 2.0.0 -> 2.1.0 data-loss regression guard.
+        // 2.0.0 -> 2.1.0 data-loss guard.
         //
         // The OS secret store (Keychain / DPAPI / Secret Service) is global
         // per-user and long-lived: it survives DataStore deletion, app-data
@@ -129,11 +129,10 @@ class Jvm200To210FixtureTest {
         // the same `<file>:<alias>` while the REAL legacy key still sits in
         // the 2.0.0 DataStore. The legacy key is authoritative — it provably
         // encrypted this ciphertext — and must NOT be shadowed by the stale
-        // OS key. The pre-fix code trusted the OS vault first and migrated
-        // only when it was empty, so every encrypted value silently reset to
-        // its default (plaintext values, needing no key, survived). This test
-        // binds the *frozen real 2.0.0* bytes against a pre-populated (stale)
-        // OS vault; it fails on the old logic and passes on legacy-first.
+        // OS key: trusting the OS vault first would silently reset every
+        // encrypted value to its default (plaintext values, needing no key,
+        // survive). This test binds the *frozen real 2.0.0* bytes against a
+        // pre-populated (stale) OS vault to pin the legacy-first order.
         val (ds, _) = freshDataStoreFromFixture()
         val ciphertext = storedCiphertext(ds)
 

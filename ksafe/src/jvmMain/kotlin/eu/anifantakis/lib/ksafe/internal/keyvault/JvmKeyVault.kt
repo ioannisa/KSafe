@@ -11,21 +11,17 @@ import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 /**
- * Abstraction over *where the raw AES key bytes live* on the JVM.
- *
- * The JVM has no standard hardware keystore, so prior to this abstraction the
- * AES key was Base64-encoded straight into the DataStore preferences file next
- * to the ciphertext — recoverable by anyone who could read that file. A
- * [JvmKeyVault] moves the key into an OS-managed secret store instead:
+ * Abstraction over *where the raw AES key bytes live* on the JVM (which has no
+ * standard hardware keystore). Implementations put the key in an OS-managed
+ * secret store:
  *
  * - Windows: DPAPI (key wrapped with the user's login credentials)
  * - macOS: Keychain (login/data-protection keychain, SE-gated on modern Macs)
  * - Linux: Secret Service / libsecret (login keyring)
  *
  * When no OS store is reachable (headless Linux with no keyring, JNA link
- * failure, locked keychain) selection falls back to [DataStoreKeyVault] — the
- * legacy plaintext-in-file behaviour — and emits a one-time warning. This keeps
- * existing deployments working unchanged ("fall back + warn").
+ * failure) selection falls back to [DataStoreKeyVault] — plaintext key in the
+ * DataStore file — and emits a one-time warning.
  *
  * Implementations must be safe to call from multiple threads; callers
  * ([eu.anifantakis.lib.ksafe.internal.JvmSoftwareEncryption]) additionally
@@ -60,8 +56,8 @@ internal interface JvmKeyVault {
  * and by [WindowsDpapiKeyVault] (to persist the DPAPI-wrapped blob — which is
  * useless without the user's Windows login, so storing it in a file is safe).
  *
- * The blocking [runBlocking] bridges mirror the pre-existing engine code:
- * key access is rare (cached after first read) and never on a hot path.
+ * Blocking [runBlocking] bridges are acceptable here: key access is rare
+ * (cached after first read) and never on a hot path.
  */
 internal class DataStorePrefStore(
     private val dataStore: DataStore<Preferences>,
@@ -229,13 +225,11 @@ internal class JvmKeyVaultProvider(
      * state destroys data two ways, so we flag it instead:
      *  - a null key lookup becomes ambiguous, so reads must report
      *    "unavailable" not "absent" ([hasDegraded]) — otherwise KSafeCore's
-     *    orphan sweep deletes still-recoverable OS-vault-only ciphertext
-     *    (deep-review finding #1);
+     *    orphan sweep deletes still-recoverable OS-vault-only ciphertext;
      *  - key *creation* must not mint into the legacy DataStore migration
      *    source ([osVaultUnavailable]) — a junk key written there is trusted as
      *    authoritative by the next healthy launch's legacy-first migration and
-     *    overwrites the real OS-vault key, destroying everything under it
-     *    (deep-review finding #2).
+     *    overwrites the real OS-vault key, destroying everything under it.
      */
     private val osVaultSelfTestFailed = AtomicBoolean(false)
 
@@ -314,15 +308,15 @@ internal class JvmKeyVaultProvider(
 
         if (candidate != null) {
             if (selfTest(candidate)) return candidate
-            // The OS vault platform exists but its self-test failed: the store is
-            // present-but-unreachable right now (locked Keychain, login keyring
-            // not yet unlocked / no D-Bus session, SSH/headless launch). Do NOT
-            // silently treat the legacy software store as healthy — that path
-            // lets the orphan sweep delete OS-vault-only ciphertext (#1) and
-            // mints junk keys into the migration source that overwrite the real
-            // OS key on the next healthy launch (#2). Flag it so the engine
-            // fails safe (reads report "unavailable"; key creation is refused)
-            // and the data survives until the OS store is reachable again.
+            // The OS vault exists but its self-test failed: present-but-
+            // unreachable right now (locked Keychain, login keyring not yet
+            // unlocked / no D-Bus session, SSH/headless launch). Do NOT silently
+            // treat the legacy software store as healthy — that lets the orphan
+            // sweep delete OS-vault-only ciphertext and mints junk keys into the
+            // migration source that overwrite the real OS key on the next
+            // healthy launch. Flag it so the engine fails safe (reads report
+            // "unavailable"; key creation is refused) and the data survives
+            // until the OS store is reachable again.
             osVaultSelfTestFailed.set(true)
             warnOsVaultUnavailableOnce(os)
             return legacy
@@ -354,14 +348,13 @@ internal class JvmKeyVaultProvider(
     /**
      * Twin of the picked OS vault under the **legacy 2.1.0/2.1.1 derived
      * namespace**, used as a read-fallback migration source. Those releases
-     * derived the default namespace from `sun.java.command`; 2.1.2 made the
-     * default a stable constant ([DEFAULT_JVM_NAMESPACE]) so the namespace can
-     * never silently move again — but an app shipped on 2.1.0/2.1.1 with a
-     * *stable* launcher (jpackage main class, non-versioned jar) holds its real
-     * OS-vault keys under the old derived namespace. Without this probe those
-     * keys become invisible on upgrade, every decrypt throws "No encryption key
-     * found", and the startup orphan sweep permanently deletes the user's
-     * ciphertext (review R6).
+     * derived the default namespace from `sun.java.command`; the default is now
+     * the stable constant [DEFAULT_JVM_NAMESPACE]. An app shipped on
+     * 2.1.0/2.1.1 with a *stable* launcher (jpackage main class, non-versioned
+     * jar) holds its real OS-vault keys under the old derived namespace.
+     * Without this probe those keys become invisible on upgrade, every decrypt
+     * throws "No encryption key found", and the startup orphan sweep
+     * permanently deletes the user's ciphertext.
      *
      * Built lazily and only when it can actually matter: production wiring
      * (no test seams), the default namespace in effect (an explicit namespace
@@ -432,14 +425,11 @@ internal class JvmKeyVaultProvider(
     /**
      * Round-trips a canary value to confirm the native store actually works.
      *
-     * The alias is unique per attempt: the OS stores are per-user and shared
-     * across every process and KSafe instance on the machine, so a FIXED alias
-     * let two concurrent self-tests interleave (A.put, B.put, A.get, A.delete,
-     * B.get → null) — flipping a perfectly healthy engine into session-long
-     * fail-closed mode (reads "unavailable", encrypted writes refused) just
-     * because two apps launched at login, or one app built two instances in
-     * parallel (review R58). With unique aliases concurrent self-tests cannot
-     * interfere.
+     * The alias must be unique per attempt: the OS stores are per-user and
+     * shared across every process and KSafe instance on the machine, so a
+     * FIXED alias lets two concurrent self-tests interleave (A.put, B.put,
+     * A.get, A.delete, B.get → null), flipping a healthy engine into
+     * session-long fail-closed mode.
      */
     private fun selfTest(vault: JvmKeyVault): Boolean = try {
         val alias = "__ksafe_selftest__" + java.util.UUID.randomUUID()
@@ -533,24 +523,18 @@ internal class JvmKeyVaultProvider(
  * service / DataStore key / Secret Service attribute. A blank result is
  * impossible.
  *
- * **The default MUST be stable across launches.** It used to be auto-derived
- * from `sun.java.command` (the jar filename or main-class token), but that
- * varies with the launcher — a versioned jar name (`myapp-1.2.3.jar` →
- * `myapp-1.2.4.jar`) or IDE-vs-packaged runs change it. Because the default
- * (unset-`appNamespace`) data file is **not** namespaced, the ciphertext stayed
- * in one shared file while the OS-vault namespace moved with the launcher: every
- * existing key became invisible under the new namespace, so the startup orphan
- * sweep deleted the user's encrypted data on every versioned-jar upgrade
- * (deep-review #11). A fixed `"shared"` keeps keys findable across launches.
+ * **The default MUST be stable across launches.** A launcher-derived default
+ * (jar name / main-class token) moves while the un-namespaced data file does
+ * not, making every existing key invisible — and the startup orphan sweep
+ * would then delete the user's encrypted data on upgrade.
  *
- * Apps that genuinely need per-app OS-vault isolation set `KSafeConfig.appNamespace`
- * explicitly — which also namespaces the data file, so file and keys move together.
- * (Two default-config apps under one OS account already share the un-namespaced
- * data file, so the constant default doesn't make that pre-existing collision worse.)
+ * Apps that genuinely need per-app OS-vault isolation set
+ * `KSafeConfig.appNamespace` explicitly — which also namespaces the data file,
+ * so file and keys move together.
  */
 /**
- * The stable default OS-vault namespace (2.1.2+). Never derived from the
- * launcher, so it cannot silently move between runs/releases.
+ * The stable default OS-vault namespace. Never derived from the launcher, so
+ * it cannot silently move between runs/releases.
  */
 internal const val DEFAULT_JVM_NAMESPACE = "shared"
 
@@ -565,9 +549,9 @@ internal fun resolveJvmAppNamespace(override: String?): String {
     System.getProperty("ksafe.appNamespace").cleanNamespaceToken()?.let { return it }
     System.getenv("KSAFE_APP_NAMESPACE").cleanNamespaceToken()?.let { return it }
 
-    // Deliberately NO `sun.java.command` derivation — see the KDoc: it changed
-    // with the launcher and silently orphaned/deleted the user's data on upgrade.
-    // Keys written by released 2.1.0/2.1.1 under the old derived namespace are
+    // Deliberately NO `sun.java.command` derivation — it changes with the
+    // launcher and would silently orphan the user's data on upgrade. Keys
+    // written by released 2.1.0/2.1.1 under the old derived namespace are
     // recovered on read by [JvmKeyVaultProvider.recoverFromLegacyNamespace].
     return DEFAULT_JVM_NAMESPACE
 }

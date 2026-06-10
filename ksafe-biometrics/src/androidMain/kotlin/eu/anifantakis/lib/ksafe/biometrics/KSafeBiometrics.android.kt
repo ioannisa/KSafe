@@ -25,14 +25,11 @@ import java.util.concurrent.atomic.AtomicReference
  */
 private val biometricAuthSessions = AtomicReference<Map<String, Long>>(emptyMap())
 
-// Clock for the authorization TTL. Requirements: (a) never go backward — a
-// backward wall-clock jump (NTP correction, manual/timezone change) must not
-// extend a cached authorization; (b) count time while the device is asleep —
-// otherwise a "60s" window becomes "60s of awake time" and survives arbitrarily
-// long deep sleep (a pocketed phone), silently honoring expired authorization
-// (deep-review #13). `System.nanoTime()` / `TimeSource.Monotonic` satisfies (a)
-// but NOT (b): it freezes while the SoC is suspended. `SystemClock.elapsedRealtime()`
-// (CLOCK_BOOTTIME) satisfies both — monotonic AND suspend-inclusive.
+// Clock for the authorization TTL. Must (a) never go backward — a wall-clock
+// jump must not extend a cached authorization — and (b) keep counting while the
+// device is asleep, or a "60s" window survives arbitrary deep sleep.
+// `System.nanoTime()` satisfies (a) but freezes during SoC suspend;
+// `SystemClock.elapsedRealtime()` (CLOCK_BOOTTIME) satisfies both.
 private fun monotonicNowMs(): Long = SystemClock.elapsedRealtime()
 
 private fun updateBiometricSession(scope: String, timestamp: Long) {
@@ -59,9 +56,9 @@ internal actual suspend fun platformVerifyBiometric(
 
     return try {
         BiometricHelper.authenticate(reason, allowDeviceCredentialFallback)
-        // Only seed the cache when the caller actually opted into caching
-        // (duration > 0). Recording a session for a duration <= 0 opt-out call
-        // would let a later, longer-window call reuse it without a prompt (#40).
+        // Only seed the cache when the caller opted into caching (duration > 0);
+        // recording an opt-out call would let a later, longer-window call reuse
+        // it without a prompt.
         if (BiometricAuthSession.shouldCache(authorizationDuration)) {
             updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope), monotonicNowMs())
         }
@@ -92,11 +89,9 @@ internal actual fun platformVerifyBiometricDirect(
 ) {
     CoroutineScope(Dispatchers.Default + SupervisorJob()).launch {
         val ok = platformVerifyBiometric(reason, authorizationDuration, allowDeviceCredentialFallback)
-        // Deliver onResult on the MAIN thread, matching the Apple implementation. The verify
-        // coroutine runs on Dispatchers.Default, so without this the callback fires on a
-        // background thread — a View-based consumer that touches the UI from it crashes
-        // ("Only the original thread that created a view hierarchy can touch its views",
-        // deep-review #39). Compose consumers happen to be tolerant; View ones are not.
+        // Deliver onResult on the main thread, matching the Apple implementation.
+        // The verify coroutine runs on Dispatchers.Default; a View-based consumer
+        // that touches the UI from the callback would crash otherwise.
         Handler(Looper.getMainLooper()).post { onResult(ok) }
     }
 }

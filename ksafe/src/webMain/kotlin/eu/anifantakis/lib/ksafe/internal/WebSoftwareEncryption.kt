@@ -10,11 +10,9 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 /**
  * Web (wasmJs + js) implementation of [KSafeEncryption].
  *
- * The AES-256-GCM key is a **non-extractable WebCrypto `CryptoKey` persisted in
- * IndexedDB** ([webKeyEnsure] / [webKeyEncrypt] / [webKeyDecrypt]). The raw key
- * bytes are never exposed to JS or written to a readable location — a hard
- * upgrade over the previous scheme, which exported the raw key and Base64'd it
- * into `localStorage` (recoverable by any XSS, extension, or profile read).
+ * The AES-256-GCM key is a non-extractable WebCrypto `CryptoKey` persisted in
+ * IndexedDB ([webKeyEnsure] / [webKeyEncrypt] / [webKeyDecrypt]); the raw key
+ * bytes are never exposed to JS or written to a readable location.
  *
  * **Migration:** a key written by an older KSafe still lives in `localStorage`
  * under `"<storagePrefix>ksafe_key_<alias>"`. On first access for that alias the
@@ -130,16 +128,14 @@ internal class WebSoftwareEncryption(
     }
 
     /**
-     * Eager one-time sweep: for every remaining legacy raw key still sitting
-     * in `localStorage` under `"<storagePrefix>ksafe_key_<alias>"`, import it
-     * as a non-extractable `CryptoKey` into IndexedDB and delete the
-     * `localStorage` entry — so a key that is never read again doesn't keep
-     * its extractable plaintext exposed to XSS/extensions indefinitely.
+     * Eager sweep: imports every legacy raw key still sitting in `localStorage`
+     * under `"<storagePrefix>ksafe_key_<alias>"` into IndexedDB and deletes the
+     * `localStorage` entry — a key that is never read again must not keep its
+     * extractable plaintext exposed indefinitely.
      *
-     * Reuses [ensureKey] per alias: it already does the import-then-scrub
-     * atomically (localStorage entry removed only after the IndexedDB persist
-     * succeeds) and is idempotent via the `ensured` set + mutex. Best-effort
-     * and per-alias isolated.
+     * Reuses [ensureKey] per alias: the `localStorage` entry is removed only
+     * after the IndexedDB persist succeeds, and it's idempotent via the
+     * `ensured` set + mutex. Best-effort and per-alias isolated.
      */
     override suspend fun migrateLegacyKeysSuspend() {
         val legacyPrefix = "$storagePrefix$KEY_PREFIX"
@@ -152,9 +148,8 @@ internal class WebSoftwareEncryption(
         for (alias in aliases) {
             runCatching { ensureKey(alias) }
                 // Cancellation must propagate — `ensureKey` suspends on a mutex,
-                // and swallowing CancellationException here would keep the loop
-                // running on a cancelled coroutine (breaks structured concurrency).
-                // Matches the guard used at every other runCatching in the codebase.
+                // and swallowing CancellationException would keep the loop
+                // running on a cancelled coroutine.
                 .onFailure { if (it is CancellationException) throw it }
         }
     }

@@ -40,35 +40,29 @@ internal expect object SecurityChecker {
 internal fun validateSecurityPolicy(policy: KSafeSecurityPolicy) {
     val violations = mutableListOf<Pair<SecurityViolation, SecurityAction>>()
 
-    // Check rooted/jailbroken
     if (policy.rootedDevice != SecurityAction.IGNORE && SecurityChecker.isDeviceRooted()) {
         violations.add(SecurityViolation.RootedDevice to policy.rootedDevice)
     }
 
-    // Check debugger
     if (policy.debuggerAttached != SecurityAction.IGNORE && SecurityChecker.isDebuggerAttached()) {
         violations.add(SecurityViolation.DebuggerAttached to policy.debuggerAttached)
     }
 
-    // Check debug build
     if (policy.debugBuild != SecurityAction.IGNORE && SecurityChecker.isDebugBuild()) {
         violations.add(SecurityViolation.DebugBuild to policy.debugBuild)
     }
 
-    // Check emulator
     if (policy.emulator != SecurityAction.IGNORE && SecurityChecker.isEmulator()) {
         violations.add(SecurityViolation.Emulator to policy.emulator)
     }
 
-    // Process violations
     var shouldBlock = false
     var firstBlockingViolation: SecurityViolation? = null
 
     for ((violation, action) in violations) {
-        // Always call the callback if provided
+        // Callback fires for every violation, including non-blocking ones
         policy.onViolation?.invoke(violation)
 
-        // Mark for blocking if needed
         if (action == SecurityAction.BLOCK) {
             shouldBlock = true
             if (firstBlockingViolation == null) {
@@ -77,7 +71,6 @@ internal fun validateSecurityPolicy(policy: KSafeSecurityPolicy) {
         }
     }
 
-    // Block if any violation required dit
     if (shouldBlock && firstBlockingViolation != null) {
         throw SecurityViolationException(firstBlockingViolation)
     }

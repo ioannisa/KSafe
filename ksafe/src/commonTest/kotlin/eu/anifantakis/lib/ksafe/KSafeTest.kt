@@ -40,15 +40,14 @@ abstract class KSafeTest {
         tracked.clear()
     }
 
-    // ============ PRIMITIVE-KIND CUSTOM SERIALIZERS (review R5) ============
+    // ============ PRIMITIVE-KIND CUSTOM SERIALIZERS ============
     //
     // Types whose serializer declares a PRIMITIVE descriptor kind while their
     // runtime values are not that Kotlin primitive (Duration is STRING-kind;
     // so are Uuid, kotlinx-datetime types, and the common hand-written
     // PrimitiveSerialDescriptor custom-serializer pattern). The plain write
-    // path JSON-encodes them (runtime-type dispatch); the read path used to
-    // dispatch on the descriptor kind alone and returned the stored JSON
-    // verbatim — ClassCastException at the caller's reified cast.
+    // path JSON-encodes them (runtime-type dispatch); reads must decode that
+    // JSON rather than return it verbatim, or the caller's reified cast fails.
 
     /** A hand-written custom serializer with a primitive (STRING) descriptor. */
     @Serializable(with = TagSerializer::class)
@@ -1173,10 +1172,10 @@ abstract class KSafeTest {
         assertEquals(p, ksafe.get(k, Person(0, "")))
     }
 
-    // NOTE: the issue #31 regression lives in the dedicated *small*
-    // `KSafeNullableDefaultTest` class, NOT here. Appending it to this
-    // oversized class made Kotlin/JS silently drop it (the legacy kotlin-test
-    // JS runner truncates this class's trailing @Tests). Keep new regressions
-    // in small focused classes so every target — including Kotlin/JS — runs
-    // them.
+    // NOTE: the nullable-default regression lives in the dedicated *small*
+    // `KSafeNullableDefaultTest` class, NOT here. Appending tests to this
+    // oversized class makes Kotlin/JS silently drop them (the legacy
+    // kotlin-test JS runner truncates this class's trailing @Tests). Keep new
+    // regressions in small focused classes so every target — including
+    // Kotlin/JS — runs them.
 }

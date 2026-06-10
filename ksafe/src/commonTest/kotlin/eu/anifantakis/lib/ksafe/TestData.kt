@@ -12,11 +12,10 @@ data class TestData(
 )
 
 /**
- * Regression fixture for issue #31: a `@Serializable` class whose **first
- * field is a String**. Before the `primitiveKindOrNull` fix, retrieving this
- * with a nullable default (`null as Issue31Data?`) misdetected the type as
- * `PrimitiveKind.STRING` and returned the raw JSON string, throwing
- * `ClassCastException: String cannot be cast to Issue31Data`.
+ * Fixture: a `@Serializable` class whose **first field is a String**.
+ * Retrieving it with a nullable default (`null as Issue31Data?`) must not
+ * misdetect the type as `PrimitiveKind.STRING` and return the raw JSON
+ * string — that fails the caller's reified cast.
  */
 @Serializable
 data class Issue31Data(

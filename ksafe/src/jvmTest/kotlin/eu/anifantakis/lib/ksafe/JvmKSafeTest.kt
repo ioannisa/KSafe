@@ -224,8 +224,9 @@ class JvmKSafeTest : KSafeTest() {
 
     /**
      * Stress test specifically for the dirty keys mechanism.
-     * This rapidly adds and removes dirty keys to stress the
-     * ConcurrentHashMap iteration that was causing NoSuchElementException.
+     * Rapidly adds and removes dirty keys to stress the ConcurrentHashMap
+     * iteration, which must not throw NoSuchElementException under
+     * concurrent modification.
      */
     @Test
     fun testDirtyKeysStress() = runTest {
@@ -468,9 +469,9 @@ class JvmKSafeTest : KSafeTest() {
     fun testEncryptedPutGetNeverReturnsDefault() = runTest(timeout = 90.seconds) {
         // 175+ real encrypted writes plus 5 readers continuously decrypting:
         // on a 2-vCPU CI runner this legitimately needs more than runTest's
-        // default 60s wall-clock budget. The deadlock that used to hang this
-        // test is fixed (cooperative yield below); the jvm-full-suite job's
-        // 20-min timeout still backstops any genuine hang.
+        // default 60s wall-clock budget. The cooperative yield below prevents
+        // the reader/writer livelock; the jvm-full-suite job's 20-min timeout
+        // still backstops any genuine hang.
         val ksafe = createKSafe()
         val defaultsReturned = AtomicInteger(0)
         val errors = AtomicInteger(0)

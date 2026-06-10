@@ -381,10 +381,9 @@ class JvmFallbackMigrationTest {
 
     @Test
     fun orphanedEncryptedMetadata_doesNotBlockArchival() {
-        // Regression for #5: an encrypted-metadata row whose VALUE row is gone
-        // (orphaned) used to be counted as a migration failure, leaving the source
-        // un-archived so the blocking migration re-ran on EVERY launch. It must now
-        // be skipped, so a clean pass still archives.
+        // An encrypted-metadata row whose VALUE row is gone (orphaned) must be
+        // skipped, not counted as a migration failure — a failure leaves the source
+        // un-archived, so the blocking migration would re-run on EVERY launch.
         val jsonFallback = File(tmp, "orphan.ksafe.json")
         val keysFallback = File(tmp, "orphan.ksafe-keys.json")
         val targetFile = File(tmp, "orphan.preferences.json")
@@ -438,12 +437,12 @@ class JvmFallbackMigrationTest {
 
     @Test
     fun permanentlyUndecryptableEntry_doesNotBlockArchival_andGoodEntryMigrates() {
-        // Regression for #10: an encrypted entry whose source ciphertext can't be
-        // decrypted (corrupt/lost software key) is a PERMANENT failure — it would
-        // fail identically every launch. Pre-fix it was counted as a retryable
-        // failure, so the source was never archived and the blocking migration
-        // re-ran every launch, re-draining the frozen fallback over the user's
-        // newer OS-backed writes. It must now be skipped so a pass still archives.
+        // An encrypted entry whose source ciphertext can't be decrypted
+        // (corrupt/lost software key) is a PERMANENT failure — it would fail
+        // identically every launch. It must be skipped (not treated as retryable)
+        // so a pass still archives; otherwise the blocking migration re-runs every
+        // launch, re-draining the frozen fallback over the user's newer OS-backed
+        // writes.
         val jsonFallback = File(tmp, "perm.ksafe.json")
         val keysFallback = File(tmp, "perm.ksafe-keys.json")
         val targetFile = File(tmp, "perm.target.json")
@@ -502,10 +501,10 @@ class JvmFallbackMigrationTest {
 
     @Test
     fun transientTargetFailure_appliesNothing_andDoesNotArchive_soItRetries() {
-        // Regression for #10: a TRANSIENT target-vault failure must abort the whole
-        // migration this launch — write nothing, archive nothing — so the retry next
-        // launch is a clean full migration, never a partial re-drain that rolls back
-        // a newer write.
+        // A TRANSIENT target-vault failure must abort the whole migration this
+        // launch — write nothing, archive nothing — so the retry next launch is a
+        // clean full migration, never a partial re-drain that rolls back a newer
+        // write.
         val jsonFallback = File(tmp, "tr.ksafe.json")
         val keysFallback = File(tmp, "tr.ksafe-keys.json")
         val targetFile = File(tmp, "tr.target.json")
@@ -542,13 +541,12 @@ class JvmFallbackMigrationTest {
 
     @Test
     fun retryAfterTransientFailure_keepsNewerTargetWrites_andStillMigratesUntouchedKeys() {
-        // Regression for review R55: a transiently-failed migration leaves the
-        // session running on the OS-backed TARGET, so the user's writes there are
-        // NEWER than the frozen fallback values. The retry on the next launch
-        // used to re-drain "fallback wins" unconditionally, silently rolling
-        // those newer writes back to stale fallback data. The retry must skip
-        // keys the user wrote after the failed attempt (tracked via the
-        // `.migration-pending` target-state snapshot) while still migrating the
+        // A transiently-failed migration leaves the session running on the
+        // OS-backed TARGET, so the user's writes there are NEWER than the frozen
+        // fallback values. The retry on the next launch must skip keys the user
+        // wrote after the failed attempt (tracked via the `.migration-pending`
+        // target-state snapshot) — re-draining "fallback wins" unconditionally
+        // would silently roll those newer writes back — while still migrating the
         // untouched keys.
         val jsonFallback = File(tmp, "rt.ksafe.json")
         val keysFallback = File(tmp, "rt.ksafe-keys.json")
@@ -619,11 +617,11 @@ class JvmFallbackMigrationTest {
 
     @Test
     fun secondFallbackPeriod_freshDataMigrates_despiteOldMarker() {
-        // Regression for #32 (the documented toggle case): after a first migration leaves a
-        // permanent `.migrated` marker, a SECOND fallback period writes fresh data into a new
-        // `.ksafe.json`. The old `!marker.exists()` gate skipped migration forever, silently
-        // stranding that data. The mtime gate migrates it because the live source is newer
-        // than the marker.
+        // The documented toggle case: after a first migration leaves a permanent
+        // `.migrated` marker, a SECOND fallback period writes fresh data into a new
+        // `.ksafe.json`. A bare marker-exists gate would skip migration forever and
+        // silently strand that data; the mtime gate migrates it because the live
+        // source is newer than the marker.
         val baseDir = File(tmp, "toggle").apply { mkdirs() }
         val base = "eu_anifantakis_ksafe_datastore_toggle"
         val cfg = KSafeConfig()

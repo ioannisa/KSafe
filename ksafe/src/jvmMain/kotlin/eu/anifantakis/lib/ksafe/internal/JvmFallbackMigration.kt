@@ -21,34 +21,22 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 /**
  * One-time **forward migration**: software JSON fallback → OS-backed DataStore.
  *
- * When a previous run persisted through the no-`sun.misc.Unsafe` fallback
- * ([DataStoreJsonStorage] + a [FileKeyVault] software key) and the app is now
- * running on the normal OS-backed DataStore path (the user added
- * `modules("jdk.unsupported")` and rebuilt), this carries the user's data
- * forward instead of letting it look empty: every fallback entry is decrypted
- * with the old software key and re-encrypted under the OS-backed key, then
- * written into the DataStore.
+ * Runs when a previous launch persisted through the no-`sun.misc.Unsafe`
+ * fallback ([DataStoreJsonStorage] + [FileKeyVault]) and the app now has the
+ * OS-backed path. Each entry is decrypted with the old software key and
+ * re-encrypted under a fresh OS-backed key (never a raw copy — the software
+ * master key is never imported into the OS keychain); per-entry
+ * [KSafeProtection], envelope version, and unlock policy are carried verbatim.
  *
- * Re-encryption — not a raw copy — is deliberate: the data ends up protected by
- * a freshly minted OS-backed key, and the old software master key is never
- * imported into the OS keychain. Per-entry [KSafeProtection], envelope version,
- * and unlock policy are preserved (metadata carried over verbatim).
- *
- * **The fallback wins:** at the moment of this transition the fallback file is
- * the store the user was *just* using, so its values are the most recent — the
- * migration drains every fallback entry into the OS-backed store, overwriting
- * any stale value an earlier migration left there. (The OS store can't hold
- * anything newer for these keys: reaching it the first time already drained and
- * archived the fallback.) The source files are **renamed** to `*.migrated`
- * (never deleted) once the pass has no *transient* failure — so the data drains
- * exactly once, the originals stay recoverable, and the migration stops
- * re-scanning. A *permanently* unmigratable entry (corrupt source ciphertext or
- * a lost software key) does **not** block archiving: it would otherwise re-run
- * the blocking migration every launch and roll the user's newer OS-backed writes
- * back to stale fallback data. Only a *transient* target-vault failure blocks
- * archiving, and then nothing is applied, so the retry has no partial state to
- * roll back. This also fixes the toggle case (turn `modules` off, change a
- * value, turn it back on): the changed value carries across.
+ * **The fallback wins:** at this transition the fallback was the live store,
+ * so its values overwrite anything in the target. The source files are
+ * **renamed** to `*.migrated` (never deleted) once the pass has no *transient*
+ * failure, so the drain happens exactly once and the originals stay
+ * recoverable. Permanently unmigratable entries (corrupt ciphertext, lost
+ * software key) do NOT block archiving — they fail identically every launch,
+ * and re-running would roll the user's newer OS-backed writes back to stale
+ * fallback data. Only a transient target-vault failure blocks archiving, and
+ * then nothing is applied, so the retry has no partial state to roll back.
  *
  * Best-effort and non-fatal: any failure is swallowed so it can never block
  * construction. Runs synchronously (`runBlocking`) so the data is in place
@@ -94,31 +82,23 @@ internal fun migrateJsonFallbackToOsBacked(
                 migScope.coroutineContext[Job]?.cancelAndJoin()
             }
 
-            // Archive (→ marker) unless a TRANSIENT failure occurred. Permanent
-            // per-entry failures (corrupt source ciphertext, a lost software key)
-            // must NOT block archiving: they fail identically every launch, so
-            // leaving the source in place would re-run the blocking migration
-            // forever and — because the migration overwrites with the frozen
-            // fallback values — silently roll the user's newer OS-backed writes
-            // back to stale data on every launch (deep-review #10). Only a
-            // transient target-vault failure (OS keychain temporarily
-            // unavailable / device locked) warrants a retry — and in that case
-            // reEncryptAll applied nothing, so there is no partial state to roll
-            // back when it re-runs.
+            // Archive unless a TRANSIENT failure occurred. Permanent per-entry
+            // failures must not block archiving: they recur every launch and the
+            // re-run would overwrite the user's newer OS-backed writes with stale
+            // fallback values. On a transient failure reEncryptAll applied
+            // nothing, so the retry has no partial state to roll back.
             if (result.transientFailed == 0) {
                 archiveOrMark(jsonFallback)
                 archiveOrMark(keysFallback)
                 runCatching { pendingFile.delete() }
             } else if (!pendingFile.exists()) {
-                // FIRST transient failure: the session now proceeds on the
-                // OS-backed store, so the user may write newer values for the
-                // very keys this migration will retry. Record the target's
-                // current per-key state so the retry can tell "unchanged since
-                // the failed attempt" (fallback still newest → overwrite) from
-                // "user wrote it after the attempt" (fallback superseded → keep
-                // the user's value). Recorded once — at the failure closest to
-                // the genuine pre-migration state — and kept until a successful
-                // migration deletes it (review R55).
+                // FIRST transient failure: the session proceeds on the OS-backed
+                // store, so the user may write newer values for the keys this
+                // migration will retry. Record the target's current per-key state
+                // so the retry can tell "unchanged since the failed attempt"
+                // (fallback still newest → overwrite) from "user wrote it after
+                // the attempt" (fallback superseded → keep the user's value).
+                // Recorded once and kept until a successful migration deletes it.
                 runCatching {
                     pendingFile.writeText(
                         Json.encodeToString(
@@ -143,7 +123,7 @@ private data class MigrationResult(
      * Fingerprints of the TARGET's current value per fallback canonical key,
      * captured from the same target snapshot the pass compared against —
      * persisted as the `.migration-pending` state when a transient failure
-     * forces a retry (review R55).
+     * forces a retry.
      */
     val targetStateForPending: Map<String, String> = emptyMap(),
 )
@@ -175,12 +155,11 @@ private fun storedFingerprint(sv: StoredValue?): String = when (sv) {
  * [priorTargetState] is non-null on a RETRY after a transiently-failed
  * attempt: it holds the target's per-key fingerprints recorded at that failed
  * attempt. The "fallback wins" rule is only sound when the target holds
- * nothing newer than the fallback — true on a first attempt, but the session
- * after a failed attempt runs on the target, so the user's writes there ARE
- * newer than the fallback. A key whose target value changed since the
- * recorded state is therefore skipped (the user's value wins; the fallback
- * copy stays recoverable in the archive); an unchanged key still migrates
- * (review R55).
+ * nothing newer than the fallback — true on a first attempt, but sessions
+ * after a failed attempt run on the target, so writes there ARE newer. A key
+ * whose target value changed since the recorded state is skipped (the user's
+ * value wins; the fallback copy stays recoverable in the archive); an
+ * unchanged key still migrates.
  */
 @OptIn(ExperimentalEncodingApi::class)
 private suspend fun reEncryptAll(
@@ -254,11 +233,9 @@ private suspend fun reEncryptAll(
         }
 
         // Source decrypt: the fallback is a static file, so a failure here
-        // (corrupt ciphertext/base64, or a lost/rotated software key) is
-        // PERMANENT — it fails identically every launch. Skip it; counting it as
-        // a retryable failure would block archiving forever and re-drain stale
-        // values over the user's newer writes (deep-review #10). The entry stays
-        // in the .migrated archive, recoverable.
+        // (corrupt ciphertext/base64, lost/rotated software key) is PERMANENT —
+        // it fails identically every launch. Skip it rather than blocking
+        // archiving forever; the entry stays recoverable in the .migrated archive.
         val plain = try {
             sourceEngine.decryptSuspend(alias, Base64.decode(cipherB64))
         } catch (e: Throwable) {

@@ -43,11 +43,11 @@ import kotlin.native.Platform
  * The sweep enumerates every Keychain item under the library's hardcoded service and
  * deletes those with no surviving DataStore counterpart. That is only safe where the
  * Keychain is **app-private** — the iOS/tvOS/watchOS sandbox. On **macOS** items land in
- * the shared per-user *login* keychain with no app-identity in the namespace (KSafe sets
+ * the shared per-user *login* keychain with no app identity in the namespace (KSafe sets
  * no access group / data-protection keychain), so one KSafe-using app's sweep would
  * enumerate and DELETE another KSafe-using app's keys, permanently corrupting its data
- * every launch (deep-review #9). Disable the sweep there: stale macOS Keychain entries are
- * harmless clutter, reclaimed by `clearAll()`.
+ * every launch. Disable the sweep there: stale macOS Keychain entries are harmless
+ * clutter, reclaimed by `clearAll()`.
  *
  * Pure + parameterized so it's unit-testable without a live Keychain.
  */
@@ -59,17 +59,11 @@ internal fun keychainOrphanSweepEnabled(osFamily: OsFamily): Boolean =
  * iOS-only Keychain orphan sweep. **Enforced** via [keychainOrphanSweepEnabled]: this is a
  * no-op on macOS, whose shared login keychain would otherwise let it delete other apps' keys.
  *
- * DataStore's orphan-ciphertext cleanup (in [KSafeCore.cleanupOrphanedCiphertext])
- * handles the "Keystore wiped but DataStore restored from backup" case — the
- * common Android reinstall scenario. The reverse problem is iOS-specific:
- * the Keychain is **not** wiped on app uninstall (unless the app explicitly
- * opts out), so keys can linger after DataStore has been cleared by the user
- * via Settings or a `clearAll()` call.
- *
- * This function scans the Keychain for items this library wrote, cross-
- * references them against DataStore's current key set, and deletes Keychain
- * entries with no surviving DataStore counterpart. It covers two item
- * classes:
+ * The Keychain is **not** wiped on app uninstall (unless the app opts out), so keys can
+ * linger after DataStore has been cleared via Settings or `clearAll()`. This scans the
+ * Keychain for items this library wrote, cross-references them against DataStore's
+ * current key set, and deletes entries with no surviving DataStore counterpart. Two
+ * item classes are covered:
  *
  *  1. **Generic-password items** — where both plain AES keys and
  *     Secure-Enclave-wrapped blobs live.
@@ -81,16 +75,14 @@ internal fun keychainOrphanSweepEnabled(osFamily: OsFamily): Boolean =
  * Failures are swallowed by the caller — a locked device or a transient
  * Keychain error must never block `KSafe` initialization.
  *
- * [reservedKeyIds] lists key-id segments that are KSafe infrastructure rather
- * than per-value keys and must NEVER be swept — currently the v2 envelope's
- * shared master-key sentinels (`__ksafe_master__` / `__ksafe_master_locked__`).
- * A master key is referenced by every `DEFAULT`-protected value collectively,
- * not by any single user key, so it never appears in [validKeys]. Without this
- * guard the sweep would classify the master as an orphan and delete it on the
- * launch after the first `DEFAULT` write — rendering ALL `DEFAULT` ciphertext
- * permanently undecryptable (and then reaped by the DataStore orphan sweep).
- * Reserved keys are infrastructure: a stale one is harmless clutter, reclaimed
- * only by `clearAll()` (or reused by the next `DEFAULT` write).
+ * [reservedKeyIds] lists key-id segments that are KSafe infrastructure rather than
+ * per-value keys and must NEVER be swept — the shared master-key sentinels
+ * (`__ksafe_master__` / `__ksafe_master_locked__`). A master key is referenced by every
+ * `DEFAULT`-protected value collectively, not by any single user key, so it never appears
+ * in [validKeys]; without this guard the sweep would classify it as an orphan and delete
+ * it, rendering ALL `DEFAULT` ciphertext permanently undecryptable. A stale reserved key
+ * is harmless clutter, reclaimed only by `clearAll()` (or reused by the next `DEFAULT`
+ * write).
  */
 @OptIn(ExperimentalForeignApi::class, ExperimentalNativeApi::class)
 internal suspend fun cleanupOrphanedKeychainEntries(
@@ -103,13 +95,13 @@ internal suspend fun cleanupOrphanedKeychainEntries(
     seKeyTagPrefix: String,
     reservedKeyIds: Set<String>,
     /** Live in-flight check (KSafeCore's dirty-key set): a key for a not-yet-committed write
-     *  must not be reaped as an orphan (deep-review #30). Default false for callers/tests
-     *  that don't run concurrently with writes. */
+     *  must not be reaped as an orphan. Default false for callers/tests that don't run
+     *  concurrently with writes. */
     isInFlight: (String) -> Boolean = { false },
 ) {
     // Never sweep on macOS: the shared login keychain has no app-identity scoping, so we'd
-    // delete other KSafe-using apps' keys (deep-review #9). No-op before touching storage or
-    // the Keychain so nothing else in this function can run there.
+    // delete other KSafe-using apps' keys. Bail before touching storage or the Keychain so
+    // nothing else in this function can run there.
     if (!keychainOrphanSweepEnabled(Platform.osFamily)) return
 
     val snapshot = storage.snapshot()
@@ -219,31 +211,15 @@ internal suspend fun cleanupOrphanedKeychainEntries(
         }
     }
 
-    // Belt-and-suspenders guard against the 1.x → 2.0 path-migration race:
-    // if the DataStore snapshot was empty AND the Keychain scans turned up
-    // entries scoped to *this* service + key prefix, we are almost certainly
-    // looking at a partial view of the storage — not a legitimate post-
-    // clearAll state. Scenarios where this happens:
-    //
-    //  - The path migration in `KSafe.apple.kt` moved the legacy file but
-    //    DataStore raced the move and read empty contents.
-    //  - The DataStore file became corrupt and was reinitialised empty.
-    //  - The user's app data was wiped via Settings but the Keychain
-    //    survived (Keychain is per-device, not per-app-container, and
-    //    survives uninstalls/data-wipes by default).
-    //
-    // In every one of those scenarios, deleting the Keychain entries
-    // destroys irrecoverable state — Secure Enclave EC private keys are
-    // gone for good once removed. The legitimate "user genuinely cleared
-    // KSafe + Keychain has stragglers" case is best handled by a future
-    // explicit migration tool, not by an automatic startup sweep that
-    // can't tell the two apart.
-    //
-    // KSafeCore.startBackgroundCollector now waits for the first
-    // `snapshotFlow` emission before invoking this function, which
-    // closes the race in the common path. This guard catches the
-    // remaining edge cases where the snapshot is *legitimately* empty
-    // because the migration failed outright.
+    // Guard: an EMPTY DataStore snapshot alongside Keychain entries scoped to *this*
+    // service + key prefix almost certainly means a partial view of storage — a failed
+    // 1.x → 2.0 path migration, a corrupt store reinitialised empty, or app data wiped
+    // while the per-device Keychain survived — not a legitimate post-clearAll state.
+    // Deleting here would destroy irrecoverable state: Secure Enclave EC private keys
+    // are gone for good once removed. KSafeCore.startBackgroundCollector waits for the
+    // first `snapshotFlow` emission before invoking this function, which covers the
+    // common path; this guard catches the cases where the snapshot is *legitimately*
+    // empty because the migration failed outright.
     if (snapshot.isEmpty() && orphanedKeyIds.isNotEmpty()) {
         println(
             "KSafe: Keychain orphan sweep skipped — DataStore is empty but " +

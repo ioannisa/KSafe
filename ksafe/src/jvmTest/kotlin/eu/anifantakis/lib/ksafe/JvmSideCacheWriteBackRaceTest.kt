@@ -8,18 +8,16 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Regression tests for review R4: `resolveFromCache` repopulates the plaintext
- * side cache after a slow synchronous decrypt with what it just decrypted. A
- * put for the same key landing DURING that decrypt has already placed its
- * fresh value in the side cache — the unguarded write-back then overwrote it
- * with the stale pre-write plaintext. Under LAZY_PLAIN_TEXT the side cache
- * never expires and the key is dirty forever (excluded from reconciliation),
- * so every subsequent read served the stale value for the rest of the session;
- * under ENCRYPTED_WITH_TIMED_CACHE for up to the TTL.
- *
- * The fix writes back only when the primary cache still holds the exact
- * ciphertext that was decrypted. Both side-cache policies are exercised (per
- * the project rule: cache fixes tested only under one policy miss the others).
+ * `resolveFromCache` repopulates the plaintext side cache after a slow
+ * synchronous decrypt with what it just decrypted. A put for the same key
+ * landing DURING that decrypt has already placed its fresh value in the side
+ * cache — the write-back must not overwrite it with the stale pre-write
+ * plaintext (under LAZY_PLAIN_TEXT the side cache never expires and the key is
+ * dirty forever, so the stale value would be served for the rest of the
+ * session; under ENCRYPTED_WITH_TIMED_CACHE for up to the TTL). The write-back
+ * is only valid while the primary cache still holds the exact ciphertext that
+ * was decrypted. Both side-cache policies are exercised, since cache behavior
+ * tested under only one policy misses the others.
  */
 class JvmSideCacheWriteBackRaceTest {
 

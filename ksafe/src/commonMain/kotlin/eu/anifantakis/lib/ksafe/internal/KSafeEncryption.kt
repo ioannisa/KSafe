@@ -125,9 +125,8 @@ internal interface KSafeEncryption {
 
     /**
      * Warms the key material for [identifier] so the first real encrypt doesn't pay the
-     * cold-start key-generation cost. Default: a throwaway encrypt of empty bytes — exactly
-     * what [KSafeCore]'s prewarm used to do, which on Keychain/OS-vault engines primes the
-     * in-memory key cache.
+     * cold-start key-generation cost. Default: a throwaway encrypt of empty bytes, which
+     * on Keychain/OS-vault engines primes the in-memory key cache.
      *
      * Engines may override to warm **only** what's needed and avoid side effects. The Android
      * engine overrides this to create just the wrapping KEK: it deliberately does **not**

@@ -53,7 +53,7 @@ internal class LocalStorageStorage(
         } catch (e: Throwable) {
             // Roll back to the pre-batch state. See [rollbackPriors] for why the
             // order matters (removals first) and why a failed restore must be
-            // surfaced rather than swallowed (deep-review #38).
+            // surfaced rather than swallowed.
             try {
                 rollbackPriors(priors, ::localStorageSet, ::localStorageRemove)
             } catch (rollbackError: Throwable) {
@@ -134,24 +134,20 @@ internal class LocalStorageStorage(
 
 /**
  * One-time migration of a store's data entries from the legacy non-prefix-free
- * namespace (`ksafe_<name>_…`, shipped 2.1.0/2.1.1) to the prefix-free one
- * (`ksafe.<name>:…`, review R7).
+ * namespace (`ksafe_<name>_…`) to the prefix-free one (`ksafe.<name>:…`).
  *
  * Only **canonical** entries are moved — those whose key remainder starts with
- * `__ksafe_` (`__ksafe_value_*`, `__ksafe_meta_*`, reserved internals). Every
- * data entry the shipped web releases ever wrote is canonical, and the gate is
- * what makes the migration order-independent for nested store names: store
- * "user" looking at `ksafe_user_cache___ksafe_value_x` sees the remainder
- * `cache___ksafe_value_x` (not canonical) and leaves it for store "user_cache",
- * whose own remainder `__ksafe_value_x` is. The engine's legacy key records
- * (`…ksafe_key_<alias>`) are likewise not canonical-shaped and stay in place —
- * the engine still owns that namespace.
+ * `__ksafe_` (`__ksafe_value_*`, `__ksafe_meta_*`). The gate makes the migration
+ * order-independent for nested store names: store "user" looking at
+ * `ksafe_user_cache___ksafe_value_x` sees the non-canonical remainder
+ * `cache___ksafe_value_x` and leaves it for store "user_cache". The engine's
+ * legacy key records (`…ksafe_key_<alias>`) are likewise not canonical-shaped
+ * and stay in place — the engine still owns that namespace.
  *
- * Copy → verify → delete per entry (the namespace-move discipline from review
- * R6): an entry is removed from the old location only once the new location
- * verifiably holds it, so a mid-migration failure (e.g. quota) is retried on a
- * later launch and never loses the only copy. An already-present new entry is
- * never overwritten (it is newer than the legacy copy by construction).
+ * Copy → verify → delete per entry: the old location is cleared only once the
+ * new location verifiably holds the value, so a mid-migration failure (e.g.
+ * quota) is retried on a later launch and never loses the only copy. An
+ * already-present new entry is never overwritten (it is newer by construction).
  */
 internal fun migrateLegacyLocalStoragePrefix(oldPrefix: String, newPrefix: String) {
     val keys = buildList {
@@ -179,22 +175,12 @@ internal fun migrateLegacyLocalStoragePrefix(oldPrefix: String, newPrefix: Strin
  * failure. Extracted as a pure function over [set]/[remove] so the order and
  * failure-handling contract can be tested without a real `localStorage`.
  *
- * Two things the naive `for ((k, v) in priors) { set-or-remove }` got wrong
- * (deep-review #38):
- *
- *  1. **Order.** A coalesced batch routinely mixes Deletes and Puts of different
- *     keys (every write also emits legacy-key Deletes, and a ~16 ms window
- *     coalesces unrelated keys). Restoring in arbitrary [Map] iteration order can
- *     try to re-add a large *deleted* key's value BEFORE removing a *newly put*
- *     key that consumed the freed space — that `set` then hits the very quota
- *     that failed the batch, and the deleted key's prior value is lost. So we
- *     **remove every touched key first** (freeing all the space the partial
- *     batch consumed), then restore the non-null priors; since those values fit
- *     before the batch ran, they fit again.
- *  2. **Swallowed failures.** A restore that still fails was caught and ignored,
- *     so the caller was told the batch atomically failed (nothing changed) while
- *     a key was actually gone. Any restore failure is now collected and
- *     surfaced.
+ * Order matters: every touched key is removed first, freeing all the space the
+ * partial batch consumed, before non-null priors are restored — restoring in
+ * arbitrary map order could hit the same quota that failed the batch and lose a
+ * deleted key's prior value. Since the priors fit before the batch ran, they
+ * fit again. A restore that still fails is surfaced (not swallowed): the caller
+ * must not be told the batch atomically failed while a key is actually gone.
  */
 internal fun rollbackPriors(
     priors: Map<String, String?>,

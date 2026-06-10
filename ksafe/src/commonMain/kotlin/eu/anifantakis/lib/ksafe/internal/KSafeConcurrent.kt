@@ -47,9 +47,9 @@ internal expect class KSafeConcurrentMap<V : Any>() {
     /**
      * Atomically inserts the mapping only when [key] is absent. Returns the
      * value already present (no change made), or `null` when [value] was
-     * inserted. Used by the post-commit cache repair (review R2): restore a
-     * key's state only when a concurrent clearAll wiped the slot — never over
-     * a newer write's optimistic value, which would already occupy it.
+     * inserted. Used by the post-commit cache repair: restore a key's state
+     * only when a concurrent clearAll wiped the slot — never over a newer
+     * write's optimistic value, which would already occupy it.
      */
     fun putIfAbsent(key: String, value: V): V?
 }

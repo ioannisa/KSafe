@@ -48,14 +48,12 @@ internal class LinuxSecretServiceKeyVault(
 
     @OptIn(ExperimentalEncodingApi::class)
     override fun get(alias: String): ByteArray? {
-        // Pass a real GError** out-param. libsecret returns NULL both when the
-        // key is genuinely absent AND when the lookup fails (login keyring
-        // locked, keyring daemon / D-Bus unreachable, …). With the error
-        // out-param passed as null those two were indistinguishable, so a
-        // transient keyring outage masqueraded as "key absent" — after which
-        // KSafe's orphan sweep DELETES the still-recoverable ciphertext. The
-        // GError disambiguates: error set ⇒ unavailable, error unset + NULL ⇒
-        // genuinely absent.
+        // libsecret returns NULL both when the key is genuinely absent AND when
+        // the lookup fails (login keyring locked, keyring daemon / D-Bus
+        // unreachable). The GError** out-param disambiguates: error set ⇒ vault
+        // unavailable, error unset + NULL ⇒ genuinely absent. Conflating the two
+        // would let the orphan sweep delete still-recoverable ciphertext during a
+        // transient keyring outage.
         val errorRef = PointerByReference()
         val ptr: Pointer? = SECRET.secret_password_lookup_sync(
             schema(), null, errorRef,

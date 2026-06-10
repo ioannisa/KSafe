@@ -8,16 +8,13 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Regression test for deep-review #18: `updateCache` must not clobber a write that
- * lands **during** the merge with the OLD on-disk value. The original code decided
- * mergeability from a `dirtyKeys` snapshot taken at entry, but the actual
- * `memoryCache` write happens much later (after the second-pass decrypt round-trips),
- * so a write arriving in that window was overwritten — and, because dirty flags are
- * never cleared, never re-merged (stale read-your-write for the process lifetime).
- *
- * The fix re-checks the LIVE `dirtyKeys` right before each merge write (and the orphan
- * sweep's delete, #17). This test drives the exact race deterministically: the racing
- * write is performed from inside the engine's `decrypt`, i.e. precisely while
+ * `updateCache` must not clobber a write that lands **during** the merge with
+ * the OLD on-disk value: mergeability has to be decided from the LIVE
+ * `dirtyKeys` right before each merge write, because the actual `memoryCache`
+ * write happens well after entry (once the second-pass decrypt round-trips),
+ * and dirty flags are never cleared, so a clobbered write would stay stale for
+ * the process lifetime. The race is driven deterministically: the racing write
+ * is performed from inside the engine's `decrypt`, i.e. precisely while
  * `updateCache`'s second pass is mid-flight for that key.
  */
 class JvmCollectorWriteRaceTest {
@@ -69,13 +66,11 @@ class JvmCollectorWriteRaceTest {
     }
 
     /**
-     * Review R3: the deep-review #18 live re-check was applied to the
-     * `memoryCache` merges but NOT to the `protectionMap`/`encMetaMap` syncs,
-     * which still decided from the frozen entry snapshot. So a write that
-     * CHANGED a key's protection during the merge window (here: encrypted on
-     * disk → racing Plain rewrite) had its fresh routing metadata reverted to
-     * the stale disk state — and, dirty flags being permanent, no later pass
-     * repaired it: reads routed to the wrong slot for the rest of the session.
+     * The live re-check must also cover the `protectionMap`/`encMetaMap`
+     * syncs, not just the `memoryCache` merges: a write that CHANGES a key's
+     * protection during the merge window (here: encrypted on disk → racing
+     * Plain rewrite) must keep its fresh routing metadata, or reads route to
+     * the wrong slot for the rest of the session.
      */
     @Test
     fun updateCache_doesNotRevertProtection_ofAWriteThatLandsDuringDecrypt() {

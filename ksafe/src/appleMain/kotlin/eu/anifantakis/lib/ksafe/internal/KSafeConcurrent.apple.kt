@@ -20,9 +20,8 @@ internal actual class KSafeAtomicFlag actual constructor(initial: Boolean) {
 }
 
 /**
- * Copy-on-write concurrent map. Matches the pattern already used by the iOS
- * `KSafe.ios.kt` for its internal caches — Kotlin/Native lacks a stdlib
- * `ConcurrentHashMap`, so mutation rebuilds the map and swaps an [AtomicReference].
+ * Copy-on-write concurrent map — Kotlin/Native lacks a stdlib `ConcurrentHashMap`,
+ * so mutation rebuilds the map and CAS-swaps an [AtomicReference].
  *
  * Reads are lock-free and see a consistent snapshot. Writes are retry-on-conflict.
  */
@@ -53,10 +52,9 @@ internal actual class KSafeConcurrentMap<V : Any> actual constructor() {
     actual fun containsKey(key: String): Boolean = ref.value.containsKey(key)
 
     actual fun clear() {
-        // CAS loop, consistent with set/remove/replaceIf. A plain volatile write
-        // here is the only non-atomic mutator; pairing it against the CAS-based
-        // writers keeps `clear()` from being silently undone by a concurrent
-        // mutation that retries against the pre-clear snapshot.
+        // CAS loop, consistent with set/remove/replaceIf, so `clear()` can't be
+        // silently undone by a concurrent mutation retrying against the
+        // pre-clear snapshot.
         while (true) {
             val current = ref.value
             if (ref.compareAndSet(current, emptyMap())) return

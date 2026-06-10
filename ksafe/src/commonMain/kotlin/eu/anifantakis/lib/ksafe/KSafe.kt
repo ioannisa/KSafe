@@ -121,9 +121,8 @@ class KSafe @PublishedApi internal constructor(
      * distributable hitting `LinkageError: sun/misc/Unsafe` and degrading
      * to the software vault mid-process).
      *
-     * **Recomputed on every access from 2.1.1** — earlier versions captured
-     * this at construction, so a runtime degrade only became visible after
-     * a process restart. Now safe to bind to UI / metrics that update.
+     * **Recomputed on every access**, so a runtime degrade is visible
+     * immediately — safe to bind to UI / metrics that update.
      *
      * See [KSafeProtectionInfo] for usage patterns.
      */
@@ -374,10 +373,10 @@ enum class KSafeMemoryPolicy {
      * still serial-IPC bound). On large encrypted stores under poor Keystore conditions this
      * can push first-read latency into ANR territory on Android.
      *
-     * **Why this is no longer the default:** [LAZY_PLAIN_TEXT] gives identical steady-state
-     * read performance with cheap cold-start — decryption is deferred until each key is
-     * actually read, then cached permanently. Apps that touch every key still pay the same
-     * total cost; apps that read a subset pay only for what they use.
+     * [LAZY_PLAIN_TEXT] gives identical steady-state read performance with cheap
+     * cold-start — decryption is deferred until each key is actually read, then cached
+     * permanently. Apps that touch every key still pay the same total cost; apps that
+     * read a subset pay only for what they use.
      *
      * Plaintext also sits in RAM for the full process lifetime (same as [LAZY_PLAIN_TEXT]
      * after first read), so the security profile is unchanged.

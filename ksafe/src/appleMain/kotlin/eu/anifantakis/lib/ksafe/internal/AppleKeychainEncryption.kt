@@ -77,35 +77,10 @@ import platform.Security.kSecValueData
 import platform.posix.memcpy
 
 /**
- * Apple-platform implementation of [KSafeEncryption] using Keychain Services and CryptoKit.
- *
- * Used by iOS, iPadOS and macOS targets. The Keychain APIs (`SecItemAdd`/`SecItemCopyMatching`/
- * `SecKey…`), Secure Enclave token attribute and CryptoKit AES-GCM are all available and
- * behave identically across these platforms; only the location of the Keychain database
- * differs (per-app on iOS, per-user on macOS).
- *
- * This provides secure encryption with:
- * - Symmetric AES keys stored as Keychain generic-password items (protected by device passcode)
- * - Keys not included in iCloud/iTunes backups (`ThisDeviceOnly` accessibility)
- * - Access control: configurable via [KSafeConfig.requireUnlockedDevice]
- *   (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly` or `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`)
- *
- * When `hardwareIsolated = true` is requested, encryption keys are protected using
- * **envelope encryption**: an EC P-256 key pair is created in the Secure Enclave
- * hardware, which wraps/unwraps the AES symmetric key using ECIES. The AES key
- * itself is stored encrypted in the Keychain. This provides hardware-level protection
- * for the key material. If the Secure Enclave is unavailable (e.g. on simulators, on
- * Intel Macs without a T2 chip, or older devices), the path falls back to regular
- * Keychain storage automatically.
- *
- * @property config Configuration for encryption (key size, default unlock policy).
- * @property serviceName The Keychain service name all items are scoped under.
- */
-/**
  * The low-level generic-password Keychain operations the engine depends on, behind a seam
  * so tests can inject an in-memory fake. Real Keychain round-trips can't run in the
  * Kotlin/Native test runner (no entitlements → `errSecMissingEntitlement`), so this is the
- * only way to unit-test the engine's concurrency invariants (deep-review #8). Production uses
+ * only way to unit-test the engine's concurrency invariants. Production uses
  * [AppleKeychainEncryption.RealKeychainStore], which calls `SecItem*`.
  */
 internal interface AppleKeychainStore {
@@ -119,6 +94,24 @@ internal interface AppleKeychainStore {
     fun delete(account: String)
 }
 
+/**
+ * Apple-platform implementation of [KSafeEncryption] using Keychain Services and CryptoKit.
+ * Shared by iOS, iPadOS and macOS — the `SecItem*`/`SecKey*` APIs, the Secure Enclave
+ * token attribute and CryptoKit AES-GCM behave identically; only the Keychain database
+ * location differs (per-app on iOS, per-user on macOS).
+ *
+ * - AES keys are stored as Keychain generic-password items with `ThisDeviceOnly`
+ *   accessibility (never in iCloud/iTunes backups); the unlock policy is configurable
+ *   via [KSafeConfig.requireUnlockedDevice].
+ * - With `hardwareIsolated = true`, keys use **envelope encryption**: an EC P-256 key
+ *   pair in the Secure Enclave wraps/unwraps the AES key via ECIES, and only the
+ *   wrapped AES key is stored in the Keychain. If the SE is unavailable (simulators,
+ *   Intel Macs without T2, older devices), the path falls back to plain Keychain
+ *   storage automatically.
+ *
+ * @property config Configuration for encryption (key size, default unlock policy).
+ * @property serviceName The Keychain service name all items are scoped under.
+ */
 @PublishedApi
 internal class AppleKeychainEncryption(
     private val config: KSafeConfig = KSafeConfig(),
@@ -157,7 +150,7 @@ internal class AppleKeychainEncryption(
          * so the SE key must be preserved and the error propagated rather than
          * triggering destructive regeneration. Deliberately conservative: every
          * plausibly-retryable code stays here, biasing away from the
-         * data-destroying path (deep-review #31).
+         * data-destroying path.
          */
         private val TRANSIENT_OSSTATUS: Set<Long> = setOf(
             errSecInteractionNotAllowed.toLong(), // -25308: device locked
@@ -173,12 +166,11 @@ internal class AppleKeychainEncryption(
          * interaction needed) and should propagate rather than trigger
          * destructive cleanup.
          *
-         * Primary signal is the locale-independent `[osstatus=<code>]` tag
-         * [cfErrorDescription] embeds for OSStatus-domain CFErrors — so the
-         * decision never depends on the device's localized error text
-         * (deep-review #31). The English-substring check remains only as a
-         * fallback for the hand-written ISE messages that already state the
-         * condition in words.
+         * The primary signal is the locale-independent `[osstatus=<code>]` tag
+         * [cfErrorDescription] embeds for OSStatus-domain CFErrors, so the
+         * decision never depends on the device's localized error text. The
+         * English-substring check remains only as a fallback for hand-written
+         * ISE messages that state the condition in words.
          */
         internal fun isTransientUnwrapFailure(message: String?): Boolean {
             val msg = message ?: return false
@@ -190,15 +182,14 @@ internal class AppleKeychainEncryption(
 
         /**
          * Builds the SE wrap/unwrap failure message. When [detail]'s OSStatus
-         * code classifies as transient, the message is branded with a
-         * "Keychain" marker — the wording `KSafeCore.isTransientDecryptFailure`
-         * already recognizes — because the engine-side classifier above is only
-         * consulted on the key-CREATION path. Without the brand, a transient SE
-         * unwrap during DECRYPT reached the core as an unrecognized message and
-         * was misclassified permanent: `getDirect` silently returned the
-         * caller's default for a HARDWARE_ISOLATED secret and `getFlow` emitted
-         * it, instead of rethrowing-for-retry / skipping the emission
-         * (review R30 — the decrypt-path half of review #31).
+         * code classifies as transient, the message carries the
+         * " [transient Keychain failure]" marker that
+         * `KSafeCore.isTransientDecryptFailure` matches on. The engine-side
+         * classifier above is only consulted on the key-CREATION path, so
+         * without the marker a transient SE unwrap during DECRYPT would be
+         * misclassified permanent: `getDirect` would silently return the
+         * caller's default for a HARDWARE_ISOLATED secret (and `getFlow` emit
+         * it) instead of rethrowing for retry / skipping the emission.
          */
         internal fun seFailureMessage(op: String, detail: String): String {
             val transientBrand =
@@ -211,30 +202,25 @@ internal class AppleKeychainEncryption(
 
     /**
      * In-process cache of unwrapped raw AES key bytes, keyed by the user-facing
-     * `keyId`. Without this every `encrypt`/`decrypt` triggers a fresh
-     * `SecItemCopyMatching` IPC into `securityd` (and, for SE-wrapped keys, an
-     * additional `SecKeyCreateDecryptedData` ECIES round-trip). Keychain bytes
-     * for a given alias are immutable for the alias's lifetime, so a simple
+     * `keyId`. Without it every `encrypt`/`decrypt` triggers a
+     * `SecItemCopyMatching` IPC into `securityd` (and, for SE-wrapped keys, a
+     * `SecKeyCreateDecryptedData` ECIES round-trip). Keychain bytes for a given
+     * alias are immutable for the alias's lifetime, so a simple
      * `KSafeConcurrentMap` cache is sound: invalidated only via [deleteKey],
-     * never via accessibility updates (which preserve the bytes). The cache is
-     * not persisted — process restart re-populates lazily on first use.
-     *
-     * Brings the Apple engine in line with the per-alias `SecretKey` handle
-     * caches the Android and JVM engines already had — Apple was the outlier.
+     * never via accessibility updates (which preserve the bytes). Not persisted
+     * — process restart re-populates lazily on first use.
      */
     private val keyBytesCache = KSafeConcurrentMap<ByteArray>()
 
     /**
      * Serializes the *key-resolution* critical section (cache-miss → look up / create →
-     * store → cache). Android and JVM serialize this per alias via `synchronized(lockFor)`,
-     * and `KSafeCore` explicitly relies on engines doing so ("DEFAULT writes serialise on the
-     * master alias's lock") — Apple had no lock at all. Concurrent creators are routine: the
-     * construction-time master-key prewarm races the first DEFAULT write batch, and that batch
-     * encrypts up to 8 entries in parallel against the **same** master alias. Without this
-     * lock two threads both read `errSecItemNotFound`, both generate a key, and the
-     * delete-then-add `storeInKeychain` lets the second clobber the first — after the first
-     * already produced ciphertext under its key — silently and permanently losing that data
-     * (deep-review #8).
+     * store → cache); `KSafeCore` relies on engines doing so ("DEFAULT writes serialise on
+     * the master alias's lock"). Concurrent creators are routine: the construction-time
+     * master-key prewarm races the first DEFAULT write batch, which encrypts up to 8
+     * entries in parallel against the **same** master alias. Without this lock two
+     * threads both read `errSecItemNotFound`, both generate a key, and the delete-then-add
+     * `storeInKeychain` lets the second clobber the first — after the first already
+     * produced ciphertext under its key — silently and permanently losing that data.
      *
      * A single engine-wide lock (not per-alias) is sufficient and simpler: it guards only key
      * *resolution* (the cache-hit fast path below stays lock-free), so per-value AES never
@@ -247,8 +233,7 @@ internal class AppleKeychainEncryption(
     private inline fun <R> withKeyResolutionLock(block: () -> R): R =
         // autoreleasepool drains the ObjC autoreleases produced by the NSRecursiveLock
         // method bridging — Kotlin/Native worker threads (Dispatchers.Default) have no
-        // ambient pool, so without this the lock/unlock calls leak on every encrypt
-        // (the same class of leak as issue #22).
+        // ambient pool, so without it the lock/unlock calls would leak on every encrypt.
         autoreleasepool {
             keyResolutionLock.lock()
             try {
@@ -259,10 +244,8 @@ internal class AppleKeychainEncryption(
         }
 
     // ================================================================
-    // Helper layer. Every Keychain operation in this file used to open
-    // its own `CFDictionaryCreateMutable` block, manually set the same
-    // three-or-four base attributes, and remember to `CFRelease` on every
-    // exit path. These helpers hold that boilerplate once.
+    // Helper layer: shared query-dictionary boilerplate (base attributes
+    // + CFRelease on every exit path) for the Keychain operations below.
     // ================================================================
 
     private fun resolvedRequireUnlockedDevice(override: Boolean?): Boolean =
@@ -282,10 +265,10 @@ internal class AppleKeychainEncryption(
     /**
      * Description out of a CFError. For OSStatus-domain errors it appends a
      * locale-independent `[osstatus=<code>]` tag so transient-vs-permanent
-     * classification can key on the numeric code instead of the localized text
-     * (deep-review #31): on a non-English device the localized description of
+     * classification can key on the numeric code instead of the localized text:
+     * on a non-English device the localized description of
      * `errSecInteractionNotAllowed` contains neither "device is locked" nor
-     * "interaction", which previously made a transient (locked-device / SE-busy)
+     * "interaction", which would make a transient (locked-device / SE-busy)
      * unwrap failure look permanent and trigger destructive key regeneration.
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
@@ -566,12 +549,12 @@ internal class AppleKeychainEncryption(
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     internal fun getExistingKeychainKey(keyId: String): ByteArray {
-        // Decrypt path is read-only — it never creates or overwrites a Keychain item, so it
-        // does NOT take keyResolutionLock (that guards key *creation*; #8's clobber is a
-        // create-vs-create race). Keeping this lock-free also avoids a per-decrypt lock/bridge
-        // cost on the hot read path (and the background-thread autorelease leak that guards).
-        // Concurrent decrypts of the same alias are safe: they read the same Keychain bytes and
-        // converge on the thread-safe keyBytesCache (idempotent last-writer-wins).
+        // The decrypt path is read-only — it never creates or overwrites a Keychain item, so
+        // it does NOT take keyResolutionLock (that guards the create-vs-create clobber race).
+        // Lock-free also avoids a per-decrypt lock/bridge cost on the hot read path (and the
+        // background-thread autorelease leak that guards). Concurrent decrypts of the same
+        // alias are safe: they read the same Keychain bytes and converge on the thread-safe
+        // keyBytesCache (idempotent last-writer-wins).
         keyBytesCache[keyId]?.let { return it }
 
         val wrappedBytes = getExistingKeychainKeyRaw(seWrappedAccount(keyId))
@@ -621,8 +604,8 @@ internal class AppleKeychainEncryption(
                     val msg = e.message ?: ""
                     if (isTransientUnwrapFailure(msg) ||
                         msg.contains("Keychain error") ||
-                        // A store failure is NOT "SE unavailable": don't silently fall back to a
-                        // divergent plain key under the same identifier (deep-review #8 secondary).
+                        // A store failure is NOT "SE unavailable": don't silently fall back
+                        // to a divergent plain key under the same identifier.
                         msg.contains("Failed to store key in Keychain")
                     ) throw e
                     // SE genuinely unavailable (simulator, old device, no entitlements)

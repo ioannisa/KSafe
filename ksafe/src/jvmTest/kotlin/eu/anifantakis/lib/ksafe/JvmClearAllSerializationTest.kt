@@ -5,14 +5,10 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Regression test for N1: `clearAll()` is serialized with concurrent writes by
- * routing through the single-consumer write channel (FIFO). A write enqueued
- * BEFORE `clearAll()` is therefore ordered before the wipe and can no longer be
- * applied after it and resurrect data; a write issued AFTER it survives.
- *
- * Before the fix, `clearAll()` cleared storage directly, racing the write
- * consumer — a fire-and-forget `putDirect` enqueued just before could land after
- * the wipe.
+ * `clearAll()` is serialized with concurrent writes by routing through the
+ * single-consumer write channel (FIFO). A write enqueued BEFORE `clearAll()`
+ * is therefore ordered before the wipe and must not be applied after it and
+ * resurrect data; a write issued AFTER it survives.
  */
 class JvmClearAllSerializationTest {
 

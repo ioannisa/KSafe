@@ -7,32 +7,33 @@ import kotlin.test.assertTrue
 
 /**
  * Pins the transient-vs-permanent classification of Secure-Enclave unwrap
- * failures (deep-review #31).
+ * failures.
  *
- * The bug: classification matched the English substrings "device is locked" /
- * "interaction" against the CFError's *localized* description. On a non-English
- * device a transient `errSecInteractionNotAllowed` (and friends) renders to text
- * containing neither word, so a recoverable, locked-device / SE-busy failure was
- * treated as permanent corruption — deleting the non-exportable SE key and
- * permanently destroying every HARDWARE_ISOLATED ciphertext under it.
+ * Classification must key on the locale-independent `[osstatus=<code>]` tag
+ * that `cfErrorDescription` embeds for OSStatus-domain errors. Matching
+ * English substrings ("device is locked" / "interaction") against the
+ * CFError's *localized* description fails on a non-English device, where a
+ * transient `errSecInteractionNotAllowed` (and friends) renders to text
+ * containing neither word — a recoverable, locked-device / SE-busy failure
+ * would then be treated as permanent corruption, deleting the non-exportable
+ * SE key and permanently destroying every HARDWARE_ISOLATED ciphertext under
+ * it.
  *
- * The fix classifies on the locale-independent `[osstatus=<code>]` tag that
- * `cfErrorDescription` now embeds for OSStatus-domain errors. These cases run
- * natively on macOS (`macosArm64Test`) and need no device — the classifier is a
- * pure function over the error string, which is exactly the destructive decision
- * point.
+ * These cases run natively on macOS (`macosArm64Test`) and need no device —
+ * the classifier is a pure function over the error string, which is exactly
+ * the destructive decision point.
  */
 class MacosSecUnwrapClassificationTest {
 
     private fun seFailure(localized: String, osstatus: Long): String =
         "KSafe: Failed to unwrap AES key with Secure Enclave: $localized [osstatus=$osstatus]"
 
-    // ---- #31: transient codes classify transient regardless of localized text ----
+    // ---- transient codes classify transient regardless of localized text ----
 
     @Test
     fun lockedDevice_nonEnglishText_isTransient_byCode() {
         // errSecInteractionNotAllowed (-25308), French-ish localized text with
-        // none of the English trigger words — the exact #31 failure case.
+        // none of the English trigger words — the case the code tag exists for.
         val msg = seFailure("L'opération n'a pas pu être terminée.", -25308)
         assertTrue(AppleKeychainEncryption.isTransientUnwrapFailure(msg))
     }
@@ -80,7 +81,7 @@ class MacosSecUnwrapClassificationTest {
         assertFalse(AppleKeychainEncryption.isTransientUnwrapFailure(null))
     }
 
-    // ---- R30: the DECRYPT path must also classify transient — the engine-side
+    // ---- the DECRYPT path must also classify transient — the engine-side
     // classifier above is only consulted on key CREATION; the core's
     // isTransientDecryptFailure matches "device is locked"/"Keystore"/"Keychain"
     // and never parses the osstatus tag. So the SE failure message itself must

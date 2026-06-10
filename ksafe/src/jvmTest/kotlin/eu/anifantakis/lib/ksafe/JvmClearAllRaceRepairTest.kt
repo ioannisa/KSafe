@@ -6,20 +6,15 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Regression tests for review R2: a put ordered AFTER an in-flight clearAll
- * (the canonical logout-then-write-fresh-state pattern) commits correctly to
- * disk — but its optimistic in-memory state, set at call time, was wiped by
- * `performClearAll` and nothing restored it: the post-commit ciphertext CAS
- * found the expected plaintext gone, dirty flags are permanent so the
- * reconciler skipped the key forever, and the acknowledged write read back as
- * the caller's default for the rest of the session.
- *
- * The fix is the owner-gated post-commit repair: an op that is still its key's
- * latest writer re-asserts its cache/metadata state via atomic putIfAbsent.
+ * A put ordered AFTER an in-flight clearAll (the canonical
+ * logout-then-write-fresh-state pattern) must be readable once committed: the
+ * wipe clears the write's optimistic in-memory state, so the owner-gated
+ * post-commit repair must restore it — an op that is still its key's latest
+ * writer re-asserts its cache/metadata state via atomic putIfAbsent.
  *
  * The race is driven deterministically: `performClearAll` deletes per-entry
- * engine keys BEFORE wiping the caches, so an engine `deleteKey` hook fires the
- * racing put exactly in the window the finding describes.
+ * engine keys BEFORE wiping the caches, so an engine `deleteKey` hook fires
+ * the racing put exactly in that window.
  */
 class JvmClearAllRaceRepairTest {
 

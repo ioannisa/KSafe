@@ -13,11 +13,11 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Regression tests for deep-review #16: a **transient** decrypt failure (locked device /
- * busy Keystore) on a snapshot must not be rethrown out of `getFlowRaw`'s flow — doing so
- * propagated uncaught out of the long-lived observers' `viewModelScope` / Recomposer and
- * crashed the app, and permanently killed observation. The flow now **skips** that emission
- * and stays alive.
+ * A **transient** decrypt failure (locked device / busy Keystore) on a
+ * snapshot must not be rethrown out of `getFlowRaw`'s flow — it would
+ * propagate uncaught out of long-lived observers' `viewModelScope` /
+ * Recomposer, crash the app, and permanently kill observation. The flow must
+ * **skip** that emission and stay alive.
  */
 class JvmObservableFlowResilienceTest {
 
@@ -49,9 +49,8 @@ class JvmObservableFlowResilienceTest {
         // Sanity: decrypts fine when not armed.
         assertEquals("v1", withTimeoutOrNull(2_000) { ksafe.getFlow<String>("k", "def").first() })
 
-        // Armed: the emission's decrypt fails transiently. Pre-fix this was rethrown and
-        // propagated out of first() (crash); now it is skipped → no emission → timeout (null),
-        // NOT an exception.
+        // Armed: the emission's decrypt fails transiently. It must be skipped →
+        // no emission → timeout (null), NOT an exception out of first().
         engine.failTransient = true
         val result = withTimeoutOrNull(500) { ksafe.getFlow<String>("k", "def").first() }
         assertNull(result, "a transient decrypt failure must be skipped, not crash the flow")
@@ -60,7 +59,7 @@ class JvmObservableFlowResilienceTest {
     }
 
     /** decrypt fails with an Apple-Keychain-shaped transient error whose message contains
-     *  "Keychain" but NOT "device is locked"/"Keystore" — deep-review #59. */
+     *  "Keychain" but NOT "device is locked"/"Keystore". */
     private class KeychainErrorEngine : KSafeEncryption {
         @Volatile var fail = false
         private val xor = FakeEncryption()
@@ -75,10 +74,9 @@ class JvmObservableFlowResilienceTest {
 
     @Test
     fun keychainTransientError_isClassifiedTransient_andSkipped() = runBlocking {
-        // #59: a transient Apple Keychain error ("Keychain error …", no "device is locked"/
-        // "Keystore") must be treated as transient — skipped on the flow path, not emitted as
-        // the default. Pre-fix isTransientDecryptFailure didn't match "Keychain", so the flow
-        // emitted the default ("def") instead of skipping.
+        // A transient Apple Keychain error ("Keychain error …", no "device is locked"/
+        // "Keystore") must be classified as transient — skipped on the flow path, not
+        // emitted as the default.
         val engine = KeychainErrorEngine()
         val ksafe = KSafe(
             fileName = JvmKSafeTest.generateUniqueFileName(),

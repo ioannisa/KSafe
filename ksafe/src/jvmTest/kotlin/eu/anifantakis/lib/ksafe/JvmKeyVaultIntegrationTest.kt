@@ -112,14 +112,13 @@ class JvmKeyVaultIntegrationTest {
     }
 
     /**
-     * The 2.0.0 → 2.1.0 data-loss regression, against the **real** OS store
-     * with the **realistic dirty precondition**: the per-user secret store
-     * already holds a STALE/mismatched key for this alias (prior install /
-     * data-clear / reinstall / mixed-version run). The legacy DataStore key
-     * provably encrypted the ciphertext and must win; the stale OS entry must
-     * be overwritten — not trusted. This is the case every other keyvault
-     * test missed (a fresh alias ⇒ pristine store ⇒ the bug never triggers);
-     * it fails on the pre-fix code on a real Keychain/DPAPI/Secret Service.
+     * The 2.0.0 → 2.1.0 upgrade against the **real** OS store with the
+     * **realistic dirty precondition**: the per-user secret store already
+     * holds a STALE/mismatched key for this alias (prior install / data-clear
+     * / reinstall / mixed-version run). The legacy DataStore key provably
+     * encrypted the ciphertext and must win; the stale OS entry must be
+     * overwritten — not trusted. A fresh alias (pristine store) would not
+     * exercise this case, which is why the dirty seed matters.
      */
     @Test
     fun legacyData_survivesUpgrade_evenWhenRealOsStoreHoldsAStaleKey() {

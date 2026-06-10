@@ -15,16 +15,13 @@ internal actual object SecurityChecker {
     actual fun isDeviceRooted(): Boolean = false
 
     /**
-     * Check if a debugger is attached.
-     * Uses JVM management APIs to detect debugging.
+     * Check if a debugger is attached by inspecting JVM input arguments.
      *
-     * Catches `Throwable` (not just `Exception`) so a missing
-     * `java.management` JDK module — common in trimmed jlink runtimes such
-     * as Compose Desktop release distributables, see
-     * `docs/JVM_PROTECTION.md` — surfaces as "no debugger detected" rather
-     * than crashing `KSafe(...)` construction with `NoClassDefFoundError`.
-     * The honest answer there is "unknown," but production apps shouldn't
-     * fail to start over a security probe.
+     * Catches `Throwable` (not just `Exception`): trimmed jlink runtimes
+     * (e.g. Compose Desktop release distributables) may lack the
+     * `java.management` module, and the resulting `NoClassDefFoundError`
+     * must surface as "no debugger detected" rather than crashing
+     * `KSafe(...)` construction.
      */
     actual fun isDebuggerAttached(): Boolean {
         return try {
@@ -38,8 +35,7 @@ internal actual object SecurityChecker {
                         arg.contains("-Xrunjdwp")
             }
         } catch (_: Throwable) {
-            // `NoClassDefFoundError` (missing `java.management` in a trimmed
-            // jlink runtime) or any other failure → can't tell, fail open.
+            // Can't tell (e.g. missing java.management) — fail open.
             false
         }
     }

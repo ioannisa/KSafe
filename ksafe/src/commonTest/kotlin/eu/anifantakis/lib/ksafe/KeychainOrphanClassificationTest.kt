@@ -7,7 +7,8 @@ import kotlin.test.assertNull
 
 /**
  * Unit tests for the Apple orphan sweep's classification step
- * ([keychainOrphanKeyId]) — the logic the v2 master-key data-loss bug lived in.
+ * ([keychainOrphanKeyId]). Misclassifying a reserved master entry as an orphan
+ * destroys the key for all DEFAULT data, so the decision must be exact.
  *
  * The surrounding sweep is pure Keychain I/O that a sandboxed/simulator unit
  * test can't exercise (the iOS simulator returns `errSecNotAvailable` for a bare
@@ -22,8 +23,8 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun reservedMasterSentinelIsNeverAnOrphan() {
-        // The v2 master rides every DEFAULT value, so it is never in validKeys.
-        // Reserved ⇒ must be preserved. This is the data-loss fix.
+        // The v2 master rides every DEFAULT value, so it is never in validKeys;
+        // being reserved is what keeps it out of orphan classification.
         assertNull(
             keychainOrphanKeyId("${prefix}__ksafe_master__", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters),
             "reserved master sentinel must never be classified as an orphan",
@@ -36,8 +37,8 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun masterSentinelWouldBeDeletedWithoutReservation() {
-        // Documents the bug: with no reservation the master is classified as an
-        // orphan (it's never a user key) and would be deleted → all DEFAULT data lost.
+        // With no reservation the master (never a user key) classifies as an orphan
+        // and would be deleted, losing all DEFAULT data — the reservation is required.
         assertEquals(
             "__ksafe_master__",
             keychainOrphanKeyId("${prefix}__ksafe_master__", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = emptySet()),
@@ -55,7 +56,6 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun unknownUserKeyIsAnOrphan() {
-        // The fix must stay surgical: genuine orphans are still reaped.
         assertEquals(
             "ghost",
             keychainOrphanKeyId("${prefix}ghost", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters),
@@ -65,11 +65,9 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun inFlightKeyIsNotAnOrphan_evenWhenAbsentFromValidKeys() {
-        // Deep-review #30: a key the engine just created for a still-in-flight write hasn't
-        // reached the DataStore snapshot (validKeys) yet — the sweep must NOT reap it, or it
-        // destroys the key for an acknowledged concurrent write. Without the guard "fresh"
-        // would be classified an orphan (absent from validKeys); the in-flight predicate
-        // preserves it.
+        // A key just created for a still-in-flight write hasn't reached the DataStore
+        // snapshot (validKeys) yet — the sweep must not reap it, or it destroys the key
+        // for an acknowledged concurrent write.
         assertEquals(
             "fresh",
             keychainOrphanKeyId("${prefix}fresh", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters),

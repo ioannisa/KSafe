@@ -8,11 +8,11 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Regression test for deep-review #23: a corrupt DataStore `.preferences_pb` must not throw
- * `CorruptionException` on every read forever — which crashed the background collector and
- * made `getDirect` silently return defaults while suspend `get()` threw. The factory now
- * installs a corruption handler that quarantines the unreadable file and continues from an
- * empty store (matching the JSON-fallback backend).
+ * A corrupt DataStore `.preferences_pb` must not throw `CorruptionException`
+ * on every read forever — that would crash the background collector and make
+ * `getDirect` silently return defaults while suspend `get()` throws. The
+ * factory installs a corruption handler that quarantines the unreadable file
+ * and continues from an empty store (matching the JSON-fallback backend).
  */
 class JvmCorruptStoreRecoveryTest {
 
@@ -27,8 +27,8 @@ class JvmCorruptStoreRecoveryTest {
         // Garbage that the DataStore Preferences (protobuf) reader can't parse → CorruptionException.
         pb.writeBytes(ByteArray(64) { 0xFF.toByte() })
 
-        // Construct (lazyLoad=false → the collector reads the store at startup). Pre-fix this
-        // crashed the collector; getDirect would silently default forever.
+        // Construct (lazyLoad=false → the collector reads the store at startup,
+        // hitting the corruption immediately).
         val ksafe = KSafe(fileName = fileName, baseDir = tmp, testEngine = FakeEncryption())
         try {
             // Read returns the default rather than crashing.

@@ -281,10 +281,8 @@ internal class KSafeMutableStateFlow<T>(
     // Latched while the user's latest write through this StateFlow
     // (value/emit/tryEmit/compareAndSet) is still propagating to disk: stale
     // disk echoes from the observer flow must not revert it. Cleared by
-    // [updateFromFlow] once the flow has caught up with [lastUserWrite] — the
-    // precise unlatch — so genuinely newer external changes reflect again
-    // (review R19; the old latch was one-way and permanently disabled the
-    // documented external-change reflection after the first write).
+    // [updateFromFlow] once the flow has caught up with [lastUserWrite], so
+    // genuinely newer external changes reflect again.
     private val awaitingWriteEcho = KSafeAtomicFlag(false)
 
     // The user's latest written value, compared against observer emissions to
@@ -334,21 +332,17 @@ internal class KSafeMutableStateFlow<T>(
     /**
      * Updates the value from an observer-flow emission without triggering persistence.
      *
-     * Suppressed while the user's own write is propagating to disk. The observer
-     * flow ([KSafe.getFlow] → `KSafeCore.getFlowRaw`) is disk-derived and lags
-     * optimistic writes by the coalescing window + commit (+ decrypt), so a
-     * snapshot emitted before the user's write commits carries an OLDER value;
-     * applying it would revert the StateFlow under collectors and `value`
-     * readers (deep-review #56, mirroring the Compose live-observe guard #15).
+     * Suppressed while the user's own write is propagating to disk: the observer
+     * flow is disk-derived and lags optimistic writes by the coalescing window +
+     * commit, so a snapshot emitted before the write commits carries an OLDER
+     * value and applying it would revert the StateFlow under collectors.
      *
-     * The suppression is **precise, not permanent** (review R19): once an
-     * emission equal to the user's last-written value arrives — the flow has
-     * caught up with the write — the latch clears and later, genuinely newer
-     * external changes reflect again, as the public KDoc promises. Residual
-     * conservative cases (the StateFlow keeps the user's value rather than
-     * reverting): a write whose batch *fails* never echoes, and a type whose
-     * deserialized round-trip is not `==` to the written instance never
-     * matches — both keep suppression in place, the pre-R19 behavior.
+     * The suppression is precise, not permanent: once an emission equal to the
+     * user's last-written value arrives, the latch clears and genuinely newer
+     * external changes reflect again. Conservative residual cases (the StateFlow
+     * keeps the user's value rather than reverting): a write whose batch fails
+     * never echoes, and a type whose deserialized round-trip is not `==` to the
+     * written instance never matches — both keep suppression in place.
      */
     internal fun updateFromFlow(newValue: T) {
         if (!awaitingWriteEcho.get()) {
@@ -391,7 +385,7 @@ internal class KSafeMutableStateFlowDelegate<T>(
 
             // Observe external changes (other screens, background writes). getFlowRaw
             // skips transient decrypt failures, so a locked-device emission can't crash
-            // [scope] or kill observation (deep-review #16).
+            // [scope] or kill observation.
             scope.launch {
                 @Suppress("UNCHECKED_CAST")
                 (ksafe.core.getFlowRaw(actualKey, defaultValue, serializer) as Flow<T>)

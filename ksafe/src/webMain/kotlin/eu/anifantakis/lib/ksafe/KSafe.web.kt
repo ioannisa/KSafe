@@ -99,14 +99,12 @@ private fun buildWebKSafe(
     }
     validateSecurityPolicy(securityPolicy)
 
-    // Data-entry namespace. The current scheme is PREFIX-FREE (review R7): `.`
-    // and `:` cannot appear in a fileName ([a-z][a-z0-9_]*), so no store's
-    // prefix can string-prefix another's — with the old `ksafe_<name>_` scheme,
-    // `KSafe("user")` scoped by startsWith() ingested `KSafe("user_cache")`'s
-    // entries under garbled keys and its clearAll() DELETED the sibling store;
-    // and `KSafe("default")` collided exactly with the unnamed `KSafe()` while
-    // using different crypto aliases (mutual ciphertext clobber). Existing data
-    // under the old prefix is carried forward by the one-time migration below.
+    // Data-entry namespace. The scheme is prefix-free: `.` and `:` cannot
+    // appear in a fileName ([a-z][a-z0-9_]*), so no store's prefix can
+    // string-prefix another's — otherwise startsWith()-scoped reads and
+    // clearAll() of `KSafe("user")` would reach into `KSafe("user_cache")`.
+    // Existing data under the old `ksafe_<name>_` prefix is carried forward
+    // by the one-time migration below.
     val legacyStoragePrefix: String = if (fileName != null) "ksafe_${fileName}_" else "ksafe_default_"
     val storagePrefix: String = if (fileName != null) "ksafe.${fileName}:" else "ksafe.:"
     migrateLegacyLocalStoragePrefix(legacyStoragePrefix, storagePrefix)

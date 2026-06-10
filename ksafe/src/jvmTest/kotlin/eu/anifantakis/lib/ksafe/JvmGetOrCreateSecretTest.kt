@@ -9,17 +9,15 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * Regression tests for [getOrCreateSecret]'s "never silently rotate" contract.
+ * Tests for [getOrCreateSecret]'s "never silently rotate" contract.
  *
- * Before the fix, `getOrCreateSecret` read the stored secret via `get(key, "")`
- * and treated the `""` default as "absent" → it minted a brand-new secret. But
- * `get()` also returns `""` when the secret EXISTS yet can't be decrypted (the
- * backing key was invalidated/rotated, the vault is unavailable, or the
- * ciphertext is corrupt). That silently rotated the secret and permanently
- * orphaned everything encrypted under the old one — e.g. a SQLCipher database
- * keyed by the secret would never open again. The fix distinguishes the two via
- * [KSafe.getKeyInfo] and throws (rather than rotating) when the entry exists but
- * is unreadable.
+ * A `get(key, "")` read returns `""` both when the secret is absent AND when
+ * it EXISTS yet can't be decrypted (the backing key was invalidated/rotated,
+ * the vault is unavailable, or the ciphertext is corrupt). The two must be
+ * distinguished via [KSafe.getKeyInfo], and the existing-but-unreadable case
+ * must throw rather than mint a replacement: silently rotating the secret
+ * permanently orphans everything encrypted under the old one — e.g. a
+ * SQLCipher database keyed by it would never open again.
  *
  * Uses [KSafeMemoryPolicy.ENCRYPTED] so every read goes through the engine's
  * `decrypt` (no plaintext side-cache), letting a single instance flip from
@@ -140,13 +138,12 @@ class JvmGetOrCreateSecretTest {
 
     @Test
     fun underPlainTextPolicy_unreadableSecretOnColdStart_throwsInsteadOfRotating() = runTest {
-        // Deep-review #5: under KSafeMemoryPolicy.PLAIN_TEXT the secret is
-        // decrypted at cold-start load; if that fails the entry is dropped from
-        // memoryCache. getKeyInfo used to read existence only from memoryCache,
-        // so the never-rotate guard saw "absent" and minted a replacement,
-        // permanently orphaning the original. The fix consults protectionMap
-        // (on-disk metadata, populated regardless of decryptability), so the
-        // guard correctly throws.
+        // Under KSafeMemoryPolicy.PLAIN_TEXT the secret is decrypted at
+        // cold-start load; if that fails the entry is dropped from memoryCache.
+        // The never-rotate guard must detect existence via protectionMap
+        // (on-disk metadata, populated regardless of decryptability), not
+        // memoryCache alone — otherwise it would see "absent" and mint a
+        // replacement, permanently orphaning the original.
         val fileName = JvmKSafeTest.generateUniqueFileName()
 
         // Instance 1 — create the secret successfully under PLAIN_TEXT.

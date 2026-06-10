@@ -16,10 +16,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Concurrency contract for [BiometricPromptGate], the serialization that fixes deep-review
- * #14 (concurrent biometric prompts stomping the shared Android callback → a caller hangs
- * forever). The gate itself is platform-agnostic, so it's exercised here on the JVM with real
- * threads.
+ * Concurrency contract for [BiometricPromptGate]: prompts are serialized (never two in
+ * flight) and a cancelled holder releases the gate. The gate is platform-agnostic, so it's
+ * exercised on the JVM with real threads.
  */
 class BiometricPromptGateTest {
 

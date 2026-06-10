@@ -39,13 +39,9 @@ internal class FileKeyVault(
     private fun read(): MutableMap<String, String> {
         // A missing file genuinely means "no keys yet" — empty is correct.
         if (!file.exists()) return mutableMapOf()
-        // A file that EXISTS but can't be read or parsed is NOT "no keys": it's
-        // transient/permanent unavailability (lock, I/O error, partial write,
-        // tampering). Returning an empty map here would make every key look
-        // absent, and KSafeCore's startup orphan sweep — which reclaims entries
-        // whose decrypt throws "No encryption key found" — would then delete the
-        // still-recoverable ciphertext. Surface it instead, so the failure does
-        // NOT masquerade as an empty vault.
+        // A file that EXISTS but can't be read or parsed must surface as an error,
+        // not an empty vault: every key would look absent and the startup orphan
+        // sweep would delete still-recoverable ciphertext.
         val text = try {
             file.readText()
         } catch (e: Throwable) {
@@ -72,15 +68,12 @@ internal class FileKeyVault(
         // temp file's permissions onto the destination.
         val tmp = createOwnerOnlyTempFile(parent)
         try {
-            // Write the bytes AND force them to stable storage (fsync) BEFORE the
-            // atomic rename. Without the fsync, a journaling filesystem can persist
-            // the rename metadata before the temp file's data blocks, so a power
-            // loss / OS crash right after the move leaves the destination zero-length.
-            // This file holds the ONLY copy of the master AES key, and a blank file
-            // is indistinguishable from "no keys yet" → getExistingSecretKey throws
-            // "No encryption key found" → the startup orphan sweep deletes every
-            // encrypted entry. (datastore-core's FileStorage fsyncs before its move
-            // for exactly this reason.) See deep-review #34.
+            // fsync BEFORE the atomic rename: a journaling filesystem can persist
+            // the rename metadata before the temp file's data blocks, so a crash
+            // right after the move could leave the destination zero-length. This
+            // file holds the ONLY copy of the master AES key, and a blank file is
+            // indistinguishable from "no keys yet" — the startup orphan sweep would
+            // then delete every encrypted entry.
             java.io.FileOutputStream(tmp).use { out ->
                 out.write(json.encodeToString(ser, map).encodeToByteArray())
                 out.flush()

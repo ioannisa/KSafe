@@ -102,14 +102,14 @@ class JvmSecurityCheckerTest {
     // since JVM typically doesn't have rooted/emulator conditions.
     // Those tests would require dependency injection or mocking framework.
 
-    // Trimmed-JRE Throwable-safety (issue #32 follow-up) is intentionally
-    // NOT unit-tested here. The bug — a `jlink`-trimmed runtime missing
-    // `java.management` makes `ManagementFactory` throw `NoClassDefFoundError`
-    // (an Error, not an Exception) — cannot be reproduced in a standard test
-    // JVM, which always has the module. The production guard is the
-    // `catch (_: Throwable)` in SecurityChecker.jvm.kt (the previous
-    // `catch (_: Exception)` let the Error escape and crashed KSafe(...)
-    // construction). End-to-end verification lives in the demo's release
-    // distributable; see docs/JVM_PROTECTION.md. The `_returnsBoolean`
-    // tests above prove the probes are exception-safe under a healthy JVM.
+    // Trimmed-JRE Throwable-safety is intentionally NOT unit-tested here. The
+    // scenario — a `jlink`-trimmed runtime missing `java.management` makes
+    // `ManagementFactory` throw `NoClassDefFoundError` (an Error, not an
+    // Exception) — cannot be reproduced in a standard test JVM, which always
+    // has the module. The production guard is the `catch (_: Throwable)` in
+    // SecurityChecker.jvm.kt (a plain `catch (Exception)` would let the Error
+    // escape and crash KSafe(...) construction). End-to-end verification lives
+    // in the demo's release distributable; see docs/JVM_PROTECTION.md. The
+    // `_returnsBoolean` tests above prove the probes are exception-safe under
+    // a healthy JVM.
 }

@@ -11,37 +11,13 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
 
 /**
- * Regression coverage for the cold-start self-heal in [KSafe.mutableStateOf]
- * on web targets (wasmJs + js).
- *
- * Background: web's `getDirect` cannot block on the async cache preload, so a
- * `mutableStateOf` provider always sees `initialValue == defaultValue` on
- * cold start. The self-heal coroutine inside `KSafeComposeState`/
- * `mutableStateOf` is responsible for then propagating the persisted value
- * into the Compose state.
- *
- * In KSafe 2.0.0-RC1 this self-heal was broken: it used
- * `getFlow(...).drop(1).first()` under the assumption that the first flow
- * emission was a placeholder mirroring the cache-cold `getDirect` result.
- * After the 2.0 refactor that is no longer true — `LocalStorageStorage`
- * initialises its `MutableStateFlow` synchronously from `localStorage`, so
- * the very first emission already carries the persisted (and, for encrypted
- * entries, decrypted) value. `drop(1)` therefore discarded the only
- * emission with data and `first()` waited forever, leaving the user with
- * the default value until a 5-second timeout expired.
- *
- * The tests below assert the contract the fix relies on: with the cache
- * cold (a freshly-constructed instance that has not yet been warmed via
- * [awaitCacheReady]), `getFlow(...).first()` already returns the persisted
- * value — both for plain entries and for encrypted entries that need an
- * inline WebCrypto round-trip. They also verify the cold-start `getDirect`
- * contract that triggers the self-heal in the first place.
- *
- * Plain [String] values are used so this file does not require the
- * kotlinx-serialization compiler plugin on `:ksafe-compose`. The
- * Compose-state propagation regression is value-type agnostic — the
- * customer-facing custom-JSON failure in the demo app is the same bug,
- * just with a more visible default.
+ * Pins the web (wasmJs + js) cold-start contract that [KSafe.mutableStateOf]'s
+ * self-heal depends on: web's `getDirect` cannot block on the async cache
+ * preload, so a fresh instance returns the default until the cache warms, while
+ * `getFlow(...).first()` must already carry the persisted (and, for encrypted
+ * entries, decrypted) value because `LocalStorageStorage` seeds its flow from
+ * `localStorage` synchronously. Plain [String] values keep this file free of
+ * the kotlinx-serialization compiler plugin.
  */
 class WebKSafeMutableStateOfTest {
 
@@ -68,7 +44,7 @@ class WebKSafeMutableStateOfTest {
         // initialValue == defaultValue and triggers self-heal.
         assertEquals(default, reader.getDirect(key, default))
 
-        // The fix relies on this: getFlow's first emission must already
+        // Self-heal relies on this: getFlow's first emission must already
         // carry the persisted value, even with a cold KSafeCore cache,
         // because LocalStorageStorage seeds its MutableStateFlow from
         // localStorage on construction.

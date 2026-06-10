@@ -58,12 +58,10 @@ internal class MacosKeychainKeyVault(
         if (status == ERR_SEC_ITEM_NOT_FOUND) return null
         // Any other non-success status means the lookup itself failed, NOT that the
         // key is absent — e.g. errSecInteractionNotAllowed when the login keychain is
-        // locked (SSH session, FileVault edge cases). Map it to the "key vault
-        // unavailable" contract (the wording Linux uses) so KSafeCore classifies it as
-        // non-transient AND non-orphan: encrypted reads return their defaults and the
-        // orphan sweep leaves the still-recoverable ciphertext intact, rather than a raw
-        // KeychainException that only incidentally avoids misclassification. Writes fail
-        // closed rather than minting a divergent key. See deep-review #57.
+        // locked (SSH session, FileVault edge cases). Throw the "key vault unavailable"
+        // contract so encrypted reads fall back to defaults, the orphan sweep leaves
+        // the still-recoverable ciphertext intact, and writes fail closed rather than
+        // minting a divergent key.
         if (status != ERR_SEC_SUCCESS) {
             throw IllegalStateException(
                 "KSafe: key vault unavailable — macOS Keychain lookup failed for alias " +

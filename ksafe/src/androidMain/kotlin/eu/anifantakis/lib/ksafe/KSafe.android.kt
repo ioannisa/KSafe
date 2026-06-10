@@ -54,17 +54,16 @@ private const val MASTER_KEY_LOCKED: String = "__ksafe_master_locked__"
  * Per-datastore-path shared backend. Co-existing [KSafe] instances on the same file share
  * ONE backend, so they share one [DataStore] **and** one [AndroidKeystoreEncryption] engine
  * — i.e. one in-memory DEK cache and one per-alias lock map over the single persisted
- * wrapped-DEK slot. Creating a fresh engine per instance (the old behaviour) let those DEK
- * caches diverge from the one on-disk slot, silently and permanently losing data after a
- * `clearAll()` on one instance or a concurrent first-write race across two (deep-review
- * #7 / #46).
+ * wrapped-DEK slot. A fresh engine per instance would let those DEK caches diverge from the
+ * one on-disk slot, silently and permanently losing data after a `clearAll()` on one
+ * instance or a concurrent first-write race across two.
  *
  * The backend is **ref-counted**: its scope is cancelled and the entry evicted only when
  * the *last* instance on the path closes, so closing one instance can't cancel the
- * DataStore out from under another live one (deep-review #50). All creation / acquisition /
- * release for a given path is serialized by [pathLock], which also makes creation atomic —
- * a non-atomic `getOrPut` could open two DataStores for one file (DataStore then throws
- * "multiple DataStores active for the same file"; deep-review #27 / #49).
+ * DataStore out from under another live one. All creation / acquisition / release for a
+ * given path is serialized by [pathLock], which also makes creation atomic — a non-atomic
+ * `getOrPut` could open two DataStores for one file (DataStore then throws "multiple
+ * DataStores active for the same file").
  */
 private class AndroidBackend(
     val dataStore: DataStore<Preferences>,
@@ -268,9 +267,9 @@ private fun buildAndroidKSafe(
     val backend = acquireBackend(datastorePath) { scope ->
         PreferenceDataStoreFactory.create(
             // Quarantine a corrupt .preferences_pb and continue from an empty store instead of
-            // throwing CorruptionException on every read forever — which crashes the background
-            // collector and makes getDirect silently return defaults (deep-review #23). The
-            // corrupt bytes are copied aside for recovery.
+            // throwing CorruptionException on every read forever — which would crash the
+            // background collector and make getDirect silently return defaults. The corrupt
+            // bytes are copied aside for recovery.
             corruptionHandler = ReplaceFileCorruptionHandler {
                 runCatching {
                     datastoreFile.copyTo(

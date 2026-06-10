@@ -44,9 +44,9 @@ class JvmKeyVaultMigrationTest {
 
     /**
      * OS vault whose lookups fail at RUNTIME with the "key vault unavailable" wording —
-     * what the Windows DPAPI / macOS Keychain vaults now throw on a non-LinkageError runtime
-     * failure (DPAPI blob undecryptable / login keychain locked) per deep-review #57. Records
-     * whether [put] was ever called, to prove key creation fails closed (no junk key minted).
+     * what the Windows DPAPI / macOS Keychain vaults throw on a non-LinkageError runtime
+     * failure (DPAPI blob undecryptable / login keychain locked). Records whether [put]
+     * was ever called, to prove key creation fails closed (no junk key minted).
      */
     private class UnavailableOsVault : JvmKeyVault {
         var putCalled = false
@@ -81,8 +81,8 @@ class JvmKeyVaultMigrationTest {
         // DIRTY precondition (the real-world case): the per-user OS store
         // ALREADY holds a stale/mismatched key for this alias from a prior
         // KSafe lifecycle. The legacy DataStore key is authoritative and must
-        // win — an empty FakeOsVault here would pass even on the broken,
-        // data-destroying code (it did: see the audit), testing nothing.
+        // win — with an empty FakeOsVault the test would not discriminate; the
+        // stale seed is what makes it meaningful.
         val staleOsKey = ByteArray(32) { 0x5A }
         val fake = FakeOsVault().apply { store[alias] = staleOsKey.copyOf() }
         val engine = JvmSoftwareEncryption(
@@ -157,9 +157,8 @@ class JvmKeyVaultMigrationTest {
         // already holds a STALE key for this alias (prior install / data-clear
         // / reinstall / mixed-version run). A fresh engine must still decrypt
         // the 2.0.0 at-rest ciphertext because the legacy DataStore key is
-        // authoritative. (With an empty osVault this test passed even on the
-        // data-destroying pre-fix code — proven in the audit — so it tested
-        // nothing. The stale seed is what makes it discriminate.)
+        // authoritative. (With an empty osVault the test would not
+        // discriminate; the stale seed is what makes it.)
         val osVault = FakeOsVault().apply { store[alias] = ByteArray(32) { 0x5A } }
         val v210 = JvmSoftwareEncryption(
             dataStore = dataStore,
@@ -256,8 +255,8 @@ class JvmKeyVaultMigrationTest {
     // selfTest at construction passes (full JDK on the build host), but the
     // jlinked runtime served to the user is missing `jdk.unsupported`, so JNA
     // throws `NoClassDefFoundError: sun/misc/Unsafe` on first real call from
-    // inside processBatch — silently dropping every write before this fix.
-    // See issue #32.
+    // inside processBatch. The provider must degrade to the legacy vault
+    // instead of letting every write be dropped.
 
     private class LinkErrorOsVault(
         /** Flips to true after [armed] is set; lets selfTest succeed at init. */
@@ -287,8 +286,8 @@ class JvmKeyVaultMigrationTest {
         val provider = JvmKeyVaultProvider(dataStore, forced = osVault)
         val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
 
-        // Pre-fix this would have thrown NoClassDefFoundError out of encrypt
-        // and KSafeCore.processBatch would have dropped the write.
+        // encrypt must absorb the NoClassDefFoundError by degrading — letting it
+        // propagate into KSafeCore.processBatch would drop the write.
         val ct = engine.encrypt(alias, "hello".toByteArray())
         assertContentEquals("hello".toByteArray(), engine.decrypt(alias, ct))
 
@@ -356,13 +355,12 @@ class JvmKeyVaultMigrationTest {
 
     @Test
     fun engineDiagnostics_reflectRuntimeDegrade() {
-        // Pre-2.1.1, JvmSoftwareEncryption.keyVaultIsOsBacked / keyVaultName
-        // were read once at KSafe construction and frozen in
-        // KSafe.protectionInfo. After a runtime degrade the snapshot lied:
-        // it still reported the OS vault even though writes were going to
-        // the legacy file. This test pins the new contract — the engine's
-        // diagnostic getters read through vaults.active, so the captured
-        // protectionInfoProvider in KSafe sees the post-degrade truth.
+        // The engine's diagnostic getters (keyVaultIsOsBacked / keyVaultName)
+        // must read through vaults.active rather than be frozen at KSafe
+        // construction — otherwise, after a runtime degrade, protectionInfo
+        // would still report the OS vault even though writes go to the legacy
+        // file. The captured protectionInfoProvider in KSafe must see the
+        // post-degrade truth.
         val osVault = LinkErrorOsVault().also { it.armed = true }
         val provider = JvmKeyVaultProvider(dataStore, forced = osVault)
         val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
@@ -379,14 +377,11 @@ class JvmKeyVaultMigrationTest {
 
     @Test
     fun decryptOfOrphanedCiphertext_throwsKeyNotFound_andMintsNoKey() {
-        // Regression for the JVM decrypt-creates-a-key bug: JVM `decrypt` used to
-        // call getOrCreateSecretKey, so decrypting ciphertext whose key was gone
-        // (OS-vault wiped / reinstall) MINTED a fresh junk key into the vault and
-        // failed with a GCM "tag mismatch" instead of "No encryption key found".
-        // Consequences: (1) the orphan sweep — which matches "No encryption key
-        // found" / "key not found" — never reclaimed JVM orphans, and (2) a
-        // spurious key polluted the user's OS vault on every failed decrypt.
-        // JVM decrypt must now behave like Android/Apple: throw, mint nothing.
+        // Decrypting ciphertext whose key is gone (OS-vault wiped / reinstall)
+        // must behave like Android/Apple: throw "No encryption key found" and
+        // mint nothing. The orphan sweep matches that wording to reclaim
+        // orphans, and a get-or-create-style decrypt would pollute the user's
+        // OS vault with a spurious key on every failed decrypt.
         val alias = "user:token"
 
         // 1. Encrypt with a real key in the vault.
@@ -417,17 +412,17 @@ class JvmKeyVaultMigrationTest {
         assertNull(emptyVault.store[alias], "decrypt must not create a key for orphaned ciphertext")
     }
 
-    // ── Construction-time OS-vault unavailability (deep-review #1 & #2) ───────
+    // ── Construction-time OS-vault unavailability ─────────────────────────────
     //
     // The data-destroying case the runtime-degrade tests above do NOT cover: at
     // construction the OS vault platform exists but its self-test fails for a
     // TRANSIENT reason — a locked macOS Keychain, a Linux login keyring not yet
     // on D-Bus (SSH / headless / session-autostart before unlock). The real
-    // keys live in the OS store and it will be reachable on a healthy launch.
-    // Pre-fix, pick() silently selected the legacy software store with
-    // degraded=false, so (#1) the orphan sweep deleted OS-vault-only ciphertext
-    // and (#2) prewarm minted a junk key into the migration source that the next
-    // healthy launch then copied OVER the real OS-vault key.
+    // keys live in the OS store and it will be reachable on a healthy launch,
+    // so pick() must flag the vault unavailable rather than silently select the
+    // legacy software store: otherwise the orphan sweep deletes OS-vault-only
+    // ciphertext, and prewarm mints a junk key into the migration source that
+    // the next healthy launch copies OVER the real OS-vault key.
 
     /** OS-vault stand-in that is unreachable (locked Keychain / keyring down):
      *  every operation throws, so the construction-time self-test fails. */
@@ -466,7 +461,7 @@ class JvmKeyVaultMigrationTest {
 
     @Test
     fun osVaultUnavailable_refusesToMintKeyIntoLegacyMigrationSource() {
-        // Deep-review #2: during an OS-vault-unavailable session, creating a key
+        // During an OS-vault-unavailable session, creating a key
         // (the construction-time prewarm of the master alias, or any first
         // encrypted write) must NOT persist key material into the legacy
         // DataStore — that store is the migration source the next healthy launch
@@ -489,7 +484,7 @@ class JvmKeyVaultMigrationTest {
 
     @Test
     fun osVaultUnavailable_decryptOfUnresolvableKey_reportsUnavailableNotOrphan() {
-        // Deep-review #1: a value whose key lives ONLY in the now-unreachable OS
+        // A value whose key lives ONLY in the now-unreachable OS
         // vault must report "unavailable", NOT "No encryption key found" — the
         // latter is the message KSafeCore's orphan sweep DELETES on, which would
         // permanently destroy still-recoverable ciphertext.
@@ -549,9 +544,9 @@ class JvmKeyVaultMigrationTest {
         )
     }
 
-    // ── Runtime OS-vault unavailability (deep-review #57) ────────────────────
+    // ── Runtime OS-vault unavailability ──────────────────────────────────────
     //
-    // The Windows DPAPI / macOS Keychain vaults now map a non-LinkageError runtime lookup
+    // The Windows DPAPI / macOS Keychain vaults map a non-LinkageError runtime lookup
     // failure (DPAPI master-key chain gone / login keychain locked) to the "key vault
     // unavailable" contract instead of leaking a raw Win32Exception/KeychainException. These
     // tests lock in the ENGINE half of that contract via a fake whose get() throws the wording
@@ -597,7 +592,7 @@ class JvmKeyVaultMigrationTest {
 
     @Test
     fun degradedVault_decryptOfUnresolvableKey_reportsUnavailableNotOrphan() {
-        // Regression for the orphan-sweep data-loss interaction: after a runtime
+        // After a runtime
         // OS-vault LinkageError forces the software fallback, a key that lives
         // ONLY in the now-unreachable OS vault must NOT surface as "No encryption
         // key found" — that is the message KSafeCore's orphan sweep DELETES on.
@@ -629,7 +624,7 @@ class JvmKeyVaultMigrationTest {
         assertTrue(msg.contains("unavailable", ignoreCase = true), "should report vault unavailable; was: $msg")
     }
 
-    // ── 2.1.0/2.1.1 → 2.1.2 namespace upgrade recovery (review R6) ──────────
+    // ── 2.1.0/2.1.1 → 2.1.2 namespace upgrade recovery ──────────────────────
     //
     // Released 2.1.0/2.1.1 derived the default OS-vault namespace from
     // `sun.java.command`; 2.1.2 made it the constant "shared". A stable-launcher
@@ -747,7 +742,7 @@ class JvmKeyVaultMigrationTest {
         )
     }
 
-    // ── Concurrent self-tests on a shared OS store (review R58) ─────────────
+    // ── Concurrent self-tests on a shared OS store ───────────────────────────
 
     /**
      * Shared per-user store whose first `put` triggers [onFirstPut] once —
@@ -770,10 +765,11 @@ class JvmKeyVaultMigrationTest {
     @Test
     fun concurrentSelfTests_onSharedOsStore_doNotFailEachOther() {
         // The OS stores (Keychain / DPAPI / Secret Service) are per-user and
-        // shared by every KSafe process/instance. With a FIXED canary alias,
-        // a competing self-test's DELETE removed our canary between our put
-        // and read-back → our self-test failed → a perfectly healthy vault was
-        // flagged unavailable, fail-closing the whole session (review R58).
+        // shared by every KSafe process/instance, so self-tests must use unique
+        // canary aliases: with a FIXED alias, a competing self-test's DELETE
+        // can remove our canary between our put and read-back, failing our
+        // self-test and flagging a perfectly healthy vault unavailable —
+        // fail-closing the whole session.
         //
         // The build runs JVM tests with `-Dksafe.jvm.keyVault=software` (so
         // tests never touch a real keyring); that opt-out short-circuits

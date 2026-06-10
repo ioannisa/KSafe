@@ -179,12 +179,10 @@ internal fun KSafe(
 /**
  * Per-file shared backend for the Apple factory. Native DataStore refuses two active
  * instances on the same file ("There are multiple DataStores active for the same file") and
- * frees a file only once the owning scope's [Job] completes. Constructing a fresh DataStore
- * per [KSafe] therefore broke a second same-file instance (its first read threw, was swallowed
- * by the cache-load guard → silent default reads + dropped writes) and raced teardown on
- * close()-then-recreate. This registry shares ONE DataStore + engine per resolved path,
- * ref-counted (only the last close tears the scope down) with a bounded prior-scope await on
- * recreate — mirroring the Android and JVM factories (deep-review #19).
+ * frees a file only once the owning scope's [Job] completes, so this registry shares ONE
+ * DataStore + engine per resolved path, ref-counted (only the last close tears the scope
+ * down) with a bounded prior-scope await on recreate — mirroring the Android and JVM
+ * factories.
  */
 private class AppleBackend(
     val dataStore: DataStore<Preferences>,
@@ -340,15 +338,15 @@ private fun buildAppleKSafe(
 
     // Acquire the per-file shared backend (DataStore + scope + engine), ref-counted so that
     // co-existing instances on the same file share one DataStore and only the last close tears
-    // the scope down, with a bounded prior-scope await on recreate (deep-review #19). The scope
-    // uses Dispatchers.Default — Kotlin/Native has no Dispatchers.IO, and DataStore's iOS I/O
+    // the scope down, with a bounded prior-scope await on recreate. The scope uses
+    // Dispatchers.Default — Kotlin/Native has no Dispatchers.IO, and DataStore's iOS I/O
     // path (NSFileManager / okio) is non-blocking.
     val backend = acquireAppleBackend(datastoreFilePath) { scope ->
         PreferenceDataStoreFactory.createWithPath(
             // Quarantine a corrupt .preferences_pb and continue from an empty store instead of
-            // throwing CorruptionException on every read forever — which crashes the background
-            // collector and makes getDirect silently return defaults (deep-review #23). The
-            // corrupt bytes are copied aside (best-effort) for recovery.
+            // throwing CorruptionException on every read forever — which would crash the
+            // background collector and make getDirect silently return defaults. The corrupt
+            // bytes are copied aside (best-effort) for recovery.
             corruptionHandler = ReplaceFileCorruptionHandler {
                 runCatching {
                     val dest = "$datastoreFilePath.corrupt"
@@ -434,7 +432,7 @@ private fun buildAppleKSafe(
                 // sweep can't delete the master and orphan all DEFAULT ciphertext.
                 reservedKeyIds = setOf(MASTER_KEY_DEFAULT, MASTER_KEY_LOCKED),
                 // Don't reap a key for a write that's in flight concurrently with the
-                // sweep — its DataStore commit lands after our snapshot (deep-review #30).
+                // sweep — its DataStore commit lands after our snapshot.
                 isInFlight = isUserKeyDirty,
             )
         }.onFailure { t ->
@@ -459,8 +457,8 @@ private fun buildAppleKSafe(
         legacyEncryptedKeyFor = ::iosLegacyEncryptedKey,
         modeTransformer = ::promoteMode,
         // Ref-counted release: only the last live instance on this file cancels the shared
-        // scope, so closing one instance can't cancel the DataStore out from under another
-        // (deep-review #19). KSafeCore.cancel() is idempotent → guard to one release.
+        // scope, so closing one instance can't cancel the DataStore out from under another.
+        // KSafeCore.cancel() is idempotent → guard to one release.
         onCancel = { if (released.compareAndSet(false, true)) releaseAppleBackend(datastoreFilePath) },
     )
 
@@ -483,7 +481,6 @@ private fun buildAppleKSafe(
     )
 }
 
-// Non-inline helper retained from pre-refactor — external Swift callers may
-// reference it for warm-up.
+// Non-inline helper kept for external Swift callers that may reference it for warm-up.
 @Suppress("unused")
 fun obtainAesGcm(): AES.GCM = CryptographyProvider.CryptoKit.get(AES.GCM)

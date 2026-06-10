@@ -10,11 +10,12 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 /**
- * Regression test for deep-review #33: a transient read failure on an existing JSON-fallback
- * file must **propagate** out of the serializer, not be swallowed as an empty store. If it
- * returned `emptyMap()`, datastore-core would cache that as the current state and the next
- * write would atomically overwrite the real file with empty — silently wiping every entry.
- * Letting it propagate leaves the file untouched (DataStore never writes on a failed read).
+ * A transient read failure on an existing JSON-fallback file must **propagate**
+ * out of the serializer, not be swallowed as an empty store. If it returned
+ * `emptyMap()`, datastore-core would cache that as the current state and the
+ * next write would atomically overwrite the real file with empty — silently
+ * wiping every entry. Letting it propagate leaves the file untouched
+ * (DataStore never writes on a failed read).
  */
 class JvmJsonSerializerReadFailureTest {
 
@@ -29,7 +30,7 @@ class JvmJsonSerializerReadFailureTest {
 
     @Test
     fun transientReadFailure_propagates_insteadOfReturningEmptyStore() {
-        // Pre-fix: readFrom caught IOException and returned emptyMap() → data wipe on next write.
+        // Swallowing this as emptyMap() would mean a data wipe on the next write.
         assertFailsWith<IOException> {
             runBlocking { serializer.readFrom(FailingInputStream()) }
         }

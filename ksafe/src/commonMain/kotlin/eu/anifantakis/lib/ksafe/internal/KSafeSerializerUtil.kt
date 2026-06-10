@@ -24,14 +24,12 @@ internal fun isStringSerializer(serializer: KSerializer<*>): Boolean {
  */
 @PublishedApi
 internal fun primitiveKindOrNull(serializer: KSerializer<*>): PrimitiveKind? {
-    // kotlinx-serialization's `.nullable` descriptor delegates `kind` (and
-    // `elementsCount`) to the wrapped type, so `T?` reports the same kind as
-    // `T`: `Int?` -> INT, `@Serializable class Foo?` -> CLASS. We must NOT
-    // descend via getElementDescriptor(0) on a nullable wrapper — for a
-    // nullable @Serializable class that would walk into the class's first
-    // *field* and misreport e.g. a class with a leading String field as
-    // PrimitiveKind.STRING, causing the stored JSON to be returned verbatim
-    // (ClassCastException: String cannot be cast to <Type>). See issue #31.
+    // kotlinx-serialization's `.nullable` descriptor delegates `kind` to the
+    // wrapped type, so `T?` reports the same kind as `T`. Do NOT descend via
+    // getElementDescriptor(0) on a nullable wrapper — for a nullable
+    // @Serializable class that walks into the class's first *field* and can
+    // misreport e.g. a class with a leading String field as
+    // PrimitiveKind.STRING, returning stored JSON verbatim.
     return serializer.descriptor.kind as? PrimitiveKind
 }
 
@@ -41,15 +39,13 @@ internal fun primitiveKindOrNull(serializer: KSerializer<*>): PrimitiveKind? {
  *
  * Custom serializers frequently declare a primitive descriptor kind
  * (`PrimitiveSerialDescriptor`) while their runtime values are NOT that Kotlin
- * primitive — `kotlin.time.Duration` and `kotlin.uuid.Uuid` are STRING-kind,
- * kotlinx-datetime types and the common hand-written custom-serializer pattern
- * likewise. The plain WRITE path dispatches on the runtime type and
- * JSON-encodes those values, so a read taking the primitive fast-path returned
- * the stored JSON verbatim (quote characters included) and the caller's
- * reified cast threw ClassCastException (review R5). Gating on the built-in
- * serialName keeps the fast-path exactly for the values the write path stores
- * raw, and routes everything else through the JSON branch that decodes them
- * correctly — making the read dispatch symmetric with the write dispatch.
+ * primitive — `kotlin.time.Duration`, `kotlin.uuid.Uuid`, and kotlinx-datetime
+ * types are STRING-kind, for example. The plain WRITE path dispatches on the
+ * runtime type and JSON-encodes those values, so the read fast-path must stay
+ * symmetric: gating on the built-in serialName keeps it exactly for values the
+ * write path stores raw, routing everything else through the JSON branch
+ * (otherwise the caller's reified cast gets stored JSON verbatim and throws
+ * ClassCastException).
  *
  * Nullable wrappers report the wrapped serialName plus a trailing `?`, hence
  * the suffix strip. Inline (value-class) descriptors are excluded outright.

@@ -35,10 +35,9 @@ class ObserveFromStorageTest {
         )
 
     /**
-     * Live mode (`observeExternalChanges = true`): every flow emission is
-     * propagated into the state via `updateFromFlow`, even after the user
-     * has NOT yet written — but stops once the user writes, so a stale disk echo
-     * can't clobber an in-flight write (deep-review #15).
+     * Live mode (`observeExternalChanges = true`): flow emissions propagate
+     * into the state until the user writes, after which stale disk echoes are
+     * suppressed so they can't clobber the in-flight write.
      */
     @Test
     fun observeFromStorage_liveMode_appliesUntilUserWrites_thenStopsClobbering() = runTest {
@@ -63,9 +62,8 @@ class ObserveFromStorageTest {
         advanceUntilIdle()
         assertEquals("second", state.value)
 
-        // After the user writes, a stale/older disk echo must NOT revert the write
-        // (the disk-derived flow lags optimistic writes). Pre-fix this clobbered
-        // "user_wrote" back to "stale_echo".
+        // After the user writes, a stale/older disk echo must NOT revert the
+        // write (the disk-derived flow lags optimistic writes).
         state.value = "user_wrote"
         flow.emit("stale_echo")
         advanceUntilIdle()
@@ -75,12 +73,10 @@ class ObserveFromStorageTest {
     }
 
     /**
-     * Review R45: the user-write guard must be precise, not permanent. Once the
-     * observed flow catches up with the user's own write (the echo arrives —
-     * the write committed and round-tripped through disk), genuinely newer
-     * external changes must reflect again, as the `scope` /
-     * `observeExternalChanges` KDocs promise. The old one-way latch silently
-     * disabled external reflection forever after the first local write.
+     * The user-write guard must be precise, not permanent: once the observed
+     * flow catches up with the user's own write (the echo arrives), genuinely
+     * newer external changes must reflect again, as the `scope` /
+     * `observeExternalChanges` KDocs promise.
      */
     @Test
     fun observeFromStorage_liveMode_resumesExternalReflection_afterEchoCatchesUp() = runTest {

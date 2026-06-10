@@ -75,17 +75,11 @@ suspend fun KSafe.getOrCreateSecret(
         when {
             stored.isNotEmpty() -> Base64.decode(stored)
 
-            // Empty value but the entry EXISTS on disk ⇒ the secret was created
-            // before but can't be read back now: the backing encryption key was
-            // invalidated/rotated/wiped, the key vault is temporarily unavailable,
-            // or the stored ciphertext is corrupt/tampered. `get` collapses all of
-            // these to the "" default (a transient "device is locked" failure would
-            // instead have thrown out of `get` before reaching here). Silently
-            // regenerating would mint a brand-new secret and PERMANENTLY orphan
-            // everything encrypted under the old one — e.g. a SQLCipher database or
-            // an HMAC chain becomes undecryptable, with no signal to the caller.
-            // Refuse and surface the condition instead (KSafe's "never silent data
-            // loss" contract).
+            // Empty value but the entry EXISTS on disk ⇒ the secret can't be read
+            // back (key invalidated/wiped, vault unavailable, or ciphertext
+            // corrupt) — `get` collapses all of these to the "" default. Silently
+            // regenerating would PERMANENTLY orphan everything encrypted under the
+            // old secret (e.g. a SQLCipher database), so refuse instead.
             getKeyInfo(storageKey) != null -> throw IllegalStateException(
                 "KSafe.getOrCreateSecret: a secret for key \"$key\" exists but could not be " +
                     "read back — the backing encryption key may have been invalidated or " +

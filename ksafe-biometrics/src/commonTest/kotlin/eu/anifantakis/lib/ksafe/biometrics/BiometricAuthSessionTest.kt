@@ -7,21 +7,14 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
- * Pins the two shared biometric-cache decisions that previously diverged across
- * the Android and Apple actuals.
- *
- * #40 — [BiometricAuthSession.shouldCache]: a duration <= 0 (the documented
- * opt-out) must NOT be cached. The old code gated the cache READ on
- * `duration > 0` but the WRITE on only `!= null`, so an opt-out call still
- * seeded the cache and a later longer-window call was granted with no prompt.
- *
- * #61 — [BiometricAuthSession.sessionKey]: a null (global) scope and a caller's
- * empty-string scope must occupy DISTINCT cache slots. The old code mapped both
- * to "", so a global authorization could satisfy an empty-scope call.
+ * Pins the shared biometric-cache decisions: [BiometricAuthSession.shouldCache]
+ * must treat `duration <= 0` (the documented opt-out) as non-caching, and
+ * [BiometricAuthSession.sessionKey] must keep the global (null) scope distinct
+ * from every caller-supplied scope, including the empty string.
  */
 class BiometricAuthSessionTest {
 
-    // ---- #40: shouldCache ----
+    // ---- shouldCache ----
 
     @Test
     fun shouldCache_isFalse_forNullDuration() {
@@ -30,7 +23,6 @@ class BiometricAuthSessionTest {
 
     @Test
     fun shouldCache_isFalse_forZeroDuration() {
-        // The exact opt-out value pinned as constructible by BiometricAuthorizationDurationTest.
         assertFalse(BiometricAuthSession.shouldCache(BiometricAuthorizationDuration(0L, "vault")))
     }
 
@@ -45,11 +37,10 @@ class BiometricAuthSessionTest {
         assertTrue(BiometricAuthSession.shouldCache(BiometricAuthorizationDuration(60_000L, null)))
     }
 
-    // ---- #61: sessionKey ----
+    // ---- sessionKey ----
 
     @Test
     fun sessionKey_null_differsFrom_emptyString() {
-        // The headline #61 collision: global (null) vs an empty caller scope.
         assertNotEquals(BiometricAuthSession.sessionKey(null), BiometricAuthSession.sessionKey(""))
     }
 

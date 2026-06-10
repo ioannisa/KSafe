@@ -4,19 +4,13 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * Serializes biometric-prompt presentation so at most **one** prompt is ever in flight.
+ * Serializes biometric-prompt presentation so at most one prompt is in flight.
  *
- * The Android `BiometricPrompt` is backed by a single activity-scoped `BiometricViewModel`
- * whose client callback is **overwritten** by each new `BiometricPrompt` construction, and a
- * second `authenticate()` while a prompt is already showing is silently dropped. So two
- * concurrent biometric requests (two biometric-gated reads launched in parallel, or a
- * double-tap) would stomp each other's callback: the user sees one prompt, exactly one
- * request is resumed, and the **other suspends forever** (deep-review #14).
- *
- * Routing every prompt through this gate makes concurrent callers **queue**: each shows its
- * prompt only after the previous one has fully resolved. Cancelling a waiting — or holding —
- * caller releases the gate (it's a plain [Mutex]), so a caller whose UI flow times out or is
- * cancelled can never permanently strand the next one.
+ * Android's `BiometricPrompt` shares an activity-scoped `BiometricViewModel`: each new prompt
+ * overwrites the previous client callback, and `authenticate()` while a prompt is showing is
+ * silently dropped — so concurrent requests would resume only one caller and strand the other.
+ * This gate makes callers queue instead. Cancellation of a waiting or holding caller releases
+ * the [Mutex], so a cancelled caller can never strand the next one.
  */
 internal class BiometricPromptGate {
     private val mutex = Mutex()

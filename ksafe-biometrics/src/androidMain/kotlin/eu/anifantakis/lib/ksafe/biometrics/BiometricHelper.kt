@@ -45,7 +45,7 @@ object BiometricHelper {
     private var currentAnyActivity: WeakReference<Activity>? = null
     private var isInitialized = false
 
-    /** Process-wide guard so only one biometric prompt is ever in flight (deep-review #14). */
+    /** Process-wide guard so only one biometric prompt is ever in flight. */
     private val promptGate = BiometricPromptGate()
 
     /**
@@ -64,7 +64,7 @@ object BiometricHelper {
      * Biometric prompt configuration. Can be customized by the app.
      */
     var promptTitle: String = "Authentication Required"
-    // Subtitle is now passed dynamically per-call, but we keep this as a default fallback
+    // Default fallback; the subtitle is normally passed per-call.
     var promptSubtitle: String = "Authenticate to access secure data"
 
     /**
@@ -313,8 +313,8 @@ object BiometricHelper {
 
         // Serialize prompt presentation: a second concurrent prompt would overwrite the
         // shared activity-scoped BiometricPrompt callback and silently drop its own
-        // authenticate(), stranding the first caller's coroutine forever (deep-review #14).
-        // The gate makes concurrent callers queue; the activity wait above stays outside it.
+        // authenticate(), stranding the first caller's coroutine forever. The gate makes
+        // concurrent callers queue; the activity wait above stays outside it.
         promptGate.withSinglePrompt {
             showBiometricPrompt(fragmentActivity, subtitle, allowDeviceCredentialFallback)
         }

@@ -141,7 +141,7 @@ internal class JvmSoftwareEncryption(
             } catch (e: LinkageError) {
                 vaults.degradeToLegacy(e)
             } catch (_: Throwable) {
-                // Pre-existing behaviour: swallow other failures on delete.
+                // Best-effort: swallow other failures on delete.
             }
             if (activeAtStart !== vaults.legacy) {
                 runCatching { vaults.legacy.delete(identifier) }
@@ -208,17 +208,13 @@ internal class JvmSoftwareEncryption(
                 resolveKeyVia(vaults.active, alias, create)
             } catch (e: LinkageError) {
                 // Runtime native-link / class-load failure on the active OS
-                // vault. Canonical case: Compose Desktop release distributable
-                // whose jlink-built JRE is missing `jdk.unsupported`, so JNA
-                // throws `NoClassDefFoundError: sun/misc/Unsafe` on first real
-                // call. Self-test at construction passed (full JDK present
-                // there) but the in-process JNA classloading fails now.
-                //
-                // Without this catch the error propagates up through
-                // encrypt/decrypt into KSafeCore.processBatch, which silently
-                // drops every batch — the data-loss symptom reported as #32.
-                // Degrade the provider (vaults.active is then === vaults.legacy)
-                // and retry on the legacy software vault so writes continue.
+                // vault. Canonical case: a jlink-built JRE missing
+                // `jdk.unsupported`, so JNA throws `NoClassDefFoundError:
+                // sun/misc/Unsafe` on first real call even though the
+                // construction-time self-test passed. Left uncaught this
+                // propagates into KSafeCore.processBatch and silently drops
+                // every batch. Degrade the provider and retry on the legacy
+                // software vault so writes continue.
                 vaults.degradeToLegacy(e)
                 resolveKeyVia(vaults.active, alias, create)
             }
@@ -234,35 +230,31 @@ internal class JvmSoftwareEncryption(
      * different vault if [active] surfaces a runtime native-link error.
      * Returns null when [create] is false and no key exists.
      *
-     * Legacy-first when an OS-backed vault is active.
-     *
-     * The legacy DataStore key, WHEN PRESENT, is authoritative: it provably
-     * encrypted this datastore's on-disk ciphertext. The OS vault (Keychain /
-     * DPAPI / Secret Service) is global-per-user and long-lived — it can hold
-     * a STALE key under the same `<file>:<alias>` from a prior KSafe lifecycle
-     * (reinstall, data-clear, backup restore, mixed 2.0/2.1 runs). The old
-     * code trusted the OS vault first and migrated only when it was empty, so
-     * a stale OS key shadowed the real legacy key: every encrypted value
-     * failed to decrypt and silently reset to its default (plaintext values,
-     * needing no key, survived). See the 2.0.0→2.1.0 data-loss regression.
+     * Legacy-first when an OS-backed vault is active: the legacy DataStore
+     * key, WHEN PRESENT, is authoritative — it provably encrypted this
+     * datastore's on-disk ciphertext. The OS vault (Keychain / DPAPI / Secret
+     * Service) is global-per-user and long-lived, so it can hold a STALE key
+     * under the same `<file>:<alias>` from a prior KSafe lifecycle (reinstall,
+     * data-clear, backup restore). Trusting the OS vault first would let that
+     * stale key shadow the real legacy key and silently reset every encrypted
+     * value to its default.
      *
      * So: if a legacy key exists, migrate it now — [migrateLegacyLocked]
      * overwrites any stale OS-vault entry, re-reads to verify, then scrubs
      * the legacy copy — and use it. Only fall back to the OS vault when
-     * there is NO legacy key (already migrated and scrubbed, or a genuinely
-     * fresh alias). Migration only ever moves an *existing* key, so it is
-     * safe on the decrypt (create = false) path.
+     * there is NO legacy key. Migration only ever moves an *existing* key,
+     * so it is safe on the decrypt (create = false) path.
      */
     private fun resolveKeyVia(active: JvmKeyVault, alias: String, create: Boolean): SecretKey? {
         val keyBytes: ByteArray? =
             if (active !== vaults.legacy) {
                 // Last probe before declaring the key absent: released
                 // 2.1.0/2.1.1 derived the OS-vault namespace from the launcher,
-                // so a stable-launcher app upgrading to the constant default
-                // namespace finds its real keys only under the OLD derived
-                // namespace. recoverFromLegacyNamespace migrates on hit; a true
-                // miss everywhere is what makes "No encryption key found" (and
-                // the orphan sweep it triggers) safe to report (review R6).
+                // so an app upgrading to the constant default namespace finds
+                // its real keys only under the OLD derived namespace.
+                // recoverFromLegacyNamespace migrates on hit; only a true miss
+                // everywhere makes "No encryption key found" (and the orphan
+                // sweep it triggers) safe to report.
                 migrateLegacyLocked(alias)
                     ?: active.get(alias)
                     ?: vaults.recoverFromLegacyNamespace(alias)
@@ -275,18 +267,15 @@ internal class JvmSoftwareEncryption(
             !create -> null
             vaults.osVaultUnavailable -> {
                 // An OS vault exists for this platform but was unreachable at
-                // construction (locked Keychain / login keyring not yet up).
-                // The real key for this alias most likely lives in that OS
-                // store. Minting a fresh key into the legacy DataStore here
-                // would (a) be persisted into the migration source and (b) be
-                // trusted as authoritative by the next healthy launch's
-                // legacy-first migration, overwriting the real OS-vault key and
-                // destroying everything encrypted under it (deep-review #2).
-                // Fail closed instead: the existing on-disk ciphertext stays
-                // intact and recovers on the next launch when the OS store is
-                // reachable. (A genuine pre-2.0 legacy key for this alias would
-                // have been returned above via `keyBytes`, so the upgrade path
-                // is unaffected.)
+                // construction (locked Keychain / login keyring not yet up), so
+                // the real key for this alias most likely lives there. Minting
+                // a fresh key into the legacy DataStore would be trusted as
+                // authoritative by the next healthy launch's legacy-first
+                // migration, overwriting the real OS-vault key and destroying
+                // everything encrypted under it. Fail closed instead: the
+                // on-disk ciphertext stays intact and recovers once the OS
+                // store is reachable. (A genuine legacy key for this alias
+                // would already have been returned above via `keyBytes`.)
                 throw IllegalStateException(
                     "KSafe: OS key vault is unavailable (locked/unreachable); " +
                         "refusing to create a key for identifier: $alias to avoid " +

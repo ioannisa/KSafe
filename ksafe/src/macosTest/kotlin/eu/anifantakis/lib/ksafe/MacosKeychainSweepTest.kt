@@ -15,9 +15,9 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Regression test for deep-review #9: the Keychain orphan sweep must NOT run on macOS, whose
- * shared per-user login keychain (no app-identity scoping) would let one KSafe-using app's
- * sweep delete another app's keys. These tests run natively on macOS
+ * The Keychain orphan sweep must NOT run on macOS, whose shared per-user login
+ * keychain (no app-identity scoping) would let one KSafe-using app's sweep
+ * delete another app's keys. These tests run natively on macOS
  * (`Platform.osFamily == MACOSX`).
  */
 class MacosKeychainSweepTest {

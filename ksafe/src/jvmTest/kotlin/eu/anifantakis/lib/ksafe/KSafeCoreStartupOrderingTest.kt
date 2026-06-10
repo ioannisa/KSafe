@@ -16,35 +16,31 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Regression coverage for the 1.x → 2.0 Apple-platform Secure Enclave
- * data-loss bug.
+ * Pins the startup ordering that protects 1.x → 2.0 Apple-platform Secure
+ * Enclave data: [KSafeCore.startBackgroundCollector] must invoke the
+ * `migrateAccessPolicy` lambda only *after* the first
+ * [KSafePlatformStorage.snapshotFlow] emission has populated the cache.
  *
- * **The failure mode this test locks out** — pre-fix,
- * [KSafeCore.startBackgroundCollector] invoked the `migrateAccessPolicy`
- * lambda *before* subscribing to [KSafePlatformStorage.snapshotFlow]. On
- * Apple platforms that lambda is `cleanupOrphanedKeychainEntries`, which
- * starts by calling `storage.snapshot()` to compute the live key set. If
- * that call raced the 1.x → 2.0 path migration in `KSafe.apple.kt` (where
- * the DataStore file gets `moveItemAtPath`-ed from `NSDocumentDirectory`
- * to `NSApplicationSupportDirectory` immediately before DataStore is
- * constructed), it could return an empty snapshot — and the sweep would
- * interpret every Keychain entry as orphaned and call
- * `engine.deleteKeySuspend(...)`. That destroys the SE EC private keys
- * irreversibly: ciphertext that survived the move is then permanently
- * undecryptable because the SE never exports private keys.
+ * On Apple platforms that lambda is `cleanupOrphanedKeychainEntries`, which
+ * starts by calling `storage.snapshot()` to compute the live key set. Run
+ * too early, that call can race the 1.x → 2.0 path migration in
+ * `KSafe.apple.kt` (where the DataStore file gets `moveItemAtPath`-ed from
+ * `NSDocumentDirectory` to `NSApplicationSupportDirectory` immediately
+ * before DataStore is constructed) and return an empty snapshot — the sweep
+ * would then interpret every Keychain entry as orphaned and call
+ * `engine.deleteKeySuspend(...)`, destroying the SE EC private keys
+ * irreversibly (the SE never exports private keys).
  *
- * **The post-fix invariant we assert here**: the cleanup hook MUST run
- * *after* the first `snapshotFlow` emission has populated the cache. We
- * verify that with a fake [KSafePlatformStorage] that records the order
- * of every call (snapshot, snapshotFlow subscription/emission,
- * applyBatch). The fake records into an [AtomicReference]-backed list so
- * the multi-threaded interleaving across `Dispatchers.Default` (where
- * [KSafeCore]'s collector and write scopes run) and the test coroutine
- * is observed safely on every target.
+ * The ordering is verified with a fake [KSafePlatformStorage] that records
+ * the order of every call (snapshot, snapshotFlow subscription/emission,
+ * applyBatch), recording into an [AtomicReference]-backed list so the
+ * multi-threaded interleaving across `Dispatchers.Default` (where
+ * [KSafeCore]'s collector and write scopes run) and the test coroutine is
+ * observed safely on every target.
  *
- * If a future refactor moves `migrateAccessPolicy()` back above the
- * snapshot subscription this test will fail with a clear ordering
- * mismatch in the events list.
+ * If a future refactor moves `migrateAccessPolicy()` above the snapshot
+ * subscription this test will fail with a clear ordering mismatch in the
+ * events list.
  */
 class KSafeCoreStartupOrderingTest {
 

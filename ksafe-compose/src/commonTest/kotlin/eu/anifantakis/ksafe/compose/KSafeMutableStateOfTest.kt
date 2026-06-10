@@ -108,11 +108,9 @@ abstract class KSafeMutableStateOfTest {
         // Roundtrip — auto-detection on read decrypts and returns the original value.
         assertEquals("SecretData", ksafe.getDirect("encrypted_key", "fallback"))
 
-        // 2.0 way to verify "encrypted by default": the key's metadata reports a
-        // non-null protection. Pre-2.0 the test asserted that an `encrypted = false`
-        // read returned defaults (proving on-disk data was ciphertext); in 2.0 the
-        // deprecated `encrypted` parameter is ignored and protection is auto-detected
-        // from metadata, so we check the metadata directly via `getKeyInfo`.
+        // Encryption-by-default is observable via metadata: the deprecated
+        // `encrypted` read parameter is ignored and protection is auto-detected,
+        // so check that `getKeyInfo` reports a non-null protection tier.
         val keyInfo = ksafe.getKeyInfo("encrypted_key")
         assertNotNull(keyInfo, "Key info should exist for stored value")
         assertNotNull(
@@ -134,9 +132,9 @@ abstract class KSafeMutableStateOfTest {
         // Roundtrip works whether we ask via the auto-detected or the legacy path.
         assertEquals("PlainData", ksafe.getDirect("plain_key", "fallback"))
 
-        // Plain writes record `protection = null` in metadata — `getKeyInfo` makes
-        // the difference observable in 2.0 even though the deprecated `encrypted`
-        // parameter on reads no longer affects behaviour.
+        // Plain writes record `protection = null` in metadata — `getKeyInfo`
+        // makes the difference observable since the deprecated `encrypted`
+        // read parameter no longer affects behaviour.
         val keyInfo = ksafe.getKeyInfo("plain_key")
         assertNotNull(keyInfo, "Key info should exist for stored value")
         assertNull(

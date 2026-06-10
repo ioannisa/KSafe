@@ -10,15 +10,15 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Tests for the three fixes claimed in the v1.6.0 CHANGELOG:
+ * Concurrency tests for the encryption engine's key handling:
  *
- * 1. Key generation race condition (JVM)
- * 2. deleteKey race with key cache repopulation (Android + JVM)
- * 3. Replaced intern() lock strategy with dedicated lock map (Android + JVM)
+ * 1. Concurrent key generation for one alias must yield a single key (JVM)
+ * 2. deleteKey must synchronize with key-cache repopulation (Android + JVM)
+ * 3. Per-alias locking via a dedicated lock map, not intern() (Android + JVM)
  *
- * These tests run on JVM only. The Android side of fixes 2 and 3 cannot be
- * tested here (requires Android Keystore), but the JVM code paths exercise
- * the same locking patterns.
+ * These tests run on JVM only. The Android side of 2 and 3 cannot be tested
+ * here (requires Android Keystore), but the JVM code paths exercise the same
+ * locking patterns.
  */
 class Jvm160FixesTest {
 
@@ -44,24 +44,21 @@ class Jvm160FixesTest {
     }
 
     // ========================================================================
-    // FIX 1: Key generation race condition (JVM)
+    // KEY GENERATION RACE (JVM)
     //
-    // Concurrent putEncrypted calls for the same key alias could trigger
-    // parallel key generation, producing different encryption keys. One would
+    // Concurrent putEncrypted calls for the same key alias must not trigger
+    // parallel key generation producing different encryption keys — one would
     // be stored while the other was used to encrypt data, causing permanent
-    // data loss on next read.
-    //
-    // The fix adds a ConcurrentHashMap<String, SecretKey> key cache and
-    // per-alias lock in JvmSoftwareEncryption.
+    // data loss on next read. JvmSoftwareEncryption guards this with a
+    // ConcurrentHashMap<String, SecretKey> key cache and a per-alias lock.
     // ========================================================================
 
     /**
-     * Verifies that concurrent encrypted writes to the SAME key all use the
-     * same encryption key — data written by any thread is readable afterward.
-     *
-     * Without the fix, parallel key generation could produce different keys,
-     * and only the last-written key would be stored. Values encrypted with
-     * the other (lost) key become permanently unreadable.
+     * Concurrent encrypted writes to the SAME key must all use the same
+     * encryption key — data written by any thread is readable afterward. If
+     * parallel key generation produced different keys, only the last-written
+     * key would be stored and values encrypted with the other (lost) key would
+     * be permanently unreadable.
      */
     @Test
     fun testConcurrentEncryptedWritesSameKey_noDataLoss() = runTest {
@@ -73,8 +70,8 @@ class Jvm160FixesTest {
         val errors = AtomicInteger(0)
         val latch = CountDownLatch(1)
 
-        // All threads write to the SAME key — this is the scenario that
-        // triggers parallel key generation without the fix.
+        // All threads write to the SAME key — the scenario that would trigger
+        // parallel key generation without per-alias locking.
         val jobs = (0 until threads).map { t ->
             launch(Dispatchers.Default) {
                 latch.await() // start simultaneously
@@ -111,11 +108,9 @@ class Jvm160FixesTest {
     }
 
     /**
-     * Verifies that concurrent encrypted writes to DIFFERENT keys each get
-     * their own stable encryption key — no cross-contamination.
-     *
-     * Without key caching and per-alias locks, concurrent generation for
-     * different aliases could still interfere due to DataStore contention.
+     * Concurrent encrypted writes to DIFFERENT keys must each get their own
+     * stable encryption key — no cross-contamination, even under DataStore
+     * contention.
      */
     @Test
     fun testConcurrentEncryptedWritesDifferentKeys_allReadable() = runTest {
@@ -204,25 +199,20 @@ class Jvm160FixesTest {
     }
 
     // ========================================================================
-    // FIX 2: deleteKey race with key cache repopulation (Android + JVM)
+    // deleteKey VS KEY-CACHE REPOPULATION (Android + JVM)
     //
-    // Pre-existing gap: deleteKey removed the key from cache and storage
-    // without holding the per-alias lock used by getOrCreateSecretKey.
-    // A concurrent encrypt/decrypt could re-populate the cache with a
-    // now-deleted key.
-    //
-    // The fix makes deleteKey hold synchronized(lockFor(identifier)) — the
-    // same lock as getOrCreateSecretKey.
+    // deleteKey must hold synchronized(lockFor(identifier)) — the same
+    // per-alias lock as getOrCreateSecretKey. Removing the key from cache and
+    // storage without it lets a concurrent encrypt/decrypt re-populate the
+    // cache with a now-deleted key.
     // ========================================================================
 
     /**
-     * Interleaves deleteKey with concurrent encrypted reads/writes on the
-     * same key alias. After deletion, subsequent writes must generate a new
-     * key and all data written after deletion must be readable.
-     *
-     * Without the fix: a concurrent getOrCreateSecretKey could re-populate
-     * the cache with the old (now-deleted) key. Future operations would
-     * succeed in-memory but after restart the ciphertext is undecryptable.
+     * Interleaves deleteKey with concurrent encrypted reads/writes on the same
+     * key alias. After deletion, subsequent writes must generate a new key and
+     * all data written after deletion must be readable; a stale cached key
+     * would let operations succeed in-memory while leaving the ciphertext
+     * undecryptable after restart.
      */
     @Test
     fun testDeleteKeyDoesNotLeaveStaleCache() = runTest {
@@ -237,9 +227,9 @@ class Jvm160FixesTest {
             ksafe.getDirect("delete_race_key", "DEFAULT")
         )
 
-        // Phase 2: Delete the key and immediately write a new value.
-        // Without the fix, a concurrent getOrCreateSecretKey during delete
-        // could repopulate the cache with the old key.
+        // Phase 2: Delete the key and immediately write a new value. A
+        // concurrent getOrCreateSecretKey during delete must not repopulate
+        // the cache with the old key.
         ksafe.delete("delete_race_key")
 
         // After delete, reading should return default
@@ -357,15 +347,12 @@ class Jvm160FixesTest {
     }
 
     // ========================================================================
-    // FIX 3: Replaced intern() lock strategy with dedicated lock map
+    // PER-ALIAS LOCKING VIA A DEDICATED LOCK MAP
     //
-    // v1.4.1 introduced synchronized(alias.intern()) on Android. The JVM
-    // implementation extended this pattern. However, intern() uses the JVM's
-    // global string pool as lock objects — with many dynamic aliases this
-    // creates unnecessary pool pressure.
-    //
-    // The fix replaces intern() with ConcurrentHashMap<String, Any> lock map
-    // using computeIfAbsent on both platforms.
+    // Lock objects come from a ConcurrentHashMap<String, Any> (computeIfAbsent)
+    // rather than synchronized(alias.intern()) — intern() uses the JVM's
+    // global string pool as lock objects, which pressures the pool with many
+    // dynamic aliases.
     //
     // These tests verify:
     // - Many unique aliases don't cause issues (no shared lock contention)
@@ -479,15 +466,11 @@ class Jvm160FixesTest {
     }
 
     /**
-     * Regression test: verifies that string identity doesn't matter for
-     * locking. With intern(), two separately-constructed strings with the
-     * same content might or might not resolve to the same lock object
-     * (depending on JVM internals). With ConcurrentHashMap.computeIfAbsent,
-     * lookup is by equals(), guaranteeing stable lock identity.
-     *
-     * This test constructs key names dynamically (not compile-time constants)
-     * to ensure they're different String objects, then verifies concurrent
-     * access still works correctly.
+     * String identity must not matter for locking: ConcurrentHashMap's
+     * computeIfAbsent looks up by equals(), so two separately-constructed
+     * strings with the same content share one lock object. Key names are
+     * built dynamically (not compile-time constants) to ensure they are
+     * different String objects.
      */
     @Test
     fun testDynamicStringAliasesShareLock() = runTest {

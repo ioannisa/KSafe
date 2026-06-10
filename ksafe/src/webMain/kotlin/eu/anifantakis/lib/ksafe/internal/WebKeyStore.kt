@@ -2,28 +2,19 @@ package eu.anifantakis.lib.ksafe.internal
 
 /**
  * Non-extractable AES-GCM key storage for the web (wasmJs + js), backed by
- * **WebCrypto + IndexedDB**.
+ * WebCrypto + IndexedDB.
  *
- * The previous web engine generated an *extractable* key, exported its raw
- * bytes and Base64'd them into `localStorage` — recoverable by any XSS, any
- * extension with storage access, or anyone reading the browser profile. This
- * replacement instead:
+ * - Keys are generated/imported with `extractable = false` and persisted as live
+ *   `CryptoKey` objects in IndexedDB (structured clone), so raw key material is
+ *   never exposed to JS.
+ * - A legacy raw key found in `localStorage` is migrated: imported as a
+ *   non-extractable key, then the `localStorage` entry is deleted.
+ * - Framing is a 12-byte random IV prepended to `ciphertext‖tag`, matching the
+ *   layout older versions wrote, so existing data still decrypts after migration.
  *
- * - generates (or imports) the AES-GCM key with `extractable = false`,
- * - persists the live `CryptoKey` object in IndexedDB via structured clone,
- *   so the raw key material is never exposed to JS again, and
- * - migrates a legacy `localStorage` raw key by importing it as a
- *   non-extractable key, then deleting the `localStorage` entry.
- *
- * The AES-GCM framing (12-byte random IV prepended to `ciphertext‖tag`)
- * matches the default layout produced by the prior `cryptography-kotlin`
- * WebCrypto AES.GCM engine, so data written by older versions still decrypts
- * once its key has migrated.
- *
- * All payloads cross the JS-interop boundary as Base64 strings so the
- * js (`external`) and wasmJs (`@JsFun`) bindings stay primitive-only. The
- * actual implementations bridge the underlying Promises to `suspend` via
- * `kotlinx.coroutines.await`.
+ * All payloads cross the JS-interop boundary as Base64 strings so the js
+ * (`external`) and wasmJs (`@JsFun`) bindings stay primitive-only; the actuals
+ * bridge the underlying Promises to `suspend`.
  */
 
 /** Ensures a non-extractable key exists for [idbName], migrating [legacyRawKeyB64] if provided. */

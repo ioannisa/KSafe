@@ -10,16 +10,17 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Regression tests for #6: on JVM, an explicitly-set `appNamespace` must isolate
- * the DATA FILE (per-namespace subdirectory), not just the OS-vault keys — so two
- * apps sharing a `fileName` on one OS account can't clobber a single file, and one
- * app's `clearAll()` can't wipe another's data. Apps that don't set `appNamespace`
- * keep the historical un-namespaced path. Existing un-namespaced data is migrated
- * (copied) into the subdir on first run with a namespace.
+ * On JVM, an explicitly-set `appNamespace` must isolate the DATA FILE
+ * (per-namespace subdirectory), not just the OS-vault keys — so two apps
+ * sharing a `fileName` on one OS account can't clobber a single file, and one
+ * app's `clearAll()` can't wipe another's data. Apps that don't set
+ * `appNamespace` keep the historical un-namespaced path. Existing
+ * un-namespaced data is migrated (copied) into the subdir on first run with a
+ * namespace.
  *
  * Uses a temp `baseDir` + `FakeEncryption` so nothing touches the real
- * `~/.eu_anifantakis_ksafe` or the OS keychain; the tests exercise the FILE-path
- * isolation, which is the fix.
+ * `~/.eu_anifantakis_ksafe` or the OS keychain; the tests exercise the
+ * FILE-path isolation.
  */
 class JvmAppNamespaceFileIsolationTest {
 

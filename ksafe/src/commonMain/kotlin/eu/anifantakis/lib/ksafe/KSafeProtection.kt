@@ -15,8 +15,6 @@ enum class KSafeProtection {
      * - **iOS:** AES-256-GCM with keys in the Keychain.
      * - **JVM:** AES-256-GCM with software-backed keys.
      * - **WASM:** AES-256-GCM via WebCrypto.
-     *
-     * Equivalent to the old `encrypted = true`.
      */
     DEFAULT,
 

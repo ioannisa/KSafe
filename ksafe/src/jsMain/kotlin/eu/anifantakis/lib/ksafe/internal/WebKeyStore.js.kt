@@ -9,10 +9,9 @@ import kotlin.js.Promise
  * The WebCrypto + IndexedDB helper is defined entirely in a self-contained JS
  * IIFE that **returns a dispatcher function**; Kotlin then invokes that
  * function with normal arguments. Crucially, the `js(...)` string references no
- * Kotlin identifiers — referencing function parameters from inside `js(...)`
- * is unreliable under the Kotlin/JS IR compiler (it renames them, which
- * surfaced as a runtime `ReferenceError`). The JS body is kept behaviourally
- * identical to the wasmJs `@JsFun` variant.
+ * Kotlin identifiers — the Kotlin/JS IR compiler renames function parameters,
+ * so referencing them from inside `js(...)` fails at runtime. The JS body is
+ * kept behaviourally identical to the wasmJs `@JsFun` variant.
  */
 private val dispatch: (String, String, String?) -> Promise<Any?> = js(
     """
@@ -38,8 +37,7 @@ private val dispatch: (String, String, String?) -> Promise<Any?> = js(
           r.onerror = function() { rej(r.error); };
         }); }); };
         // Atomic create: 'add' (unlike 'put') fails with ConstraintError if the key
-        // already exists. Resolves true on insert, false if another context won the
-        // race — the single source of cross-tab key-creation truth (deep-review #12).
+        // already exists. Resolves true on insert, false if another context won the race.
         var idbAdd = function(n, v) { return open().then(function(db) { return new Promise(function(res, rej) {
           var r = db.transaction(STORE, 'readwrite').objectStore(STORE).add(v, n);
           r.onsuccess = function() { res(true); };
@@ -54,37 +52,27 @@ private val dispatch: (String, String, String?) -> Promise<Any?> = js(
         var u2b = function(buf) { var u = new Uint8Array(buf); var s = ''; for (var i = 0; i < u.length; i++) s += String.fromCharCode(u[i]); return btoa(s); };
         var mem = new Map();
         var subtle = G.crypto.subtle;
-        // Cross-tab key-invalidation: the page-local `mem` cache holds CryptoKey handles,
-        // but a key deleted in ANOTHER tab (clearAll / logout) leaves this tab's `mem` entry
-        // stale — encrypting under a key that no longer exists durably, so the writes become
-        // unrecoverable after reload (deep-review #36). A BroadcastChannel lets the deleting
-        // tab evict the key from every other tab's `mem`, so the next encrypt re-reads
-        // IndexedDB (converging on a re-created shared key, or failing loudly) instead of
-        // silently using the dead key. Feature-detected — older engines just keep the
-        // pre-existing (single-tab-correct) behaviour.
+        // Cross-tab key-invalidation: a key deleted in another tab (clearAll / logout)
+        // would leave this tab's page-local `mem` entry stale — it would keep encrypting
+        // under a durably-deleted key and lose those writes after reload. The deleting tab
+        // broadcasts an eviction so other tabs drop the key from `mem` and re-read
+        // IndexedDB on next use. Feature-detected.
         var bc = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('ksafe-keys') : null;
         if (bc) bc.onmessage = function(e) { if (e && e.data && e.data.op === 'evict' && e.data.name) mem.delete(e.data.name); };
-        // Legacy-first: a legacy localStorage raw key, WHEN PRESENT, is
-        // authoritative — it provably encrypted the current ciphertext. Import
-        // it and OVERWRITE any (possibly stale, from a prior lifecycle)
-        // IndexedDB key under this name. Only fall back to an existing IDB key
-        // when there is no legacy key. (Old code trusted an existing IDB key
-        // first and ignored legacy → a stale IDB key shadowed the real key and
-        // every encrypted value silently reset; see the 2.0.0→2.1.0 data-loss
-        // regression — JVM had the identical flaw.)
+        // Legacy-first: a legacy localStorage raw key, when present, is authoritative —
+        // it provably encrypted the current ciphertext. Import it and overwrite any
+        // (possibly stale) IndexedDB key under this name; only fall back to an existing
+        // IDB key when there is no legacy key.
         var ensure = function(name, legacy) {
-          // Legacy is authoritative over EVERYTHING — the in-memory `mem`
-          // cache (page-global, shared across instances, can hold a stale
-          // entry from a prior lifecycle) AND any IndexedDB key. So the
-          // legacy import/overwrite must precede the mem short-circuit.
+          // The legacy import/overwrite must precede the mem short-circuit:
+          // the page-global `mem` cache can hold a stale entry too.
           if (legacy) { return subtle.importKey('raw', b2u(legacy), 'AES-GCM', false, ['encrypt', 'decrypt']).then(function(nk) { return idbPut(name, nk).then(function() { mem.set(name, nk); return null; }); }); }
           if (mem.has(name)) return Promise.resolve(null);
           return idbGet(name).then(function(k) {
             if (k) { mem.set(name, k); return null; }
-            // Create via atomic 'add', not 'put': if two same-origin tabs both reach
-            // here on first launch, only one 'add' wins; the loser adopts the winner's
-            // key instead of keeping its own page-local key and writing ciphertext that
-            // no other context can ever decrypt (deep-review #12).
+            // Create via atomic 'add', not 'put': if two same-origin tabs race on first
+            // launch, only one 'add' wins and the loser adopts the winner's key instead
+            // of writing ciphertext no other context can decrypt.
             return subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']).then(function(nk) {
               return idbAdd(name, nk).then(function(added) {
                 if (added) { mem.set(name, nk); return null; }

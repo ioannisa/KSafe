@@ -8,23 +8,17 @@ import java.io.File
 /**
  * Android-specific security checker implementation.
  *
- * IMPORTANT DISCLAIMER: Root detection is a cat-and-mouse game. Sophisticated
- * root-hiding tools (e.g., Magisk DenyList/Hide, Shamiko) can bypass most or all
- * of these checks. This implementation provides reasonable detection for casual
- * rooting but cannot guarantee detection against determined users with advanced
- * hiding tools. For high-security applications, consider additional measures
- * like Google Play Integrity API.
+ * Root detection is best-effort: hiding tools (Magisk DenyList/Hide, Shamiko) can
+ * bypass most or all of these checks. For high-security applications, consider
+ * additional measures like the Google Play Integrity API.
  *
- * In addition to the file/package probes (which modern Android's app sandbox
- * frequently defeats — `File.exists("/system/xbin/su")` returns false even when
- * the binary is present, because SELinux denies the `untrusted_app` domain access
- * to `su_exec`), this checker treats `userdebug`/`eng` builds (and `test-keys`
- * signing) as rooted. Such images — Google-APIs emulator system images and
- * engineering devices — ship `su` and permit `adb root` by construction. These
- * build signals are read from the public [Build] fields and
- * `android.os.SystemProperties` (not a `getprop` subprocess), so they survive the
- * app sandbox where the path probes do not. Note that `user`-build emulators
- * (Google Play / foldable images) are signed `dev-keys` yet are *not* rooted — the
+ * The file/package probes are often defeated by the app sandbox — SELinux denies
+ * the `untrusted_app` domain access to `su_exec`, so `File.exists("/system/xbin/su")`
+ * can return false even when the binary is present. The build-signal checks —
+ * `userdebug`/`eng` build type or `test-keys` signing, read via the public [Build]
+ * fields and `android.os.SystemProperties` (not a `getprop` subprocess) — survive
+ * the sandbox; such images ship `su` and permit `adb root` by construction. Note
+ * that `user`-build emulators are signed `dev-keys` yet are *not* rooted — the
  * build *type*, not the signing tag, is what distinguishes them.
  */
 internal actual object SecurityChecker {
@@ -274,18 +268,16 @@ internal actual object SecurityChecker {
  * Pure predicate: do this build's type/tags indicate a rooted-capable image?
  *
  * The reliable signal is the **build type**: `userdebug`/`eng` system builds ship
- * `su`, allow `adb root`, and expose writable system partitions by construction —
- * that is exactly what a Google-APIs emulator image or an engineering device is.
+ * `su`, allow `adb root`, and expose writable system partitions by construction.
  * `test-keys` signing (an AOSP/custom ROM signed with the public test keys, never a
- * retail device) is kept as a secondary indicator.
+ * retail device) is a secondary indicator.
  *
- * Deliberately does **not** key off `dev-keys`: modern Google emulator system
- * images are signed `dev-keys` for *both* `user` and `userdebug` builds, so the tag
- * says nothing about root. A `user`-build emulator (Google Play / "Pixel … Fold"
- * images — no `su`, `ro.debuggable=0`, `adb root` refused) is not rooted and must
- * not be flagged; only the build *type* separates it from a rooted `userdebug`
- * image. Extracted as a top-level function over the public [Build] fields so it is
- * deterministically unit-testable.
+ * Deliberately does **not** key off `dev-keys`: modern Google emulator system images
+ * are signed `dev-keys` for *both* `user` and `userdebug` builds, so the tag says
+ * nothing about root — a `user`-build emulator (no `su`, `ro.debuggable=0`,
+ * `adb root` refused) must not be flagged; only the build *type* separates it from a
+ * rooted `userdebug` image. Top-level function over the public [Build] fields so it
+ * is deterministically unit-testable.
  */
 internal fun isRootIndicatingBuild(buildType: String?, buildTags: String?): Boolean {
     val dangerousType = buildType == "userdebug" || buildType == "eng"

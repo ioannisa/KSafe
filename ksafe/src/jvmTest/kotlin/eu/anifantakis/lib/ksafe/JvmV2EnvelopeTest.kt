@@ -206,12 +206,12 @@ class JvmV2EnvelopeTest {
 
     @Test
     fun clearAllDeletesPerEntryHardwareIsolatedKeyNotJustMaster() = runTest {
-        // Regression: clearAll used to delete only the master alias. Per-entry
-        // HARDWARE_ISOLATED keys (and all legacy v1 keys) live OUTSIDE the
+        // clearAll must explicitly delete per-entry HARDWARE_ISOLATED keys (and
+        // legacy v1 keys), not just the master alias: they live OUTSIDE the
         // DataStore on the real OS-vault (Keychain/DPAPI/Secret Service) and web
-        // (IndexedDB) backends, so wiping storage doesn't reclaim them — and those
-        // platforms have no startup orphan sweep for engine keys. They leaked
-        // across clearAll() cycles. clearAll must now explicitly delete them.
+        // (IndexedDB) backends, so wiping storage doesn't reclaim them — and
+        // those platforms have no startup orphan sweep for engine keys, so they
+        // would leak across clearAll() cycles.
         //
         // FakeEncryption records every deleteKey identifier, so we can assert the
         // engine was asked to drop the per-entry alias regardless of where a real
@@ -243,12 +243,12 @@ class JvmV2EnvelopeTest {
 
     @Test
     fun clearAll_onFreshLazyInstance_stillDeletesPerEntryKeys() = runTest {
-        // Regression for the lazyLoad gap: clearAll reads protectionMap to find
-        // per-entry engine keys. If the cache isn't preloaded (lazyLoad, or
-        // before the first snapshot), that map is empty and the keys leak. The
-        // fix calls ensureCacheReadySuspend() first. Here we seed a
-        // HARDWARE_ISOLATED entry on disk, reopen LAZILY, and call clearAll() as
-        // the very first operation — it must still delete the per-entry key.
+        // clearAll reads protectionMap to find per-entry engine keys. If the
+        // cache isn't preloaded (lazyLoad, or before the first snapshot), that
+        // map is empty and the keys would leak — clearAll must load the cache
+        // first (ensureCacheReadySuspend). Here we seed a HARDWARE_ISOLATED
+        // entry on disk, reopen LAZILY, and call clearAll() as the very first
+        // operation — it must still delete the per-entry key.
         val fileName = JvmKSafeTest.generateUniqueFileName()
 
         val seed = KSafe(fileName = fileName, testEngine = FakeEncryption())

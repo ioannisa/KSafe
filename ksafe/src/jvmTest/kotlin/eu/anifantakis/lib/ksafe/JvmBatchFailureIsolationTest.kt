@@ -10,12 +10,10 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * Regression tests for the write-coalescer's failure handling.
- *
- * Deep-review findings:
- *  - #4: one failing encrypt inside a coalesced batch must NOT drop the other
- *    (unrelated) writes that merely shared the 16 ms window.
- *  - #3: a write that fails to persist must NOT leave its optimistic value
+ * Tests for the write-coalescer's failure handling:
+ *  - one failing encrypt inside a coalesced batch must NOT drop the other
+ *    (unrelated) writes that merely shared the 16 ms window;
+ *  - a write that fails to persist must NOT leave its optimistic value
  *    permanently served from the cache — the optimistic state is rolled back so
  *    reads fall back to the prior persisted value (or the default).
  *
@@ -69,7 +67,7 @@ class JvmBatchFailureIsolationTest {
             "the awaiting caller must receive the encrypt failure; was: ${ex.message}",
         )
 
-        // Deep-review #3: the never-persisted optimistic value must NOT be served.
+        // The never-persisted optimistic value must NOT be served.
         assertEquals(
             "none", ksafe.get("token", "none"),
             "a failed write must be rolled back — reads fall back to the default",
@@ -111,7 +109,7 @@ class JvmBatchFailureIsolationTest {
         // protection metadata survives, so reads take the encrypted path and
         // consult plaintextCache FIRST — the rollback must evict the failed
         // key's side-cache entry, otherwise the phantom is served for the whole
-        // session (LAZY never expires). (deep-review #3)
+        // session (LAZY never expires).
         val fileName = JvmKSafeTest.generateUniqueFileName()
         val ksafe = KSafe(
             fileName = fileName,
@@ -178,21 +176,21 @@ class JvmBatchFailureIsolationTest {
             launch { ksafe.put("goodPlain", "good_plain_value", KSafeWriteMode.Plain) }
         }
 
-        // Deep-review #4: the unrelated writes must survive the sibling's failure.
+        // The unrelated writes must survive the sibling's failure.
         assertEquals("good_enc_value", ksafe.get("goodEnc", "missing"))
         assertEquals("good_plain_value", ksafe.get("goodPlain", "missing"))
-        // …and the failed key is rolled back (deep-review #3).
+        // …and the failed key is rolled back.
         assertEquals("missing", ksafe.get("bad", "missing"))
 
         ksafe.close()
     }
 
     /**
-     * Engine for the review-R28/R81 race: encrypts via XOR, fails once on the
-     * marker payload — invoking [onMarkerFailure] (the racing newer write)
-     * first — and gates every NON-marker encrypt on [commitGate], so the newer
-     * write cannot reach disk before the test has asserted on its optimistic
-     * state (its commit would otherwise heal the pre-fix clobber and mask it).
+     * Engine for the newer-write-vs-failing-batch race: encrypts via XOR, fails
+     * once on the marker payload — invoking [onMarkerFailure] (the racing newer
+     * write) first — and gates every NON-marker encrypt on [commitGate], so the
+     * newer write cannot reach disk before the test has asserted on its
+     * optimistic state (its commit would otherwise mask a wrong rollback).
      */
     private class RaceFailEncryption(private val failMarker: String) : KSafeEncryption {
         private val xor = FakeEncryption()
@@ -221,14 +219,12 @@ class JvmBatchFailureIsolationTest {
     }
 
     /**
-     * Review R28/R81: `dirtyKeys` is a set, not a counter — a NEWER write to
-     * the same key issued while an older write's batch is failing performs a
-     * no-op `dirtyKeys.add`. The old rollback then cleared the key's dirty
-     * flags unconditionally and re-merged from a pre-newer-write disk snapshot,
-     * stripping the newer (already optimistically acknowledged) write's
-     * stale-snapshot protection and clobbering its value: reads returned the
-     * default until some later snapshot emission healed it. Rollback must skip
-     * a key whose latest writer is no longer the failed op.
+     * `dirtyKeys` is a set, not a counter — a NEWER write to the same key
+     * issued while an older write's batch is failing performs a no-op
+     * `dirtyKeys.add`. Rollback must therefore skip a key whose latest writer
+     * is no longer the failed op: clearing the dirty flags unconditionally and
+     * re-merging from a pre-newer-write disk snapshot would clobber the newer,
+     * already-acknowledged write.
      */
     @Test
     fun failedWriteRollback_doesNotClobber_aNewerWriteToTheSameKey() = runTest {
