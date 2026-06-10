@@ -399,6 +399,17 @@ inline fun <reified T> KSafe.rememberKSafeState(
         defaultValue = defaultValue,
         observeExternalChanges = observeExternalChanges,
         policy = policy,
+        // Identity tokens for memoization (deep-review #44): the captured
+        // lambdas below bind THIS `ksafe` instance and `mode`, so if the
+        // composable is re-invoked with a different instance or mode (e.g. a
+        // multi-account screen swapping `KSafe(account.id)`, or toggling
+        // Plain↔Encrypted), the memoized state and observer MUST be rebuilt —
+        // otherwise reads/writes silently keep targeting the previous instance's
+        // store (a cross-store leak) or a closed core. The storage `key` alone
+        // does not capture this. Object identity is the right signal: a stable
+        // singleton instance keeps the same identity → no rebuild (no churn).
+        instanceKey = ksafe,
+        modeKey = mode,
         readInitial = { resolvedKey -> ksafe.getDirect<T>(resolvedKey, defaultValue) },
         writeValue = { resolvedKey, newValue -> ksafe.putDirect<T>(resolvedKey, newValue, mode) },
         flowProvider = { resolvedKey -> ksafe.getFlow<T>(resolvedKey, defaultValue) },
@@ -419,6 +430,8 @@ class KSafeComposeStateProvider<T> @PublishedApi internal constructor(
     private val defaultValue: T,
     private val observeExternalChanges: Boolean,
     private val policy: SnapshotMutationPolicy<T>,
+    private val instanceKey: Any?,
+    private val modeKey: Any?,
     private val readInitial: (resolvedKey: String) -> T,
     private val writeValue: (resolvedKey: String, T) -> Unit,
     private val flowProvider: (resolvedKey: String) -> Flow<T>,
@@ -431,6 +444,8 @@ class KSafeComposeStateProvider<T> @PublishedApi internal constructor(
         val key = explicitKey ?: property.name
         return rememberKSafeStateImpl(
             key = key,
+            instanceKey = instanceKey,
+            modeKey = modeKey,
             defaultValue = defaultValue,
             observeExternalChanges = observeExternalChanges,
             policy = policy,
@@ -445,6 +460,8 @@ class KSafeComposeStateProvider<T> @PublishedApi internal constructor(
 @Composable
 internal fun <T> rememberKSafeStateImpl(
     key: String,
+    instanceKey: Any?,
+    modeKey: Any?,
     defaultValue: T,
     observeExternalChanges: Boolean,
     policy: SnapshotMutationPolicy<T>,
@@ -452,7 +469,10 @@ internal fun <T> rememberKSafeStateImpl(
     writeValue: (T) -> Unit,
     flowProvider: () -> Flow<T>,
 ): KSafeComposeState<T> {
-    val state = remember(key) {
+    // `instanceKey`/`modeKey` join `key` so a swapped KSafe instance or write
+    // mode rebuilds the state with lambdas bound to the new instance (#44). A
+    // stable instance keeps the same identity, so this never causes churn.
+    val state = remember(key, instanceKey, modeKey) {
         KSafeComposeState(
             initialValue = readInitial(),
             valueSaver = { newValue ->
@@ -467,9 +487,10 @@ internal fun <T> rememberKSafeStateImpl(
     }
 
     // The LaunchedEffect coroutine is owned by the composition: leaving the
-    // composition cancels it; changing `key` or `observeExternalChanges`
-    // cancels and re-launches.
-    LaunchedEffect(key, observeExternalChanges) {
+    // composition cancels it; changing `key`, the instance/mode identity, or
+    // `observeExternalChanges` cancels and re-launches so the observer follows
+    // the rebuilt state's instance (#44).
+    LaunchedEffect(key, instanceKey, modeKey, observeExternalChanges) {
         state.observeFromStorage(
             flow = flowProvider(),
             coldStart = (state.value == defaultValue),
