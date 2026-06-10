@@ -603,6 +603,20 @@ internal class KSafeCore(
             return canonical in currentDirty || userKey in currentDirty || legacyEncrypted in currentDirty
         }
 
+        // Frozen + LIVE dirty check for every write/removal on the SHARED maps
+        // below (protectionMap / encMetaMap). The frozen `currentDirty` decision
+        // alone misses a write that lands after the snapshot — deep-review #18
+        // fixed that for the memoryCache merges, but the routing-metadata syncs
+        // kept the frozen-only guard, so a racing plain↔encrypted rewrite had
+        // its protection/envelope metadata reverted to stale disk state; since
+        // dirty flags are never cleared, no later pass repaired it and reads
+        // stayed misrouted for the whole session (review R3). The frozen half
+        // is kept (not just the live check) so a key that was dirty at snapshot
+        // time but rolled back mid-merge still defers to the rollback's own,
+        // fresher re-merge.
+        fun isDirtyForUserKeyLive(userKey: String): Boolean =
+            isDirtyForUserKey(userKey) || isUserKeyDirty(userKey)
+
         val metadataEntries = snapshot.map { (rawKey, storedValue) ->
             rawKey to (storedValue as? StoredValue.Text)?.value
         }
@@ -617,7 +631,7 @@ internal class KSafeCore(
         // Legacy entries with no metadata or with literal-form metadata parse
         // as v1, which routes through the per-entry alias unchanged.
         for ((userKey, rawMeta) in protectionByKey) {
-            if (isDirtyForUserKey(userKey)) continue
+            if (isDirtyForUserKeyLive(userKey)) continue
             // Skip plain entries — encMetaMap only tracks encrypted ones.
             if (KeySafeMetadataManager.parseProtection(rawMeta) == null) continue
             val env = KeySafeMetadataManager.parseEnvelopeVersion(rawMeta)
@@ -716,23 +730,27 @@ internal class KSafeCore(
             }
         }
 
-        // Sync protectionMap: add/update entries from disk, drop entries that disappeared.
+        // Sync protectionMap: add/update entries from disk, drop entries that
+        // disappeared. Live-checked (not just frozen-snapshot-checked): a put
+        // that changed this key's protection during the merge — the second-pass
+        // decrypt window spans tens of ms — must not have its fresh routing
+        // metadata reverted to the pre-write disk state (review R3).
         for ((userKey, rawMeta) in protectionByKey) {
-            if (!isDirtyForUserKey(userKey)) {
+            if (!isDirtyForUserKeyLive(userKey)) {
                 protectionMap[userKey] = KeySafeMetadataManager.extractProtectionLiteral(rawMeta)
             }
         }
         for (userKey in protectionMap.snapshot().keys) {
-            if (!protectionByKey.containsKey(userKey) && !isDirtyForUserKey(userKey)) {
+            if (!protectionByKey.containsKey(userKey) && !isDirtyForUserKeyLive(userKey)) {
                 protectionMap.remove(userKey)
             }
         }
 
         // Sync encMetaMap: drop entries that no longer have on-disk metadata
-        // (and aren't dirty). Adds/updates already happened in the pre-pass
-        // before the second-pass decrypt.
+        // (and aren't dirty — live-checked, see above). Adds/updates already
+        // happened in the pre-pass before the second-pass decrypt.
         for (userKey in encMetaMap.snapshot().keys) {
-            if (!protectionByKey.containsKey(userKey) && !isDirtyForUserKey(userKey)) {
+            if (!protectionByKey.containsKey(userKey) && !isDirtyForUserKeyLive(userKey)) {
                 encMetaMap.remove(userKey)
             }
         }

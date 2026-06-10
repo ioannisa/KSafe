@@ -67,4 +67,48 @@ class JvmCollectorWriteRaceTest {
 
         ksafe.close()
     }
+
+    /**
+     * Review R3: the deep-review #18 live re-check was applied to the
+     * `memoryCache` merges but NOT to the `protectionMap`/`encMetaMap` syncs,
+     * which still decided from the frozen entry snapshot. So a write that
+     * CHANGED a key's protection during the merge window (here: encrypted on
+     * disk → racing Plain rewrite) had its fresh routing metadata reverted to
+     * the stale disk state — and, dirty flags being permanent, no later pass
+     * repaired it: reads routed to the wrong slot for the rest of the session.
+     */
+    @Test
+    fun updateCache_doesNotRevertProtection_ofAWriteThatLandsDuringDecrypt() {
+        val engine = RaceEngine()
+        val ksafe = KSafe(
+            fileName = JvmKSafeTest.generateUniqueFileName(),
+            memoryPolicy = KSafeMemoryPolicy.PLAIN_TEXT, // forces the second-pass decrypt window
+            lazyLoad = true,                              // no auto-collector; we drive updateCache
+            testEngine = engine,
+        )
+
+        // The racing write flips the key's protection: encrypted (on disk) → Plain.
+        engine.onDecrypt = {
+            ksafe.putDirect("k", "new-plain", KSafeWriteMode.Plain)
+        }
+
+        // Hand-seed a snapshot where "k" is encrypted with DEFAULT protection metadata.
+        val seeded = mapOf(
+            KeySafeMetadataManager.valueRawKey("k") to StoredValue.Text(encodeBase64(byteArrayOf(1))),
+            KeySafeMetadataManager.metadataRawKey("k") to
+                StoredValue.Text(KeySafeMetadataManager.buildMetadataJson(KSafeProtection.DEFAULT, accessPolicy = null)),
+        )
+
+        runBlocking { ksafe.core.updateCache(seeded) }
+
+        // If the metadata sync reverted protection to the stale "DEFAULT", the read
+        // routes to the (empty) encrypted slot and misses the racing plain write —
+        // the freshly-written value must stay reachable instead.
+        assertEquals(
+            "new-plain", ksafe.getDirect("k", "def"),
+            "a protection-changing write landing during updateCache must not have its routing metadata reverted (review R3)",
+        )
+
+        ksafe.close()
+    }
 }

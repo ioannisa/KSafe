@@ -79,4 +79,30 @@ class MacosSecUnwrapClassificationTest {
         assertFalse(AppleKeychainEncryption.isTransientUnwrapFailure("KSafe: some unrelated failure"))
         assertFalse(AppleKeychainEncryption.isTransientUnwrapFailure(null))
     }
+
+    // ---- R30: the DECRYPT path must also classify transient — the engine-side
+    // classifier above is only consulted on key CREATION; the core's
+    // isTransientDecryptFailure matches "device is locked"/"Keystore"/"Keychain"
+    // and never parses the osstatus tag. So the SE failure message itself must
+    // carry the "Keychain" brand when (and only when) the code is transient.
+
+    @Test
+    fun seFailureMessage_transientCode_isBrandedForCoreClassifier() {
+        val msg = AppleKeychainEncryption.seFailureMessage(
+            "unwrap",
+            "L'opération n'a pas pu être terminée. [osstatus=-25308]",
+        )
+        // "Keychain" is the substring KSafeCore.isTransientDecryptFailure keys on
+        // (pinned by JvmObservableFlowResilienceTest for the flow-skip behavior).
+        assertTrue(msg.contains("Keychain"), "transient SE failure must carry the core-recognized brand; was: $msg")
+    }
+
+    @Test
+    fun seFailureMessage_permanentCode_isNotBranded() {
+        // errSecDecode (-26275): genuine corruption must stay core-permanent so
+        // reads fall through to default and the self-heal/orphan logic applies.
+        val msg = AppleKeychainEncryption.seFailureMessage("unwrap", "bad blob [osstatus=-26275]")
+        assertFalse(msg.contains("Keychain"), "permanent SE failure must NOT classify transient; was: $msg")
+        assertFalse(msg.contains("device is locked", ignoreCase = true))
+    }
 }

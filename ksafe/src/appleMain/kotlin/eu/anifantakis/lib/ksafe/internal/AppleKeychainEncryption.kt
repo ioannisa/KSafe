@@ -187,6 +187,24 @@ internal class AppleKeychainEncryption(
             return msg.contains("device is locked", ignoreCase = true) ||
                 msg.contains("interaction", ignoreCase = true)
         }
+
+        /**
+         * Builds the SE wrap/unwrap failure message. When [detail]'s OSStatus
+         * code classifies as transient, the message is branded with a
+         * "Keychain" marker — the wording `KSafeCore.isTransientDecryptFailure`
+         * already recognizes — because the engine-side classifier above is only
+         * consulted on the key-CREATION path. Without the brand, a transient SE
+         * unwrap during DECRYPT reached the core as an unrecognized message and
+         * was misclassified permanent: `getDirect` silently returned the
+         * caller's default for a HARDWARE_ISOLATED secret and `getFlow` emitted
+         * it, instead of rethrowing-for-retry / skipping the emission
+         * (review R30 — the decrypt-path half of review #31).
+         */
+        internal fun seFailureMessage(op: String, detail: String): String {
+            val transientBrand =
+                if (isTransientUnwrapFailure(detail)) " [transient Keychain failure]" else ""
+            return "KSafe: Failed to $op AES key with Secure Enclave: $detail$transientBrand"
+        }
     }
 
     private val keySizeBytes: Int = config.keySize / 8
@@ -508,9 +526,7 @@ internal class AppleKeychainEncryption(
                              else SecKeyCreateDecryptedData(key, algo, cfData, errorRef.ptr)
                 if (result == null) {
                     val op = if (wrap) "wrap" else "unwrap"
-                    throw IllegalStateException(
-                        "KSafe: Failed to $op AES key with Secure Enclave: ${cfErrorDescription(errorRef)}"
-                    )
+                    throw IllegalStateException(seFailureMessage(op, cfErrorDescription(errorRef)))
                 }
                 (CFBridgingRelease(result) as NSData).toByteArray()
             } finally {
