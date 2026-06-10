@@ -429,9 +429,20 @@ internal class JvmKeyVaultProvider(
         runCatching { twin.delete(alias) }
     }
 
-    /** Round-trips a canary value to confirm the native store actually works. */
+    /**
+     * Round-trips a canary value to confirm the native store actually works.
+     *
+     * The alias is unique per attempt: the OS stores are per-user and shared
+     * across every process and KSafe instance on the machine, so a FIXED alias
+     * let two concurrent self-tests interleave (A.put, B.put, A.get, A.delete,
+     * B.get → null) — flipping a perfectly healthy engine into session-long
+     * fail-closed mode (reads "unavailable", encrypted writes refused) just
+     * because two apps launched at login, or one app built two instances in
+     * parallel (review R58). With unique aliases concurrent self-tests cannot
+     * interfere.
+     */
     private fun selfTest(vault: JvmKeyVault): Boolean = try {
-        val alias = "__ksafe_selftest__"
+        val alias = "__ksafe_selftest__" + java.util.UUID.randomUUID()
         val canary = byteArrayOf(0x4B, 0x53, 0x61, 0x66, 0x65) // "KSafe"
         vault.put(alias, canary)
         val read = vault.get(alias)

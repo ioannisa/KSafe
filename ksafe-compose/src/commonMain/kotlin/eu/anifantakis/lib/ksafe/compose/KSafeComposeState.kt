@@ -510,10 +510,20 @@ internal fun <T> rememberKSafeStateImpl(
     writeValue: (T) -> Unit,
     flowProvider: () -> Flow<T>,
 ): KSafeComposeState<T> {
-    // `instanceKey`/`modeKey` join `key` so a swapped KSafe instance or write
-    // mode rebuilds the state with lambdas bound to the new instance (#44). A
-    // stable instance keeps the same identity, so this never causes churn.
-    val state = remember(key, instanceKey, modeKey) {
+    // EVERY parameter the memoized state bakes in participates in the keys:
+    //  - `instanceKey`/`modeKey`: a swapped KSafe instance or write mode rebuilds
+    //    the state with lambdas bound to the new instance (#44);
+    //  - `policy`: it is baked into the underlying `mutableStateOf(initial,
+    //    policy)` and gates persistence — a changed policy can't be applied to a
+    //    live state, so it must rebuild (review R68); the standard policies
+    //    (structural/referential/neverEqual) are singletons, so no churn;
+    //  - `defaultValue`: captured by readInitial/flowProvider — a changed
+    //    default must re-resolve, not be silently ignored (review R68). It is
+    //    compared with equals(), the normal `remember`-key contract: pass a
+    //    stable value (constants and data classes are; an instance freshly
+    //    constructed per recomposition WITHOUT equals would rebuild each time).
+    // A composable invoked with the same stable arguments never rebuilds.
+    val state = remember(key, instanceKey, modeKey, policy, defaultValue) {
         KSafeComposeState(
             initialValue = readInitial(),
             valueSaver = { newValue ->
@@ -528,10 +538,10 @@ internal fun <T> rememberKSafeStateImpl(
     }
 
     // The LaunchedEffect coroutine is owned by the composition: leaving the
-    // composition cancels it; changing `key`, the instance/mode identity, or
+    // composition cancels it; changing any of the state's identity inputs or
     // `observeExternalChanges` cancels and re-launches so the observer follows
-    // the rebuilt state's instance (#44).
-    LaunchedEffect(key, instanceKey, modeKey, observeExternalChanges) {
+    // the rebuilt state (#44, R68).
+    LaunchedEffect(key, instanceKey, modeKey, policy, defaultValue, observeExternalChanges) {
         state.observeFromStorage(
             flow = flowProvider(),
             coldStart = (state.value == defaultValue),

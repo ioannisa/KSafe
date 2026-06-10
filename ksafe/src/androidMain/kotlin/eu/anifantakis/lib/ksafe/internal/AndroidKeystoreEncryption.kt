@@ -219,10 +219,46 @@ internal class AndroidKeystoreEncryption(
                 // if the now-stored DEK unwraps cleanly (a concurrent regenerate replaced it),
                 // leave everything intact; only destroy when it's genuinely still broken.
                 synchronized(lockFor(identifier)) {
-                    val healed = runCatching {
-                        dekStore.load()?.let { unwrapDek(identifier, it) }
-                    }.getOrNull()
-                    if (healed == null) {
+                    // Same discrimination as the encrypt-side twin regenerateDek
+                    // (review R72): only a DEFINITIVE re-validation outcome — the
+                    // stored DEK is genuinely still broken — may destroy state.
+                    // The old `runCatching{}.getOrNull()` collapsed TRANSIENT
+                    // failures (a momentary store read error, a locked-device
+                    // ISE from the Keystore) into "not healed" and destroyed a
+                    // concurrent writer's just-regenerated healthy DEK + KEK,
+                    // orphaning the values it had already encrypted under them.
+                    // A transient failure proves nothing: leave everything
+                    // intact and just surface the read failure below.
+                    val stillBroken = try {
+                        val stored = try {
+                            dekStore.load()
+                        } catch (_: IllegalArgumentException) {
+                            null // malformed persisted blob (#26) — definitively unusable
+                        } catch (_: IndexOutOfBoundsException) {
+                            null
+                        }
+                        if (stored == null) {
+                            true // nothing usable stored
+                        } else {
+                            unwrapDek(identifier, stored)
+                            false // a concurrent regenerate healed it — destroy nothing
+                        }
+                    } catch (_: KeyPermanentlyInvalidatedException) {
+                        true
+                    } catch (_: javax.crypto.AEADBadTagException) {
+                        true
+                    } catch (_: IllegalArgumentException) {
+                        true
+                    } catch (_: IndexOutOfBoundsException) {
+                        true
+                    } catch (t: IllegalStateException) {
+                        // KEK absent = definitive (mirrors regenerateDek #24);
+                        // a transient "device is locked" ISE must NOT destroy.
+                        t.message?.contains("No encryption key found", ignoreCase = true) == true
+                    } catch (_: Throwable) {
+                        false // unknown ⇒ conservative: preserve
+                    }
+                    if (stillBroken) {
                         discardDek(identifier)
                         deleteKeyInternal(identifier)
                     }

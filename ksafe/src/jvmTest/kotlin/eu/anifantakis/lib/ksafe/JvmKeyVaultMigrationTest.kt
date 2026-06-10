@@ -747,6 +747,60 @@ class JvmKeyVaultMigrationTest {
         )
     }
 
+    // ── Concurrent self-tests on a shared OS store (review R58) ─────────────
+
+    /**
+     * Shared per-user store whose first `put` triggers [onFirstPut] once —
+     * simulating another process / instance whose construction-time self-test
+     * interleaves with ours on the SAME OS store.
+     */
+    private class RacingOsVault : JvmKeyVault {
+        val store = ConcurrentHashMap<String, ByteArray>()
+        @Volatile var onFirstPut: (() -> Unit)? = null
+        override val name = "RacingOsVault (test)"
+        override val isOsBacked = true
+        override fun get(alias: String): ByteArray? = store[alias]?.copyOf()
+        override fun put(alias: String, keyBytes: ByteArray) {
+            store[alias] = keyBytes.copyOf()
+            onFirstPut?.also { onFirstPut = null }?.invoke()
+        }
+        override fun delete(alias: String) { store.remove(alias) }
+    }
+
+    @Test
+    fun concurrentSelfTests_onSharedOsStore_doNotFailEachOther() {
+        // The OS stores (Keychain / DPAPI / Secret Service) are per-user and
+        // shared by every KSafe process/instance. With a FIXED canary alias,
+        // a competing self-test's DELETE removed our canary between our put
+        // and read-back → our self-test failed → a perfectly healthy vault was
+        // flagged unavailable, fail-closing the whole session (review R58).
+        //
+        // The build runs JVM tests with `-Dksafe.jvm.keyVault=software` (so
+        // tests never touch a real keyring); that opt-out short-circuits
+        // pick() before the self-test, so lift it for this test and restore.
+        val prop = "ksafe.jvm.keyVault"
+        val original = System.getProperty(prop)
+        System.clearProperty(prop)
+        try {
+            val shared = RacingOsVault()
+            // From inside OUR canary put, a competitor runs its FULL self-test
+            // (put + get + delete) against the same shared store.
+            shared.onFirstPut = {
+                JvmKeyVaultProvider(dataStore, osCandidateForTest = shared)
+            }
+
+            val provider = JvmKeyVaultProvider(dataStore, osCandidateForTest = shared)
+
+            assertFalse(
+                provider.osVaultUnavailable,
+                "a competing self-test on the shared OS store must not fail ours (unique canary aliases)",
+            )
+            assertEquals(shared, provider.active, "the healthy OS vault must be selected")
+        } finally {
+            if (original != null) System.setProperty(prop, original)
+        }
+    }
+
     @Test
     fun legacyDerivedJvmNamespace_reproduces211Derivation() {
         val prop = "sun.java.command"
