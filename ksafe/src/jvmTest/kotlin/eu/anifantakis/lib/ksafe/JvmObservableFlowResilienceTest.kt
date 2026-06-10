@@ -89,7 +89,7 @@ class JvmObservableFlowResilienceTest {
 
         engine.fail = true
         val result = withTimeoutOrNull(500) { ksafe.getFlow<String>("k", "def").first() }
-        assertNull(result, "a transient Keychain error must be skipped (transient), not emitted as the default (#59)")
+        assertNull(result, "a transient Keychain error must be skipped (transient), not emitted as the default")
 
         ksafe.close()
     }

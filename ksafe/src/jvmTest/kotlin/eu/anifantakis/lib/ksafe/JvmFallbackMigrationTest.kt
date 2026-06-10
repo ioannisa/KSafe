@@ -486,7 +486,7 @@ class JvmFallbackMigrationTest {
         // …and crucially the source is ARCHIVED despite the permanent failure, so the
         // gate (`jsonFallback.exists() && !marker.exists()`) won't re-run the migration
         // and roll back the user's later writes to "good".
-        assertFalse(jsonFallback.exists(), "permanent failure must not block archival (deep-review #10)")
+        assertFalse(jsonFallback.exists(), "permanent failure must not block archival")
         assertTrue(File(tmp, "perm.ksafe.json.migrated").exists(), "source must be archived → migration won't re-run")
     }
 
@@ -600,7 +600,7 @@ class JvmFallbackMigrationTest {
             assertEquals(
                 "user-fresh",
                 goodTargetEngine.decryptSuspend(masterAlias(false), Base64.decode(sessionCipher)).decodeToString(),
-                "the retry must NOT roll a newer target write back to the stale fallback value (R55)",
+                "the retry must NOT roll a newer target write back to the stale fallback value",
             )
             // …while a key untouched since the failed attempt still migrates.
             val themeCipher = (snap[KeySafeMetadataManager.valueRawKey("theme")] as StoredValue.Text).value
@@ -663,7 +663,7 @@ class JvmFallbackMigrationTest {
             runBlocking {
                 assertEquals(
                     2222, ksafe.get("count2", 0),
-                    "second-period fallback data must carry forward despite an old .migrated marker (#32)",
+                    "second-period fallback data must carry forward despite an old .migrated marker",
                 )
             }
         } finally {

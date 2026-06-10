@@ -41,7 +41,7 @@ class BiometricPromptGateTest {
 
         assertEquals(
             1, maxActive.get(),
-            "at most one biometric prompt may be in flight at a time (deep-review #14)",
+            "at most one biometric prompt may be in flight at a time",
         )
     }
 

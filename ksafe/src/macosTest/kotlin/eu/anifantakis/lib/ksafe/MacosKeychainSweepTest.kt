@@ -50,7 +50,7 @@ class MacosKeychainSweepTest {
         // The macOS gate must short-circuit before any storage read or Keychain enumeration.
         assertFalse(
             spy.snapshotCalled,
-            "the Keychain orphan sweep must be a no-op on macOS (shared login keychain — deep-review #9)",
+            "the Keychain orphan sweep must be a no-op on macOS (shared login keychain)",
         )
     }
 

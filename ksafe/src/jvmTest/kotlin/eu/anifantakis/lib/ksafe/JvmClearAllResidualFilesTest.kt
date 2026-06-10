@@ -39,9 +39,9 @@ class JvmClearAllResidualFilesTest {
         ksafe.clearAll()
         ksafe.close()
 
-        assertFalse(migratedJson.exists(), "clearAll must delete the migrated ciphertext archive (#35)")
-        assertFalse(migratedKeys.exists(), "clearAll must delete the migrated PLAINTEXT keys archive (#35)")
-        assertFalse(corrupt.exists(), "clearAll must delete the corrupt-quarantine copy (#35)")
+        assertFalse(migratedJson.exists(), "clearAll must delete the migrated ciphertext archive")
+        assertFalse(migratedKeys.exists(), "clearAll must delete the migrated PLAINTEXT keys archive")
+        assertFalse(corrupt.exists(), "clearAll must delete the corrupt-quarantine copy")
         assertTrue(siblingMigrated.exists(), "a different safe's residue in the same dir must be preserved")
     }
 }

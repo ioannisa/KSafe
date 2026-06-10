@@ -253,7 +253,7 @@ class JvmBatchFailureIsolationTest {
             // failed write's rollback must have left intact.
             assertEquals(
                 "fresh-v2", ksafe.getDirect("token", "none"),
-                "rollback of a failed write must not strip a newer same-key write's optimistic state (R28/R81)",
+                "rollback of a failed write must not strip a newer same-key write's optimistic state",
             )
         } finally {
             engine.commitGate.countDown() // release the newer write's commit

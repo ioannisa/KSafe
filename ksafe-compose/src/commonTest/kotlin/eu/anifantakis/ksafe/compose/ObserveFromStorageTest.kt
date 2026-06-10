@@ -110,7 +110,7 @@ class ObserveFromStorageTest {
         advanceUntilIdle()
         assertEquals(
             "external_new", state.value,
-            "after the write's echo, newer external changes must reflect again (R45)",
+            "after the write's echo, newer external changes must reflect again",
         )
 
         // And a fresh user write re-arms the guard until its own echo.

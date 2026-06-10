@@ -66,7 +66,7 @@ class KSafeStateFlowClobberTest {
         msf.updateFromFlow("external_new")
         assertEquals(
             "external_new", msf.value,
-            "after the write's echo, newer external changes must reflect again (R19)",
+            "after the write's echo, newer external changes must reflect again",
         )
     }
 

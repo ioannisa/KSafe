@@ -60,7 +60,7 @@ class JvmClearAllRaceRepairTest {
         assertEquals(
             "fresh-value", ksafe.getDirect("fresh", "def"),
             "a put ordered after an in-flight clearAll must be readable once committed " +
-                "(review R2; policy=$policy, mode=$mode)",
+                "(policy=$policy, mode=$mode)",
         )
 
         ksafe.close()

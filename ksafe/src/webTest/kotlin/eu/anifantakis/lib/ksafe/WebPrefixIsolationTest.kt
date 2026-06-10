@@ -44,7 +44,7 @@ class WebPrefixIsolationTest {
         assertEquals(
             "nested-value",
             nestedReopened.get("k", "GONE"),
-            "clearAll() on '$base' must not wipe the sibling store '${base}_cache' (review R7)",
+            "clearAll() on '$base' must not wipe the sibling store '${base}_cache'",
         )
         nestedReopened.clearAll()
     }

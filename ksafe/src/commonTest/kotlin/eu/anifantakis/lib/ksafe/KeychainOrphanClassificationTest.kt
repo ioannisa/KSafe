@@ -78,7 +78,7 @@ class KeychainOrphanClassificationTest {
                 "${prefix}fresh", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters,
                 isInFlight = { it == "fresh" },
             ),
-            "a key for an in-flight write must be preserved, not reaped (#30)",
+            "a key for an in-flight write must be preserved, not reaped",
         )
     }
 

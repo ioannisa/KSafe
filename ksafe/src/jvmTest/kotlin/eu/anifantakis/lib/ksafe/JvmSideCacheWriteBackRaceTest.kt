@@ -67,7 +67,7 @@ class JvmSideCacheWriteBackRaceTest {
         assertEquals(
             "new", ksafe.getDirect("k", "def"),
             "a put landing during a read's decrypt must not have its side-cache value " +
-                "overwritten by the stale write-back (review R4, policy=$policy)",
+                "overwritten by the stale write-back (policy=$policy)",
         )
 
         ksafe.close()

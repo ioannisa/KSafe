@@ -325,7 +325,7 @@ class AndroidSoftwareDekTest {
                 assertContentEquals(
                     "value_$i".encodeToByteArray(),
                     fresh.decrypt(master, blob),
-                    "every concurrently-regenerated write must remain decryptable (deep-review #6)",
+                    "every concurrently-regenerated write must remain decryptable",
                 )
             }
         } finally {
@@ -375,7 +375,7 @@ class AndroidSoftwareDekTest {
             assertContentEquals(
                 "legacy-value".encodeToByteArray(),
                 fresh.decrypt(master, legacyBlob),
-                "legacy TEE ciphertext under the same KEK must survive a corrupt-DEK self-heal (#25)",
+                "legacy TEE ciphertext under the same KEK must survive a corrupt-DEK self-heal",
             )
         } finally {
             engine(storage).deleteKey(master)
@@ -408,7 +408,7 @@ class AndroidSoftwareDekTest {
             assertContentEquals(
                 "v2".encodeToByteArray(),
                 fresh.decrypt(master, healed),
-                "encrypt must self-heal when the KEK is absent but a wrapped DEK lingers (#24)",
+                "encrypt must self-heal when the KEK is absent but a wrapped DEK lingers",
             )
         } finally {
             engine(storage).deleteKey(master)
@@ -443,7 +443,7 @@ class AndroidSoftwareDekTest {
             assertContentEquals(
                 "v2".encodeToByteArray(),
                 fresh.decrypt(master, healed),
-                "a malformed wrapped DEK must self-heal on the next encrypt (#26)",
+                "a malformed wrapped DEK must self-heal on the next encrypt",
             )
         } finally {
             engine(storage).deleteKey(master)

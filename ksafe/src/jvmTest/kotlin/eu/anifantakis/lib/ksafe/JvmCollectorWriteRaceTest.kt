@@ -59,7 +59,7 @@ class JvmCollectorWriteRaceTest {
         // The write that raced the decrypt must win — not be reverted to the stale "old".
         assertEquals(
             "new", ksafe.getDirect("k", "def"),
-            "a write landing during updateCache's decrypt must not be clobbered by the stale disk value (deep-review #18)",
+            "a write landing during updateCache's decrypt must not be clobbered by the stale disk value",
         )
 
         ksafe.close()
@@ -101,7 +101,7 @@ class JvmCollectorWriteRaceTest {
         // the freshly-written value must stay reachable instead.
         assertEquals(
             "new-plain", ksafe.getDirect("k", "def"),
-            "a protection-changing write landing during updateCache must not have its routing metadata reverted (review R3)",
+            "a protection-changing write landing during updateCache must not have its routing metadata reverted",
         )
 
         ksafe.close()
