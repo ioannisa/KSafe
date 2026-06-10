@@ -32,6 +32,13 @@ internal actual class KSafeConcurrentMap<V : Any> actual constructor() {
         map[key] = new
         return true
     }
+
+    actual fun putIfAbsent(key: String, value: V): V? {
+        val existing = map[key]
+        if (existing != null) return existing
+        map[key] = value
+        return null
+    }
 }
 
 @PublishedApi

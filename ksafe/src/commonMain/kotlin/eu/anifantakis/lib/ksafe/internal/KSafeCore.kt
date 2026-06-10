@@ -1085,17 +1085,59 @@ internal class KSafeCore(
                 .onFailure { if (it is CancellationException) throw it }
         }
 
-        // For ciphertext-at-rest policies: swap plaintext → ciphertext in cache.
-        // CAS guard prevents overwriting a newer `putDirect` issued mid-batch.
-        // The plaintextCache (populated optimistically by the put path) keeps the
-        // plaintext available for fast reads under ENCRYPTED_WITH_TIMED_CACHE and
-        // LAZY_PLAIN_TEXT. Failed-encrypt keys have no ciphertext and are skipped.
-        if (cacheHoldsCiphertext) {
-            for (op in finalByKey.values) {
-                if (op is PendingWrite.Encrypted && op.userKey !in encryptFailures) {
-                    val base64 = b64Encode(encryptedCiphertext[op.userKey]!!)
-                    memoryCache.replaceIf(op.rawCacheKey, op.jsonString, base64)
+        // Post-commit cache maintenance, two halves:
+        //
+        // 1. For ciphertext-at-rest policies: swap plaintext → ciphertext in
+        //    cache. CAS guard prevents overwriting a newer `putDirect` issued
+        //    mid-batch. The plaintextCache (populated optimistically by the put
+        //    path) keeps the plaintext available for fast reads under
+        //    ENCRYPTED_WITH_TIMED_CACHE and LAZY_PLAIN_TEXT.
+        //
+        // 2. REPAIR (review R2): a clearAll ordered BEFORE this op wiped the
+        //    op's optimistic in-memory state (memoryCache / protectionMap /
+        //    encMetaMap) — set at call time, before the op was even enqueued —
+        //    and nothing ever restored it: the CAS above failed (the expected
+        //    plaintext was gone), dirty flags are permanent so reconciliation
+        //    skips the key forever, and an acknowledged, committed write read
+        //    back as the default for the rest of the session. So after the
+        //    commit, an op that is still its key's LATEST writer (writeOwners
+        //    token — same ownership rule as rollback, R28) re-asserts its state
+        //    via atomic putIfAbsent: a wiped slot is restored; a slot occupied
+        //    by a newer write's optimistic value is never touched. The
+        //    plaintextCache needs no explicit repair — the guarded read
+        //    write-back (R4) lazily repopulates it from the restored ciphertext.
+        //    Failed-encrypt keys have no ciphertext and are skipped.
+        for (op in finalByKey.values) {
+            when (op) {
+                is PendingWrite.Encrypted -> if (op.userKey !in encryptFailures) {
+                    val cacheValue: Any = if (cacheHoldsCiphertext) {
+                        val base64 = b64Encode(encryptedCiphertext[op.userKey]!!)
+                        memoryCache.replaceIf(op.rawCacheKey, op.jsonString, base64)
+                        base64
+                    } else {
+                        op.jsonString
+                    }
+                    if (writeOwners[op.userKey] === op.writeToken) {
+                        memoryCache.putIfAbsent(op.rawCacheKey, cacheValue)
+                        protectionMap.putIfAbsent(
+                            op.userKey,
+                            KeySafeMetadataManager.protectionToLiteral(op.protection),
+                        )
+                        encMetaMap.putIfAbsent(
+                            op.userKey,
+                            EncMeta(
+                                envelopeVersion = KeySafeMetadataManager.ENVELOPE_VERSION_LATEST,
+                                requireUnlockedDevice = op.requireUnlockedDevice,
+                            ),
+                        )
+                    }
                 }
+                is PendingWrite.Plain -> if (writeOwners[op.userKey] === op.writeToken) {
+                    memoryCache.putIfAbsent(op.rawCacheKey, op.value)
+                    protectionMap.putIfAbsent(op.userKey, KeySafeMetadataManager.protectionToLiteral(null))
+                }
+                // A delete's desired in-memory state IS the wiped state.
+                is PendingWrite.Delete, is PendingWrite.ClearAll -> Unit
             }
         }
 

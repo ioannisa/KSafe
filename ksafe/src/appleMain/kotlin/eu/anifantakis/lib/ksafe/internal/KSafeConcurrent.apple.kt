@@ -73,6 +73,15 @@ internal actual class KSafeConcurrentMap<V : Any> actual constructor() {
             if (ref.compareAndSet(current, next)) return true
         }
     }
+
+    actual fun putIfAbsent(key: String, value: V): V? {
+        while (true) {
+            val current = ref.value
+            current[key]?.let { return it }
+            val next = HashMap(current).also { it[key] = value }
+            if (ref.compareAndSet(current, next)) return null
+        }
+    }
 }
 
 @PublishedApi
