@@ -14,7 +14,6 @@ import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import java.io.File
-import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 
@@ -107,19 +106,24 @@ internal class DataStoreJsonStorage(
     }
 
     /** JSON `Map<String,String>` serializer over `java.io` streams — no protobuf, no okio. */
-    private object JsonMapSerializer : Serializer<Map<String, String>> {
+    internal object JsonMapSerializer : Serializer<Map<String, String>> {
         private val json = Json { encodeDefaults = true }
         private val mapSer = MapSerializer(String.serializer(), String.serializer())
 
         override val defaultValue: Map<String, String> = emptyMap()
 
         override suspend fun readFrom(input: InputStream): Map<String, String> {
-            val text = try {
-                input.readBytes().decodeToString()
-            } catch (_: IOException) {
-                // Unreadable file → behave like a fresh store.
-                return emptyMap()
-            }
+            // Read the raw bytes. A mid-read IOException on an EXISTING file (disk
+            // error, network FS, AV interference) MUST propagate — never swallow it
+            // as an empty store. datastore-core caches readFrom's return as the
+            // current state, so returning emptyMap() here would make the very next
+            // write atomically overwrite the real file with that empty map, wiping
+            // every entry from a transient hiccup (deep-review #33). Letting the
+            // exception propagate leaves the file untouched (DataStore does not
+            // write on a failed read), so the data survives and the next read can
+            // recover. A missing file never reaches here — datastore-core handles
+            // FileNotFoundException upstream and yields the empty defaultValue.
+            val text = input.readBytes().decodeToString()
             return try {
                 if (text.isBlank()) emptyMap() else json.decodeFromString(mapSer, text)
             } catch (e: SerializationException) {
