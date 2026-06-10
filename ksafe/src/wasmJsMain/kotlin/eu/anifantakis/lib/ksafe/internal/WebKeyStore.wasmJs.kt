@@ -53,6 +53,13 @@ import kotlin.js.Promise
         var u2b = function(buf) { var u = new Uint8Array(buf); var s = ''; for (var i = 0; i < u.length; i++) s += String.fromCharCode(u[i]); return btoa(s); };
         var mem = new Map();
         var subtle = G.crypto.subtle;
+        // Cross-tab key-invalidation (deep-review #36): a key deleted in another tab
+        // (clearAll / logout) would leave this tab's page-local `mem` entry stale, so it
+        // would keep encrypting under a durably-deleted key and lose those writes after
+        // reload. The deleting tab broadcasts an eviction so every other tab drops the key
+        // from `mem` and re-reads IndexedDB on next use. Feature-detected.
+        var bc = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('ksafe-keys') : null;
+        if (bc) bc.onmessage = function(e) { if (e && e.data && e.data.op === 'evict' && e.data.name) mem['delete'](e.data.name); };
         // Legacy-first: a legacy localStorage raw key, WHEN PRESENT, is
         // authoritative — it provably encrypted the current ciphertext. Import
         // it and OVERWRITE any (possibly stale, from a prior lifecycle)
@@ -99,7 +106,7 @@ import kotlin.js.Promise
           var all = b2u(dataB64); var iv = all.slice(0, 12); var ct = all.slice(12);
           return subtle.decrypt({ name: 'AES-GCM', iv: iv }, k, ct).then(function(ptBuf) { return u2b(ptBuf); });
         }); };
-        var del = function(name) { mem['delete'](name); return idbDel(name).then(function() { return null; }); };
+        var del = function(name) { mem['delete'](name); if (bc) bc.postMessage({ op: 'evict', name: name }); return idbDel(name).then(function() { return null; }); };
         G.__ksafeWK = { ensure: ensure, enc: enc, dec: dec, del: del };
       }
       var wk = G.__ksafeWK;
