@@ -428,11 +428,40 @@ internal class AndroidKeystoreEncryption(
      * KEK, then mint a fresh pair. Used when the KEK is permanently invalidated or the
      * persisted wrapped DEK fails to unwrap (corrupt / KEK mismatch). Old DEK ciphertext is
      * unrecoverable either way; this keeps *new* writes working instead of failing forever.
+     *
+     * The whole discard + delete + recreate runs under a single [lockFor] acquisition so it
+     * is **atomic** — the inner calls re-enter the same reentrant monitor. Without this, two
+     * writers that both hit the same bad blob both land here and interleave: the second one's
+     * `discardDek` + `deleteKeyInternal` wipe the DEK (and KEK) the first just minted, *after*
+     * the first already encrypted and returned a value under it — silently losing an
+     * acknowledged write (deep-review #6). Atomicity alone isn't enough, though: the second
+     * writer must also NOT destroy the fresh DEK, so we **re-validate before discarding** —
+     * if a concurrent regenerate already produced a usable DEK, adopt it instead.
      */
     private fun regenerateDek(alias: String): ByteArray {
-        discardDek(alias)
-        deleteKeyInternal(alias)
-        return getOrCreateDek(alias)
+        synchronized(lockFor(alias)) {
+            // A concurrent regenerate may have already healed it while we were blocked on the
+            // lock. Adopt the fresh DEK rather than discarding it (and the data just encrypted
+            // under it).
+            dekCache[alias]?.let { return it }
+            dekStore.load()?.let { stored ->
+                try {
+                    val dek = unwrapDek(alias, stored)
+                    dekCache[alias] = dek
+                    return dek
+                } catch (_: KeyPermanentlyInvalidatedException) {
+                    // Still unrecoverable — fall through to discard + recreate.
+                } catch (_: javax.crypto.AEADBadTagException) {
+                    // Still unrecoverable — fall through to discard + recreate.
+                }
+                // Any other failure (transient "device is locked", or a missing KEK) is NOT a
+                // reason to destroy keys: it propagates so the caller can retry once the
+                // condition clears, leaving the stored DEK intact.
+            }
+            discardDek(alias)
+            deleteKeyInternal(alias)
+            return getOrCreateDek(alias)
+        }
     }
 
     /**

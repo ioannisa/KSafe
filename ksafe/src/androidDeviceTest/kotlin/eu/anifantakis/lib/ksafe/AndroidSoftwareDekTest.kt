@@ -275,6 +275,65 @@ class AndroidSoftwareDekTest {
     }
 
     /**
+     * Deep-review #6: concurrent regeneration must be atomic and must not discard a
+     * sibling's freshly-minted DEK. Two+ writers that all read the SAME corrupt wrapped
+     * DEK each route through regenerateDek concurrently; pre-fix, the second writer's
+     * discard wiped the DEK (and KEK) the first had already encrypted a value under,
+     * silently losing that acknowledged write. With the fix exactly one DEK survives and
+     * EVERY concurrently-written blob must still decrypt under it.
+     */
+    @Test
+    fun concurrentRegenerate_doesNotDiscardAnotherWritersFreshDek() {
+        val storage = newStorage()
+        val master = uniqueAlias()
+        val seed = engine(storage)
+        try {
+            // Establish a DEK, then corrupt the persisted wrapped DEK so every cold-engine
+            // unwrap fails and routes through regenerateDek.
+            seed.encrypt(master, "seed".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
+            assertTrue(dekPresent(storage))
+            runBlocking {
+                storage.applyBatch(
+                    listOf(
+                        StorageOp.Put(
+                            DataStoreDekStore.DEK_KEY,
+                            StoredValue.Text(Base64.encodeToString(ByteArray(40) { 0x7 }, Base64.NO_WRAP)),
+                        )
+                    )
+                )
+            }
+
+            // Cold engine (empty dekCache) → all N concurrent encrypts hit the corrupt DEK
+            // and regenerate concurrently.
+            val fresh = engine(storage)
+            val n = 16
+            val blobs = runBlocking(Dispatchers.Default) {
+                (0 until n).map { i ->
+                    async {
+                        i to fresh.encrypt(
+                            master, "value_$i".encodeToByteArray(),
+                            hardwareIsolated = false, requireUnlockedDevice = false,
+                        )
+                    }
+                }.awaitAll()
+            }
+
+            // Decisive: every concurrently-regenerated write round-trips. Pre-fix, a writer
+            // whose fresh DEK was discarded by a sibling regenerate would fail to decrypt.
+            blobs.forEach { (i, blob) ->
+                assertTrue(blob.startsWithMagic(), "regenerated write should use the DEK header")
+                assertContentEquals(
+                    "value_$i".encodeToByteArray(),
+                    fresh.decrypt(master, blob),
+                    "every concurrently-regenerated write must remain decryptable (deep-review #6)",
+                )
+            }
+        } finally {
+            seed.deleteKey(master)
+        }
+    }
+
+    /**
      * Lazy DEK: prewarm warms only the wrapping KEK and must NOT persist a DEK, so an
      * unencrypted-only safe never writes one. The DEK appears on the first real encrypt.
      */
