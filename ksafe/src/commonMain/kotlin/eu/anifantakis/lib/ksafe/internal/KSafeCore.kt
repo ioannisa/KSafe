@@ -895,22 +895,44 @@ internal class KSafeCore(
         // engines never contend across distinct identifiers, so DEFAULT writes
         // serialise on the master alias's lock (cheap, in-process) while
         // HARDWARE_ISOLATED encrypts pipeline freely.
+        //
+        // Per-op failure isolation (deep-review #4): a coalesced batch mixes
+        // unrelated keys and plain writes by design, so a single failing
+        // encrypt (e.g. a `requireUnlockedDevice` write while the device is
+        // locked) must NOT drop the whole batch. We capture each encrypt's
+        // outcome independently — successes go on to commit; the offending key
+        // is excluded, its awaiter(s) are failed, and its optimistic cache
+        // state is rolled back — instead of cancelling the siblings via
+        // `awaitAll`'s fail-fast.
+        val encryptFailures = LinkedHashMap<String, Throwable>()
         if (toEncrypt.isNotEmpty()) {
             val gate = Semaphore(maxParallelEncrypts)
-            coroutineScope {
+            val results = coroutineScope {
                 toEncrypt.map { op ->
                     async {
                         gate.withPermit {
                             val alias = aliasForWrite(op.userKey, op.protection, op.requireUnlockedDevice)
-                            op.userKey to engine.encryptSuspend(
-                                identifier = alias,
-                                data = op.jsonString.encodeToByteArray(),
-                                hardwareIsolated = op.protection == KSafeProtection.HARDWARE_ISOLATED,
-                                requireUnlockedDevice = op.requireUnlockedDevice,
-                            )
+                            op.userKey to try {
+                                Result.success(
+                                    engine.encryptSuspend(
+                                        identifier = alias,
+                                        data = op.jsonString.encodeToByteArray(),
+                                        hardwareIsolated = op.protection == KSafeProtection.HARDWARE_ISOLATED,
+                                        requireUnlockedDevice = op.requireUnlockedDevice,
+                                    )
+                                )
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Throwable) {
+                                Result.failure(e)
+                            }
                         }
                     }
-                }.awaitAll().forEach { (k, ct) -> encryptedCiphertext[k] = ct }
+                }.awaitAll()
+            }
+            for ((k, result) in results) {
+                result.onSuccess { encryptedCiphertext[k] = it }
+                    .onFailure { encryptFailures[k] = it }
             }
         }
 
@@ -932,6 +954,9 @@ internal class KSafeCore(
                     ops += StorageOp.Delete(legacyProtectionRawKey(key))
                 }
                 is PendingWrite.Encrypted -> {
+                    // Encrypt failed for this key — exclude it from the commit;
+                    // its awaiter(s) are failed and its cache rolled back below.
+                    if (op.userKey in encryptFailures) continue
                     val key = op.userKey
                     val ciphertext = encryptedCiphertext[key]!!
                     val base64 = b64Encode(ciphertext)
@@ -959,7 +984,20 @@ internal class KSafeCore(
             }
         }
 
-        storage.applyBatch(ops)
+        if (ops.isNotEmpty()) {
+            try {
+                storage.applyBatch(ops)
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                // Whole-batch persistence failed (e.g. disk-full IOException,
+                // issue #32 NoClassDefFoundError). Roll back the optimistic
+                // cache for every key in this batch so reads stop serving
+                // never-persisted values (deep-review #3), then surface the
+                // failure — processBatch fails all awaiters and logs.
+                rollbackOptimisticState(finalByKey.keys)
+                throw e
+            }
+        }
 
         for (alias in aliasesToDelete) engine.deleteKeySuspend(alias)
 
@@ -967,18 +1005,69 @@ internal class KSafeCore(
         // CAS guard prevents overwriting a newer `putDirect` issued mid-batch.
         // The plaintextCache (populated optimistically by the put path) keeps the
         // plaintext available for fast reads under ENCRYPTED_WITH_TIMED_CACHE and
-        // LAZY_PLAIN_TEXT.
+        // LAZY_PLAIN_TEXT. Failed-encrypt keys have no ciphertext and are skipped.
         if (cacheHoldsCiphertext) {
             for (op in finalByKey.values) {
-                if (op is PendingWrite.Encrypted) {
+                if (op is PendingWrite.Encrypted && op.userKey !in encryptFailures) {
                     val base64 = b64Encode(encryptedCiphertext[op.userKey]!!)
                     memoryCache.replaceIf(op.rawCacheKey, op.jsonString, base64)
                 }
             }
         }
-        // Dirty flags deliberately NOT cleared — see the long note in the original
-        // JVM implementation for why (prevents stale collector snapshots from
-        // clobbering optimistic writes).
+
+        // Per-op encrypt failures (deep-review #4): the successful ops above are
+        // committed; now roll back the dropped keys' optimistic cache state so
+        // reads no longer serve the phantom value (deep-review #3), THEN fail
+        // the awaiter(s) of every dropped key (covers earlier same-key writes in
+        // this batch too). Rolling back before releasing the awaiter guarantees
+        // a caller that catches the exception and immediately re-reads sees the
+        // reverted value, not the phantom. completeExceptionally here means
+        // processBatch's later complete(Unit) is a harmless no-op for these.
+        if (encryptFailures.isNotEmpty()) {
+            rollbackOptimisticState(encryptFailures.keys)
+            for (op in batch) {
+                val cause = encryptFailures[op.userKey] ?: continue
+                op.completion?.completeExceptionally(cause)
+            }
+            val sample = encryptFailures.entries.first()
+            println(
+                "KSafe SEVERE: ${encryptFailures.size} encrypted write(s) failed and " +
+                    "were rolled back (other writes in the batch committed); e.g. " +
+                    "key='${sample.key}' (${sample.value::class.simpleName}: " +
+                    "${sample.value.message}). Awaiting callers received the exception."
+            )
+        }
+        // Successful-write dirty flags are deliberately NOT cleared — see the long
+        // note in the original JVM implementation for why (prevents stale
+        // collector snapshots from clobbering optimistic writes).
+    }
+
+    /**
+     * Reverts the optimistic in-memory state for [userKeys] after their write
+     * failed to persist, so reads stop serving never-committed values
+     * (deep-review #3). Clears the keys' dirty flags and reconciles them against
+     * the on-disk snapshot via [updateCache]: a key with a prior persisted value
+     * is restored to it; a key that was never persisted is evicted (reads fall
+     * back to the default). Other in-flight (still-dirty) keys are untouched —
+     * [updateCache] skips any key still marked dirty.
+     */
+    private suspend fun rollbackOptimisticState(userKeys: Collection<String>) {
+        if (userKeys.isEmpty()) return
+        for (key in userKeys) {
+            dirtyKeys.remove(valueRawKey(key))
+            dirtyKeys.remove(legacyEncryptedRawKey(key))
+            dirtyKeys.remove(key)
+            // updateCache does NOT manage the secondary plaintextCache, so evict
+            // the failed key's optimistic plaintext here too — otherwise reads
+            // under ENCRYPTED_WITH_TIMED_CACHE / LAZY_PLAIN_TEXT keep serving the
+            // phantom from the side cache (permanently, under LAZY_PLAIN_TEXT
+            // which never expires). Covers both rawCacheKey forms (encrypted =
+            // legacyEncryptedRawKey, plain = userKey).
+            plaintextCache.remove(legacyEncryptedRawKey(key))
+            plaintextCache.remove(key)
+        }
+        runCatching { updateCache(storage.snapshot()) }
+            .onFailure { if (it is CancellationException) throw it }
     }
 
     // ============================================================
