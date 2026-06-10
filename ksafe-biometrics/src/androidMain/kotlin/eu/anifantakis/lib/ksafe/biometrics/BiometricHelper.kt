@@ -45,6 +45,9 @@ object BiometricHelper {
     private var currentAnyActivity: WeakReference<Activity>? = null
     private var isInitialized = false
 
+    /** Process-wide guard so only one biometric prompt is ever in flight (deep-review #14). */
+    private val promptGate = BiometricPromptGate()
+
     /**
      * Track activities from onCreate so they're available during ViewModel initialization.
      * These may not yet be in STARTED state.
@@ -308,7 +311,13 @@ object BiometricHelper {
             }
         }
 
-        showBiometricPrompt(fragmentActivity, subtitle, allowDeviceCredentialFallback)
+        // Serialize prompt presentation: a second concurrent prompt would overwrite the
+        // shared activity-scoped BiometricPrompt callback and silently drop its own
+        // authenticate(), stranding the first caller's coroutine forever (deep-review #14).
+        // The gate makes concurrent callers queue; the activity wait above stays outside it.
+        promptGate.withSinglePrompt {
+            showBiometricPrompt(fragmentActivity, subtitle, allowDeviceCredentialFallback)
+        }
     }
 
     /**
