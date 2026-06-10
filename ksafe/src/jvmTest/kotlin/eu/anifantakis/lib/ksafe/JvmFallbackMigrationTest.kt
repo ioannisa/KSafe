@@ -539,4 +539,60 @@ class JvmFallbackMigrationTest {
         assertTrue(jsonFallback.exists(), "transient failure must NOT archive — the source stays for a clean retry")
         assertFalse(File(tmp, "tr.ksafe.json.migrated").exists(), "no marker on transient failure")
     }
+
+    @Test
+    fun secondFallbackPeriod_freshDataMigrates_despiteOldMarker() {
+        // Regression for #32 (the documented toggle case): after a first migration leaves a
+        // permanent `.migrated` marker, a SECOND fallback period writes fresh data into a new
+        // `.ksafe.json`. The old `!marker.exists()` gate skipped migration forever, silently
+        // stranding that data. The mtime gate migrates it because the live source is newer
+        // than the marker.
+        val baseDir = File(tmp, "toggle").apply { mkdirs() }
+        val base = "eu_anifantakis_ksafe_datastore_toggle"
+        val cfg = KSafeConfig()
+        val masterA = "toggle:__ksafe_master__"
+
+        val jsonFile = File(baseDir, "$base.ksafe.json")
+        val keysFile = File(baseDir, "$base.ksafe-keys.json")
+
+        // Second-period fallback data ("v2") seeded as the no-Unsafe path would write it.
+        val seedScope = newScope()
+        runBlocking {
+            val storage = DataStoreJsonStorage(jsonFile, seedScope)
+            val engine = JvmSoftwareEncryption(
+                config = cfg,
+                vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFile)),
+            )
+            val ct = engine.encryptSuspend(masterA, "2222".encodeToByteArray())
+            storage.applyBatch(
+                listOf(
+                    StorageOp.Put(KeySafeMetadataManager.valueRawKey("count2"), StoredValue.Text(Base64.encode(ct))),
+                    StorageOp.Put(
+                        KeySafeMetadataManager.metadataRawKey("count2"),
+                        StoredValue.Text(KeySafeMetadataManager.buildMetadataJson(KSafeProtection.DEFAULT, accessPolicy = null)),
+                    ),
+                )
+            )
+        }
+        runBlocking { seedScope.coroutineContext[Job]!!.cancelAndJoin() }
+
+        // A leftover marker from a FIRST migration, older than the fresh second-period source.
+        val marker = File(baseDir, "$base.ksafe.json.migrated").apply { writeText("old-archive") }
+        val now = System.currentTimeMillis()
+        marker.setLastModified(now - 120_000)
+        jsonFile.setLastModified(now)
+
+        // Modules restored → OS-backed construction must migrate the fresh data forward.
+        val ksafe = KSafe(fileName = "toggle", baseDir = baseDir)
+        try {
+            runBlocking {
+                assertEquals(
+                    2222, ksafe.get("count2", 0),
+                    "second-period fallback data must carry forward despite an old .migrated marker (#32)",
+                )
+            }
+        } finally {
+            ksafe.close()
+        }
+    }
 }

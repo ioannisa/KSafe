@@ -375,11 +375,18 @@ private fun createJvmBackend(
         if (testEngine == null) {
             val jsonFallback = File(storageDir, "$baseFileName.ksafe.json")
             val migrationMarker = File(storageDir, "$baseFileName.ksafe.json.migrated")
-            // Gate on the marker as well as the source: if a prior clean pass
-            // couldn't rename the source away (e.g. a lingering Windows handle),
-            // it still leaves a `.migrated` marker — so we don't re-run the
-            // blocking migration on every launch.
-            if (jsonFallback.exists() && !migrationMarker.exists()) {
+            // Migrate when a live fallback file exists AND it is NEWER than the last
+            // migration's marker. Gating on `!marker.exists()` alone (the old code) broke the
+            // documented toggle case (deep-review #32): after one migration the marker is a
+            // permanent `.migrated` archive that nothing deletes, so a SECOND fallback period
+            // (modules dropped again → fresh `.ksafe.json` with new data → modules restored)
+            // was skipped forever and that data never reached the OS-backed store. Comparing
+            // mtimes distinguishes "fresh fallback data written after the last migration"
+            // (migrate) from "a stale source a prior clean pass couldn't rename away — its
+            // write predates the marker" (skip, so we don't re-drain on every launch).
+            val needsMigration = jsonFallback.exists() &&
+                (!migrationMarker.exists() || jsonFallback.lastModified() > migrationMarker.lastModified())
+            if (needsMigration) {
                 migrateJsonFallbackToOsBacked(
                     config = config,
                     jsonFallback = jsonFallback,
