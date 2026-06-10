@@ -20,6 +20,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -1090,8 +1091,28 @@ internal class KSafeCore(
         }
     }
 
+    /**
+     * Per-emission sentinel: a transient decrypt failure maps to this and is filtered
+     * out, so the emission is **skipped** rather than crashing the flow.
+     */
+    private val transientDecryptSkip = Any()
+
+    /**
+     * A transient decrypt failure (locked device / busy Keystore) on one snapshot
+     * **skips** that emission rather than throwing. The previous code rethrew it from
+     * inside the flow's `map`, which — for the long-lived observers that collect this
+     * flow on a `viewModelScope` / Recomposer (`getFlow` collectors, `asMutableStateFlow`,
+     * `getStateFlow`, the Compose live-observe) — propagated uncaught and crashed the app,
+     * and permanently stopped observation (deep-review #16). Skipping keeps the flow alive
+     * and the observer's last value; the next decryptable snapshot updates it. (`getDirect`
+     * has its own transient handling and is unaffected — this is the flow path only.)
+     */
     @PublishedApi
-    internal fun getFlowRaw(key: String, defaultValue: Any?, serializer: KSerializer<*>): Flow<Any?> {
+    internal fun getFlowRaw(
+        key: String,
+        defaultValue: Any?,
+        serializer: KSerializer<*>,
+    ): Flow<Any?> {
         return storage.snapshotFlow().map { snapshot ->
             val metaRaw = (snapshot[metaRawKey(key)] as? StoredValue.Text)?.value
                 ?: (snapshot[legacyProtectionRawKey(key)] as? StoredValue.Text)?.value
@@ -1128,13 +1149,15 @@ internal class KSafeCore(
                             else jsonDecode(json, serializer, rawString)
                         } catch (e: Throwable) {
                             if (e is CancellationException) throw e
-                            if (isTransientDecryptFailure(e)) throw e
-                            defaultValue
+                            // Transient (locked device / busy Keystore): skip this emission
+                            // (filtered below) so collectors aren't crashed (deep-review #16).
+                            if (isTransientDecryptFailure(e)) transientDecryptSkip
+                            else defaultValue
                         }
                     } else defaultValue
                 }
             }
-        }.distinctUntilChanged()
+        }.filter { it !== transientDecryptSkip }.distinctUntilChanged()
     }
 
     @PublishedApi

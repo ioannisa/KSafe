@@ -361,7 +361,9 @@ internal class KSafeMutableStateFlowDelegate<T>(
                 ksafe.core.putDirectRaw(actualKey, newValue, mode, serializer)
             }
 
-            // Observe external changes (other screens, background writes)
+            // Observe external changes (other screens, background writes). getFlowRaw
+            // skips transient decrypt failures, so a locked-device emission can't crash
+            // [scope] or kill observation (deep-review #16).
             scope.launch {
                 @Suppress("UNCHECKED_CAST")
                 (ksafe.core.getFlowRaw(actualKey, defaultValue, serializer) as Flow<T>)
