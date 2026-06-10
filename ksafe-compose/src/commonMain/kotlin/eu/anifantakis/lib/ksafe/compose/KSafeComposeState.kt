@@ -41,15 +41,29 @@ class KSafeComposeState<T>(
 
     private var _internalState: MutableState<T> = mutableStateOf(initialValue, policy)
 
+    // Latched while the user's latest write through this state is still
+    // propagating to disk: stale flow emissions must not revert it (#15). The
+    // live-observe path clears it once the flow has caught up with the written
+    // value (the precise unlatch, review R45) — so external changes resume
+    // reflecting, as the public `scope`/`observeExternalChanges` KDocs promise;
+    // the old latch was one-way and disabled reflection permanently after the
+    // first write.
+    //
     // @Volatile for cross-thread visibility: with `scope = null` + a cold-start key the
     // self-heal runs on a detached Dispatchers.Default coroutine while the setter runs on the
     // caller's thread (typically main). As a plain `var` the heal thread could miss the
-    // setter's `userHasWritten = true` (no happens-before), then overwrite the user's value
-    // with the persisted default — UI/disk divergence for the owner's lifetime (deep-review
-    // #42 / #62). @Volatile is multiplatform (JVM/Native volatile; a no-op on single-threaded
-    // JS/Wasm). The residual check-then-act window is negligible vs. the prior visibility gap.
+    // setter's write (no happens-before), then overwrite the user's value with the persisted
+    // default — UI/disk divergence for the owner's lifetime (deep-review #42 / #62). @Volatile
+    // is multiplatform (JVM/Native volatile; a no-op on single-threaded JS/Wasm). The residual
+    // check-then-act window is negligible vs. the prior visibility gap.
     @Volatile
-    private var userHasWritten = false
+    private var awaitingWriteEcho = false
+
+    // The user's latest written value, compared against flow emissions to detect
+    // the echo. Written BEFORE the flag is raised so a concurrent observer that
+    // sees the flag also sees the fresh value.
+    @Volatile
+    private var lastUserWrite: T? = null
 
     override var value: T
         get() {
@@ -62,7 +76,8 @@ class KSafeComposeState<T>(
 
             // Persist only if the value has changed according to the policy
             if (!policy.equivalent(oldValueToCompare, newValue)) {
-                userHasWritten = true
+                lastUserWrite = newValue
+                awaitingWriteEcho = true
                 valueSaver(newValue) // Call the provided saver lambda
             }
         }
@@ -71,10 +86,13 @@ class KSafeComposeState<T>(
      * Updates the state from storage without triggering persistence.
      * Used for async cache self-healing (e.g., WASM WebCrypto decryption completes
      * after initial synchronous read returned the default).
-     * Skipped if the user has already written a value to avoid overwriting their change.
+     * Skipped if the user has already written a value to avoid overwriting their
+     * change. (One-shot path — the cold-start `flow.first()` self-heal; the
+     * precise unlatch below only applies to live observation, so here a user
+     * write keeps the guard up for good, exactly the deep-review #15 contract.)
      */
     @PublishedApi internal fun updateFromStorage(newValue: T) {
-        if (!userHasWritten) {
+        if (!awaitingWriteEcho) {
             _internalState.value = newValue
         }
     }
@@ -83,21 +101,36 @@ class KSafeComposeState<T>(
      * Updates the state from a live flow emission without triggering persistence.
      * Used for continuous flow observation when a [CoroutineScope] is provided.
      *
-     * **Skipped once the user has written through this state.** The observed flow
-     * ([KSafe.getFlow] → `KSafeCore.getFlowRaw`) is derived purely from disk
-     * snapshots and lags an optimistic write by the coalescing window + commit
-     * (+ a per-emission decrypt). So a snapshot emitted before the user's write
-     * commits carries an OLDER value; applying it would revert the visible state
-     * mid-gesture — clobbering an in-flight write and, in a `TextField`, dropping
-     * typed characters as the next `onValueChange` builds on the reverted text
-     * (deep-review #15). Respecting the user-write guard (like [updateFromStorage],
-     * and the core's `updateCache` dirty-key skip) makes the user's own writes
-     * authoritative. External changes still reflect for a state the user has not
-     * yet written.
+     * **Suppressed while the user's own write is propagating to disk.** The
+     * observed flow ([KSafe.getFlow] → `KSafeCore.getFlowRaw`) is derived purely
+     * from disk snapshots and lags an optimistic write by the coalescing window
+     * + commit (+ a per-emission decrypt). So a snapshot emitted before the
+     * user's write commits carries an OLDER value; applying it would revert the
+     * visible state mid-gesture — clobbering an in-flight write and, in a
+     * `TextField`, dropping typed characters as the next `onValueChange` builds
+     * on the reverted text (deep-review #15).
+     *
+     * The suppression is **precise, not permanent** (review R45): once an
+     * emission [policy]-equivalent to the user's last-written value arrives —
+     * the flow has caught up with the write — the latch clears and later,
+     * genuinely newer external changes reflect again, as the `scope` /
+     * `observeExternalChanges` KDocs promise. Conservative residual cases (the
+     * state keeps the user's value rather than risking a revert): a write whose
+     * batch *fails* never echoes, and a policy that never equates distinct
+     * instances (`neverEqualPolicy`, or `referentialEqualityPolicy` against a
+     * deserialized round-trip) never matches — both keep suppression in place,
+     * the pre-R45 behavior.
      */
     @PublishedApi internal fun updateFromFlow(newValue: T) {
-        if (!userHasWritten) {
+        if (!awaitingWriteEcho) {
             _internalState.value = newValue
+            return
+        }
+        @Suppress("UNCHECKED_CAST")
+        if (policy.equivalent(newValue, lastUserWrite as T)) {
+            // The echo of the user's own write: consume it (the state already
+            // shows this value) and resume external-change reflection.
+            awaitingWriteEcho = false
         }
     }
 
@@ -129,9 +162,10 @@ internal const val SELF_HEAL_TIMEOUT_MS: Long = 5_000L
  *
  * Two modes — selected by [observeExternalChanges]:
  *  - `true` → indefinite [Flow.collect], each emission propagated via
- *    [KSafeComposeState.updateFromFlow] (which respects the user-write guard,
- *    so external changes reflect until the user writes through this state — a
- *    stale disk echo then can't clobber the in-flight write; deep-review #15).
+ *    [KSafeComposeState.updateFromFlow] (which respects the user-write guard:
+ *    while the user's own write is propagating to disk, stale echoes are
+ *    suppressed so they can't clobber it — deep-review #15 — and reflection
+ *    of external changes resumes once the flow catches up; review R45).
  *  - `false` + [coldStart] → one-shot `flow.first()` with a [selfHealTimeoutMs]
  *    deadline, propagated via [KSafeComposeState.updateFromStorage] (respects
  *    the user-write guard so a pending self-heal cannot clobber a value the
@@ -173,7 +207,9 @@ internal suspend fun <T> KSafeComposeState<T>.observeFromStorage(
  * @param mode Write mode. Defaults to encrypted/default.
  * @param scope Optional [CoroutineScope] for continuous flow observation. When provided,
  * the state automatically updates when the stored value changes externally (e.g., from
- * another screen or a background `put` call).
+ * another screen or a background `put` call). While one of this state's own writes is
+ * still propagating to disk, lagging emissions are suppressed (they would revert it);
+ * external reflection resumes once the observed flow catches up with the written value.
  */
 inline fun <reified T> KSafe.mutableStateOf(
     defaultValue: T,
@@ -233,8 +269,10 @@ inline fun <reified T> KSafe.mutableStateOf(
  * @param mode Write mode. Defaults to encrypted/default.
  * @param scope Optional [CoroutineScope] for continuous flow observation. When provided,
  * the state automatically updates when the stored value changes externally (e.g., from
- * another screen or a background `put` call). When null, only the WASM self-healing
- * one-shot observation is used.
+ * another screen or a background `put` call). While one of this state's own writes is
+ * still propagating to disk, lagging emissions are suppressed (they would revert it);
+ * external reflection resumes once the observed flow catches up with the written value.
+ * When null, only the WASM self-healing one-shot observation is used.
  * @param policy The [SnapshotMutationPolicy] for Compose state equality.
  * It affects both recomposition and persistence behavior.
  *
@@ -378,6 +416,9 @@ inline fun <reified T> KSafe.mutableStateOf(
  * @param mode Write mode. Defaults to [KSafeWriteMode.Plain].
  * @param observeExternalChanges When `true`, external writes to the key (from
  *   another screen, ViewModel, or KSafe instance) propagate into this state.
+ *   While one of this state's own writes is still propagating to disk, lagging
+ *   emissions are suppressed (they would revert it); external reflection
+ *   resumes once the observed flow catches up with the written value.
  *   When `false` (default), only a one-shot cold-start self-heal runs.
  * @param policy Snapshot mutation policy. Affects both recomposition and
  *   persistence — KSafe persists only when `!policy.equivalent(old, new)`.

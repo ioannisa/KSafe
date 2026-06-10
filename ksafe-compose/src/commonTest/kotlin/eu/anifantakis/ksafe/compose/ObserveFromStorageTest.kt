@@ -75,6 +75,58 @@ class ObserveFromStorageTest {
     }
 
     /**
+     * Review R45: the user-write guard must be precise, not permanent. Once the
+     * observed flow catches up with the user's own write (the echo arrives —
+     * the write committed and round-tripped through disk), genuinely newer
+     * external changes must reflect again, as the `scope` /
+     * `observeExternalChanges` KDocs promise. The old one-way latch silently
+     * disabled external reflection forever after the first local write.
+     */
+    @Test
+    fun observeFromStorage_liveMode_resumesExternalReflection_afterEchoCatchesUp() = runTest {
+        val state = newState("initial")
+        val flow = MutableSharedFlow<String>(replay = 0)
+
+        val job = launch {
+            state.observeFromStorage(
+                flow = flow,
+                coldStart = false,
+                observeExternalChanges = true,
+            )
+        }
+        advanceUntilIdle()
+
+        state.value = "user_wrote"
+
+        // Stale pre-write echo: suppressed.
+        flow.emit("stale_echo")
+        advanceUntilIdle()
+        assertEquals("user_wrote", state.value)
+
+        // The user's own write round-trips through disk → the flow caught up.
+        flow.emit("user_wrote")
+        advanceUntilIdle()
+        assertEquals("user_wrote", state.value)
+
+        // A genuinely newer external write (another screen / background sync)
+        // must now reflect again.
+        flow.emit("external_new")
+        advanceUntilIdle()
+        assertEquals(
+            "external_new", state.value,
+            "after the write's echo, newer external changes must reflect again (R45)",
+        )
+
+        // And a fresh user write re-arms the guard until its own echo.
+        state.value = "user_2"
+        flow.emit("external_new") // late re-emission, stale vs user_2
+        advanceUntilIdle()
+        assertEquals("user_2", state.value, "a re-armed guard must suppress stale echoes again")
+
+        job.cancel()
+    }
+
+    /**
      * Cold-start one-shot mode: when `observeExternalChanges = false` and
      * `coldStart = true`, the helper takes the first flow emission and
      * propagates it via `updateFromStorage` (which respects the user-write
@@ -122,7 +174,7 @@ class ObserveFromStorageTest {
      * Cold-start self-heal must not clobber a value the user has written
      * between the helper launching and the flow's first emission. The
      * `updateFromStorage` path is gated by [KSafeComposeState]'s
-     * `userHasWritten` flag.
+     * user-write guard (`awaitingWriteEcho`).
      */
     @Test
     fun observeFromStorage_coldStart_doesNotClobberUserWrite() = runTest {

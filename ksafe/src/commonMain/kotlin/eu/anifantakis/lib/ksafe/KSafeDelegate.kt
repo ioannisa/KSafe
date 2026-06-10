@@ -261,7 +261,10 @@ inline fun <reified T> KSafe.asStateFlow(
  * External changes (from other screens, background writes, etc.) are reflected
  * automatically via flow observation in the provided [CoroutineScope].
  * Setting [value], calling [emit], [tryEmit], or [compareAndSet] will persist
- * the new value via [KSafe.putDirect].
+ * the new value via [KSafe.putDirect]. While one of your own writes is still
+ * propagating to disk, lagging disk emissions are suppressed so they can't
+ * momentarily revert it; reflection of external changes resumes as soon as the
+ * observed flow has caught up with the written value.
  */
 @OptIn(
     ExperimentalCoroutinesApi::class,
@@ -275,14 +278,26 @@ internal class KSafeMutableStateFlow<T>(
 
     private val delegate = MutableStateFlow(initialValue)
 
-    // Set once the user writes through this StateFlow (value/emit/tryEmit/compareAndSet).
-    // After that, stale disk echoes from the observer flow must not revert the write.
-    private val userHasWritten = KSafeAtomicFlag(false)
+    // Latched while the user's latest write through this StateFlow
+    // (value/emit/tryEmit/compareAndSet) is still propagating to disk: stale
+    // disk echoes from the observer flow must not revert it. Cleared by
+    // [updateFromFlow] once the flow has caught up with [lastUserWrite] — the
+    // precise unlatch — so genuinely newer external changes reflect again
+    // (review R19; the old latch was one-way and permanently disabled the
+    // documented external-change reflection after the first write).
+    private val awaitingWriteEcho = KSafeAtomicFlag(false)
+
+    // The user's latest written value, compared against observer emissions to
+    // detect the echo. Written BEFORE the flag is raised so a concurrent
+    // [updateFromFlow] that observes the flag also observes the fresh value.
+    @kotlin.concurrent.Volatile
+    private var lastUserWrite: T? = null
 
     override var value: T
         get() = delegate.value
         set(newValue) {
-            userHasWritten.set(true)
+            lastUserWrite = newValue
+            awaitingWriteEcho.set(true)
             delegate.value = newValue
             persist(newValue)
         }
@@ -290,7 +305,8 @@ internal class KSafeMutableStateFlow<T>(
     override fun compareAndSet(expect: T, update: T): Boolean {
         val changed = delegate.compareAndSet(expect, update)
         if (changed) {
-            userHasWritten.set(true)
+            lastUserWrite = update
+            awaitingWriteEcho.set(true)
             persist(update)
         }
         return changed
@@ -318,19 +334,31 @@ internal class KSafeMutableStateFlow<T>(
     /**
      * Updates the value from an observer-flow emission without triggering persistence.
      *
-     * Skipped once the user has written through this StateFlow. The observer flow
-     * ([KSafe.getFlow] → `KSafeCore.getFlowRaw`) is disk-derived and lags optimistic
-     * writes by the coalescing window + commit (+ decrypt), so a snapshot emitted
-     * before the user's write commits carries an OLDER value; applying it would
-     * revert the StateFlow under collectors and `value` readers — and if that write's
-     * batch fails, no corrective emission ever arrives, leaving the StateFlow
-     * permanently disagreeing with `getDirect` (deep-review #56). Mirrors the Compose
-     * live-observe guard (#15) and the core's `updateCache` dirty-key skip. External
-     * changes still reflect for a StateFlow the user has not written through.
+     * Suppressed while the user's own write is propagating to disk. The observer
+     * flow ([KSafe.getFlow] → `KSafeCore.getFlowRaw`) is disk-derived and lags
+     * optimistic writes by the coalescing window + commit (+ decrypt), so a
+     * snapshot emitted before the user's write commits carries an OLDER value;
+     * applying it would revert the StateFlow under collectors and `value`
+     * readers (deep-review #56, mirroring the Compose live-observe guard #15).
+     *
+     * The suppression is **precise, not permanent** (review R19): once an
+     * emission equal to the user's last-written value arrives — the flow has
+     * caught up with the write — the latch clears and later, genuinely newer
+     * external changes reflect again, as the public KDoc promises. Residual
+     * conservative cases (the StateFlow keeps the user's value rather than
+     * reverting): a write whose batch *fails* never echoes, and a type whose
+     * deserialized round-trip is not `==` to the written instance never
+     * matches — both keep suppression in place, the pre-R19 behavior.
      */
     internal fun updateFromFlow(newValue: T) {
-        if (!userHasWritten.get()) {
+        if (!awaitingWriteEcho.get()) {
             delegate.value = newValue
+            return
+        }
+        if (newValue == lastUserWrite) {
+            // The echo of the user's own write: consume it (the StateFlow
+            // already shows this value) and resume external-change reflection.
+            awaitingWriteEcho.compareAndSet(true, false)
         }
     }
 }
