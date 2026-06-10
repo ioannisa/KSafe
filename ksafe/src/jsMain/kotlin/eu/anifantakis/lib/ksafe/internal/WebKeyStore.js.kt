@@ -37,6 +37,14 @@ private val dispatch: (String, String, String?) -> Promise<Any?> = js(
           r.onsuccess = function() { res(true); };
           r.onerror = function() { rej(r.error); };
         }); }); };
+        // Atomic create: 'add' (unlike 'put') fails with ConstraintError if the key
+        // already exists. Resolves true on insert, false if another context won the
+        // race — the single source of cross-tab key-creation truth (deep-review #12).
+        var idbAdd = function(n, v) { return open().then(function(db) { return new Promise(function(res, rej) {
+          var r = db.transaction(STORE, 'readwrite').objectStore(STORE).add(v, n);
+          r.onsuccess = function() { res(true); };
+          r.onerror = function(e) { if (r.error && r.error.name === 'ConstraintError') { if (e && e.preventDefault) e.preventDefault(); res(false); } else rej(r.error); };
+        }); }); };
         var idbDel = function(n) { return open().then(function(db) { return new Promise(function(res, rej) {
           var r = db.transaction(STORE, 'readwrite').objectStore(STORE).delete(n);
           r.onsuccess = function() { res(true); };
@@ -63,7 +71,16 @@ private val dispatch: (String, String, String?) -> Promise<Any?> = js(
           if (mem.has(name)) return Promise.resolve(null);
           return idbGet(name).then(function(k) {
             if (k) { mem.set(name, k); return null; }
-            return subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']).then(function(nk) { return idbPut(name, nk).then(function() { mem.set(name, nk); return null; }); });
+            // Create via atomic 'add', not 'put': if two same-origin tabs both reach
+            // here on first launch, only one 'add' wins; the loser adopts the winner's
+            // key instead of keeping its own page-local key and writing ciphertext that
+            // no other context can ever decrypt (deep-review #12).
+            return subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']).then(function(nk) {
+              return idbAdd(name, nk).then(function(added) {
+                if (added) { mem.set(name, nk); return null; }
+                return idbGet(name).then(function(existing) { if (existing) mem.set(name, existing); return null; });
+              });
+            });
           });
         };
         var keyOf = function(name) { if (mem.has(name)) return Promise.resolve(mem.get(name));
