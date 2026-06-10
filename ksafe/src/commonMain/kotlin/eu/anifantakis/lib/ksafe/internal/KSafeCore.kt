@@ -189,6 +189,18 @@ internal class KSafeCore(
     internal val plaintextCache = KSafeConcurrentMap<CachedPlaintext>()
 
     /**
+     * Latest write's identity token per user key (see `PendingWrite.writeToken`).
+     * Claimed by every put/delete BEFORE its optimistic mutations; consulted by
+     * `rollbackOptimisticState` so a failed write never reverts optimistic state
+     * that a NEWER in-flight write to the same key now owns (review R28/R81 —
+     * `dirtyKeys` is a set, not a counter, so the newer write's `add` is a no-op
+     * and the old code's unconditional flag-clear stripped its protection).
+     * Grows like [dirtyKeys] (one entry per key ever written); not wiped by
+     * clearAll so a write racing the wipe keeps its rollback ownership.
+     */
+    private val writeOwners = KSafeConcurrentMap<Any>()
+
+    /**
      * `true` for any policy whose primary [memoryCache] holds Base64 ciphertext at rest:
      * [KSafeMemoryPolicy.ENCRYPTED], [KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE], and
      * [KSafeMemoryPolicy.LAZY_PLAIN_TEXT]. Cold-start skips bulk decryption and the post-batch
@@ -325,6 +337,18 @@ internal class KSafeCore(
          */
         abstract val completion: CompletableDeferred<Unit>?
 
+        /**
+         * Identity token claimed in [writeOwners] by the issuing put/delete
+         * BEFORE its optimistic mutations. A failed write may roll back a key's
+         * optimistic state only while it is still the key's latest writer
+         * (`writeOwners[userKey] === writeToken`) — otherwise the dirty flags
+         * and cache entries belong to a newer in-flight write and clearing them
+         * would clobber it (review R28/R81). Required (no default) so a new
+         * call site can't silently enqueue an unregistered token, which would
+         * disable rollback for that key entirely.
+         */
+        abstract val writeToken: Any
+
         data class Plain(
             override val userKey: String,
             override val rawCacheKey: String,
@@ -334,6 +358,7 @@ internal class KSafeCore(
              * to JSON and arrive here as [String].
              */
             val value: Any,
+            override val writeToken: Any,
             override val completion: CompletableDeferred<Unit>? = null,
         ) : PendingWrite()
 
@@ -343,12 +368,14 @@ internal class KSafeCore(
             val jsonString: String,
             val protection: KSafeProtection,
             val requireUnlockedDevice: Boolean,
+            override val writeToken: Any,
             override val completion: CompletableDeferred<Unit>? = null,
         ) : PendingWrite()
 
         data class Delete(
             override val userKey: String,
             override val rawCacheKey: String,
+            override val writeToken: Any,
             override val completion: CompletableDeferred<Unit>? = null,
         ) : PendingWrite()
 
@@ -362,6 +389,7 @@ internal class KSafeCore(
         ) : PendingWrite() {
             override val userKey: String get() = "__ksafe_clear_all__"
             override val rawCacheKey: String get() = "__ksafe_clear_all__"
+            override val writeToken: Any get() = this // never rolled back per-key
         }
     }
 
@@ -1042,7 +1070,7 @@ internal class KSafeCore(
                 // cache for every key in this batch so reads stop serving
                 // never-persisted values (deep-review #3), then surface the
                 // failure — processBatch fails all awaiters and logs.
-                rollbackOptimisticState(finalByKey.keys)
+                rollbackOptimisticState(finalByKey.values)
                 throw e
             }
         }
@@ -1080,7 +1108,7 @@ internal class KSafeCore(
         // reverted value, not the phantom. completeExceptionally here means
         // processBatch's later complete(Unit) is a harmless no-op for these.
         if (encryptFailures.isNotEmpty()) {
-            rollbackOptimisticState(encryptFailures.keys)
+            rollbackOptimisticState(finalByKey.values.filter { it.userKey in encryptFailures })
             for (op in batch) {
                 val cause = encryptFailures[op.userKey] ?: continue
                 op.completion?.completeExceptionally(cause)
@@ -1099,17 +1127,28 @@ internal class KSafeCore(
     }
 
     /**
-     * Reverts the optimistic in-memory state for [userKeys] after their write
-     * failed to persist, so reads stop serving never-committed values
-     * (deep-review #3). Clears the keys' dirty flags and reconciles them against
-     * the on-disk snapshot via [updateCache]: a key with a prior persisted value
-     * is restored to it; a key that was never persisted is evicted (reads fall
-     * back to the default). Other in-flight (still-dirty) keys are untouched —
-     * [updateCache] skips any key still marked dirty.
+     * Reverts the optimistic in-memory state for the failed writes' keys, so
+     * reads stop serving never-committed values (deep-review #3). Clears the
+     * keys' dirty flags and reconciles them against the on-disk snapshot via
+     * [updateCache]: a key with a prior persisted value is restored to it; a
+     * key that was never persisted is evicted (reads fall back to the default).
+     * Other in-flight (still-dirty) keys are untouched — [updateCache] skips
+     * any key still marked dirty.
+     *
+     * Ownership gate (review R28/R81): a failed op may only roll back a key it
+     * still OWNS (`writeOwners[key] === op.writeToken`). If a newer write for
+     * the same key was issued after the failed one, the dirty flags (a set —
+     * the newer write's `add` was a no-op) and the optimistic cache entries
+     * now describe the NEWER write; clearing them here would strip its
+     * stale-snapshot protection and let the re-merge below clobber its value.
+     * The newer write's own commit (or its own rollback) resolves the key.
      */
-    private suspend fun rollbackOptimisticState(userKeys: Collection<String>) {
-        if (userKeys.isEmpty()) return
-        for (key in userKeys) {
+    private suspend fun rollbackOptimisticState(failedOps: Collection<PendingWrite>) {
+        var rolledBackAny = false
+        for (op in failedOps) {
+            val key = op.userKey
+            if (writeOwners[key] !== op.writeToken) continue
+            rolledBackAny = true
             dirtyKeys.remove(valueRawKey(key))
             dirtyKeys.remove(legacyEncryptedRawKey(key))
             dirtyKeys.remove(key)
@@ -1122,6 +1161,7 @@ internal class KSafeCore(
             plaintextCache.remove(legacyEncryptedRawKey(key))
             plaintextCache.remove(key)
         }
+        if (!rolledBackAny) return
         runCatching { updateCache(storage.snapshot()) }
             .onFailure { if (it is CancellationException) throw it }
     }
@@ -1221,6 +1261,11 @@ internal class KSafeCore(
         val protection = mode.toProtection()
         val requireUnlockedDevice = mode is KSafeWriteMode.Encrypted && mode.requireUnlockedDevice
 
+        // Claim rollback ownership FIRST — before any optimistic mutation — so
+        // a concurrently-failing older write for this key can no longer revert
+        // the state set below (review R28/R81).
+        val writeToken = Any().also { writeOwners[key] = it }
+
         if (protection != null) {
             val rawCacheKey = legacyEncryptedRawKey(key)
             dirtyKeys.add(rawCacheKey)
@@ -1245,6 +1290,7 @@ internal class KSafeCore(
                     jsonString = jsonString,
                     protection = protection,
                     requireUnlockedDevice = requireUnlockedDevice,
+                    writeToken = writeToken,
                 )
             )
         } else {
@@ -1265,7 +1311,9 @@ internal class KSafeCore(
                 is Boolean, is Int, is Long, is Float, is Double, is String -> value
                 else -> jsonEncode(json, serializer, value)
             }
-            writeChannel.trySend(PendingWrite.Plain(userKey = key, rawCacheKey = rawCacheKey, value = storedInBatch))
+            writeChannel.trySend(
+                PendingWrite.Plain(userKey = key, rawCacheKey = rawCacheKey, value = storedInBatch, writeToken = writeToken)
+            )
         }
     }
 
@@ -1288,6 +1336,8 @@ internal class KSafeCore(
     ) {
         // Optimistic in-memory state (matches `putEncryptedDirect`): subsequent
         // reads from any thread see the new value the instant this returns.
+        // Rollback ownership claimed first (review R28/R81).
+        val writeToken = Any().also { writeOwners[key] = it }
         val rawCacheKey = legacyEncryptedRawKey(key)
         dirtyKeys.add(rawCacheKey)
         protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(protection)
@@ -1314,6 +1364,7 @@ internal class KSafeCore(
                 jsonString = jsonString,
                 protection = protection,
                 requireUnlockedDevice = requireUnlockedDevice,
+                writeToken = writeToken,
                 completion = deferred,
             )
         )
@@ -1322,6 +1373,8 @@ internal class KSafeCore(
 
     private suspend fun putPlainSuspend(key: String, value: Any?, serializer: KSerializer<*>) {
         // Optimistic in-memory state (matches `putPlainDirect`).
+        // Rollback ownership claimed first (review R28/R81).
+        val writeToken = Any().also { writeOwners[key] = it }
         dirtyKeys.add(key)
         protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(null)
         encMetaMap.remove(key)
@@ -1345,6 +1398,7 @@ internal class KSafeCore(
                 userKey = key,
                 rawCacheKey = key,
                 value = storedInBatch,
+                writeToken = writeToken,
                 completion = deferred,
             )
         )
@@ -1352,6 +1406,8 @@ internal class KSafeCore(
     }
 
     fun deleteDirect(key: String) {
+        // Rollback ownership claimed first (review R28/R81).
+        val writeToken = Any().also { writeOwners[key] = it }
         val rawKey = key
         val encKeyName = legacyEncryptedRawKey(key)
         dirtyKeys.add(rawKey)
@@ -1362,11 +1418,13 @@ internal class KSafeCore(
         plaintextCache.remove(encKeyName)
         protectionMap.remove(key)
         encMetaMap.remove(key)
-        writeChannel.trySend(PendingWrite.Delete(userKey = key, rawCacheKey = rawKey))
+        writeChannel.trySend(PendingWrite.Delete(userKey = key, rawCacheKey = rawKey, writeToken = writeToken))
     }
 
     suspend fun delete(key: String) {
         // Optimistic in-memory cleanup (matches `deleteDirect`).
+        // Rollback ownership claimed first (review R28/R81).
+        val writeToken = Any().also { writeOwners[key] = it }
         val rawKey = key
         val encKeyName = legacyEncryptedRawKey(key)
         dirtyKeys.add(rawKey)
@@ -1384,6 +1442,7 @@ internal class KSafeCore(
             PendingWrite.Delete(
                 userKey = key,
                 rawCacheKey = rawKey,
+                writeToken = writeToken,
                 completion = deferred,
             )
         )

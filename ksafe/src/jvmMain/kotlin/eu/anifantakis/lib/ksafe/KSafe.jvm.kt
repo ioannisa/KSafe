@@ -385,8 +385,10 @@ private fun createJvmBackend(
         // One-time forward migration: if an earlier run persisted through the
         // no-`Unsafe` JSON fallback, re-encrypt that data under the OS-backed key
         // so it carries forward instead of appearing empty. Cheap `exists()`
-        // pre-gate (common path costs nothing); the migration itself only
-        // proceeds when the OS-backed store has no user data yet. Skipped for
+        // pre-gate (common path costs nothing). The fallback values win over
+        // anything already in the target — EXCEPT, on a retry after a transient
+        // failure, keys the user wrote in the target since that failed attempt
+        // (tracked via the `.migration-pending` state; review R55). Skipped for
         // test-injected engines.
         if (testEngine == null) {
             val jsonFallback = File(storageDir, "$baseFileName.ksafe.json")
@@ -434,7 +436,9 @@ private fun deleteResidualFallbackFiles(storageDir: File, baseFileName: String) 
         val prefix = "$baseFileName.ksafe"
         storageDir.listFiles()?.forEach { f ->
             val n = f.name
-            if (n.startsWith(prefix) && (n.endsWith(".migrated") || n.contains(".corrupt-"))) {
+            if (n.startsWith(prefix) &&
+                (n.endsWith(".migrated") || n.endsWith(".migration-pending") || n.contains(".corrupt-"))
+            ) {
                 runCatching { f.delete() }
             }
         }

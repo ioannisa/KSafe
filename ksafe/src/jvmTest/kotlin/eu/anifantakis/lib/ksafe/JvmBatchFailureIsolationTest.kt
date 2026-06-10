@@ -186,4 +186,83 @@ class JvmBatchFailureIsolationTest {
 
         ksafe.close()
     }
+
+    /**
+     * Engine for the review-R28/R81 race: encrypts via XOR, fails once on the
+     * marker payload — invoking [onMarkerFailure] (the racing newer write)
+     * first — and gates every NON-marker encrypt on [commitGate], so the newer
+     * write cannot reach disk before the test has asserted on its optimistic
+     * state (its commit would otherwise heal the pre-fix clobber and mask it).
+     */
+    private class RaceFailEncryption(private val failMarker: String) : KSafeEncryption {
+        private val xor = FakeEncryption()
+        @Volatile var onMarkerFailure: (() -> Unit)? = null
+        val commitGate = java.util.concurrent.CountDownLatch(1)
+
+        override fun encrypt(
+            identifier: String,
+            data: ByteArray,
+            hardwareIsolated: Boolean,
+            requireUnlockedDevice: Boolean?,
+        ): ByteArray {
+            if (data.decodeToString().contains(failMarker)) {
+                onMarkerFailure?.invoke()
+                onMarkerFailure = null
+                throw IllegalStateException("KSafe: Cannot access Keystore key - device is locked. (test)")
+            }
+            commitGate.await()
+            return xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
+        }
+
+        override fun decrypt(identifier: String, data: ByteArray): ByteArray =
+            xor.decrypt(identifier, data)
+
+        override fun deleteKey(identifier: String) { /* no-op */ }
+    }
+
+    /**
+     * Review R28/R81: `dirtyKeys` is a set, not a counter — a NEWER write to
+     * the same key issued while an older write's batch is failing performs a
+     * no-op `dirtyKeys.add`. The old rollback then cleared the key's dirty
+     * flags unconditionally and re-merged from a pre-newer-write disk snapshot,
+     * stripping the newer (already optimistically acknowledged) write's
+     * stale-snapshot protection and clobbering its value: reads returned the
+     * default until some later snapshot emission healed it. Rollback must skip
+     * a key whose latest writer is no longer the failed op.
+     */
+    @Test
+    fun failedWriteRollback_doesNotClobber_aNewerWriteToTheSameKey() = runTest {
+        val engine = RaceFailEncryption("BAD")
+        val ksafe = KSafe(
+            fileName = JvmKSafeTest.generateUniqueFileName(),
+            memoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+            lazyLoad = true, // no background collector — nothing heals a wrong rollback
+            testEngine = engine,
+        )
+
+        // The racing NEWER write for the same key, fired from inside the older
+        // write's failing encrypt — i.e. while its batch is mid-processing.
+        engine.onMarkerFailure = {
+            ksafe.putDirect("token", "fresh-v2", KSafeWriteMode.Encrypted())
+        }
+
+        // Older write fails; its rollback runs before the awaiter is released.
+        assertFailsWith<IllegalStateException> {
+            ksafe.put("token", "BAD_v1", KSafeWriteMode.Encrypted())
+        }
+
+        try {
+            // The newer write hasn't committed (its encrypt is latch-gated), so
+            // this read is answered purely by its optimistic state — which the
+            // failed write's rollback must have left intact.
+            assertEquals(
+                "fresh-v2", ksafe.getDirect("token", "none"),
+                "rollback of a failed write must not strip a newer same-key write's optimistic state (R28/R81)",
+            )
+        } finally {
+            engine.commitGate.countDown() // release the newer write's commit
+        }
+
+        ksafe.close()
+    }
 }

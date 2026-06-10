@@ -541,6 +541,83 @@ class JvmFallbackMigrationTest {
     }
 
     @Test
+    fun retryAfterTransientFailure_keepsNewerTargetWrites_andStillMigratesUntouchedKeys() {
+        // Regression for review R55: a transiently-failed migration leaves the
+        // session running on the OS-backed TARGET, so the user's writes there are
+        // NEWER than the frozen fallback values. The retry on the next launch
+        // used to re-drain "fallback wins" unconditionally, silently rolling
+        // those newer writes back to stale fallback data. The retry must skip
+        // keys the user wrote after the failed attempt (tracked via the
+        // `.migration-pending` target-state snapshot) while still migrating the
+        // untouched keys.
+        val jsonFallback = File(tmp, "rt.ksafe.json")
+        val keysFallback = File(tmp, "rt.ksafe-keys.json")
+        val targetFile = File(tmp, "rt.target.json")
+        val targetKeys = File(tmp, "rt.target-keys.json")
+        val pendingFile = File(tmp, "rt.ksafe.json.migration-pending")
+        val config = KSafeConfig()
+
+        // ── Fallback period: two keys live in the fallback store. ───────────────
+        val srcScope = newScope()
+        runBlocking {
+            val src = DataStoreJsonStorage(jsonFallback, srcScope)
+            val srcEngine = JvmSoftwareEncryption(
+                config = config,
+                vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFallback)),
+            )
+            putEncrypted(src, srcEngine, "session", "fallback-session", KSafeProtection.DEFAULT)
+            putEncrypted(src, srcEngine, "theme", "fallback-theme", KSafeProtection.DEFAULT)
+        }
+        runBlocking { srcScope.coroutineContext[Job]!!.cancelAndJoin() }
+
+        val targetScope = newScope()
+        val target = DataStoreJsonStorage(targetFile, targetScope)
+        val goodTargetEngine = JvmSoftwareEncryption(
+            config = config,
+            vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(targetKeys)),
+        )
+
+        // ── Attempt 1: transient target failure → nothing applied, pending state recorded. ──
+        migrateJsonFallbackToOsBacked(
+            config, jsonFallback, keysFallback, target,
+            targetEngine = TransientFailTargetEngine(),
+            keyAlias = keyAlias, masterAlias = masterAlias,
+        )
+        assertTrue(pendingFile.exists(), "a transient failure must record the target's pending state")
+
+        // ── The session proceeds on the target: the user overwrites "session". ──
+        runBlocking { putEncrypted(target, goodTargetEngine, "session", "user-fresh", KSafeProtection.DEFAULT) }
+
+        // ── Attempt 2 (next launch): vault healthy → migration succeeds. ────────
+        migrateJsonFallbackToOsBacked(
+            config, jsonFallback, keysFallback, target,
+            targetEngine = goodTargetEngine,
+            keyAlias = keyAlias, masterAlias = masterAlias,
+        )
+
+        runBlocking {
+            val snap = target.snapshot()
+            // The user's post-attempt write must survive the retry…
+            val sessionCipher = (snap[KeySafeMetadataManager.valueRawKey("session")] as StoredValue.Text).value
+            assertEquals(
+                "user-fresh",
+                goodTargetEngine.decryptSuspend(masterAlias(false), Base64.decode(sessionCipher)).decodeToString(),
+                "the retry must NOT roll a newer target write back to the stale fallback value (R55)",
+            )
+            // …while a key untouched since the failed attempt still migrates.
+            val themeCipher = (snap[KeySafeMetadataManager.valueRawKey("theme")] as StoredValue.Text).value
+            assertEquals(
+                "fallback-theme",
+                goodTargetEngine.decryptSuspend(masterAlias(false), Base64.decode(themeCipher)).decodeToString(),
+                "keys untouched since the failed attempt must still migrate",
+            )
+        }
+        // Successful migration archives the sources and clears the pending state.
+        assertTrue(File(tmp, "rt.ksafe.json.migrated").exists(), "successful retry must archive the source")
+        assertFalse(pendingFile.exists(), "successful migration must delete the pending state")
+    }
+
+    @Test
     fun secondFallbackPeriod_freshDataMigrates_despiteOldMarker() {
         // Regression for #32 (the documented toggle case): after a first migration leaves a
         // permanent `.migrated` marker, a SECOND fallback period writes fresh data into a new

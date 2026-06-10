@@ -10,6 +10,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.io.encoding.Base64
@@ -63,6 +66,21 @@ internal fun migrateJsonFallbackToOsBacked(
 ) {
     runCatching {
         runBlocking {
+            // State of the target at the FIRST transiently-failed attempt (see
+            // below). Present ⇒ this run is a RETRY and the session(s) since may
+            // have written newer values into the target.
+            val pendingFile = File(jsonFallback.parentFile, jsonFallback.name + ".migration-pending")
+            val priorTargetState: Map<String, String>? = if (pendingFile.exists()) {
+                runCatching {
+                    Json.decodeFromString(
+                        MapSerializer(String.serializer(), String.serializer()),
+                        pendingFile.readText(),
+                    )
+                }.getOrNull() // unreadable/corrupt pending state ⇒ behave like a first attempt
+            } else {
+                null
+            }
+
             val migScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
             val result = try {
                 val source = DataStoreJsonStorage(jsonFallback, migScope)
@@ -70,7 +88,7 @@ internal fun migrateJsonFallbackToOsBacked(
                     config = config,
                     vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFallback)),
                 )
-                reEncryptAll(source, sourceEngine, target, targetEngine, keyAlias, masterAlias)
+                reEncryptAll(source, sourceEngine, target, targetEngine, keyAlias, masterAlias, priorTargetState)
             } finally {
                 // Release the .ksafe.json DataStore handle before renaming the file.
                 migScope.coroutineContext[Job]?.cancelAndJoin()
@@ -90,6 +108,25 @@ internal fun migrateJsonFallbackToOsBacked(
             if (result.transientFailed == 0) {
                 archiveOrMark(jsonFallback)
                 archiveOrMark(keysFallback)
+                runCatching { pendingFile.delete() }
+            } else if (!pendingFile.exists()) {
+                // FIRST transient failure: the session now proceeds on the
+                // OS-backed store, so the user may write newer values for the
+                // very keys this migration will retry. Record the target's
+                // current per-key state so the retry can tell "unchanged since
+                // the failed attempt" (fallback still newest → overwrite) from
+                // "user wrote it after the attempt" (fallback superseded → keep
+                // the user's value). Recorded once — at the failure closest to
+                // the genuine pre-migration state — and kept until a successful
+                // migration deletes it (review R55).
+                runCatching {
+                    pendingFile.writeText(
+                        Json.encodeToString(
+                            MapSerializer(String.serializer(), String.serializer()),
+                            result.targetStateForPending,
+                        )
+                    )
+                }
             }
             if (result.migrated > 0) warnMigratedFromFallbackOnce(result.migrated)
         }
@@ -102,13 +139,48 @@ private data class MigrationResult(
     val permanentlySkipped: Int,
     /** Entries that failed for a transient reason (OS vault unavailable). Block archiving → retry. */
     val transientFailed: Int,
+    /**
+     * Fingerprints of the TARGET's current value per fallback canonical key,
+     * captured from the same target snapshot the pass compared against —
+     * persisted as the `.migration-pending` state when a transient failure
+     * forces a retry (review R55).
+     */
+    val targetStateForPending: Map<String, String> = emptyMap(),
 )
+
+/** Marker fingerprint for "the target had no value for this key". */
+private const val ABSENT_FINGERPRINT = "∅"
+
+/**
+ * Stable equality fingerprint of a target value, for the retry-overwrite
+ * decision. Only compared (never reconstructed), so a type-tagged string is
+ * enough; [StoredValue.Text] covers every value KSafe itself writes.
+ */
+private fun storedFingerprint(sv: StoredValue?): String = when (sv) {
+    null -> ABSENT_FINGERPRINT
+    is StoredValue.Text -> "T:${sv.value}"
+    is StoredValue.BoolVal -> "B:${sv.value}"
+    is StoredValue.IntVal -> "I:${sv.value}"
+    is StoredValue.LongVal -> "L:${sv.value}"
+    is StoredValue.FloatVal -> "F:${sv.value}"
+    is StoredValue.DoubleVal -> "D:${sv.value}"
+}
 
 /**
  * Re-encrypts every user entry from [source]/[sourceEngine] into
  * [target]/[targetEngine] under the **same** key alias (only the key store
  * changes), overwriting any existing target value. Returns the counts of
  * migrated and failed entries.
+ *
+ * [priorTargetState] is non-null on a RETRY after a transiently-failed
+ * attempt: it holds the target's per-key fingerprints recorded at that failed
+ * attempt. The "fallback wins" rule is only sound when the target holds
+ * nothing newer than the fallback — true on a first attempt, but the session
+ * after a failed attempt runs on the target, so the user's writes there ARE
+ * newer than the fallback. A key whose target value changed since the
+ * recorded state is therefore skipped (the user's value wins; the fallback
+ * copy stays recoverable in the archive); an unchanged key still migrates
+ * (review R55).
  */
 @OptIn(ExperimentalEncodingApi::class)
 private suspend fun reEncryptAll(
@@ -118,8 +190,11 @@ private suspend fun reEncryptAll(
     targetEngine: KSafeEncryption,
     keyAlias: (String) -> String,
     masterAlias: (Boolean) -> String,
+    priorTargetState: Map<String, String>? = null,
 ): MigrationResult {
     val srcSnap = source.snapshot()
+    val targetSnap = target.snapshot()
+    val targetFingerprints = mutableMapOf<String, String>()
     val ops = mutableListOf<StorageOp>()
     var migrated = 0
     var permanentlySkipped = 0
@@ -127,6 +202,19 @@ private suspend fun reEncryptAll(
 
     for ((rawKey, stored) in srcSnap) {
         val userKey = KeySafeMetadataManager.tryExtractCanonicalValueKey(rawKey) ?: continue
+
+        // Record the target's current state for this key (pending-state capture)
+        // and, on a retry, skip a key the user wrote after the failed attempt.
+        val valueKey = KeySafeMetadataManager.valueRawKey(userKey)
+        val nowFingerprint = storedFingerprint(targetSnap[valueKey])
+        targetFingerprints[valueKey] = nowFingerprint
+        if (priorTargetState != null &&
+            nowFingerprint != (priorTargetState[valueKey] ?: ABSENT_FINGERPRINT)
+        ) {
+            // Newer user write in the target — the fallback copy is superseded.
+            // Resolved, not failed: doesn't block the apply or the archiving.
+            continue
+        }
 
         val metaRaw = (srcSnap[KeySafeMetadataManager.metadataRawKey(userKey)] as? StoredValue.Text)?.value
         val protection = KeySafeMetadataManager.parseProtection(metaRaw)
@@ -205,7 +293,12 @@ private suspend fun reEncryptAll(
     // Permanent skips don't block the apply — the successful entries land and the
     // source gets archived so the migration never re-runs.
     if (transientFailed == 0 && ops.isNotEmpty()) target.applyBatch(ops)
-    return MigrationResult(migrated = migrated, permanentlySkipped = permanentlySkipped, transientFailed = transientFailed)
+    return MigrationResult(
+        migrated = migrated,
+        permanentlySkipped = permanentlySkipped,
+        transientFailed = transientFailed,
+        targetStateForPending = targetFingerprints,
+    )
 }
 
 /**
