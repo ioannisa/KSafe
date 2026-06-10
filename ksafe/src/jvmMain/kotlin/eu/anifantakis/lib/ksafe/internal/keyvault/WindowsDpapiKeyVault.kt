@@ -47,8 +47,27 @@ internal class WindowsDpapiKeyVault(
 
     @OptIn(ExperimentalEncodingApi::class)
     override fun get(alias: String): ByteArray? {
+        // Genuinely absent: no stored blob → null (so the orphan sweep / migration
+        // treat it as a true miss).
         val wrapped = store.getString(alias) ?: return null
-        return Crypt32Util.cryptUnprotectData(Base64.decode(wrapped))
+        // A stored blob that can no longer be unprotected is NOT a miss: the user's
+        // DPAPI master-key chain is unavailable (admin-forced Windows password reset,
+        // or the profile/blob copied to another machine). Map it to the "key vault
+        // unavailable" contract — the same wording Linux uses — so KSafeCore treats it
+        // as non-transient AND non-orphan: encrypted reads return their defaults and
+        // the orphan sweep leaves the still-recoverable ciphertext intact, instead of a
+        // raw Win32Exception that only incidentally avoids misclassification. Writes
+        // fail closed rather than minting a divergent key. See deep-review #57.
+        return try {
+            Crypt32Util.cryptUnprotectData(Base64.decode(wrapped))
+        } catch (e: Throwable) {
+            throw IllegalStateException(
+                "KSafe: key vault unavailable — Windows DPAPI could not unprotect the stored " +
+                    "key for alias \"$alias\" (the user's DPAPI master-key chain is unavailable, " +
+                    "e.g. after a Windows password reset or copying the profile to another machine).",
+                e,
+            )
+        }
     }
 
     @OptIn(ExperimentalEncodingApi::class)

@@ -54,9 +54,23 @@ internal class MacosKeychainKeyVault(
             pwdLen, pwdData,
             null,
         )
+        // Genuinely absent → null (a true miss the orphan sweep / migration may act on).
         if (status == ERR_SEC_ITEM_NOT_FOUND) return null
+        // Any other non-success status means the lookup itself failed, NOT that the
+        // key is absent — e.g. errSecInteractionNotAllowed when the login keychain is
+        // locked (SSH session, FileVault edge cases). Map it to the "key vault
+        // unavailable" contract (the wording Linux uses) so KSafeCore classifies it as
+        // non-transient AND non-orphan: encrypted reads return their defaults and the
+        // orphan sweep leaves the still-recoverable ciphertext intact, rather than a raw
+        // KeychainException that only incidentally avoids misclassification. Writes fail
+        // closed rather than minting a divergent key. See deep-review #57.
         if (status != ERR_SEC_SUCCESS) {
-            throw KeychainException("SecKeychainFindGenericPassword", status)
+            throw IllegalStateException(
+                "KSafe: key vault unavailable — macOS Keychain lookup failed for alias " +
+                    "\"$alias\" (OSStatus $status; the login keychain may be locked or " +
+                    "inaccessible).",
+                KeychainException("SecKeychainFindGenericPassword", status),
+            )
         }
         val ptr = pwdData.value ?: return null
         return try {

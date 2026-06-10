@@ -41,6 +41,22 @@ class JvmKeyVaultMigrationTest {
         override fun delete(alias: String) { store.remove(alias) }
     }
 
+    /**
+     * OS vault whose lookups fail at RUNTIME with the "key vault unavailable" wording —
+     * what the Windows DPAPI / macOS Keychain vaults now throw on a non-LinkageError runtime
+     * failure (DPAPI blob undecryptable / login keychain locked) per deep-review #57. Records
+     * whether [put] was ever called, to prove key creation fails closed (no junk key minted).
+     */
+    private class UnavailableOsVault : JvmKeyVault {
+        var putCalled = false
+        override val name = "UnavailableOsVault (test)"
+        override val isOsBacked = true
+        override fun get(alias: String): ByteArray? =
+            throw IllegalStateException("KSafe: key vault unavailable — test runtime failure for \"$alias\".")
+        override fun put(alias: String, keyBytes: ByteArray) { putCalled = true }
+        override fun delete(alias: String) {}
+    }
+
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val tmpDir = File(System.getProperty("java.io.tmpdir"), "ksafe_kv_${System.nanoTime()}")
         .apply { mkdirs() }
@@ -530,6 +546,52 @@ class JvmKeyVaultMigrationTest {
             legacyKeyBefore, DataStoreKeyVault(dataStore).get(alias),
             "the legacy key must be left in place (can't migrate to an unreachable OS vault)",
         )
+    }
+
+    // ── Runtime OS-vault unavailability (deep-review #57) ────────────────────
+    //
+    // The Windows DPAPI / macOS Keychain vaults now map a non-LinkageError runtime lookup
+    // failure (DPAPI master-key chain gone / login keychain locked) to the "key vault
+    // unavailable" contract instead of leaking a raw Win32Exception/KeychainException. These
+    // tests lock in the ENGINE half of that contract via a fake whose get() throws the wording
+    // (the platform string-mapping itself needs a real DPAPI/Keychain failure to exercise).
+
+    @Test
+    fun runtimeUnavailableVault_decrypt_reportsUnavailableNotOrphan() {
+        val alias = "user:token"
+        // Ciphertext produced earlier under a healthy vault; its key is irrelevant — we assert
+        // on the error wording when the vault is unreachable at read time.
+        val ciphertext = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = FakeOsVault()),
+        ).encrypt(alias, "secret".toByteArray())
+
+        val engine = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = UnavailableOsVault()),
+        )
+        val ex = assertFailsWith<IllegalStateException> { engine.decrypt(alias, ciphertext) }
+        val msg = ex.message.orEmpty()
+        assertTrue(msg.contains("unavailable", ignoreCase = true), "should report vault unavailable; was: $msg")
+        assertFalse(
+            msg.contains("No encryption key found", ignoreCase = true) ||
+                msg.contains("key not found", ignoreCase = true),
+            "must NOT use the orphan-sweep delete message (would destroy recoverable ciphertext); was: $msg",
+        )
+    }
+
+    @Test
+    fun runtimeUnavailableVault_encrypt_failsClosed_mintsNoKey() {
+        val vault = UnavailableOsVault()
+        val engine = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = vault),
+        )
+        // The vault is unreachable → we can't get OR safely create a key. Fail the write
+        // rather than mint a divergent key (which a later healthy launch could treat as
+        // authoritative). No put must reach the vault.
+        assertFailsWith<IllegalStateException> { engine.encrypt("user:token", "data".toByteArray()) }
+        assertFalse(vault.putCalled, "encrypt must fail closed — no key minted into an unavailable vault")
     }
 
     @Test
