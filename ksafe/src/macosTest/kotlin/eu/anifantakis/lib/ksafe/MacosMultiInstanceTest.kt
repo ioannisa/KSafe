@@ -7,12 +7,13 @@ import kotlin.test.assertEquals
 import kotlin.uuid.ExperimentalUuidApi
 
 /**
- * Regression test for deep-review #19: the Apple factory used to create a fresh DataStore on
- * every construction, so co-existing [KSafe] instances on the same file — or a quick
- * close()-then-recreate — tripped native DataStore's "multiple DataStores active for the same
- * file" guard. The second instance then silently served defaults and dropped writes. The
- * factory now shares one ref-counted DataStore per file path (matching Android/JVM). Runs
- * natively on macOS with [FakeEncryption] (no real Keychain in the unit-test runner).
+ * The Apple factory must share one ref-counted DataStore per file path
+ * (matching Android/JVM): creating a fresh DataStore on every construction
+ * would make co-existing [KSafe] instances on the same file — or a quick
+ * close()-then-recreate — trip native DataStore's "multiple DataStores active
+ * for the same file" guard, silently serving defaults and dropping writes.
+ * Runs natively on macOS with [FakeEncryption] (no real Keychain in the
+ * unit-test runner).
  */
 @OptIn(ExperimentalUuidApi::class)
 class MacosMultiInstanceTest {
@@ -34,8 +35,8 @@ class MacosMultiInstanceTest {
         val a = KSafe(fileName = file, directory = d, testEngine = FakeEncryption())
         val b = KSafe(fileName = file, directory = d, testEngine = FakeEncryption())
 
-        // Pre-fix, b's DataStore is a second active instance on the same file → its first read
-        // throws, is swallowed, and b serves defaults / drops writes.
+        // b must share a's DataStore — a second active instance on the same file
+        // would throw on its first read (swallowed) and serve defaults / drop writes.
         a.put("ka", "va")
         assertEquals("va", b.get("ka", "none"), "a co-existing same-file instance must read the shared store")
 

@@ -3,7 +3,7 @@ package eu.anifantakis.lib.ksafe
 import kotlin.test.AfterTest
 import kotlin.uuid.ExperimentalUuidApi
 
-/** macOS (native) binding for the issue #31 regression suite. */
+/** macOS (native) binding for the nullable-default regression suite. */
 @OptIn(ExperimentalUuidApi::class)
 class MacosKSafeNullableDefaultTest : KSafeNullableDefaultTest() {
 
