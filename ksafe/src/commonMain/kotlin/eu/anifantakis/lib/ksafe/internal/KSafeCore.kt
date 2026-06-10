@@ -557,14 +557,34 @@ internal class KSafeCore(
 
         val orphanOps = mutableListOf<StorageOp>()
         for (c in orphans) {
+            // Skip any key that became dirty after we snapshotted/probed: a write
+            // racing the sweep marks the key dirty (synchronously, before its own
+            // commit) — see putDirectRaw/putEncryptedSuspend. Without this live
+            // re-check the sweep could delete ciphertext a just-completed put wrote
+            // between the probe and this batch, silently reverting an acknowledged
+            // write (deep-review #17). Every other collector-side mutation already
+            // guards on dirtyKeys; the sweep was the one that didn't.
+            if (isUserKeyDirty(c.userKey)) continue
             orphanOps += StorageOp.Delete(c.rawKey)
             orphanOps += StorageOp.Delete(metaRawKey(c.userKey))
             orphanOps += StorageOp.Delete(legacyProtectionRawKey(c.userKey))
             memoryCache.remove(c.userKey)
             memoryCache.remove(legacyEncryptedRawKey(c.userKey))
         }
+        if (orphanOps.isEmpty()) return
         storage.applyBatch(orphanOps)
     }
+
+    /**
+     * True if [userKey] currently has an in-flight (dirty) write under any of its
+     * raw-key forms (canonical value key, legacy-encrypted cache key, or the bare
+     * key for plain writes). Reads the LIVE [dirtyKeys] set — callers that need a
+     * point-in-time decision against a frozen snapshot pass it explicitly.
+     */
+    private fun isUserKeyDirty(userKey: String): Boolean =
+        dirtyKeys.contains(valueRawKey(userKey)) ||
+            dirtyKeys.contains(legacyEncryptedRawKey(userKey)) ||
+            dirtyKeys.contains(userKey)
 
     /**
      * Merges an on-disk snapshot into the memory cache. Dirty (in-flight) keys
@@ -645,14 +665,19 @@ internal class KSafeCore(
                 hasAnyEncryptedKey.set(true)
                 val encryptedString = (storedValue as? StoredValue.Text)?.value ?: continue
                 if (cacheHoldsCiphertext) {
-                    memoryCache[cacheKey] = encryptedString
+                    // Live re-check (not just the entry snapshot `currentDirty`): a write
+                    // that arrived after the snapshot marks the key dirty before setting
+                    // its own optimistic cache value, so merging the OLD disk value here
+                    // would clobber the fresh write — and dirty flags are never cleared,
+                    // so it would never re-merge (deep-review #18).
+                    if (!isUserKeyDirty(userKey)) memoryCache[cacheKey] = encryptedString
                 } else {
                     val protection = KeySafeMetadataManager.parseProtection(protectionByKey[userKey])
                         ?: KSafeProtection.DEFAULT
                     pendingDecrypts += PendingDecrypt(userKey, cacheKey, encryptedString, protection)
                 }
             } else {
-                memoryCache[cacheKey] = storedValue.toCacheValue()
+                if (!isUserKeyDirty(userKey)) memoryCache[cacheKey] = storedValue.toCacheValue()
             }
         }
 
@@ -667,7 +692,11 @@ internal class KSafeCore(
                             try {
                                 val alias = aliasForRead(p.userKey, p.protection)
                                 val plain = engine.decryptSuspend(alias, b64Decode(p.ciphertextB64))
-                                memoryCache[p.cacheKey] = plain.decodeToString()
+                                // Live re-check AFTER the (slow, suspending) decrypt: a write
+                                // for this key may have landed during the round-trip — don't
+                                // overwrite its optimistic value with this stale disk decrypt
+                                // (deep-review #18; the widest window is exactly here).
+                                if (!isUserKeyDirty(p.userKey)) memoryCache[p.cacheKey] = plain.decodeToString()
                             } catch (e: Throwable) {
                                 if (e is CancellationException) throw e
                                 /* leave out of cache */
