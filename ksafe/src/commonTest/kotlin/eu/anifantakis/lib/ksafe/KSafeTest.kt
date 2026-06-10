@@ -40,6 +40,54 @@ abstract class KSafeTest {
         tracked.clear()
     }
 
+    // ============ PRIMITIVE-KIND CUSTOM SERIALIZERS (review R5) ============
+    //
+    // Types whose serializer declares a PRIMITIVE descriptor kind while their
+    // runtime values are not that Kotlin primitive (Duration is STRING-kind;
+    // so are Uuid, kotlinx-datetime types, and the common hand-written
+    // PrimitiveSerialDescriptor custom-serializer pattern). The plain write
+    // path JSON-encodes them (runtime-type dispatch); the read path used to
+    // dispatch on the descriptor kind alone and returned the stored JSON
+    // verbatim — ClassCastException at the caller's reified cast.
+
+    /** A hand-written custom serializer with a primitive (STRING) descriptor. */
+    @Serializable(with = TagSerializer::class)
+    data class Tag(val raw: String)
+
+    object TagSerializer : kotlinx.serialization.KSerializer<Tag> {
+        override val descriptor = kotlinx.serialization.descriptors.PrimitiveSerialDescriptor(
+            "eu.anifantakis.test.Tag",
+            kotlinx.serialization.descriptors.PrimitiveKind.STRING,
+        )
+        override fun serialize(encoder: kotlinx.serialization.encoding.Encoder, value: Tag) =
+            encoder.encodeString(value.raw)
+        override fun deserialize(decoder: kotlinx.serialization.encoding.Decoder): Tag =
+            Tag(decoder.decodeString())
+    }
+
+    @Test
+    fun testDuration_roundTrips_inPlainMode() = runTest {
+        val ksafe = createKSafe()
+        ksafe.put("dur_plain", 5.seconds, KSafeWriteMode.Plain)
+        assertEquals(5.seconds, ksafe.get("dur_plain", kotlin.time.Duration.ZERO))
+        assertEquals(5.seconds, ksafe.getDirect("dur_plain", kotlin.time.Duration.ZERO))
+    }
+
+    @Test
+    fun testDuration_roundTrips_encrypted() = runTest {
+        val ksafe = createKSafe()
+        ksafe.put("dur_enc", 7.seconds)
+        assertEquals(7.seconds, ksafe.get("dur_enc", kotlin.time.Duration.ZERO))
+    }
+
+    @Test
+    fun testCustomPrimitiveDescriptorSerializer_roundTrips_inPlainMode() = runTest {
+        val ksafe = createKSafe()
+        ksafe.put("tag_plain", Tag("alpha"), KSafeWriteMode.Plain)
+        assertEquals(Tag("alpha"), ksafe.get("tag_plain", Tag("default")))
+        assertEquals(Tag("alpha"), ksafe.getDirect("tag_plain", Tag("default")))
+    }
+
     // ============ BASIC STRING OPERATIONS ============
 
     /** Verifies that unencrypted strings can be stored and retrieved correctly */

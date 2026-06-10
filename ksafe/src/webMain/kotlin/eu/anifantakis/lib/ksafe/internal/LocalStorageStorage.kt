@@ -133,6 +133,47 @@ internal class LocalStorageStorage(
 }
 
 /**
+ * One-time migration of a store's data entries from the legacy non-prefix-free
+ * namespace (`ksafe_<name>_…`, shipped 2.1.0/2.1.1) to the prefix-free one
+ * (`ksafe.<name>:…`, review R7).
+ *
+ * Only **canonical** entries are moved — those whose key remainder starts with
+ * `__ksafe_` (`__ksafe_value_*`, `__ksafe_meta_*`, reserved internals). Every
+ * data entry the shipped web releases ever wrote is canonical, and the gate is
+ * what makes the migration order-independent for nested store names: store
+ * "user" looking at `ksafe_user_cache___ksafe_value_x` sees the remainder
+ * `cache___ksafe_value_x` (not canonical) and leaves it for store "user_cache",
+ * whose own remainder `__ksafe_value_x` is. The engine's legacy key records
+ * (`…ksafe_key_<alias>`) are likewise not canonical-shaped and stay in place —
+ * the engine still owns that namespace.
+ *
+ * Copy → verify → delete per entry (the namespace-move discipline from review
+ * R6): an entry is removed from the old location only once the new location
+ * verifiably holds it, so a mid-migration failure (e.g. quota) is retried on a
+ * later launch and never loses the only copy. An already-present new entry is
+ * never overwritten (it is newer than the legacy copy by construction).
+ */
+internal fun migrateLegacyLocalStoragePrefix(oldPrefix: String, newPrefix: String) {
+    val keys = buildList {
+        for (i in 0 until localStorageLength()) {
+            localStorageKey(i)?.takeIf { it.startsWith(oldPrefix) }?.let(::add)
+        }
+    }
+    for (oldKey in keys) {
+        val rest = oldKey.removePrefix(oldPrefix)
+        if (!rest.startsWith("__ksafe_")) continue
+        val value = localStorageGet(oldKey) ?: continue
+        val newKey = newPrefix + rest
+        if (localStorageGet(newKey) == null) {
+            runCatching { localStorageSet(newKey, value) }
+        }
+        if (localStorageGet(newKey) != null) {
+            runCatching { localStorageRemove(oldKey) }
+        }
+    }
+}
+
+/**
  * Restores the pre-batch state captured in [priors] (full key → prior value, or
  * `null` if the key did not exist) after an [LocalStorageStorage.applyBatch]
  * failure. Extracted as a pure function over [set]/[remove] so the order and

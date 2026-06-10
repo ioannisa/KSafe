@@ -42,7 +42,7 @@ class WebEncryptionProofTest {
 
         assertEquals(SENTINEL, ksafe.get(KEY, "DEFAULT"), "encryption must round-trip")
 
-        val prefix = "ksafe_${fileName}_"
+        val prefix = "ksafe.${fileName}:"
         var valueKeyPresent = false
         var scannedEntries = 0
         val offending = mutableListOf<String>()
@@ -67,7 +67,7 @@ class WebEncryptionProofTest {
         )
         assertTrue(
             valueKeyPresent,
-            "expected an encrypted value entry 'ksafe_${fileName}___ksafe_value_$KEY' in localStorage"
+            "expected an encrypted value entry 'ksafe.${fileName}:__ksafe_value_$KEY' in localStorage"
         )
         assertTrue(
             offending.isEmpty(),
@@ -87,7 +87,7 @@ class WebEncryptionProofTest {
 
             assertEquals(SENTINEL, ksafe.get(KEY, "DEFAULT"))
 
-            val fullKey = "ksafe_${fileName}___ksafe_value_${KEY}"
+            val fullKey = "ksafe.${fileName}:__ksafe_value_${KEY}"
             val stored = localStorageGet(fullKey)
             assertNotNull(stored, "expected a plain value entry '$fullKey' in localStorage")
             assertEquals(

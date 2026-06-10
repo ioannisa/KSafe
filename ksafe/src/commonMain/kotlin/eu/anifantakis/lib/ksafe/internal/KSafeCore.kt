@@ -1532,7 +1532,17 @@ internal class KSafeCore(
                         deserialized = if (candidate == NULL_SENTINEL) null
                         else jsonDecode(json, serializer, candidate)
                         success = true
-                        if (usesPlaintextSideCache) {
+                        // Guarded write-back (review R4): the decrypt above is a slow
+                        // engine round-trip, and a put/delete for this key may have
+                        // landed during it — its fresh side-cache entry (or eviction)
+                        // must not be overwritten with this now-STALE plaintext.
+                        // Under LAZY_PLAIN_TEXT the side cache never expires and the
+                        // key is dirty forever, so an unguarded insert served the
+                        // stale value for the rest of the session. Only write back
+                        // when the primary cache still holds the exact ciphertext we
+                        // decrypted — the same CAS discipline the post-batch
+                        // plaintext→ciphertext swap uses.
+                        if (usesPlaintextSideCache && memoryCache[cacheKey] == encryptedString) {
                             plaintextCache[cacheKey] = CachedPlaintext(candidate, plaintextExpiry())
                         }
                     }
@@ -1573,7 +1583,13 @@ internal class KSafeCore(
         // is `true` because `0f` is represented as the integer `0`). Each
         // branch handles both typed-stored primitives (DataStore) and
         // string-stored primitives (web localStorage).
-        return when (primitiveKindOrNull(serializer)) {
+        // Built-in primitives ONLY: a custom serializer with a primitive
+        // descriptor kind (Duration, Uuid, kotlinx-datetime, hand-written
+        // PrimitiveSerialDescriptor serializers) was JSON-encoded by the write
+        // path (runtime-type dispatch), so it must round-trip through the JSON
+        // else-branch — the primitive fast-path returned the stored JSON
+        // verbatim and the caller's reified cast threw CCE (review R5).
+        return when (builtInPrimitiveKindOrNull(serializer)) {
             kotlinx.serialization.descriptors.PrimitiveKind.BOOLEAN -> when (storedValue) {
                 is Boolean -> storedValue
                 is String -> storedValue.toBooleanStrictOrNull() ?: defaultValue

@@ -6,6 +6,8 @@ import kotlin.native.Platform
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSProcessInfo
+import platform.Foundation.NSSelectorFromString
+import platform.Foundation.iOSAppOnMac
 
 /**
  * Apple-platform security checker implementation. Shared by iOS and macOS.
@@ -13,14 +15,41 @@ import platform.Foundation.NSProcessInfo
  * The jailbreak-style path probes only make sense on iOS — every macOS host has
  * `/bin/sh`, `/usr/bin/ssh`, `/etc/apt` if Homebrew is installed, etc. So
  * [isDeviceRooted] short-circuits to `false` on macOS rather than producing
- * false positives. macOS hosts are assumed to be the user's own machine; if a
- * caller wants stronger guarantees on macOS they should plug in their own
- * [eu.anifantakis.lib.ksafe.KSafeSecurityPolicy].
+ * false positives — and likewise for an **iOS binary running on an Apple
+ * Silicon Mac** ("iOS app on Mac"), which executes against the same macOS
+ * filesystem (see [isIosAppOnMac]). macOS hosts are assumed to be the user's
+ * own machine; if a caller wants stronger guarantees on macOS they should plug
+ * in their own [eu.anifantakis.lib.ksafe.KSafeSecurityPolicy].
  */
 internal actual object SecurityChecker {
 
     @OptIn(ExperimentalNativeApi::class)
     private val isMacOs: Boolean = Platform.osFamily == OsFamily.MACOSX
+
+    /**
+     * True when this iOS binary is running on an Apple Silicon Mac ("iOS app
+     * on Mac" — enabled by DEFAULT for App Store iPhone/iPad apps unless the
+     * developer opts out). There the process sees the REAL macOS filesystem,
+     * where the jailbreak path probes trivially match (`/bin/sh`,
+     * `/usr/bin/ssh`, … exist on every Mac) — while [isMacOs] is still `false`
+     * (`Platform.osFamily` is a compile-time constant of the iosArm64 slice,
+     * not the host) and no `SIMULATOR_*` env vars are set. Without this check a
+     * perfectly clean Mac was classified as jailbroken, and the documented
+     * `KSafeSecurityPolicy.Strict` preset then threw at construction — secure
+     * storage entirely unusable on M-series Macs (review R1).
+     *
+     * `NSProcessInfo.iOSAppOnMac` exists from iOS 14 / macOS 11; the selector
+     * guard keeps older runtimes safe (they cannot be iOS-on-Mac anyway), and
+     * the catch keeps a security probe from ever crashing `KSafe(...)`
+     * construction, mirroring [isDebuggerAttached].
+     */
+    @OptIn(ExperimentalForeignApi::class)
+    private val isIosAppOnMac: Boolean = try {
+        val info = NSProcessInfo.processInfo
+        info.respondsToSelector(NSSelectorFromString("isiOSAppOnMac")) && info.iOSAppOnMac
+    } catch (_: Throwable) {
+        false
+    }
 
     // Common jailbreak paths to check
     private val jailbreakPaths = listOf(
@@ -66,6 +95,9 @@ internal actual object SecurityChecker {
      */
     actual fun isDeviceRooted(): Boolean {
         if (isMacOs) return false
+        // iOS slice on an Apple Silicon Mac: same macOS filesystem, same
+        // false positives — same short-circuit (review R1).
+        if (isIosAppOnMac) return false
         // Don't check on simulator - it's expected to have different paths
         if (isEmulator()) return false
 

@@ -36,6 +36,44 @@ internal fun primitiveKindOrNull(serializer: KSerializer<*>): PrimitiveKind? {
 }
 
 /**
+ * Like [primitiveKindOrNull], but returns a kind ONLY for the **built-in**
+ * primitive serializers (`kotlin.Int`, `kotlin.String`, …).
+ *
+ * Custom serializers frequently declare a primitive descriptor kind
+ * (`PrimitiveSerialDescriptor`) while their runtime values are NOT that Kotlin
+ * primitive — `kotlin.time.Duration` and `kotlin.uuid.Uuid` are STRING-kind,
+ * kotlinx-datetime types and the common hand-written custom-serializer pattern
+ * likewise. The plain WRITE path dispatches on the runtime type and
+ * JSON-encodes those values, so a read taking the primitive fast-path returned
+ * the stored JSON verbatim (quote characters included) and the caller's
+ * reified cast threw ClassCastException (review R5). Gating on the built-in
+ * serialName keeps the fast-path exactly for the values the write path stores
+ * raw, and routes everything else through the JSON branch that decodes them
+ * correctly — making the read dispatch symmetric with the write dispatch.
+ *
+ * Nullable wrappers report the wrapped serialName plus a trailing `?`, hence
+ * the suffix strip. Inline (value-class) descriptors are excluded outright.
+ * BYTE/SHORT/CHAR return null: no write path stores those raw, so they have
+ * always round-tripped through JSON.
+ */
+@PublishedApi
+internal fun builtInPrimitiveKindOrNull(serializer: KSerializer<*>): PrimitiveKind? {
+    val descriptor = serializer.descriptor
+    val kind = descriptor.kind as? PrimitiveKind ?: return null
+    if (descriptor.isInline) return null
+    val expected = when (kind) {
+        PrimitiveKind.BOOLEAN -> "kotlin.Boolean"
+        PrimitiveKind.INT -> "kotlin.Int"
+        PrimitiveKind.LONG -> "kotlin.Long"
+        PrimitiveKind.FLOAT -> "kotlin.Float"
+        PrimitiveKind.DOUBLE -> "kotlin.Double"
+        PrimitiveKind.STRING -> "kotlin.String"
+        else -> return null
+    }
+    return if (descriptor.serialName.removeSuffix("?") == expected) kind else null
+}
+
+/**
  * JSON-decode helper that works with erased serializer types.
  */
 @PublishedApi

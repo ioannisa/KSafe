@@ -4,6 +4,7 @@ import eu.anifantakis.lib.ksafe.internal.KSafeCore
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
 import eu.anifantakis.lib.ksafe.internal.LocalStorageStorage
 import eu.anifantakis.lib.ksafe.internal.WebSoftwareEncryption
+import eu.anifantakis.lib.ksafe.internal.migrateLegacyLocalStoragePrefix
 import eu.anifantakis.lib.ksafe.internal.validateSecurityPolicy
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
@@ -98,10 +99,26 @@ private fun buildWebKSafe(
     }
     validateSecurityPolicy(securityPolicy)
 
-    val storagePrefix: String = if (fileName != null) "ksafe_${fileName}_" else "ksafe_default_"
+    // Data-entry namespace. The current scheme is PREFIX-FREE (review R7): `.`
+    // and `:` cannot appear in a fileName ([a-z][a-z0-9_]*), so no store's
+    // prefix can string-prefix another's — with the old `ksafe_<name>_` scheme,
+    // `KSafe("user")` scoped by startsWith() ingested `KSafe("user_cache")`'s
+    // entries under garbled keys and its clearAll() DELETED the sibling store;
+    // and `KSafe("default")` collided exactly with the unnamed `KSafe()` while
+    // using different crypto aliases (mutual ciphertext clobber). Existing data
+    // under the old prefix is carried forward by the one-time migration below.
+    val legacyStoragePrefix: String = if (fileName != null) "ksafe_${fileName}_" else "ksafe_default_"
+    val storagePrefix: String = if (fileName != null) "ksafe.${fileName}:" else "ksafe.:"
+    migrateLegacyLocalStoragePrefix(legacyStoragePrefix, storagePrefix)
 
+    // The ENGINE keeps the legacy prefix on purpose: it namespaces the key
+    // records — including the IndexedDB record NAMES that hold the
+    // non-extractable WebCrypto keys. Changing it would orphan every existing
+    // key and make all shipped ciphertext undecryptable. Key records are
+    // addressed by exact name (no startsWith scans across sibling stores), so
+    // the prefix-free property is not needed there.
     val engine: KSafeEncryption =
-        testEngine ?: WebSoftwareEncryption(config, storagePrefix)
+        testEngine ?: WebSoftwareEncryption(config, legacyStoragePrefix)
 
     val core = KSafeCore(
         storage = LocalStorageStorage(storagePrefix),
