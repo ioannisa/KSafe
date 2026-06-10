@@ -10,13 +10,14 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /**
- * Review R7: the legacy `ksafe_<name>_` localStorage prefix scheme was not
- * prefix-free — `KSafe("user")`'s startsWith() scoping ingested
- * `KSafe("user_cache")`'s entries and its `clearAll()` DELETED the sibling
- * store, and `KSafe("default")` collided byte-for-byte with the unnamed
- * `KSafe()` while using different crypto aliases. The current `ksafe.<name>:`
- * scheme is prefix-free (`.`/`:` are outside the fileName alphabet), with a
- * one-time canonical-entry migration carrying shipped data forward.
+ * The localStorage key scheme must be prefix-free. The legacy `ksafe_<name>_`
+ * scheme was not: `KSafe("user")`'s startsWith() scoping would ingest
+ * `KSafe("user_cache")`'s entries and its `clearAll()` would DELETE the
+ * sibling store, while `KSafe("default")` collided byte-for-byte with the
+ * unnamed `KSafe()` despite using different crypto aliases. The
+ * `ksafe.<name>:` scheme is prefix-free (`.`/`:` are outside the fileName
+ * alphabet), with a one-time canonical-entry migration carrying shipped data
+ * forward.
  */
 class WebPrefixIsolationTest {
 
@@ -32,8 +33,8 @@ class WebPrefixIsolationTest {
         outer.put("k", "outer-value", KSafeWriteMode.Plain)
         nested.put("k", "nested-value", KSafeWriteMode.Plain)
 
-        // Under the old scheme this deleted every `ksafe_<base>_cache_*` entry
-        // too, permanently destroying the sibling store's data.
+        // The wipe must be scoped prefix-free: a startsWith() wipe would delete
+        // every `ksafe_<base>_cache_*` entry too, destroying the sibling store.
         outer.clearAll()
 
         // Read through a FRESH instance so the answer comes from DISK — the

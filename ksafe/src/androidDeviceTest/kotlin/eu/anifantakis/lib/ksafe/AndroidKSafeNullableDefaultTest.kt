@@ -5,7 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.runner.RunWith
 
-/** Android instrumented binding for the issue #31 regression suite. */
+/** Android instrumented binding for the nullable-default regression suite. */
 @RunWith(AndroidJUnit4::class)
 class AndroidKSafeNullableDefaultTest : KSafeNullableDefaultTest() {
     override fun newKSafe(fileName: String?): KSafe {

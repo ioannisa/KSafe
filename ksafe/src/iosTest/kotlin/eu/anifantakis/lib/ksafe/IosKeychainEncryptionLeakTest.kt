@@ -17,12 +17,14 @@ import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
 /**
- * Regression tests for issue #22: NSString leak on background threads.
+ * Keychain operations on background threads must not leak NSString bridging
+ * allocations.
  *
  * Kotlin coroutine worker threads (Dispatchers.Default on Native) do not have
  * an ambient ObjC autorelease pool. Any Kotlin→NSString bridging performed on
  * those threads — e.g. `CFBridgingRetain(keyId)` where `keyId` is a Kotlin
- * String — produces autoreleased NSString allocations that are never drained.
+ * String — produces autoreleased NSString allocations that are never drained
+ * unless the operation runs inside an explicit `autoreleasepool { }`.
  *
  * Each test runs many keychain operations on Dispatchers.Default and asserts
  * that peak resident memory does not grow unboundedly. Each iteration fails
@@ -30,8 +32,8 @@ import kotlin.uuid.Uuid
  * does not prevent the leak: the NSString bridging happens before the
  * keychain call errors out.
  *
- * Reproduction instructions: remove the `autoreleasepool { }` wrappers added
- * to AppleKeychainEncryption.kt and these tests fail with peak RSS growing by
+ * Reproduction: remove the `autoreleasepool { }` wrappers in
+ * AppleKeychainEncryption.kt and these tests fail with peak RSS growing by
  * several megabytes beyond baseline.
  */
 class IosKeychainEncryptionLeakTest {
@@ -113,10 +115,10 @@ class IosKeychainEncryptionLeakTest {
         private const val WARMUP_ITERATIONS = 200
         private const val LEAK_TEST_ITERATIONS = 5_000
 
-        // Pre-fix: each iteration leaks ≥1KB of NSString/Malloc allocations
-        // (per Instruments in issue #22), so 5k iterations push peak RSS up
-        // by multiple MB. Post-fix: growth is dominated by allocator slack and
-        // stays under 2 MB.
+        // A leaking implementation costs ≥1KB of NSString/Malloc allocations
+        // per iteration (measured with Instruments), so 5k iterations push
+        // peak RSS up by multiple MB. With autorelease pools in place, growth
+        // is dominated by allocator slack and stays under 2 MB.
         private const val LEAK_GROWTH_THRESHOLD_BYTES: Long = 2L * 1024 * 1024
     }
 }

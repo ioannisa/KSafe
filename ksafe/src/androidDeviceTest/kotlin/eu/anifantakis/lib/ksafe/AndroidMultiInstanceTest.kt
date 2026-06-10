@@ -17,10 +17,10 @@ import kotlin.test.assertEquals
  * DataStore and ONE engine per path, ref-counted, instead of giving each instance a private
  * engine whose in-memory DEK cache diverges from the single persisted wrapped-DEK slot.
  *
- * Covers deep-review findings:
- *  - #7 / #46: a per-engine DEK cache diverging from the one on-disk DEK slot silently lost
- *    data after a `clearAll()` on one instance, or a concurrent first-write race across two.
- *  - #50: closing one instance must not cancel the shared DataStore out from under another.
+ * Pins two invariants:
+ *  - a per-engine DEK cache diverging from the one on-disk DEK slot silently loses
+ *    data after a `clearAll()` on one instance, or a concurrent first-write race across two;
+ *  - closing one instance must not cancel the shared DataStore out from under another.
  *
  * "Restart" is simulated by closing every live instance (ref-count → 0 evicts + tears down
  * the backend) and opening a fresh one, which reads from disk with cold caches.
@@ -46,8 +46,8 @@ class AndroidMultiInstanceTest {
 
             a.close(); b.close()                    // ref-count → 0: evict + tear the backend down
 
-            // Cold restart reads from disk. Pre-fix, b had a private engine whose stale DEK
-            // cache encrypted v2 under a DEK that was never re-persisted → lost after restart.
+            // Cold restart reads from disk. With a private engine, b's stale DEK cache
+            // would encrypt v2 under a DEK that was never re-persisted → lost after restart.
             val c = KSafe(context, fileName = file, lazyLoad = true)
             assertEquals(
                 "v2", c.get("token", ""),
@@ -68,9 +68,9 @@ class AndroidMultiInstanceTest {
             val a = KSafe(context, fileName = file, lazyLoad = true)
             val b = KSafe(context, fileName = file, lazyLoad = true)
 
-            // Concurrent FIRST encrypted writes from both instances. Pre-fix each instance's
-            // engine mints its own DEK (last-save-wins on the single slot), so values under
-            // the losing DEK are undecryptable after restart.
+            // Concurrent FIRST encrypted writes from both instances. With private engines,
+            // each instance would mint its own DEK (last-save-wins on the single slot),
+            // leaving values under the losing DEK undecryptable after restart.
             coroutineScope {
                 (0 until 8).forEach { i -> launch(Dispatchers.Default) { a.put("a_$i", "av_$i") } }
                 (0 until 8).forEach { i -> launch(Dispatchers.Default) { b.put("b_$i", "bv_$i") } }
@@ -103,7 +103,7 @@ class AndroidMultiInstanceTest {
             a.put("k", "v")
             assertEquals("v", b.get("k", ""))
 
-            a.close() // pre-fix: the creator's close cancelled the shared scope → b's store died
+            a.close() // must not cancel the shared scope out from under b
 
             // b must still read AND write — the ref-count keeps the shared backend alive
             // while b holds it. The write is the discriminator (a cancelled DataStore scope

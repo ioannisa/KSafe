@@ -31,7 +31,7 @@ import kotlin.test.assertTrue
  * Device tests for the Android software-DEK fast path in [AndroidKeystoreEncryption].
  *
  * These exercise the engine directly (a real AndroidKeyStore is required, so they can't
- * run on the JVM). The wrapped DEK now lives as a reserved entry ([DataStoreDekStore.DEK_KEY])
+ * run on the JVM). The wrapped DEK lives as a reserved entry ([DataStoreDekStore.DEK_KEY])
  * in the safe's own DataStore — never in SharedPreferences — so each test backs the engine
  * with its own temporary DataStore (one relaxed master KEK ⇒ one DEK per store). They assert:
  *  - relaxed DEFAULT entries are encrypted with the userspace DEK (self-describing header)
@@ -275,11 +275,11 @@ class AndroidSoftwareDekTest {
     }
 
     /**
-     * Deep-review #6: concurrent regeneration must be atomic and must not discard a
-     * sibling's freshly-minted DEK. Two+ writers that all read the SAME corrupt wrapped
-     * DEK each route through regenerateDek concurrently; pre-fix, the second writer's
-     * discard wiped the DEK (and KEK) the first had already encrypted a value under,
-     * silently losing that acknowledged write. With the fix exactly one DEK survives and
+     * Concurrent regeneration must be atomic and must not discard a sibling's
+     * freshly-minted DEK. Two+ writers that all read the SAME corrupt wrapped
+     * DEK each route through regenerateDek concurrently; a discard there would
+     * wipe the DEK (and KEK) a sibling had already encrypted a value under,
+     * silently losing that acknowledged write. Exactly one DEK must survive and
      * EVERY concurrently-written blob must still decrypt under it.
      */
     @Test
@@ -318,7 +318,7 @@ class AndroidSoftwareDekTest {
                 }.awaitAll()
             }
 
-            // Decisive: every concurrently-regenerated write round-trips. Pre-fix, a writer
+            // Decisive: every concurrently-regenerated write round-trips — a writer
             // whose fresh DEK was discarded by a sibling regenerate would fail to decrypt.
             blobs.forEach { (i, blob) ->
                 assertTrue(blob.startsWithMagic(), "regenerated write should use the DEK header")
@@ -334,7 +334,7 @@ class AndroidSoftwareDekTest {
     }
 
     /**
-     * Deep-review #25: a corrupt wrapped DEK must self-heal by minting a fresh DEK under the
+     * A corrupt wrapped DEK must self-heal by minting a fresh DEK under the
      * SAME (healthy) KEK — it must NOT delete the KEK, or pre-upgrade legacy TEE ciphertext
      * still encrypted directly under that KEK would be permanently destroyed.
      */
@@ -370,8 +370,8 @@ class AndroidSoftwareDekTest {
             val healed = fresh.encrypt(master, "after".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
             assertContentEquals("after".encodeToByteArray(), fresh.decrypt(master, healed), "regenerated DEK must round-trip")
 
-            // THE point of #25: the legacy TEE ciphertext under the KEK must STILL decrypt —
-            // pre-fix the self-heal deleted the KEK and this threw "No encryption key found".
+            // The decisive check: the legacy TEE ciphertext under the KEK must STILL decrypt —
+            // a self-heal that deleted the KEK would make this throw "No encryption key found".
             assertContentEquals(
                 "legacy-value".encodeToByteArray(),
                 fresh.decrypt(master, legacyBlob),
@@ -383,7 +383,7 @@ class AndroidSoftwareDekTest {
     }
 
     /**
-     * Deep-review #24: a wrapped DEK present while its KEK is ABSENT (Auto Backup restored the
+     * A wrapped DEK present while its KEK is ABSENT (Auto Backup restored the
      * DataStore to a device with an empty Keystore, and an encrypted write beat the prewarm)
      * must self-heal on the next encrypt, not brick every write with "No encryption key found".
      */
@@ -416,7 +416,7 @@ class AndroidSoftwareDekTest {
     }
 
     /**
-     * Deep-review #26: a MALFORMED wrapped-DEK entry (invalid Base64 / blob shorter than the
+     * A MALFORMED wrapped-DEK entry (invalid Base64 / blob shorter than the
      * GCM IV) must self-heal like the corrupt-but-well-formed case — not bypass the recovery
      * and brick encrypted writes forever.
      */
@@ -429,8 +429,8 @@ class AndroidSoftwareDekTest {
             e.encrypt(master, "v1".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
             assertTrue(dekPresent(storage))
 
-            // Invalid Base64 → load() throws IllegalArgumentException (not AEADBadTagException),
-            // which pre-fix bypassed the self-heal and bricked every encrypted write.
+            // Invalid Base64 → load() throws IllegalArgumentException (not AEADBadTagException);
+            // the self-heal must catch this shape too, or every encrypted write bricks.
             runBlocking {
                 storage.applyBatch(
                     listOf(StorageOp.Put(DataStoreDekStore.DEK_KEY, StoredValue.Text("@@@not-valid-base64@@@")))

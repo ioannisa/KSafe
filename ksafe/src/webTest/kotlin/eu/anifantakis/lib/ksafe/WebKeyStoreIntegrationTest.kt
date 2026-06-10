@@ -90,7 +90,7 @@ class WebKeyStoreIntegrationTest {
     }
 
     /**
-     * 2.0.0 → 2.1.0 data-loss regression, web edition, with the realistic
+     * The 2.0.0 → 2.1.0 upgrade, web edition, with the realistic
      * **dirty** precondition: IndexedDB already holds a STALE non-extractable
      * key under this name (from a prior KSafe lifecycle in this origin) while
      * the genuine legacy raw key is still in localStorage. The legacy key
@@ -98,8 +98,8 @@ class WebKeyStoreIntegrationTest {
      * be overwritten and the legacy key must NOT be destroyed.
      *
      * Every other web keyvault test uses a unique prefix ⇒ pristine IndexedDB
-     * ⇒ the stale-shadow branch is unreachable, so they pass on the broken
-     * code and prove nothing. This one fails on the pre-fix code.
+     * ⇒ the stale-shadow branch is unreachable; the dirty seed here is what
+     * makes this test discriminate.
      */
     @Test
     fun legacyKey_survivesUpgrade_evenWhenIndexedDbHoldsAStaleKey() = runTest {

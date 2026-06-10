@@ -12,10 +12,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Android-specific instrumented tests for the new 2.0 storage-location feature:
+ * Android-specific instrumented tests for the storage-location behavior:
  *
  *  1. The `baseDir` parameter routes the DataStore into a caller-supplied path.
- *  2. The Android `dataStoreCache` is now keyed by the resolved file path
+ *  2. The Android `dataStoreCache` is keyed by the resolved file path
  *     (not by `fileName ?: "default"`), so two `KSafe` instances with the same
  *     `fileName` but different `baseDir`s get isolated DataStores instead of
  *     conflicting on DataStore's "multiple active instances" error.
@@ -52,10 +52,10 @@ class AndroidStorageLocationTest {
 
     /**
      * Two KSafe instances with the **same fileName** but **different baseDir**s
-     * must get isolated DataStores. Pre-2.0 the `dataStoreCache` was keyed by
-     * `fileName ?: "default"` and would have collapsed them onto one DataStore
-     * (DataStore would then throw "multiple active instances"). The 2.0 cache
-     * key is `datastoreFile.absolutePath` so the two are distinguished.
+     * must get isolated DataStores. A `dataStoreCache` keyed by
+     * `fileName ?: "default"` would collapse them onto one DataStore
+     * (DataStore would then throw "multiple active instances"); the cache key
+     * is `datastoreFile.absolutePath` so the two are distinguished.
      */
     @Test
     fun baseDir_dataStoreCacheKey_isolatesByPath() = runTest {

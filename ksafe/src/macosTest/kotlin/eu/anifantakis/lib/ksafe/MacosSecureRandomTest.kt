@@ -13,10 +13,9 @@ import kotlin.test.assertTrue
  * on iOS and macOS (`AppleKeychainEncryption.getOrCreateKeychainKeySE` /
  * `getOrCreateKeychainKeyPlain`).
  *
- * This is the regression guard for the 2.1.1 fix that switched the Apple actual
- * from `kotlin.random.Random.nextBytes(size)` (NOT a CSPRNG) to
- * `SecRandomCopyBytes` (the Security framework CSPRNG). Before the fix there was
- * zero automated coverage of this security-critical path on any Apple target.
+ * The Apple actual must draw from `SecRandomCopyBytes` (the Security framework
+ * CSPRNG) — `kotlin.random.Random.nextBytes(size)` is NOT a CSPRNG and must
+ * never back key generation on this security-critical path.
  *
  * macOS runs the identical `appleMain` actual that iOS does, so exercising it
  * here covers both. These are statistical sanity checks, not a crypto-grade
@@ -52,9 +51,9 @@ class MacosSecureRandomTest {
     @Test
     fun successiveCallsDiffer() {
         // Two 32-byte draws colliding from a real CSPRNG is a 2^-256 event.
-        // The pre-fix kotlin.random.Random would still pass this, so it's not a
-        // CSPRNG proof on its own — but combined with the others it pins
-        // "produces fresh, non-constant output".
+        // A non-cryptographic PRNG would still pass this, so it's not a CSPRNG
+        // proof on its own — but combined with the others it pins "produces
+        // fresh, non-constant output".
         val a = secureRandomBytes(32)
         val b = secureRandomBytes(32)
         assertFalse(a.contentEquals(b), "two secureRandomBytes(32) draws were identical")

@@ -7,7 +7,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 
 /**
- * Deterministic tests for [rollbackPriors] (deep-review #38). They run on both
+ * Deterministic tests for [rollbackPriors]. They run on both
  * `jsBrowserTest` and `wasmJsBrowserTest`, but use a fake in-memory store with
  * a simulated character quota instead of the real `localStorage`, so the
  * mid-rollback quota condition is reproducible (it isn't with a real browser).
@@ -32,7 +32,7 @@ class LocalStorageRollbackTest {
     }
 
     /**
-     * #38 part 1 (order): a batch that deleted A (large) and put C (large) fails
+     * Rollback order: a batch that deleted A (large) and put C (large) fails
      * on a third op. At rollback time the partial state holds C but not A, and A
      * + C together exceed the quota. Removing touched keys FIRST frees C's space,
      * so A's prior is restored. (Arbitrary-order restore would try to re-add A
@@ -57,9 +57,9 @@ class LocalStorageRollbackTest {
     }
 
     /**
-     * #38 part 2 (surfacing): if a prior genuinely cannot be restored even after
+     * Surfacing: if a prior genuinely cannot be restored even after
      * freeing the touched keys (here A's prior is larger than the whole quota),
-     * the failure must propagate — not be silently swallowed as it was before.
+     * the failure must propagate — not be silently swallowed.
      */
     @Test
     fun rollback_surfacesUnrestorableValue_insteadOfSwallowing() {

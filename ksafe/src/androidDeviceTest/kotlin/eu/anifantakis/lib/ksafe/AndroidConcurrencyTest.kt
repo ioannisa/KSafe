@@ -53,10 +53,9 @@ class AndroidConcurrencyTest {
     // ============ ENCRYPTED putDirect/getDirect STRESS ============
 
     /**
-     * Stress test: encrypted putDirect followed by immediate getDirect.
-     *
-     * This directly targets the user-reported bug: using ksafe.mutableStateOf
-     * on an encrypted value, getDirect returned the default once.
+     * Stress test: encrypted putDirect followed by immediate getDirect — the
+     * read must never transiently return the default (the ksafe.mutableStateOf
+     * initial-read scenario).
      *
      * On Android with real Keystore, the timing of background collector,
      * migration, and encryption is different from JVM's FakeEncryption.

@@ -9,16 +9,14 @@ import org.junit.runner.RunWith
 import kotlin.test.assertEquals
 
 /**
- * Regression test for the Android DataStore close→recreate lifecycle (see `KSafe.android.kt`).
+ * Tests the Android DataStore close→recreate lifecycle (see `KSafe.android.kt`).
  *
  * Closing a safe cancels its DataStore scope; DataStore releases the underlying file only
  * once that scope's `Job` completes. Recreating a safe on the **same file** must therefore
  * await the previous owner's teardown, or it trips DataStore's
  * `IllegalStateException: There are multiple DataStores active for the same file`.
- *
- * This intermittently failed the device suite before the factory learned to await the prior
- * scope; the loop here reproduces the create-after-close pressure deterministically so a
- * future regression of that await is caught.
+ * The loop here reproduces the create-after-close pressure deterministically so a
+ * regression of that await is caught.
  */
 @RunWith(AndroidJUnit4::class)
 class AndroidDataStoreLifecycleTest {

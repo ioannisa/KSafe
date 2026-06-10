@@ -12,9 +12,9 @@ import kotlin.test.assertTrue
  *
  * The iOS jailbreak heuristics (`/bin/sh`, `/usr/bin/ssh`, `/etc/apt`, etc.)
  * all fire on every macOS host — Macs ship with `/bin/sh`, Homebrew installs
- * `/etc/apt`-shaped trees, and so on. Without the macOS short-circuit added
- * during the appleMain migration, every Mac would be reported as "rooted"
- * and any KSafe with [KSafeSecurityPolicy.Strict] would refuse to operate.
+ * `/etc/apt`-shaped trees, and so on. Without a macOS short-circuit, every
+ * Mac would be reported as "rooted" and any KSafe with
+ * [KSafeSecurityPolicy.Strict] would refuse to operate.
  */
 @OptIn(ExperimentalForeignApi::class)
 class MacosSecurityCheckerTest {

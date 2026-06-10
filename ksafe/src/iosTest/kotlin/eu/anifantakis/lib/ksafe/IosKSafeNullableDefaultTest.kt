@@ -3,7 +3,7 @@ package eu.anifantakis.lib.ksafe
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
-/** iOS (native) binding for the issue #31 regression suite. */
+/** iOS (native) binding for the nullable-default regression suite. */
 class IosKSafeNullableDefaultTest : KSafeNullableDefaultTest() {
     @OptIn(ExperimentalUuidApi::class)
     override fun newKSafe(fileName: String?): KSafe {

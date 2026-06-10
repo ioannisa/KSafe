@@ -13,7 +13,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Concurrency regression test for [AppleKeychainEncryption] key resolution (deep-review #8).
+ * Concurrency test for [AppleKeychainEncryption] key resolution.
  *
  * Real Keychain round-trips can't run in the Kotlin/Native test runner (no entitlements →
  * `errSecMissingEntitlement`), so this injects an in-memory [AppleKeychainStore]. The fake is
@@ -22,9 +22,8 @@ import kotlin.test.assertTrue
  * overwrites the first.
  *
  * Without the engine's `keyResolutionLock`, concurrent first-creation of one alias returns
- * several different keys (each creator's own) — exactly the bug that loses data, since the
- * losing key's ciphertext becomes undecryptable. With the lock, all callers resolve to the one
- * surviving key.
+ * several different keys (each creator's own) and loses data — the losing key's ciphertext
+ * becomes undecryptable. With the lock, all callers resolve to the one surviving key.
  */
 class IosKeychainConcurrencyTest {
 
