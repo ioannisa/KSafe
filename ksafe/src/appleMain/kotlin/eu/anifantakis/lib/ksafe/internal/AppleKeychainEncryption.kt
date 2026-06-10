@@ -29,6 +29,7 @@ import platform.Foundation.CFBridgingRelease
 import platform.Foundation.CFBridgingRetain
 import platform.Foundation.NSData
 import platform.Foundation.NSNumber
+import platform.Foundation.NSOSStatusErrorDomain
 import platform.Foundation.NSRecursiveLock
 import platform.Foundation.NSString
 import platform.Foundation.NSUTF8StringEncoding
@@ -43,9 +44,12 @@ import platform.Security.SecKeyCreateDecryptedData
 import platform.Security.SecKeyCreateEncryptedData
 import platform.Security.SecKeyCreateRandomKey
 import platform.Security.SecKeyRef
+import platform.Security.errSecAuthFailed
 import platform.Security.errSecInteractionNotAllowed
 import platform.Security.errSecItemNotFound
+import platform.Security.errSecNotAvailable
 import platform.Security.errSecSuccess
+import platform.Security.errSecUserCanceled
 import platform.Security.kSecAttrAccessible
 import platform.Security.kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 import platform.Security.kSecAttrAccessibleWhenUnlockedThisDeviceOnly
@@ -149,11 +153,37 @@ internal class AppleKeychainEncryption(
             listOf("$SE_KEY_TAG_PREFIX$keyId", keyId)
 
         /**
-         * True when an unwrap error looks transient (device locked, interaction needed)
-         * and should propagate rather than trigger destructive cleanup.
+         * OSStatus codes whose SE/unwrap failure is transient (NOT corruption),
+         * so the SE key must be preserved and the error propagated rather than
+         * triggering destructive regeneration. Deliberately conservative: every
+         * plausibly-retryable code stays here, biasing away from the
+         * data-destroying path (deep-review #31).
+         */
+        private val TRANSIENT_OSSTATUS: Set<Long> = setOf(
+            errSecInteractionNotAllowed.toLong(), // -25308: device locked
+            errSecNotAvailable.toLong(),          // -25291: keychain/securityd not ready
+            errSecAuthFailed.toLong(),            // -25293: auth failed (retryable)
+            errSecUserCanceled.toLong(),          // -128: user cancelled the auth prompt
+        )
+
+        private val OSSTATUS_TAG = Regex("""osstatus=(-?\d+)""")
+
+        /**
+         * True when an unwrap/SE error is transient (device locked, SE busy,
+         * interaction needed) and should propagate rather than trigger
+         * destructive cleanup.
+         *
+         * Primary signal is the locale-independent `[osstatus=<code>]` tag
+         * [cfErrorDescription] embeds for OSStatus-domain CFErrors — so the
+         * decision never depends on the device's localized error text
+         * (deep-review #31). The English-substring check remains only as a
+         * fallback for the hand-written ISE messages that already state the
+         * condition in words.
          */
         internal fun isTransientUnwrapFailure(message: String?): Boolean {
             val msg = message ?: return false
+            val code = OSSTATUS_TAG.find(msg)?.groupValues?.get(1)?.toLongOrNull()
+            if (code != null && code in TRANSIENT_OSSTATUS) return true
             return msg.contains("device is locked", ignoreCase = true) ||
                 msg.contains("interaction", ignoreCase = true)
         }
@@ -231,12 +261,22 @@ internal class AppleKeychainEncryption(
     private fun tagAsNSData(tag: String): NSData? =
         (tag as NSString).dataUsingEncoding(NSUTF8StringEncoding)
 
-    /** Localized description out of a CFError, with stable "no details" fallback. */
+    /**
+     * Description out of a CFError. For OSStatus-domain errors it appends a
+     * locale-independent `[osstatus=<code>]` tag so transient-vs-permanent
+     * classification can key on the numeric code instead of the localized text
+     * (deep-review #31): on a non-English device the localized description of
+     * `errSecInteractionNotAllowed` contains neither "device is locked" nor
+     * "interaction", which previously made a transient (locked-device / SE-busy)
+     * unwrap failure look permanent and trigger destructive key regeneration.
+     */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun cfErrorDescription(errorRef: CFErrorRefVar): String {
         val cfError = errorRef.value ?: return "no error details"
         val nsError = CFBridgingRelease(cfError) as? platform.Foundation.NSError
-        return nsError?.localizedDescription ?: "unknown error"
+            ?: return "unknown error"
+        val desc = nsError.localizedDescription
+        return if (nsError.domain == NSOSStatusErrorDomain) "$desc [osstatus=${nsError.code}]" else desc
     }
 
     /**
@@ -563,9 +603,8 @@ internal class AppleKeychainEncryption(
                     getOrCreateKeychainKeyWithSE(keyId, requireUnlockedDevice)
                 } catch (e: IllegalStateException) {
                     val msg = e.message ?: ""
-                    if (msg.contains("device is locked") ||
+                    if (isTransientUnwrapFailure(msg) ||
                         msg.contains("Keychain error") ||
-                        msg.contains("interaction", ignoreCase = true) ||
                         // A store failure is NOT "SE unavailable": don't silently fall back to a
                         // divergent plain key under the same identifier (deep-review #8 secondary).
                         msg.contains("Failed to store key in Keychain")
