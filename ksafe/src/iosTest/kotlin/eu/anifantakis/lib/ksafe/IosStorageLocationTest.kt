@@ -204,20 +204,31 @@ class IosStorageLocationTest {
             // clock skips kotlinx delay.
             var durable = false
             var attempt = 0
-            while (!durable && attempt < 80) {            // ~8s ceiling
+            while (!durable && attempt < 80) {            // ~8s floor; longer if a reacquire blocks
                 attempt++
-                val probe = KSafe(
-                    fileName = name,
-                    directory = documentsDirPath(),
-                    testEngine = FakeEncryption(),
-                )
+                // Construct the probe INSIDE the try. Reopening the same file
+                // path back-to-back can transiently throw IllegalStateException
+                // ("There are multiple DataStores active for the same file"):
+                // DataStore frees a file only once the owning backend scope's
+                // Job completes, and acquireAppleBackend() awaits the prior
+                // scope only up to a 2s ceiling before proceeding. On a loaded
+                // CI simulator that ceiling is occasionally exceeded, so the
+                // next construction races an still-terminating instance. Treat
+                // it like any other not-ready condition — back off and retry,
+                // rather than letting the flake fail the test.
+                var probe: KSafe? = null
                 durable = try {
+                    probe = KSafe(
+                        fileName = name,
+                        directory = documentsDirPath(),
+                        testEngine = FakeEncryption(),
+                    )
                     probe.get("plain_key", "∅") == "plain_value" &&
                         probe.get("encrypted_key", "∅") == "encrypted_value"
                 } catch (t: Throwable) {
-                    false   // CorruptionException etc. → not durable yet
+                    false   // CorruptionException / multiple-DataStores race → not durable yet
                 } finally {
-                    runCatching { probe.close() }
+                    runCatching { probe?.close() }
                 }
                 if (!durable) NSThread.sleepForTimeInterval(0.1)
             }
