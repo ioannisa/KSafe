@@ -2,6 +2,14 @@
 
 All notable changes to KSafe will be documented in this file.
 
+## [2.1.3] - 2026-06-17
+
+Security patch release for aggressive memory caching bypassing the `requireUnlockedDevice` hardware lock policy.
+
+### Fixed
+- **`requireUnlockedDevice = true` security policy could be bypassed due to in-memory caching (All Platforms).** A key-value pair written with the `requireUnlockedDevice = true` flag is designed to be inaccessible while the user's device is locked. However, because `KSafeCore` maintained a fast, optimistic `plaintextCache` and `memoryCache`, a read on a locked device could return the secret value directly from process memory if it had been cached while the device was previously unlocked. The in-memory read bypassed the hardware OS security modules entirely. Furthermore, the platform-specific encryption engines (`AndroidKeystoreEncryption` and `AppleKeychainEncryption`) also aggressively cached raw AES bytes or Data Encryption Keys (DEKs) in memory, which could short-circuit hardware lock checks even if the core cache was bypassed.
+  - **The Fix:** A coordinated cache bypass architecture has been implemented across all layers. `KSafeCore` now consults the metadata for a key *before* checking the `plaintextCache`. If the key requires an unlocked device, it completely ignores the in-memory cache and forces a native decryption request. The native engine interface now receives the `requireUnlockedDevice` intent. On Android, this forces the `AndroidKeystoreEncryption` engine to bypass its software DEK cache and hit the Keystore hardware directly, which natively throws a `UserNotAuthenticatedException` on locked devices. On Apple platforms, `AppleKeychainEncryption` bypasses its `keyBytesCache` and queries the Keychain, which enforces `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`. Highly sensitive keys are now guaranteed to be cryptographically enforced by the underlying OS hardware on every read, fixing the lock bypass vulnerability on both Android and iOS.
+
 ## [2.1.2] - 2026-06-10
 
 Android performance, numeric type-coercion, and data-loss hardening release. **Drop-in upgrade from 2.1.1** — on-disk format is unchanged and existing data keeps working without migration.
