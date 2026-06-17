@@ -71,7 +71,7 @@ internal class FakeEncryption : KSafeEncryption {
      *
      * Since XOR is its own inverse, this produces the original plaintext.
      */
-    override fun decrypt(identifier: String, data: ByteArray): ByteArray {
+    override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
         decryptedKeys.add(identifier)
         val key = deriveKey(identifier)
         return xorWithKey(data, key)

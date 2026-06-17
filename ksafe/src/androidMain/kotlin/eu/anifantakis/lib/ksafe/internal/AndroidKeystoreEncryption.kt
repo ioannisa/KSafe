@@ -160,7 +160,7 @@ internal class AndroidKeystoreEncryption(
             // it cannot wrap anything anymore, so the KEK must be deleted and recreated.
             // Old DEK ciphertext AND legacy TEE ciphertext under it are unrecoverable either
             // way — the same outcome a TEE-only scheme has after key invalidation.
-            regenerateDek(alias, deleteKek = true)
+            regenerateDek(alias, deleteKek = true, requireUnlockedDevice = null)
         } catch (e: javax.crypto.AEADBadTagException) {
             // The persisted wrapped DEK fails GCM auth — the blob is corrupt or was wrapped
             // under a replaced key. This says NOTHING about the KEK's health, so mint a
@@ -168,14 +168,14 @@ internal class AndroidKeystoreEncryption(
             // legacy TEE ciphertext still encrypted directly under it would be destroyed.
             // A transient failure surfaces as "device is locked", not AEADBadTagException,
             // so this classification is deterministic.
-            regenerateDek(alias, deleteKek = false)
+            regenerateDek(alias, deleteKek = false, requireUnlockedDevice = null)
         } catch (e: IllegalArgumentException) {
             // Malformed wrapped-DEK entry: invalid Base64 in load(), or a blob shorter than
             // the GCM IV in unwrapDek. Heal like a corrupt DEK — keep the KEK.
-            regenerateDek(alias, deleteKek = false)
+            regenerateDek(alias, deleteKek = false, requireUnlockedDevice = null)
         } catch (e: IndexOutOfBoundsException) {
             // Same malformed case via an out-of-range read in GCMParameterSpec/doFinal.
-            regenerateDek(alias, deleteKek = false)
+            regenerateDek(alias, deleteKek = false, requireUnlockedDevice = null)
         } catch (e: IllegalStateException) {
             // The wrapped DEK is present but the KEK alias is ABSENT — e.g. Auto Backup
             // restored the DataStore (with the DEK) to a device whose Keystore is empty, and
@@ -185,7 +185,7 @@ internal class AndroidKeystoreEncryption(
             // "device is locked" ISE must NOT trigger destructive regen — rethrow it so the
             // write retries once the device unlocks, with data intact.
             if (e.message?.contains("No encryption key found", ignoreCase = true) == true) {
-                regenerateDek(alias, deleteKek = false)
+                regenerateDek(alias, deleteKek = false, requireUnlockedDevice = null)
             } else {
                 throw e
             }
@@ -204,10 +204,10 @@ internal class AndroidKeystoreEncryption(
 
     // ── decrypt ──────────────────────────────────────────────────────────────
 
-    override fun decrypt(identifier: String, data: ByteArray): ByteArray {
+    override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
         if (useSoftwareDek && hasDekHeader(data)) {
             return try {
-                decryptWithDek(identifier, data)
+                decryptWithDek(identifier, data, requireUnlockedDevice)
             } catch (e: KeyPermanentlyInvalidatedException) {
                 // KEK gone → this value's DEK is unrecoverable. Clean up the stale DEK + KEK
                 // so future writes regenerate — but ONLY if a concurrent writer hasn't already
@@ -265,7 +265,7 @@ internal class AndroidKeystoreEncryption(
                 // whose random IV happened to start with our magic. Retry the legacy path
                 // on the ORIGINAL bytes; if that also fails, surface the original error.
                 try {
-                    decryptLegacy(identifier, data)
+                    decryptLegacy(identifier, data, requireUnlockedDevice)
                 } catch (_: Throwable) {
                     throw e
                 }
@@ -275,22 +275,22 @@ internal class AndroidKeystoreEncryption(
                 // bytes, else surface the error so the read returns its default (decrypt
                 // never creates keys; the next encrypt self-heals the DEK).
                 try {
-                    decryptLegacy(identifier, data)
+                    decryptLegacy(identifier, data, requireUnlockedDevice)
                 } catch (_: Throwable) {
                     throw e
                 }
             } catch (e: IndexOutOfBoundsException) {
                 try {
-                    decryptLegacy(identifier, data)
+                    decryptLegacy(identifier, data, requireUnlockedDevice)
                 } catch (_: Throwable) {
                     throw e
                 }
             }
         }
-        return decryptLegacy(identifier, data)
+        return decryptLegacy(identifier, data, requireUnlockedDevice)
     }
 
-    private fun decryptLegacy(identifier: String, data: ByteArray): ByteArray {
+    private fun decryptLegacy(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
         return try {
             decryptWithKey(identifier, data)
         } catch (e: KeyPermanentlyInvalidatedException) {
@@ -320,8 +320,8 @@ internal class AndroidKeystoreEncryption(
     }
 
     /** Userspace AES-GCM under the cached DEK for a self-describing DEK blob. */
-    private fun decryptWithDek(alias: String, data: ByteArray): ByteArray {
-        val dek = getExistingDek(alias) // throws "No encryption key found" if the DEK is absent
+    private fun decryptWithDek(alias: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
+        val dek = getExistingDek(alias, requireUnlockedDevice) // throws "No encryption key found" if the DEK is absent
         val cipher = Cipher.getInstance(TRANSFORMATION)
         val spec = GCMParameterSpec(GCM_TAG_LENGTH, data, DEK_HEADER_LEN, GCM_IV_LENGTH)
         cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(dek, KEY_ALGORITHM), spec)
@@ -499,14 +499,20 @@ internal class AndroidKeystoreEncryption(
      * Returns the raw DEK for [alias], creating + wrapping + persisting one on first use.
      * Serialized per alias so a burst of concurrent first-writes generates exactly one DEK.
      */
-    private fun getOrCreateDek(alias: String): ByteArray {
-        dekCache[alias]?.let { return it }
-        synchronized(lockFor(alias)) {
+    private fun getOrCreateDek(alias: String, requireUnlockedDevice: Boolean? = null, deleteKek: Boolean = false): ByteArray {
+        if (requireUnlockedDevice != true) {
             dekCache[alias]?.let { return it }
+        }
+        synchronized(lockFor(alias)) {
+            if (requireUnlockedDevice != true) {
+                dekCache[alias]?.let { return it }
+            }
             val stored = dekStore.load()
             if (stored != null) {
                 val dek = unwrapDek(alias, stored)
-                dekCache[alias] = dek
+                if (requireUnlockedDevice != true) {
+                    dekCache[alias] = dek
+                }
                 return dek
             }
             val dek = secureRandomBytes(config.keySize / 8)
@@ -515,7 +521,9 @@ internal class AndroidKeystoreEncryption(
             // the wrapped DEK is durable would strand an in-RAM-only DEK and orphan the
             // ciphertext we're about to write.
             dekStore.save(wrapped)
-            dekCache[alias] = dek
+            if (requireUnlockedDevice != true) {
+                dekCache[alias] = dek
+            }
             return dek
         }
     }
@@ -540,7 +548,7 @@ internal class AndroidKeystoreEncryption(
      * **re-validate before discarding**: if a concurrent regenerate already produced a usable
      * DEK, adopt it instead.
      */
-    private fun regenerateDek(alias: String, deleteKek: Boolean): ByteArray {
+    private fun regenerateDek(alias: String, deleteKek: Boolean, requireUnlockedDevice: Boolean?): ByteArray {
         synchronized(lockFor(alias)) {
             // A concurrent regenerate may have already healed it while we were blocked on the
             // lock. Adopt the fresh DEK rather than discarding it (and the data just encrypted
@@ -558,7 +566,9 @@ internal class AndroidKeystoreEncryption(
             if (stored != null) {
                 try {
                     val dek = unwrapDek(alias, stored)
-                    dekCache[alias] = dek
+                    if (requireUnlockedDevice != true) {
+                        dekCache[alias] = dek
+                    }
                     return dek
                 } catch (_: KeyPermanentlyInvalidatedException) {
                     // Still unrecoverable — fall through to discard + recreate.
@@ -580,7 +590,7 @@ internal class AndroidKeystoreEncryption(
             // For a bad/missing DEK the KEK is healthy and must survive so legacy TEE
             // ciphertext under it stays decryptable.
             if (deleteKek) deleteKeyInternal(alias)
-            return getOrCreateDek(alias)
+            return getOrCreateDek(alias, requireUnlockedDevice)
         }
     }
 
@@ -589,14 +599,20 @@ internal class AndroidKeystoreEncryption(
      * DEK throws the canonical "No encryption key found" message so [KSafeCore]'s orphan
      * cleanup reclaims the entry (matching the JVM/Apple engines).
      */
-    private fun getExistingDek(alias: String): ByteArray {
-        dekCache[alias]?.let { return it }
-        synchronized(lockFor(alias)) {
+    private fun getExistingDek(alias: String, requireUnlockedDevice: Boolean?): ByteArray {
+        if (requireUnlockedDevice != true) {
             dekCache[alias]?.let { return it }
+        }
+        synchronized(lockFor(alias)) {
+            if (requireUnlockedDevice != true) {
+                dekCache[alias]?.let { return it }
+            }
             val stored = dekStore.load()
                 ?: throw IllegalStateException("KSafe: No encryption key found for identifier: $alias")
             val dek = unwrapDek(alias, stored)
-            dekCache[alias] = dek
+            if (requireUnlockedDevice != true) {
+                dekCache[alias] = dek
+            }
             return dek
         }
     }

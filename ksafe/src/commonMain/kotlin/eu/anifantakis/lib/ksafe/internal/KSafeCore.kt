@@ -1514,8 +1514,10 @@ internal class KSafeCore(
             var deserialized: Any? = null
             var success = false
 
+            val reqUnlocked = encMetaMap[key]?.requireUnlockedDevice == true
+
             if (cacheHoldsCiphertext) {
-                if (usesPlaintextSideCache) {
+                if (usesPlaintextSideCache && !reqUnlocked) {
                     val cached = plaintextCache[cacheKey]
                     if (cached != null && plaintextStillValid(cached)) {
                         if (cached.value == NULL_SENTINEL) return null
@@ -1531,7 +1533,7 @@ internal class KSafeCore(
                 try {
                     val encryptedString = cachedValue as? String
                     if (encryptedString != null) {
-                        val plainBytes = engine.decrypt(aliasForRead(key, protection), b64Decode(encryptedString))
+                        val plainBytes = engine.decrypt(aliasForRead(key, protection), b64Decode(encryptedString), reqUnlocked)
                         val candidate = plainBytes.decodeToString()
                         deserialized = if (candidate == NULL_SENTINEL) null
                         else jsonDecode(json, serializer, candidate)
@@ -1546,7 +1548,7 @@ internal class KSafeCore(
                         // primary cache still holds the exact ciphertext we decrypted
                         // — the same CAS discipline as the post-batch
                         // plaintext→ciphertext swap.
-                        if (usesPlaintextSideCache && memoryCache[cacheKey] == encryptedString) {
+                        if (usesPlaintextSideCache && !reqUnlocked && memoryCache[cacheKey] == encryptedString) {
                             plaintextCache[cacheKey] = CachedPlaintext(candidate, plaintextExpiry())
                         }
                     }

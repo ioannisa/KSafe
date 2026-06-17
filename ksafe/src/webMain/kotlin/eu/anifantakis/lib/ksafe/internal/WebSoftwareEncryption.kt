@@ -91,7 +91,7 @@ internal class WebSoftwareEncryption(
     ): ByteArray =
         throw UnsupportedOperationException("Web encryption is async-only. Use encryptSuspend().")
 
-    override fun decrypt(identifier: String, data: ByteArray): ByteArray =
+    override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray =
         throw UnsupportedOperationException("Web decryption is async-only. Use decryptSuspend().")
 
     @OptIn(ExperimentalEncodingApi::class)
@@ -107,7 +107,7 @@ internal class WebSoftwareEncryption(
     }
 
     @OptIn(ExperimentalEncodingApi::class)
-    override suspend fun decryptSuspend(identifier: String, data: ByteArray): ByteArray {
+    override suspend fun decryptSuspend(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
         ensureKey(identifier)
         val plainB64 = webKeyDecrypt(idbName(identifier), Base64.encode(data))
         return Base64.decode(plainB64)

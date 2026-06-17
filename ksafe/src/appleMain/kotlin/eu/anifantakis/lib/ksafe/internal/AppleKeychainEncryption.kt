@@ -376,8 +376,8 @@ internal class AppleKeychainEncryption(
         }
     }
 
-    override fun decrypt(identifier: String, data: ByteArray): ByteArray {
-        val keyBytes = getExistingKeychainKey(identifier)
+    override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
+        val keyBytes = getExistingKeychainKey(identifier, requireUnlockedDevice)
         return runBlocking {
             val aesGcm = CryptographyProvider.CryptoKit.get(AES.GCM)
             val symmetricKey = aesGcm.keyDecoder().decodeFromByteArray(AES.Key.Format.RAW, keyBytes)
@@ -548,14 +548,16 @@ internal class AppleKeychainEncryption(
      * `SecKeyCreateDecryptedData` ECIES round-trip on cache hit.
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
-    internal fun getExistingKeychainKey(keyId: String): ByteArray {
+    internal fun getExistingKeychainKey(keyId: String, requireUnlockedDevice: Boolean?): ByteArray {
         // The decrypt path is read-only — it never creates or overwrites a Keychain item, so
         // it does NOT take keyResolutionLock (that guards the create-vs-create clobber race).
         // Lock-free also avoids a per-decrypt lock/bridge cost on the hot read path (and the
         // background-thread autorelease leak that guards). Concurrent decrypts of the same
         // alias are safe: they read the same Keychain bytes and converge on the thread-safe
         // keyBytesCache (idempotent last-writer-wins).
-        keyBytesCache[keyId]?.let { return it }
+        if (requireUnlockedDevice != true) {
+            keyBytesCache[keyId]?.let { return it }
+        }
 
         val wrappedBytes = getExistingKeychainKeyRaw(seWrappedAccount(keyId))
         val bytes = if (wrappedBytes != null) {
@@ -570,7 +572,9 @@ internal class AppleKeychainEncryption(
             getExistingKeychainKeyRaw(keyId)
                 ?: throw IllegalStateException("KSafe: No encryption key found for identifier: $keyId")
         }
-        keyBytesCache[keyId] = bytes
+        if (requireUnlockedDevice != true) {
+            keyBytesCache[keyId] = bytes
+        }
         return bytes
     }
 
@@ -590,7 +594,9 @@ internal class AppleKeychainEncryption(
         hardwareIsolated: Boolean = false,
         requireUnlockedDevice: Boolean? = null,
     ): ByteArray {
-        keyBytesCache[keyId]?.let { return it }
+        if (requireUnlockedDevice != true) {
+            keyBytesCache[keyId]?.let { return it }
+        }
 
         return withKeyResolutionLock {
             // Re-check under the lock: a concurrent creator may have just populated the cache
@@ -614,7 +620,9 @@ internal class AppleKeychainEncryption(
             } else {
                 getOrCreateKeychainKeyPlain(keyId, requireUnlockedDevice)
             }
-            keyBytesCache[keyId] = bytes
+            if (requireUnlockedDevice != true) {
+                keyBytesCache[keyId] = bytes
+            }
             bytes
         }
     }

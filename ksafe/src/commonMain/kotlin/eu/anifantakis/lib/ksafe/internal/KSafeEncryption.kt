@@ -67,10 +67,11 @@ internal interface KSafeEncryption {
      *
      * @param identifier Unique identifier for the encryption key.
      * @param data The encrypted bytes (typically IV || ciphertext).
+     * @param requireUnlockedDevice If true, engine caches should be bypassed to ensure hardware policy enforcement.
      * @return The decrypted plaintext bytes.
      * @throws Exception if decryption fails (wrong key, tampered data, missing key, etc.)
      */
-    fun decrypt(identifier: String, data: ByteArray): ByteArray
+    fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean? = null): ByteArray
 
     /**
      * Deletes the cryptographic key associated with the identifier.
@@ -118,8 +119,8 @@ internal interface KSafeEncryption {
         requireUnlockedDevice: Boolean? = null,
     ): ByteArray = encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
 
-    suspend fun decryptSuspend(identifier: String, data: ByteArray): ByteArray =
-        decrypt(identifier, data)
+    suspend fun decryptSuspend(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean? = null): ByteArray =
+        decrypt(identifier, data, requireUnlockedDevice)
 
     suspend fun deleteKeySuspend(identifier: String) = deleteKey(identifier)
 

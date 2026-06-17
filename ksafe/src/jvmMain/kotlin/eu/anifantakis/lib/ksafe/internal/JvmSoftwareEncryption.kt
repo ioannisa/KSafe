@@ -101,7 +101,7 @@ internal class JvmSoftwareEncryption(
         return iv + ciphertext
     }
 
-    override fun decrypt(identifier: String, data: ByteArray): ByteArray {
+    override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
         // Decrypt must NOT create a key. If the key is gone (orphaned
         // ciphertext after an OS-vault wipe / reinstall), throw the same
         // "No encryption key found" message Android and Apple use, so
