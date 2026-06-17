@@ -44,7 +44,7 @@ class JvmBatchFailureIsolationTest {
             return xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
         }
 
-        override fun decrypt(identifier: String, data: ByteArray): ByteArray =
+        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray =
             xor.decrypt(identifier, data)
 
         override fun deleteKey(identifier: String) { /* no-op */ }
@@ -212,7 +212,7 @@ class JvmBatchFailureIsolationTest {
             return xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
         }
 
-        override fun decrypt(identifier: String, data: ByteArray): ByteArray =
+        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray =
             xor.decrypt(identifier, data)
 
         override fun deleteKey(identifier: String) { /* no-op */ }

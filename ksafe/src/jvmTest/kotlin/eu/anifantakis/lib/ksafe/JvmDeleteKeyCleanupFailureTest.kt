@@ -19,7 +19,7 @@ class JvmDeleteKeyCleanupFailureTest {
         private val xor = FakeEncryption()
         override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray =
             xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
-        override fun decrypt(identifier: String, data: ByteArray): ByteArray = xor.decrypt(identifier, data)
+        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray = xor.decrypt(identifier, data)
         override fun deleteKey(identifier: String) { throw RuntimeException("simulated key-delete failure") }
     }
 

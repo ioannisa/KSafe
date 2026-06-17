@@ -338,7 +338,7 @@ class JvmKSafeTest : KSafeTest() {
                 requireUnlockedDevice: Boolean?
             ): ByteArray = delegate.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
 
-            override fun decrypt(identifier: String, data: ByteArray): ByteArray {
+            override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
                 if (failOnDecrypt) throw IllegalStateException("No encryption key found")
                 return delegate.decrypt(identifier, data)
             }
@@ -398,7 +398,7 @@ class JvmKSafeTest : KSafeTest() {
                 requireUnlockedDevice: Boolean?
             ): ByteArray = delegate.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
 
-            override fun decrypt(identifier: String, data: ByteArray): ByteArray {
+            override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
                 if (failOnDecrypt) throw IllegalStateException("No encryption key found")
                 return delegate.decrypt(identifier, data)
             }

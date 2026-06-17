@@ -41,7 +41,7 @@ class JvmGetOrCreateSecretTest {
             requireUnlockedDevice: Boolean?,
         ): ByteArray = xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
 
-        override fun decrypt(identifier: String, data: ByteArray): ByteArray {
+        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
             if (failDecrypt) {
                 throw IllegalStateException("KSafe: simulated ciphertext corruption (AEAD tag mismatch)")
             }
@@ -130,7 +130,7 @@ class JvmGetOrCreateSecretTest {
             requireUnlockedDevice: Boolean?,
         ): ByteArray = xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
 
-        override fun decrypt(identifier: String, data: ByteArray): ByteArray =
+        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray =
             throw IllegalStateException("KSafe: simulated unreadable secret (key invalidated)")
 
         override fun deleteKey(identifier: String) { /* no-op */ }

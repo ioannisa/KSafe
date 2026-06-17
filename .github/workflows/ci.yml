@@ -33,7 +33,10 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: |
+            17
+            21
+            24
       - uses: gradle/actions/setup-gradle@v4
       - name: Compile all :ksafe targets
         run: ./gradlew :ksafe:compileKotlinJvm :ksafe:compileKotlinJs :ksafe:compileKotlinWasmJs :ksafe:compileKotlinMetadata --stacktrace
@@ -60,15 +63,19 @@ jobs:
   # drainable; full intensity remains the local default.
   # ---------------------------------------------------------------------------
   jvm-full-suite:
-    name: Full JVM suite
+    name: Full JVM suite (Java ${{ matrix.java }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        java: [ '17', '21', '24' ]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: ${{ matrix.java }}
       - uses: gradle/actions/setup-gradle@v4
       # -PksafeTestLog kept ON: scaling the stress magnitude alone did NOT
       # stop the 2-vCPU hang, so a specific test deadlocks (not a throughput
@@ -158,9 +165,13 @@ jobs:
   # Linux Secret Service (libsecret) — real gnome-keyring under a dbus session.
   # ---------------------------------------------------------------------------
   keyvault-linux:
-    name: Key vault IT — Linux Secret Service
+    name: Key vault IT — Linux Secret Service (Java ${{ matrix.java }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        java: [ '17', '21', '24' ]
     env:
       KSAFE_KEYVAULT_IT: "1"
     steps:
@@ -168,7 +179,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: ${{ matrix.java }}
       - uses: gradle/actions/setup-gradle@v4
       - name: Install gnome-keyring + libsecret
         run: |
@@ -203,9 +214,13 @@ jobs:
   # Windows DPAPI — available for the runner user out of the box.
   # ---------------------------------------------------------------------------
   keyvault-windows:
-    name: Key vault IT — Windows DPAPI
+    name: Key vault IT — Windows DPAPI (Java ${{ matrix.java }})
     runs-on: windows-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        java: [ '17', '21', '24' ]
     defaults:
       run:
         shell: bash
@@ -216,7 +231,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: ${{ matrix.java }}
       - uses: gradle/actions/setup-gradle@v4
       - name: Key vault integration test (DPAPI)
         run: ./gradlew :ksafe:jvmTest --tests 'eu.anifantakis.lib.ksafe.JvmKeyVaultIntegrationTest' --tests 'eu.anifantakis.lib.ksafe.Jvm200To210FixtureTest' --tests 'eu.anifantakis.lib.ksafe.JvmKeyVaultMigrationTest' --no-daemon --no-configuration-cache --stacktrace
@@ -233,9 +248,13 @@ jobs:
   # there are no GUI access prompts and no developer-keychain pollution.
   # ---------------------------------------------------------------------------
   keyvault-macos:
-    name: Key vault IT — macOS Keychain
+    name: Key vault IT — macOS Keychain (Java ${{ matrix.java }})
     runs-on: macos-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        java: [ '17', '21', '24' ]
     env:
       KSAFE_KEYVAULT_IT: "1"
     steps:
@@ -243,7 +262,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: ${{ matrix.java }}
       - uses: gradle/actions/setup-gradle@v4
       - name: Create + unlock a dedicated keychain
         run: |

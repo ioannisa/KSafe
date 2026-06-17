@@ -28,7 +28,7 @@ class JvmObservableFlowResilienceTest {
         private val xor = FakeEncryption()
         override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray =
             xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
-        override fun decrypt(identifier: String, data: ByteArray): ByteArray {
+        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
             if (failTransient) throw IllegalStateException("KSafe: Cannot access Keystore key - device is locked.")
             return xor.decrypt(identifier, data)
         }
@@ -65,7 +65,7 @@ class JvmObservableFlowResilienceTest {
         private val xor = FakeEncryption()
         override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray =
             xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
-        override fun decrypt(identifier: String, data: ByteArray): ByteArray {
+        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
             if (fail) throw IllegalStateException("KSafe: Keychain error -25308 for account $identifier")
             return xor.decrypt(identifier, data)
         }

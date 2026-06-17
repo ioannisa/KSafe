@@ -24,7 +24,7 @@ class JvmCollectorWriteRaceTest {
     private class RaceEngine : KSafeEncryption {
         @Volatile var onDecrypt: (() -> Unit)? = null
         override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray = data
-        override fun decrypt(identifier: String, data: ByteArray): ByteArray {
+        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
             onDecrypt?.invoke()
             onDecrypt = null // race only the first (seeded) decrypt
             return "\"old\"".encodeToByteArray() // JSON for String "old"
