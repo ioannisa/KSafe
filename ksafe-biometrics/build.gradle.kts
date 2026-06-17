@@ -109,6 +109,14 @@ kotlin {
             }
         }
 
+        getByName("androidDeviceTest") {
+            dependencies {
+                implementation(libs.androidx.runner)
+                implementation(libs.androidx.core)
+                implementation(libs.androidx.junit)
+            }
+        }
+
         // appleMain is shared by iosX64/iosArm64/iosSimulatorArm64 + macosX64/macosArm64.
         // LocalAuthentication framework is part of the Apple SDKs — no extra dep needed.
     }
