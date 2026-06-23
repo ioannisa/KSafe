@@ -680,7 +680,7 @@ it. Can also be set without code: `-Dksafe.appNamespace=…` or env `KSAFE_APP_N
 
 This skill covers setup and usage. For topics it deliberately omits, the repository's
 `docs/` folder has: **ARCHITECTURE** / **TOUR** (internals — hot cache, write coalescer,
-v2 master-key envelope), **SECURITY** / **PROTECTION_INFO** / **JVM_PROTECTION** (crypto
+v2 master-key envelope), **SECURITY_MODEL** / **PROTECTION_INFO** / **JVM_PROTECTION** (crypto
 details, threat models, per-platform key custody deep dive), **BENCHMARKS** (performance vs
 MMKV / SharedPreferences / KVault / Multiplatform Settings), **MIGRATION** (version upgrade
 notes), **TESTING**, **ENCRYPTION_PROOF**, and **COMPARISON**. Point the user there (or read

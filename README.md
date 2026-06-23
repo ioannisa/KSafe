@@ -62,7 +62,7 @@ KSafe in action across many scenarios: **[KSafeDemo — Compose Multiplatform ap
 - [Setup](#setup)
 - [Basic Usage](#basic-usage) — full reference in [docs/USAGE.md](docs/USAGE.md)
 - [Custom JSON Serialization](#custom-json-serialization) — full guide in [docs/SERIALIZATION.md](docs/SERIALIZATION.md)
-- [Cryptographic Utilities](#cryptographic-utilities) — full reference in [docs/SECURITY.md](docs/SECURITY.md)
+- [Cryptographic Utilities](#cryptographic-utilities) — full reference in [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md)
 - [Why use KSafe?](#why-use-ksafe)
 - [How KSafe Compares](#how-ksafe-compares)
 - [Performance Benchmarks](#performance-benchmarks)
@@ -71,6 +71,7 @@ KSafe in action across many scenarios: **[KSafeDemo — Compose Multiplatform ap
 - [Runtime Security Policy](#runtime-security-policy)
 - [Memory Security Policy](#memory-security-policy)
 - [Deep-Dive Documentation](#deep-dive-documentation)
+- [Community](#community)
 
 ***
 
@@ -246,7 +247,7 @@ val passphrase = ksafe.getOrCreateSecret("main.db")
 
 > `secureRandomBytes` lives under `eu.anifantakis.lib.ksafe.internal` — it's the same primitive KSafe uses internally, exposed for app code that needs a CSPRNG.
 
-Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURITY.md#cryptographic-utilities](docs/SECURITY.md#cryptographic-utilities)**.
+Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURITY_MODEL.md#cryptographic-utilities](docs/SECURITY_MODEL.md#cryptographic-utilities)**.
 
 ***
 
@@ -365,7 +366,7 @@ val ksafe = KSafe(
 )
 ```
 
-Preset policies, BLOCK exception handling, Compose stability, detection methods: [docs/SECURITY.md](docs/SECURITY.md).
+Preset policies, BLOCK exception handling, Compose stability, detection methods: [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md).
 
 ***
 
@@ -422,7 +423,7 @@ Internals, advanced features, reference material:
 | [Custom JSON Serialization](docs/SERIALIZATION.md) | Registering `KSerializer`s for `UUID`, `Instant`, and other third-party types |
 | [Performance Benchmarks](docs/BENCHMARKS.md) | Full benchmark tables, cold start numbers, architecture deep-dive |
 | [Biometric Authentication](docs/BIOMETRICS.md) | Authorization caching, scoped sessions, platform setup, complete examples |
-| [Security](docs/SECURITY.md) | Runtime security policy, encryption internals, threat model, hardware isolation, key storage queries, crypto utilities |
+| [Security Model](docs/SECURITY_MODEL.md) | Runtime security policy, encryption internals, threat model, hardware isolation, key storage queries, crypto utilities |
 | [Protection Info](docs/PROTECTION_INFO.md) | Instance-level diagnostic API: `KSafe.protectionInfo`, the cross-platform `KSafeProtectionLevel` scale, per-platform truth table, consumer gating / telemetry / UI patterns |
 | [JVM Key Protection](docs/JVM_PROTECTION.md) | Deep dive on how the AES key is held on each JVM host: Windows DPAPI, macOS login Keychain, Linux Secret Service (libsecret), the software fallback, the opt-out, and the per-app namespace |
 | [Encryption Proof](docs/ENCRYPTION_PROOF.md) | Per-platform automated proof tests + manual commands to inspect the raw stored bytes and see the ciphertext yourself |
@@ -432,6 +433,14 @@ Internals, advanced features, reference material:
 | [Testing](docs/TESTING.md) | Running tests, building iOS test app, test features |
 | [Migration Guide](docs/MIGRATION.md) | Upgrading from v1.x → v2.0 (biometric module extraction, iOS path migration), v1.6.x → v1.7.0 (`encrypted: Boolean` → `KSafeWriteMode`), and v1.1.x → v1.2.0+ |
 | [Alternatives & Comparison](docs/COMPARISON.md) | KSafe vs EncryptedSharedPrefs, KVault, SQLCipher, and more |
+
+***
+
+## Community
+
+Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening issues or pull requests, and follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+Security-sensitive bug reports should follow [SECURITY.md](SECURITY.md), not public GitHub issues.
 
 ***
 

@@ -134,7 +134,7 @@ You will see:
 
 - `ksafe_<fileName>___ksafe_value_<key>` → Base64 ciphertext for encrypted writes, raw string for plain writes.
 - `ksafe_<fileName>___ksafe_meta_<key>__` → JSON metadata.
-- **No AES key appears in `localStorage`.** As of 2.1.0 the key is a **non-extractable** WebCrypto `CryptoKey` (`extractable = false`) persisted in **IndexedDB** (database `ksafe-keys`) — the raw key bytes are never exposed to JS and cannot be exfiltrated even with DOM/console access. A legacy ≤2.0 `ksafe_<fileName>_ksafe_key_<alias>` (raw Base64 key) may still be present in `localStorage` from an old install, but it is imported as a non-extractable key into IndexedDB and **deleted from `localStorage`** on first access. Net: ciphertext and its key no longer live side by side; an attacker with DOM access can *use* the key via SubtleCrypto but cannot read it out. See the `Kotlin/WASM` and `Kotlin/JS` rows in [docs/SECURITY.md](SECURITY.md).
+- **No AES key appears in `localStorage`.** As of 2.1.0 the key is a **non-extractable** WebCrypto `CryptoKey` (`extractable = false`) persisted in **IndexedDB** (database `ksafe-keys`) — the raw key bytes are never exposed to JS and cannot be exfiltrated even with DOM/console access. A legacy ≤2.0 `ksafe_<fileName>_ksafe_key_<alias>` (raw Base64 key) may still be present in `localStorage` from an old install, but it is imported as a non-extractable key into IndexedDB and **deleted from `localStorage`** on first access. Net: ciphertext and its key no longer live side by side; an attacker with DOM access can *use* the key via SubtleCrypto but cannot read it out. See the `Kotlin/WASM` and `Kotlin/JS` rows in [SECURITY_MODEL.md](SECURITY_MODEL.md).
 
 ---
 

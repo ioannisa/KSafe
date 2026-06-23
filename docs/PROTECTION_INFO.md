@@ -18,8 +18,8 @@ It complements the two pre-existing surfaces:
 
 | Question | Answered by |
 |---|---|
-| What's the strongest protection this **device** could provide? | [`KSafe.deviceKeyStorages`](SECURITY.md) — capability probe |
-| What protection did this **specific key** get when stored? | [`KSafe.getKeyInfo(key)`](SECURITY.md) — per-key audit |
+| What's the strongest protection this **device** could provide? | [`KSafe.deviceKeyStorages`](SECURITY_MODEL.md) — capability probe |
+| What protection did this **specific key** get when stored? | [`KSafe.getKeyInfo(key)`](SECURITY_MODEL.md) — per-key audit |
 | **What protection is this `KSafe` instance running at right now?** | **`KSafe.protectionInfo`** — instance audit |
 
 The instance-level audit is the one that catches **silent fallbacks**: a JVM
@@ -53,9 +53,9 @@ comparison.
 > is how hard it is for an attacker to recover the **key** that decrypts
 > that ciphertext. (There is no instance-level "plaintext data" state;
 > per-write `KSafeWriteMode.Plain` is a per-value concept surfaced through
-> [`KSafeKeyInfo`](SECURITY.md), not through this scale.)
+> [`KSafeKeyInfo`](SECURITY_MODEL.md), not through this scale.)
 
-> Distinct from [`KSafeKeyStorage`](SECURITY.md), which is a *device
+> Distinct from [`KSafeKeyStorage`](SECURITY_MODEL.md), which is a *device
 > capability* vocabulary (`SOFTWARE | HARDWARE_BACKED | HARDWARE_ISOLATED`).
 > `KSafeProtectionLevel` is about *negotiated runtime custody* and is the
 > value type used by `KSafeProtectionInfo`.
@@ -355,7 +355,7 @@ delta check for support escalation.
 > **`KSafeKeyInfo` shares the same `KSafeProtectionLevel` scale.** As of 2.1
 > the per-key audit record returned by `getKeyInfo(key)` exposes a
 > `level: KSafeProtectionLevel` field alongside the legacy `storage`
-> ([`KSafeKeyStorage`](SECURITY.md)). `level` uses the same ordinal scale as
+> ([`KSafeKeyStorage`](SECURITY_MODEL.md)). `level` uses the same ordinal scale as
 > `protectionInfo.effectiveLevel`, so a single threshold works at both the
 > instance level and the per-key level:
 >
@@ -382,6 +382,6 @@ A typical production flow uses all three:
 
 ## See also
 
-- **[SECURITY.md](SECURITY.md)** — the broader security model, threat model, encryption internals, and existing `KSafeKeyStorage` / `KSafeKeyInfo` APIs.
+- **[SECURITY_MODEL.md](SECURITY_MODEL.md)** — the broader security model, threat model, encryption internals, and existing `KSafeKeyStorage` / `KSafeKeyInfo` APIs.
 - **[JVM_PROTECTION.md](JVM_PROTECTION.md)** — the per-platform deep dive on the JVM key vaults whose status `protectionInfo` reports.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — where the new types fit in the module / Ring structure.
