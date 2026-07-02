@@ -127,6 +127,25 @@ internal class AndroidKeystoreEncryption(
         getOrCreateSecretKey(identifier, hardwareIsolated, requireUnlockedDevice)
     }
 
+    /**
+     * Read-only warm of an already-persisted wrapped DEK into [dekCache] so the first real
+     * encrypted READ (e.g. a `getDirect` on the main thread) doesn't do a blocking DataStore
+     * round-trip for the DEK on the caller thread — the ANR the lazy-DEK design otherwise
+     * leaves on the read path (FEEDBACK_4 low). Strictly read-only: [getExistingDek] never
+     * creates or persists a DEK, so an unencrypted-only safe stays DEK-free; if none is
+     * present it throws "No encryption key found" and we swallow it. Best-effort — a
+     * transient failure (or a read cancelled by a concurrent `close()`) just means the lazy
+     * read path warms the cache on first use as before.
+     */
+    override suspend fun prewarmDekReadIfPresent(identifier: String, requireUnlockedDevice: Boolean?) {
+        if (!useSoftwareDek || requireUnlockedDevice == true) return // strict/legacy paths have no cached DEK
+        runCatching { getExistingDek(identifier, requireUnlockedDevice) }
+    }
+
+    /** Test-only: whether a DEK for [alias] is warm in the in-process cache. */
+    @PublishedApi
+    internal fun isDekCachedForTest(alias: String): Boolean = dekCache[alias] != null
+
     private fun encryptWithKey(
         identifier: String,
         data: ByteArray,

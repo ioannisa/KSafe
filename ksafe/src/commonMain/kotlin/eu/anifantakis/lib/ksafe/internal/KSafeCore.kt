@@ -327,6 +327,17 @@ internal class KSafeCore(
                     /* swallow — lazy path will retry on first real write */
                 }
             }
+            // Read-only warm of an already-persisted relaxed-DEFAULT DEK, so the first
+            // encrypted READ (e.g. a getDirect on the UI thread) doesn't do a blocking
+            // storage round-trip for the DEK on the caller thread (FEEDBACK_4 low: ANR).
+            // No-op on engines without a DEK, and never creates one — an unencrypted-only
+            // safe still writes nothing. Runs on writeScope, which close() cancels cleanly.
+            try {
+                engine.prewarmDekReadIfPresent(masterAlias(false), requireUnlockedDevice = false)
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                /* swallow — the lazy read path warms the cache on first use as before */
+            }
         }
     }
 

@@ -158,4 +158,21 @@ internal interface KSafeEncryption {
      * Default: no-op (Android/Apple have no weak legacy key location).
      */
     suspend fun migrateLegacyKeysSuspend() { /* no-op by default */ }
+
+    /**
+     * Best-effort **read-only** warm of an already-persisted key-wrapping DEK into the
+     * engine's in-process cache, so the first real encrypted read doesn't do a blocking
+     * storage round-trip on the caller (potentially UI) thread (FEEDBACK_4 low: ANR).
+     *
+     * Distinct from [prewarmKey], which warms only the Keystore KEK and deliberately never
+     * touches the DEK: this reads an EXISTING DEK if one is present, but NEVER creates or
+     * persists one — an unencrypted-only safe still writes no DEK. `KSafeCore` calls it once
+     * on a background scope at construction, so a cancelled read (racing `close()`) is
+     * simply swallowed. Default: no-op (only the Android software-DEK engine has a DEK to
+     * warm; Apple/JVM/web keep the key in the OS vault / key store).
+     */
+    suspend fun prewarmDekReadIfPresent(
+        identifier: String,
+        requireUnlockedDevice: Boolean? = null,
+    ) { /* no-op by default */ }
 }
