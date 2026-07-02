@@ -132,4 +132,32 @@ class KSafeStateFlowClobberTest {
             "an A→B→A net-zero write must not permanently suppress external observation",
         )
     }
+
+    /**
+     * FEEDBACK_4 M-F (core twin of the Compose fix): the user-write guard's
+     * check-then-apply in `updateFromFlow` is not atomic against the setter, so a
+     * stale emission that read the guard as clear before the setter armed it can
+     * clobber the visible value AFTER the setter ran. The source flow is
+     * distinctUntilChanged, so the user's value is never re-emitted — the clobber was
+     * permanent. The user-write echo must now re-apply the value (self-heal).
+     */
+    @Test
+    fun updateFromFlow_userWriteEcho_selfHealsAStaleClobber() {
+        val msf = KSafeMutableStateFlow(initialValue = "A", persist = { /* no-op */ })
+        msf.updateFromFlow("A")   // sync baseline
+        msf.value = "B"           // arms the guard; delegate = "B", lastUserWrite = "B"
+        assertEquals("B", msf.value)
+
+        // Reproduce the raced outcome: a stale "A" emission clobbered the visible value
+        // AFTER the guard was armed (the non-atomic check-then-apply the fix addresses).
+        msf.simulateStaleClobberForTest("A")
+        assertEquals("A", msf.value, "precondition: the stale emission diverged the visible state")
+
+        msf.updateFromFlow("B")   // the echo of the user's own write
+        assertEquals(
+            "B", msf.value,
+            "the user-write echo must restore the value a stale emission clobbered (M-F); " +
+                "before the fix it stayed stuck on the stale value",
+        )
+    }
 }

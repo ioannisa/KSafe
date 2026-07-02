@@ -401,6 +401,15 @@ internal class KSafeMutableStateFlow<T>(
      * never echoes, and a type whose deserialized round-trip is not `==` to the
      * written instance never matches — both keep suppression in place.
      */
+    /**
+     * Test-only: simulates the M-F race where a stale observer emission clobbers the
+     * visible value AFTER the setter armed the echo guard (the check-then-apply in
+     * [updateFromFlow] is not atomic). Lets a deterministic test verify the self-heal.
+     */
+    @PublishedApi internal fun simulateStaleClobberForTest(staleValue: T) {
+        delegate.value = staleValue
+    }
+
     internal fun updateFromFlow(newValue: T) {
         if (!awaitingWriteEcho.get()) {
             delegate.value = newValue
@@ -410,8 +419,16 @@ internal class KSafeMutableStateFlow<T>(
             return
         }
         if (newValue == lastUserWrite) {
-            // The echo of the user's own write: consume it (the StateFlow
-            // already shows this value) and resume external-change reflection.
+            // The echo of the user's own write: consume it and resume external-change
+            // reflection. Re-apply the echoed value too (FEEDBACK_4 M-F, twin of the
+            // Compose KSafeComposeState fix): the guard check-then-apply above is not
+            // atomic against the setter, so a stale emission that read the latch as
+            // false before the setter armed it can clobber the visible value AFTER the
+            // setter ran. The source flow is distinctUntilChanged, so the user's value is
+            // never re-emitted — without this the StateFlow would stay stuck on the stale
+            // value. In the non-raced case delegate.value already equals newValue, so a
+            // StateFlow's own distinct-until-changed makes this a no-op.
+            delegate.value = newValue
             awaitingWriteEcho.compareAndSet(true, false)
             syncedValue = newValue
             hasSynced = true

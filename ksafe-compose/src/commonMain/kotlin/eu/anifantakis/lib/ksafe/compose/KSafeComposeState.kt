@@ -134,11 +134,29 @@ class KSafeComposeState<T>(
         }
         @Suppress("UNCHECKED_CAST")
         if (policy.equivalent(newValue, lastUserWrite as T)) {
-            // The echo of the user's own write: consume it (the state already
-            // shows this value) and resume external-change reflection.
+            // The echo of the user's own write: consume it and resume external-change
+            // reflection. Re-apply the echoed value too (FEEDBACK_4 M-F): the guard
+            // check-then-apply in [updateFromFlow] is not atomic against the setter, so a
+            // stale emission that read `awaitingWriteEcho == false` before the setter armed
+            // it can clobber the visible state to the pre-write value AFTER the setter ran.
+            // The source flow is distinctUntilChanged, so the user's value is never
+            // re-emitted — without this the state would stay stuck on the stale value.
+            // In the non-raced case this writes a policy-equal value, which Compose treats
+            // as a no-op (no recomposition, no persistence) — so it only ever heals the race.
+            _internalState.value = newValue
             awaitingWriteEcho = false
             syncedValue = newValue
         }
+    }
+
+    /**
+     * Test-only: simulates the M-F race where a stale observer emission clobbers the
+     * visible value AFTER the setter armed the echo guard (the check-then-apply in
+     * [updateFromFlow] is not atomic against the setter). Lets a deterministic test
+     * verify that the user-write echo self-heals the clobbered value.
+     */
+    @PublishedApi internal fun simulateStaleClobberForTest(staleValue: T) {
+        _internalState.value = staleValue
     }
 
     override fun getValue(thisRef: Any?, property: KProperty<*>): T {

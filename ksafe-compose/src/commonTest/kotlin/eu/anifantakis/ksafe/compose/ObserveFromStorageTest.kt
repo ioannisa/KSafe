@@ -123,6 +123,36 @@ class ObserveFromStorageTest {
     }
 
     /**
+     * FEEDBACK_4 M-F: the user-write guard's check-then-apply in `updateFromFlow` is
+     * not atomic against the setter, so a stale flow emission that read the guard as
+     * clear before the setter armed it can clobber the visible value to the pre-write
+     * value AFTER the setter ran. Because the observed flow is `distinctUntilChanged`,
+     * the user's value is never re-emitted — the clobber used to be PERMANENT. The
+     * user-write echo must now re-apply the value (self-heal), turning a permanent loss
+     * into (at worst) the already-accepted transient flicker.
+     */
+    @Test
+    fun updateFromFlow_userWriteEcho_selfHealsAStaleClobber() {
+        val state = newState("A")            // syncedValue = "A"
+        state.value = "B"                     // arms the guard; _internalState = "B", lastUserWrite = "B"
+        assertEquals("B", state.value)
+
+        // Reproduce the raced outcome: a stale "A" emission clobbered the visible value
+        // AFTER the guard was armed (the non-atomic check-then-apply the fix addresses).
+        state.simulateStaleClobberForTest("A")
+        assertEquals("A", state.value, "precondition: the stale emission diverged the visible state")
+
+        // The echo of the user's own write arrives.
+        state.updateFromFlow("B")
+
+        assertEquals(
+            "B", state.value,
+            "the user-write echo must restore the value a stale emission clobbered (M-F); " +
+                "before the fix it stayed stuck on the stale value",
+        )
+    }
+
+    /**
      * Cold-start one-shot mode: when `observeExternalChanges = false` and
      * `coldStart = true`, the helper takes the first flow emission and
      * propagates it via `updateFromStorage` (which respects the user-write
