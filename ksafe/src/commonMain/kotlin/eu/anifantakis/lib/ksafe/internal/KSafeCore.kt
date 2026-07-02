@@ -1651,11 +1651,14 @@ internal class KSafeCore(
             val reqUnlocked = encMetaMap[key]?.requireUnlockedDevice == true
 
             // Strict (requireUnlockedDevice) entries ALWAYS take the native-decrypt
-            // branch, even under a plaintext memory policy: their memoryCache slot
-            // holds ciphertext (see updateCache / the post-batch swap), never the
+            // branch, even under a plaintext memory policy, so they never read the
             // plaintext `else` branch below — otherwise a locked-device read would
             // return the secret straight from RAM (deep-review H2, the PLAIN_TEXT twin
-            // of the 2.1.3 getDirect fix).
+            // of the 2.1.3 getDirect fix). Their slot normally holds ciphertext (see
+            // updateCache / the post-batch swap), but TRANSIENTLY holds plaintext during
+            // the optimistic write window — so this branch's failure path must also refuse
+            // to fall through to that cached plaintext (see the `reqUnlocked` guard on the
+            // fallback below, FEEDBACK_4 FB3-M1).
             if (cacheHoldsCiphertext || reqUnlocked) {
                 if (usesPlaintextSideCache && !reqUnlocked) {
                     val cached = plaintextCache[cacheKey]
@@ -1704,6 +1707,16 @@ internal class KSafeCore(
             }
 
             if (success) return deserialized
+            // A strict (requireUnlockedDevice) entry must NEVER be served from the cached
+            // value when native-decrypt did not succeed. During the optimistic write
+            // window — after the put sets memoryCache to PLAINTEXT and marks the entry
+            // strict, but before the post-batch plaintext→ciphertext swap — falling through
+            // to the cached value would return the secret straight from RAM on a locked
+            // device, bypassing the unlock requirement (FEEDBACK_4 FB3-M1). Return the
+            // default instead. (A committed strict entry holds ciphertext here, whose
+            // jsonDecode would fail to the default anyway; a locked-device decrypt already
+            // threw transiently and propagated above.)
+            if (reqUnlocked) return defaultValue
             if (jsonString == null) jsonString = cachedValue as? String
             if (jsonString == null) return defaultValue
             if (jsonString == NULL_SENTINEL) return null
