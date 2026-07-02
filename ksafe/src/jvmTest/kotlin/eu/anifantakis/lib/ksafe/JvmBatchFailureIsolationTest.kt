@@ -1,9 +1,12 @@
 package eu.anifantakis.lib.ksafe
 
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import java.util.concurrent.CountDownLatch
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -181,6 +184,81 @@ class JvmBatchFailureIsolationTest {
         assertEquals("good_plain_value", ksafe.get("goodPlain", "missing"))
         // …and the failed key is rolled back.
         assertEquals("missing", ksafe.get("bad", "missing"))
+
+        ksafe.close()
+    }
+
+    /**
+     * Engine that (a) fails encrypt on the "BAD" marker (device-locked), (b) pins the
+     * single write consumer inside encrypt on the "DECOY" marker until [releaseGate]
+     * opens, and (c) XOR-encrypts everything else. The pin lets the test STAGE a
+     * coalesced batch with a guaranteed op order while the consumer is parked.
+     */
+    private class PinFailEncryption : KSafeEncryption {
+        private val xor = FakeEncryption()
+        val decoyPinned = CountDownLatch(1)
+        val releaseGate = CountDownLatch(1)
+        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray {
+            val s = data.decodeToString()
+            if (s.contains("DECOY")) { decoyPinned.countDown(); releaseGate.await() }
+            else if (s.contains("BAD")) throw IllegalStateException("KSafe: Cannot access Keystore key - device is locked. (test)")
+            return xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
+        }
+        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray =
+            xor.decrypt(identifier, data)
+        override fun deleteKey(identifier: String) { /* no-op */ }
+    }
+
+    @Test
+    fun failingEncryptedWrite_doesNotContaminate_aSupersededSameKeyDeleteAwaiter() {
+        // M-A: a batch coalesces same-key ops to the LAST write. When an earlier
+        // delete("token") is superseded by a later encrypted put("token", BAD…) that
+        // fails to encrypt, ONLY the failing final op's awaiter may receive the keystore
+        // exception. The superseded delete did no encryption — its awaiter must complete
+        // normally, not be cross-contaminated with the encryption error.
+        val engine = PinFailEncryption()
+        val ksafe = KSafe(
+            fileName = JvmKSafeTest.generateUniqueFileName(),
+            memoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+            testEngine = engine,
+        )
+
+        var deleteResult: Result<Unit>? = null
+        var putResult: Result<Unit>? = null
+        runBlocking {
+            // A prior persisted value, so a spurious rollback would be observable.
+            ksafe.put("token", "original", KSafeWriteMode.Encrypted())
+            assertEquals("original", ksafe.get("token", "none"))
+
+            // Park the single write consumer inside the decoy's encrypt so the next two
+            // writes queue in the channel without being drained yet.
+            val decoyJob = launch(Dispatchers.IO) { runCatching { ksafe.put("decoy", "DECOY_v", KSafeWriteMode.Encrypted()) } }
+            engine.decoyPinned.await()
+
+            // Stage delete THEN the failing put with a GUARANTEED send order: Dispatchers
+            // .Unconfined runs each launch eagerly on this thread up to its first suspension
+            // (the deferred.await() that follows the synchronous writeChannel.send()), so
+            // the delete's send strictly precedes the put's send. Both land in the SAME
+            // next batch (consumer still parked), with finalByKey["token"] = the failing put.
+            val delJob = launch(Dispatchers.Unconfined) { deleteResult = runCatching { ksafe.delete("token") } }
+            val putJob = launch(Dispatchers.Unconfined) { putResult = runCatching { ksafe.put("token", "BAD_secret", KSafeWriteMode.Encrypted()) } }
+
+            engine.releaseGate.countDown() // consumer finishes the decoy, then drains [delete, put]
+            decoyJob.join(); delJob.join(); putJob.join()
+        }
+
+        assertTrue(
+            deleteResult!!.isSuccess,
+            "a delete superseded by a failing same-key encrypted put must NOT be failed with the " +
+                "encryption exception (M-A); was: ${deleteResult!!.exceptionOrNull()?.message}",
+        )
+        assertTrue(putResult!!.isFailure, "the genuinely-failing encrypted put's awaiter must still receive the exception")
+        assertTrue(
+            putResult!!.exceptionOrNull()?.message?.contains("device is locked", ignoreCase = true) == true,
+            "the failing op's awaiter gets the keystore exception; was: ${putResult!!.exceptionOrNull()?.message}",
+        )
+        // Both token ops no-op'd (delete superseded, failing put rolled back) → prior value survives.
+        assertEquals("original", runBlocking { ksafe.get("token", "none") }, "the prior persisted value must survive")
 
         ksafe.close()
     }

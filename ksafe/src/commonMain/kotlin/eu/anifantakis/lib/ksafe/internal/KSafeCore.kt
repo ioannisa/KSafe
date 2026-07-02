@@ -1193,15 +1193,23 @@ internal class KSafeCore(
 
         // Per-op encrypt failures: the successful ops above are committed; now
         // roll back the dropped keys' optimistic cache state so reads no longer
-        // serve the phantom value, THEN fail the awaiter(s) of every dropped
-        // key (covers earlier same-key writes in this batch too). Rolling back
-        // before releasing the awaiter guarantees a caller that catches the
-        // exception and immediately re-reads sees the reverted value, not the
-        // phantom. completeExceptionally here means processBatch's later
-        // complete(Unit) is a harmless no-op for these.
+        // serve the phantom value, THEN fail the awaiter of the FINAL (failing)
+        // op for each dropped key. Rolling back before releasing the awaiter
+        // guarantees a caller that catches the exception and immediately re-reads
+        // sees the reverted value, not the phantom. completeExceptionally here
+        // means processBatch's later complete(Unit) is a harmless no-op for these.
         if (encryptFailures.isNotEmpty()) {
             rollbackOptimisticState(finalByKey.values.filter { it.userKey in encryptFailures })
-            for (op in batch) {
+            // Iterate the COALESCED final ops, not the raw batch: only a key's
+            // final op is encrypted (toEncrypt filters finalByKey), so for every
+            // failed key finalByKey[key] IS the failing Encrypted op. Iterating the
+            // raw batch would also fail an EARLIER coalesced op for the same key —
+            // a delete(k) or plain put(k) superseded by the failing encrypted
+            // write — handing its awaiter this unrelated keystore exception (M-A).
+            // Superseded same-key ops are absorbed into the coalesced write and
+            // complete normally via processBatch's success path, exactly as they
+            // would have if the final op had succeeded.
+            for (op in finalByKey.values) {
                 val cause = encryptFailures[op.userKey] ?: continue
                 op.completion?.completeExceptionally(cause)
             }
