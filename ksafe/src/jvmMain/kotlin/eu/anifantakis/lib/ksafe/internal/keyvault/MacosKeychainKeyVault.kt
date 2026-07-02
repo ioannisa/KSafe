@@ -7,6 +7,17 @@ import com.sun.jna.ptr.IntByReference
 import com.sun.jna.ptr.PointerByReference
 
 /**
+ * Whether a `SecKeychainAddGenericPassword` OSStatus means the key write FAILED and must
+ * throw (fail closed). `errSecDuplicateItem` (-25299) IS a failure here (FEEDBACK_4 low):
+ * [MacosKeychainKeyVault.put] is a delete-then-add upsert, so a duplicate error means the
+ * preceding delete did NOT remove the existing item — the NEW key was never stored and the
+ * stale one remains. Swallowing it would report success while silently losing the write,
+ * making everything re-encrypted under the intended key undecryptable. Only `errSecSuccess`
+ * (0) is a success. Pure so it's unit-testable without a live Keychain.
+ */
+internal fun macosKeychainAddIsFailure(status: Int): Boolean = status != 0 // errSecSuccess
+
+/**
  * macOS key vault backed by the **login Keychain** via JNA bindings to
  * `Security.framework`.
  *
@@ -90,7 +101,10 @@ internal class MacosKeychainKeyVault(
             keyBytes.size, keyBytes,
             null,
         )
-        if (status != ERR_SEC_SUCCESS && status != ERR_SEC_DUPLICATE_ITEM) {
+        // errSecDuplicateItem is NOT tolerated (FEEDBACK_4 low): it means the delete above
+        // failed to remove the existing item, so this add did NOT replace the key — the
+        // stale one is still there. Fail closed so the write isn't silently lost.
+        if (macosKeychainAddIsFailure(status)) {
             throw KeychainException("SecKeychainAddGenericPassword", status)
         }
     }
