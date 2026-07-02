@@ -27,6 +27,13 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 @OptIn(ExperimentalEncodingApi::class)
 internal class FileKeyVault(
     private val file: File,
+    /**
+     * fsyncs the given directory so a preceding atomic rename INTO it is durable.
+     * Injectable so a test can observe that the parent-dir fsync happens after a write;
+     * production uses [fsyncDirectory]. Best-effort (a no-op on filesystems that can't
+     * open a directory as a channel, e.g. Windows).
+     */
+    private val syncDir: (File) -> Unit = ::fsyncDirectory,
 ) : JvmKeyVault {
 
     override val name: String = "JSON file (software, plaintext — no OS protection)"
@@ -85,6 +92,14 @@ internal class FileKeyVault(
                 StandardCopyOption.ATOMIC_MOVE,
                 StandardCopyOption.REPLACE_EXISTING,
             )
+            // fsync the PARENT DIRECTORY so the rename (a directory-entry change) is
+            // itself durable. The data fsync above only durably persists the temp file's
+            // blocks; without also syncing the directory, a crash right after the move can
+            // lose the rename and leave the key file missing — indistinguishable from "no
+            // keys yet", which the startup orphan sweep treats as "delete every entry"
+            // (FEEDBACK_4 low: FileKeyVault no parent-dir fsync).
+            val dir = file.absoluteFile.parentFile
+            if (dir != null) syncDir(dir)
         } catch (e: Throwable) {
             runCatching { tmp.delete() }
             throw e
@@ -104,6 +119,21 @@ internal class FileKeyVault(
             // Non-POSIX filesystem (e.g. Windows): no atomic perm-on-create. The
             // parent directory's 0700 / ACL is the protection here.
             File.createTempFile(file.name, ".tmp", parent)
+        }
+    }
+
+    private companion object {
+        /**
+         * Best-effort fsync of [dir] so a preceding atomic rename into it survives a crash.
+         * Opening a directory as a channel is a POSIX capability; on filesystems that don't
+         * allow it (Windows), it's swallowed — the data fsync + atomic move are the
+         * durability guarantee there.
+         */
+        fun fsyncDirectory(dir: File) {
+            runCatching {
+                java.nio.channels.FileChannel.open(dir.toPath(), java.nio.file.StandardOpenOption.READ)
+                    .use { it.force(true) }
+            }
         }
     }
 
