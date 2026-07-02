@@ -695,7 +695,24 @@ internal class KSafeCore(
                     // Re-check the LIVE dirty set: a write landing after the snapshot
                     // must not be clobbered with the older disk value (dirty flags are
                     // never cleared, so it would never re-merge).
-                    if (!isUserKeyDirty(userKey)) memoryCache[cacheKey] = encryptedString
+                    if (!isUserKeyDirty(userKey)) {
+                        val previousCiphertext = memoryCache[cacheKey]
+                        memoryCache[cacheKey] = encryptedString
+                        // updateCache is the ONLY path that merges an EXTERNAL change
+                        // (another instance/process/direct DataStore edit). It does not
+                        // manage the secondary plaintextCache, which under LAZY_PLAIN_TEXT
+                        // (the default) never expires — so without this a reader keeps
+                        // returning the pre-change plaintext forever and getDirect/get
+                        // diverge from getFlow (FEEDBACK_4 H-F). When the ciphertext
+                        // actually changed, evict the stale side-cache entry so the next
+                        // read re-decrypts the fresh value and repopulates it. A fresh IV
+                        // per encrypt ⇒ a real external write always yields different
+                        // ciphertext; an unrelated key's snapshot entry is byte-identical,
+                        // so its side cache is preserved and the eviction stays cheap.
+                        if (usesPlaintextSideCache && previousCiphertext != encryptedString) {
+                            plaintextCache.remove(cacheKey)
+                        }
+                    }
                 } else {
                     val protection = KeySafeMetadataManager.parseProtection(protectionByKey[userKey])
                         ?: KSafeProtection.DEFAULT
@@ -742,6 +759,12 @@ internal class KSafeCore(
         for (key in memoryCache.snapshot().keys) {
             if (key !in validCacheKeys && !dirtyKeys.contains(key)) {
                 memoryCache.remove(key)
+                // Mirror the eviction into the secondary plaintextCache: an entry a
+                // key had there (encrypted keys under LAZY_PLAIN_TEXT / TIMED_CACHE)
+                // would otherwise keep serving the plaintext of a key another
+                // instance/process deleted — forever, under the never-expiring
+                // LAZY_PLAIN_TEXT side cache (FEEDBACK_4 H-F). No-op for plain keys.
+                if (usesPlaintextSideCache) plaintextCache.remove(key)
             }
         }
 
