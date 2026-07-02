@@ -63,13 +63,17 @@ import kotlin.js.Promise
         // it provably encrypted the current ciphertext. Import it and overwrite any
         // (possibly stale) IndexedDB key under this name; only fall back to an existing
         // IDB key when there is no legacy key.
-        var ensure = function(name, legacy) {
+        var ensure = function(name, legacy, mint) {
           // The legacy import/overwrite must precede the mem short-circuit:
           // the page-global `mem` cache can hold a stale entry too.
           if (legacy) { return subtle.importKey('raw', b2u(legacy), 'AES-GCM', false, ['encrypt', 'decrypt']).then(function(nk) { return idbPut(name, nk).then(function() { mem.set(name, nk); return null; }); }); }
           if (mem.has(name)) return Promise.resolve(null);
           return idbGet(name).then(function(k) {
             if (k) { mem.set(name, k); return null; }
+            // Read path (mint=false): NEVER create a key. A genuinely absent key stays
+            // absent so decrypt fails recoverably ('web key missing') instead of minting
+            // a key that can't decrypt the surviving ciphertext (FEEDBACK_4 H-A).
+            if (!mint) return null;
             // Create via atomic 'add', not 'put': if two same-origin tabs race on first
             // launch, only one 'add' wins and the loser adopts the winner's key instead
             // of writing ciphertext no other context can decrypt.
@@ -102,7 +106,8 @@ import kotlin.js.Promise
         G.__ksafeWK = { ensure: ensure, enc: enc, dec: dec, del: del };
       }
       var wk = G.__ksafeWK;
-      if (op === 'ensure') return wk.ensure(a, b);
+      if (op === 'ensure') return wk.ensure(a, b, true);
+      if (op === 'ensureNoMint') return wk.ensure(a, b, false);
       if (op === 'enc') return wk.enc(a, b);
       if (op === 'dec') return wk.dec(a, b);
       if (op === 'delnw') return wk.del(a).catch(function() { return null; });
@@ -113,8 +118,8 @@ import kotlin.js.Promise
 private external fun wkDispatch(op: String, a: String, b: String?): Promise<JsAny?>
 
 @PublishedApi
-internal actual suspend fun webKeyEnsure(idbName: String, legacyRawKeyB64: String?) {
-    wkDispatch("ensure", idbName, legacyRawKeyB64).await<JsAny?>()
+internal actual suspend fun webKeyEnsure(idbName: String, legacyRawKeyB64: String?, mintIfAbsent: Boolean) {
+    wkDispatch(if (mintIfAbsent) "ensure" else "ensureNoMint", idbName, legacyRawKeyB64).await<JsAny?>()
 }
 
 @PublishedApi

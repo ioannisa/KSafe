@@ -146,6 +146,42 @@ class WebKeyStoreIntegrationTest {
         fresh.deleteKeySuspend(alias)
     }
 
+    /**
+     * FEEDBACK_4 H-A: a **decrypt** must NEVER mint a fresh key when the IndexedDB
+     * key is absent. Web stores ciphertext (localStorage) and the key (IndexedDB)
+     * in separate backends with independent eviction; if the IDB key goes missing
+     * while the ciphertext survives, minting a fresh key on decrypt makes the old
+     * ciphertext permanently undecryptable AND poisons it (a fresh key persisted).
+     * Absence must instead surface recoverably as "web key missing" so the data
+     * stays decryptable once the key backend is restored (matching Android/Apple/JVM,
+     * which never create a key on the read path).
+     */
+    @Test
+    fun decrypt_doesNotMintKey_whenIndexedDbKeyEvicted() = runTest {
+        val prefix = uniquePrefix()
+        val alias = "tok"
+        val ct = WebSoftwareEncryption(storagePrefix = prefix)
+            .encryptSuspend(alias, "recoverable-secret".encodeToByteArray())
+
+        // Simulate the IndexedDB key backend being evicted (browser storage
+        // pressure / "clear cached site data") while the localStorage ciphertext
+        // (held in `ct`) survives.
+        WebSoftwareEncryption(storagePrefix = prefix).deleteKeySuspend(alias)
+
+        // A fresh engine (new session, empty in-memory `ensured`) decrypting the
+        // surviving ciphertext must FAIL RECOVERABLY, not mint a poisoning key.
+        val fresh = WebSoftwareEncryption(storagePrefix = prefix)
+        val error = kotlin.test.assertFails("decrypt of an evicted-key entry must fail, not silently mint") {
+            fresh.decryptSuspend(alias, ct)
+        }
+        // "web key missing" ⇔ keyOf returned null ⇔ decrypt did NOT mint a key.
+        // (A minted key would instead produce a GCM OperationError.)
+        kotlin.test.assertTrue(
+            error.message?.contains("web key missing", ignoreCase = true) == true,
+            "decrypt must surface recoverable 'web key missing' (no mint), got: ${error.message}",
+        )
+    }
+
     @Test
     fun eagerSweep_importsEveryLegacyLocalStorageKey_andScrubs() = runTest {
         val prefix = uniquePrefix()

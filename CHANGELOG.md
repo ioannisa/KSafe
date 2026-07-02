@@ -34,6 +34,12 @@ Security and data-integrity hardening release. It **completes the 2.1.3 `require
 
 - The iOS Keychain memory-leak regression test now uses a **strict** threshold on the non-throwing `deleteKey` path (below the leak's ~5 MB signature so a regression actually fails the build) and a separate loose threshold only on the throwing `decrypt` path, whose Kotlin/Native 2.3+ exception stack traces inflate peak RSS independently of the bridging leak under test.
 
+### Fixed — post-audit hardening (FEEDBACK_3 / FEEDBACK_4)
+
+Additional data-integrity edges closed after two further deep audits of the 2.1.4 code, before release:
+
+- **Web: decrypting an entry whose IndexedDB key was evicted no longer mints a fresh key and permanently poisons the ciphertext (FEEDBACK_4 H-A).** KSafe web stores ciphertext in `localStorage` but the AES-GCM `CryptoKey` in a *separate* IndexedDB, and the two backends have independent eviction/quotas. If the key backend was cleared while the ciphertext survived (browser storage pressure, "clear cached site data", a transient empty first-open), the read path called `ensureKey`, which **generated and persisted a brand-new key as a side effect of a decrypt** — so the old ciphertext failed GCM authentication and became permanently undecryptable, and the fresh key persisted as unrecoverable garbage. This fired automatically and batch-wide on first load (cache preload + orphan sweep both probe every entry). The read path now **never creates a key**: a genuinely absent key surfaces the recoverable `"web key missing"` error (matching the Android/Apple/JVM engines, which never mint on decrypt), so the ciphertext stays decryptable once the key backend is restored. A legacy `localStorage` key is still migrated on read (it provably decrypts existing data); only `encrypt` mints.
+
 ## [2.1.3] - 2026-06-17
 
 Security patch release for aggressive memory caching bypassing the `requireUnlockedDevice` hardware lock policy.

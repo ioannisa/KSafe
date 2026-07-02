@@ -74,12 +74,37 @@ internal class WebSoftwareEncryption(
             // Read the legacy key from the FROZEN (un-namespaced) localStorage
             // location; import it into the namespaced IndexedDB destination.
             val legacy = localStorageGet(legacyKey(alias)) // Base64 or null
-            webKeyEnsure(idbName(alias), legacy)
+            webKeyEnsure(idbName(alias), legacy, mintIfAbsent = true)
             if (legacy != null) {
                 // Raw key now lives only as a non-extractable CryptoKey in IDB.
                 localStorageRemove(legacyKey(alias))
             }
             ensured.add(alias)
+        }
+    }
+
+    /**
+     * Read-path key resolution (FEEDBACK_4 H-A): migrates a legacy `localStorage`
+     * key if present, but NEVER mints a fresh key when the key is absent — so a
+     * `decrypt` of ciphertext whose IndexedDB key was evicted fails recoverably
+     * ("web key missing") instead of minting a key that can never decrypt it and
+     * permanently poisoning the ciphertext. Does not add to [ensured] on a mint-free
+     * miss, so a later `encrypt` can still create the key if genuinely absent.
+     */
+    private suspend fun ensureKeyForRead(alias: String) {
+        if (alias in ensured) return
+        ensureMutex.withLock {
+            if (alias in ensured) return
+            val legacy = localStorageGet(legacyKey(alias)) // Base64 or null
+            webKeyEnsure(idbName(alias), legacy, mintIfAbsent = false)
+            if (legacy != null) {
+                // A legacy key provably decrypts existing data — importing it is safe on
+                // the read path; scrub the raw copy and treat the alias as resolved.
+                localStorageRemove(legacyKey(alias))
+                ensured.add(alias)
+            }
+            // No legacy key: whether or not an IndexedDB key exists, do NOT mark
+            // `ensured` — an absent key must stay mintable by a future encrypt.
         }
     }
 
@@ -134,7 +159,10 @@ internal class WebSoftwareEncryption(
 
     @OptIn(ExperimentalEncodingApi::class)
     override suspend fun decryptSuspend(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
-        ensureKey(identifier)
+        // Read path must never mint a key (FEEDBACK_4 H-A): if the IndexedDB key was
+        // evicted while the ciphertext survives, this surfaces "web key missing"
+        // (recoverable) rather than minting a key that permanently poisons the data.
+        ensureKeyForRead(identifier)
         val plainB64 = webKeyDecrypt(idbName(identifier), Base64.encode(data))
         return Base64.decode(plainB64)
     }

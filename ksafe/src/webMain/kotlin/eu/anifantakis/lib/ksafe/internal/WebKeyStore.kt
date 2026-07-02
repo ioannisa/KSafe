@@ -17,9 +17,17 @@ package eu.anifantakis.lib.ksafe.internal
  * bridge the underlying Promises to `suspend`.
  */
 
-/** Ensures a non-extractable key exists for [idbName], migrating [legacyRawKeyB64] if provided. */
+/**
+ * Ensures the key state for [idbName], migrating [legacyRawKeyB64] into IndexedDB if provided.
+ *
+ * When [mintIfAbsent] is `true` (the write path) a fresh non-extractable key is generated and
+ * persisted if none exists. When `false` (the read path) no key is ever created — a genuinely
+ * absent key is left absent so the subsequent decrypt fails recoverably with "web key missing"
+ * instead of minting a key that can never decrypt the surviving ciphertext (FEEDBACK_4 H-A).
+ * A legacy `localStorage` key is still migrated regardless, since it provably decrypts existing data.
+ */
 @PublishedApi
-internal expect suspend fun webKeyEnsure(idbName: String, legacyRawKeyB64: String?)
+internal expect suspend fun webKeyEnsure(idbName: String, legacyRawKeyB64: String?, mintIfAbsent: Boolean)
 
 /** Encrypts [plaintextB64]; returns Base64 of `IV ‖ ciphertext ‖ tag`. */
 @PublishedApi
