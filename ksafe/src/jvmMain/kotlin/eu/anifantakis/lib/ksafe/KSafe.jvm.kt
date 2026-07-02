@@ -375,6 +375,18 @@ private fun createJvmBackend(
             try {
                 if (datastoreFile.exists()) datastoreFile.delete()
             } catch (_: Exception) { /* best-effort */ }
+            // DataStore's corruption handler above quarantines an unreadable store as
+            // `<base>.preferences_pb.corrupt-<ts>` — a copy that still holds decryptable
+            // ciphertext. clearAll() promises a full wipe, so remove those siblings too
+            // (M-E); deleteResidualFallbackFiles only matches the `<base>.ksafe` prefix,
+            // not the protobuf file's. Matched by the exact datastore file-name prefix
+            // so a sibling safe's files in the same dir aren't touched. Best-effort.
+            runCatching {
+                val corruptPrefix = "${datastoreFile.name}.corrupt-"
+                storageDir.listFiles()?.forEach { f ->
+                    if (f.name.startsWith(corruptPrefix)) runCatching { f.delete() }
+                }
+            }
             // Even on the OS-backed path, a PRIOR run's JSON fallback may have left
             // recoverable residue in this dir; clearAll() must wipe it too.
             deleteResidualFallbackFiles(storageDir, baseFileName)
