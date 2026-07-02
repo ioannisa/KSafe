@@ -99,7 +99,7 @@ internal class KSafeCore(
      * accessibility tiers; JVM/WASM are no-ops.
      */
     private val migrateAccessPolicy: suspend (isUserKeyDirty: (String) -> Boolean) -> Unit = {},
-    lazyLoad: Boolean = false,
+    private val lazyLoad: Boolean = false,
     /**
      * Builds the Keystore/Keychain alias for a given user key. Android uses
      * `"$KEY_ALIAS_PREFIX.$fileName?.$key"`; iOS/JVM use `"$fileName?:$key"`
@@ -488,20 +488,47 @@ internal class KSafeCore(
                 updateCache(snapshot)
                 if (firstEmission) {
                     firstEmission = false
-                    runCatching { migrateAccessPolicy(::isUserKeyDirty) }
-                        .onFailure { if (it is CancellationException) throw it }
-                    runCatching { cleanupOrphanedCiphertext() }
-                        .onFailure { if (it is CancellationException) throw it }
-                    // Eager one-time sweep of legacy key material out of the
-                    // weak location (JVM DataStore file / web localStorage)
-                    // into the secure store. Best-effort, idempotent, no-op
-                    // where there's no safer destination; lazy per-key
-                    // migration still handles correctness.
-                    runCatching { engine.migrateLegacyKeysSuspend() }
-                        .onFailure { if (it is CancellationException) throw it }
+                    runOneTimeStartupCleanup()
                 }
             }
         }
+    }
+
+    /** Guards the one-time startup cleanup so it runs exactly once, whether triggered by
+     *  the background collector's first emission or (under [lazyLoad]) by first access. */
+    private val startupCleanupDone = KSafeAtomicFlag(false)
+    private val lazyStartupCleanupLaunched = KSafeAtomicFlag(false)
+
+    /**
+     * The one-time, post-first-load startup cleanup: the Apple access-policy migration +
+     * Keychain orphan sweep, the orphaned-ciphertext sweep, and the eager sweep of legacy
+     * key material out of the weak location (JVM DataStore file / web localStorage) into
+     * the secure store. Best-effort, idempotent, no-op where there's no safer destination;
+     * lazy per-key migration still handles correctness. Must run only AFTER the first
+     * snapshot has populated the cache (see [startBackgroundCollector]'s ordering hazard).
+     */
+    private suspend fun runOneTimeStartupCleanup() {
+        if (!startupCleanupDone.compareAndSet(false, true)) return
+        runCatching { migrateAccessPolicy(::isUserKeyDirty) }
+            .onFailure { if (it is CancellationException) throw it }
+        runCatching { cleanupOrphanedCiphertext() }
+            .onFailure { if (it is CancellationException) throw it }
+        runCatching { engine.migrateLegacyKeysSuspend() }
+            .onFailure { if (it is CancellationException) throw it }
+    }
+
+    /**
+     * Under [lazyLoad] the background collector never starts, so the one-time startup
+     * cleanup (legacy-key sweep, orphan cleanup, iOS access-policy migration) would never
+     * run — a lazy instance would leave plaintext key material in the weak location and
+     * skip the migrations (FEEDBACK_4 low). Trigger it once, on the background scope, after
+     * the cache is first readied by a lazy first access — deferred like the rest of
+     * lazyLoad, and off the caller's thread so it never blocks the read.
+     */
+    private fun triggerLazyStartupCleanupOnce() {
+        if (!lazyLoad || startupCleanupDone.get()) return
+        if (!lazyStartupCleanupLaunched.compareAndSet(false, true)) return
+        collectorScope.launch { runOneTimeStartupCleanup() }
     }
 
     /**
@@ -1864,11 +1891,18 @@ internal class KSafeCore(
             if (e is CancellationException) throw e
             /* web: no blocking available */
         }
+        // lazyLoad has no collector to run the one-time startup cleanup — trigger it once
+        // here, off the caller's thread, now that a first access has readied the cache.
+        triggerLazyStartupCleanupOnce()
     }
 
     suspend fun ensureCacheReadySuspend() {
-        if (cacheInitialized.get()) return
+        if (cacheInitialized.get()) {
+            triggerLazyStartupCleanupOnce()
+            return
+        }
         updateCache(storage.snapshot())
+        triggerLazyStartupCleanupOnce()
     }
 
     /**
