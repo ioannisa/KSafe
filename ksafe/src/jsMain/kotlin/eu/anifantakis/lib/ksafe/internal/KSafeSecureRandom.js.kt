@@ -16,7 +16,19 @@ private external object crypto {
 
 actual fun secureRandomBytes(size: Int): ByteArray {
     require(size > 0) { "size must be positive" }
-    val arr = Uint8Array(size)
-    crypto.getRandomValues(arr)
-    return ByteArray(size) { arr[it] }
+    // WebCrypto's getRandomValues rejects a view longer than 65536 bytes
+    // (QuotaExceededError), so fill in chunks — otherwise getOrCreateSecret(size > 64KB)
+    // would throw (FEEDBACK_4 low: JS/Wasm getOrCreateSecret > 65536).
+    val out = ByteArray(size)
+    var offset = 0
+    while (offset < size) {
+        val chunk = minOf(MAX_RANDOM_BYTES_PER_CALL, size - offset)
+        val arr = Uint8Array(chunk)
+        crypto.getRandomValues(arr)
+        for (i in 0 until chunk) out[offset + i] = arr[i]
+        offset += chunk
+    }
+    return out
 }
+
+private const val MAX_RANDOM_BYTES_PER_CALL = 65536
