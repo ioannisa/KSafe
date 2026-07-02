@@ -21,6 +21,11 @@ class KeychainOrphanClassificationTest {
     // fileName = "vault" → these are the per-instance account prefixes.
     private val prefix = "eu.anifantakis.ksafe.vault."
     private val sePrefix = "se.eu.anifantakis.ksafe.vault."
+    // fileName = null (the root/default instance) → these prefixes. A named instance
+    // reaps ONLY keys it provably owns (M-D), so the "an unknown key is reaped" semantics
+    // are exercised against the ROOT sweep, which the M-D guard leaves unchanged.
+    private val rootPrefix = "eu.anifantakis.ksafe."
+    private val rootSePrefix = "se.eu.anifantakis.ksafe."
     private val masters = setOf("__ksafe_master__", "__ksafe_master_locked__")
 
     @Test
@@ -41,27 +46,32 @@ class KeychainOrphanClassificationTest {
     fun masterSentinelWouldBeDeletedWithoutReservation() {
         // With no reservation the master (never a user key) classifies as an orphan
         // and would be deleted, losing all DEFAULT data — the reservation is required.
+        // Exercised on the ROOT sweep, where the M-D owned-key guard does not apply.
         assertEquals(
             "__ksafe_master__",
-            keychainOrphanKeyId("${prefix}__ksafe_master__", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = emptySet()),
+            keychainOrphanKeyId("${rootPrefix}__ksafe_master__", rootPrefix, fileName = null, validKeys = setOf("token"), reservedKeyIds = emptySet()),
             "without the reservation the master is (wrongly) an orphan — this is the bug being fixed",
         )
     }
 
     @Test
     fun liveUserKeyIsNotAnOrphan() {
+        // A named instance's own live key is in ownedKeyIds (= validKeys), so it passes the
+        // M-D guard and is then preserved by the validKeys check.
         assertNull(
-            keychainOrphanKeyId("${prefix}token", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters),
+            keychainOrphanKeyId("${prefix}token", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters, ownedKeyIds = setOf("token")),
             "a key with a live DataStore counterpart must be preserved",
         )
     }
 
     @Test
-    fun unknownUserKeyIsAnOrphan() {
+    fun unknownUserKeyIsAnOrphan_forTheRootSweep() {
+        // The ROOT sweep still reaps a per-entry key with no DataStore counterpart. (A
+        // NAMED instance no longer does — see namedInstanceDoesNotReapAnUnprovableKey.)
         assertEquals(
             "ghost",
-            keychainOrphanKeyId("${prefix}ghost", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters),
-            "a per-entry key with no DataStore counterpart must still be reaped",
+            keychainOrphanKeyId("${rootPrefix}ghost", rootPrefix, fileName = null, validKeys = setOf("token"), reservedKeyIds = masters),
+            "a per-entry key with no DataStore counterpart must still be reaped by the root sweep",
         )
     }
 
@@ -69,18 +79,43 @@ class KeychainOrphanClassificationTest {
     fun inFlightKeyIsNotAnOrphan_evenWhenAbsentFromValidKeys() {
         // A key just created for a still-in-flight write hasn't reached the DataStore
         // snapshot (validKeys) yet — the sweep must not reap it, or it destroys the key
-        // for an acknowledged concurrent write.
+        // for an acknowledged concurrent write. Exercised on the ROOT sweep.
         assertEquals(
             "fresh",
-            keychainOrphanKeyId("${prefix}fresh", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters),
+            keychainOrphanKeyId("${rootPrefix}fresh", rootPrefix, fileName = null, validKeys = setOf("token"), reservedKeyIds = masters),
             "precondition: without the in-flight guard, an absent key is an orphan",
         )
         assertNull(
             keychainOrphanKeyId(
-                "${prefix}fresh", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters,
+                "${rootPrefix}fresh", rootPrefix, fileName = null, validKeys = setOf("token"), reservedKeyIds = masters,
                 isInFlight = { it == "fresh" },
             ),
             "a key for an in-flight write must be preserved, not reaped",
+        )
+    }
+
+    @Test
+    fun namedInstanceSweepDoesNotReapRootInstanceDottedKey() {
+        // FEEDBACK_4 M-D: a root instance stored userKey "vault.token" → account
+        // "eu.anifantakis.ksafe.vault.token", byte-identical to named-instance "vault"'s
+        // userKey "token". The named "vault" sweep must NOT reap it (it can't prove
+        // ownership) — reaping would destroy the root instance's live HARDWARE key.
+        assertNull(
+            keychainOrphanKeyId(
+                "eu.anifantakis.ksafe.vault.token", prefix, fileName = "vault",
+                validKeys = emptySet(), reservedKeyIds = masters, ownedKeyIds = emptySet(),
+            ),
+            "a named sweep must NOT reap a root instance's dotted key that collides with its scope (M-D)",
+        )
+    }
+
+    @Test
+    fun namedInstanceDoesNotReapAnUnprovableKey() {
+        // The M-D contract: a named instance reaps ONLY keys it provably owns (ownedKeyIds).
+        // A cross-session orphan it can't prove is its own is left as harmless clutter.
+        assertNull(
+            keychainOrphanKeyId("${prefix}ghost", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters, ownedKeyIds = setOf("token")),
+            "a named instance must not reap a key it can't prove it owns (M-D)",
         )
     }
 
@@ -93,6 +128,7 @@ class KeychainOrphanClassificationTest {
         val classified = keychainOrphanKeyId(
             "${prefix}ghost", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters,
             isInFlight = { false }, // classify time: not yet in flight → orphan
+            ownedKeyIds = setOf("ghost"), // provably owned so the M-D guard passes (H-B is about the delete-time recheck)
         )
         assertEquals("ghost", classified, "precondition: 'ghost' classifies as an orphan")
 
@@ -125,15 +161,17 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun secureEnclavePrefixClassifiesIndependently() {
-        // SE-wrapped generic-passwords and SE EC tags use the "se." prefix; the
-        // master stays reserved and unknown SE keys are still orphans.
+        // SE-wrapped generic-passwords and SE EC tags use the "se." prefix; the master
+        // stays reserved (named instance) and, on the ROOT sweep, unknown SE keys are
+        // still orphans.
         assertNull(
             keychainOrphanKeyId("${sePrefix}__ksafe_master__", sePrefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters),
             "reserved master must be preserved on the SE prefix too",
         )
         assertEquals(
             "ghost",
-            keychainOrphanKeyId("${sePrefix}ghost", sePrefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters),
+            keychainOrphanKeyId("${rootSePrefix}ghost", rootSePrefix, fileName = null, validKeys = setOf("token"), reservedKeyIds = masters),
+            "an unknown SE key is still reaped by the root sweep",
         )
     }
 

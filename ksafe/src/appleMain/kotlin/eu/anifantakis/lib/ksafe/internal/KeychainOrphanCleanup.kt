@@ -165,9 +165,12 @@ internal suspend fun cleanupOrphanedKeychainEntries(
                     // Plain keys: "{prefix}.{keyId}"; SE-wrapped keys:
                     // "se.{prefix}.{keyId}". The two prefixes are mutually
                     // exclusive, so at most one classifier matches.
+                    // ownedKeyIds = validKeys: a named instance reaps only keys it can
+                    // prove are its own, so it never destroys a root instance's dotted key
+                    // that shares a byte-identical account (M-D). Root sweep is unaffected.
                     val orphan =
-                        keychainOrphanKeyId(account, prefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight)
-                            ?: keychainOrphanKeyId(account, sePrefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight)
+                        keychainOrphanKeyId(account, prefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight, ownedKeyIds = validKeys)
+                            ?: keychainOrphanKeyId(account, sePrefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight, ownedKeyIds = validKeys)
                     if (orphan != null) orphanedKeyIds.add(orphan)
                 }
             }
@@ -203,8 +206,8 @@ internal suspend fun cleanupOrphanedKeychainEntries(
                     }
                     val tag = tagBytes.decodeToString()
 
-                    // SE tags: "se.{prefix}.{keyId}"
-                    keychainOrphanKeyId(tag, sePrefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight)
+                    // SE tags: "se.{prefix}.{keyId}". ownedKeyIds = validKeys (M-D, see above).
+                    keychainOrphanKeyId(tag, sePrefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight, ownedKeyIds = validKeys)
                         ?.let { orphanedKeyIds.add(it) }
                 }
             }

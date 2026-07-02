@@ -35,11 +35,27 @@ internal fun keychainOrphanKeyId(
     validKeys: Set<String>,
     reservedKeyIds: Set<String>,
     isInFlight: (String) -> Boolean = { false },
+    /**
+     * Key-ids this instance can PROVE it owns (its live [validKeys]). A NAMED instance
+     * only reaps a key-id it provably owns (FEEDBACK_4 M-D): the account
+     * `KEY.fileName.keyId` is byte-identical to a ROOT instance's dotted user key
+     * `fileName.keyId` (user keys are unvalidated and may contain dots), so a bare key-id
+     * is genuinely ambiguous — reaping it could destroy a live foreign HARDWARE key. A
+     * cross-session orphan a named instance can't prove it owns is therefore left as
+     * harmless clutter (reclaimed by `clearAll()`), never auto-reaped. Ignored for the
+     * root/no-fileName sweep (`fileName == null`), whose dotted-key guard above already
+     * defers ambiguous ids to the named instances that own them.
+     */
+    ownedKeyIds: Set<String> = emptySet(),
 ): String? {
     if (!accountOrTag.startsWith(prefix)) return null
     val keyId = accountOrTag.removePrefix(prefix)
     if (fileName == null && keyId.contains('.')) return null
     if (keyId in reservedKeyIds) return null
+    // A named instance can't prove ownership of a bare key-id (see [ownedKeyIds]); one it
+    // can't prove is its own might be a live root-instance dotted key, so preserve it
+    // rather than reaping (M-D). The root sweep is unaffected (fileName == null).
+    if (fileName != null && keyId !in ownedKeyIds) return null
     if (keyId in validKeys) return null
     if (isInFlight(keyId)) return null
     return keyId
