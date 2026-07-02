@@ -59,3 +59,7 @@ internal actual class KSafeConcurrentSet<T : Any> actual constructor() {
 @PublishedApi
 internal actual fun <T> runBlockingOnPlatform(block: suspend () -> T): T =
     error("runBlockingOnPlatform is not available on the web target; the web cache must be pre-populated synchronously.")
+
+// Single-threaded: no lock needed, just run the block.
+@PublishedApi
+internal actual fun <R> ksafeSynchronized(lock: Any, block: () -> R): R = block()

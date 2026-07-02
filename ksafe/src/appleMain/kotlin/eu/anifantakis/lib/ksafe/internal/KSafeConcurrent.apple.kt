@@ -7,6 +7,23 @@ import kotlin.concurrent.AtomicReference
 @PublishedApi
 internal actual fun <T> runBlockingOnPlatform(block: suspend () -> T): T = runBlocking { block() }
 
+// Kotlin/Native has no object-monitor `synchronized`. A one-shot flow-delegate lazy
+// init is rare and fast, so serialize inits on a single global spin-lock — the [lock]
+// identity is irrelevant to correctness (mutual exclusion is what M-G needs), and a
+// short spin during the exceedingly rare concurrent first-init is cheaper than pulling
+// in a heavier native lock. Non-reentrant, which is fine: an init block never re-enters.
+private val globalInitSpinLock = AtomicInt(0)
+
+@PublishedApi
+internal actual fun <R> ksafeSynchronized(lock: Any, block: () -> R): R {
+    while (!globalInitSpinLock.compareAndSet(0, 1)) { /* spin until acquired */ }
+    try {
+        return block()
+    } finally {
+        globalInitSpinLock.value = 0
+    }
+}
+
 // Uses AtomicInt (0/1) rather than AtomicReference<Boolean>: AtomicReference uses
 // identity equality, and boxed Booleans don't have guaranteed stable identity on
 // Kotlin/Native, which would break compareAndSet.

@@ -8,6 +8,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal actual fun <T> runBlockingOnPlatform(block: suspend () -> T): T = runBlocking { block() }
 
 @PublishedApi
+internal actual fun <R> ksafeSynchronized(lock: Any, block: () -> R): R = synchronized(lock, block)
+
+@PublishedApi
 internal actual class KSafeAtomicFlag actual constructor(initial: Boolean) {
     private val ref = AtomicBoolean(initial)
     actual fun get(): Boolean = ref.get()

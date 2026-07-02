@@ -81,3 +81,13 @@ internal expect class KSafeConcurrentSet<T : Any>() {
  */
 @PublishedApi
 internal expect fun <T> runBlockingOnPlatform(block: suspend () -> T): T
+
+/**
+ * Runs [block] holding [lock] as a monitor — a non-suspending mutual-exclusion
+ * primitive for the one-shot lazy init in the flow delegates (double-checked
+ * init: a fast-path read outside, the build inside). JVM/Android/Native use the
+ * object monitor via `kotlin.synchronized`; the single-threaded web target calls
+ * through with no lock (there is no concurrency to guard).
+ */
+@PublishedApi
+internal expect fun <R> ksafeSynchronized(lock: Any, block: () -> R): R

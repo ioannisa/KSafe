@@ -10,8 +10,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import eu.anifantakis.lib.ksafe.internal.KSafeAtomicFlag
+import eu.anifantakis.lib.ksafe.internal.ksafeSynchronized
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.serializer
+import kotlin.concurrent.Volatile
 import kotlin.properties.ReadOnlyProperty
 import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
@@ -64,14 +66,21 @@ internal class KSafeFlowDelegate<T>(
     private val defaultValue: T,
     private val key: String?,
 ) : ReadOnlyProperty<Any?, Flow<T>> {
-    private var flow: Flow<T>? = null
+    // @Volatile + double-checked init (FEEDBACK_4 M-G): two threads on concurrent
+    // FIRST access would otherwise both build the flow and one caller would hold a
+    // non-canonical instance. Fast-path read stays lock-free; only first-init locks.
+    @Volatile private var flow: Flow<T>? = null
+    private val initLock = Any()
 
     override fun getValue(thisRef: Any?, property: KProperty<*>): Flow<T> {
-        return flow ?: run {
-            @Suppress("UNCHECKED_CAST")
-            val f = ksafe.core.getFlowRaw(key ?: property.name, defaultValue, serializer) as Flow<T>
-            flow = f
-            f
+        flow?.let { return it }
+        return ksafeSynchronized(initLock) {
+            flow ?: run {
+                @Suppress("UNCHECKED_CAST")
+                val f = ksafe.core.getFlowRaw(key ?: property.name, defaultValue, serializer) as Flow<T>
+                flow = f
+                f
+            }
         }
     }
 }
@@ -88,13 +97,21 @@ internal class KSafeStateFlowDelegate<T>(
     private val key: String?,
     private val scope: CoroutineScope,
 ) : ReadOnlyProperty<Any?, StateFlow<T>> {
-    private var stateFlow: StateFlow<T>? = null
+    // @Volatile + double-checked init (FEEDBACK_4 M-G): getStateFlowRaw calls
+    // stateIn(..., SharingStarted.Eagerly), which eagerly launches a sharing
+    // coroutine — so a concurrent double-init would ALSO leak an observer coroutine,
+    // not just hand out a non-canonical StateFlow. The build must run inside the lock.
+    @Volatile private var stateFlow: StateFlow<T>? = null
+    private val initLock = Any()
 
     override fun getValue(thisRef: Any?, property: KProperty<*>): StateFlow<T> {
-        return stateFlow ?: run {
-            val sf = ksafe.getStateFlowRaw(key ?: property.name, defaultValue, serializer, scope)
-            stateFlow = sf
-            sf
+        stateFlow?.let { return it }
+        return ksafeSynchronized(initLock) {
+            stateFlow ?: run {
+                val sf = ksafe.getStateFlowRaw(key ?: property.name, defaultValue, serializer, scope)
+                stateFlow = sf
+                sf
+            }
         }
     }
 }
@@ -175,21 +192,26 @@ internal class KSafeWritableFlowDelegate<T>(
     private val key: String?,
     private val mode: KSafeWriteMode,
 ) : ReadOnlyProperty<Any?, WritableKSafeFlow<T>> {
-    private var writable: WritableKSafeFlow<T>? = null
+    // @Volatile + double-checked init (FEEDBACK_4 M-G).
+    @Volatile private var writable: WritableKSafeFlow<T>? = null
+    private val initLock = Any()
 
     override fun getValue(thisRef: Any?, property: KProperty<*>): WritableKSafeFlow<T> {
-        return writable ?: run {
-            val actualKey = key ?: property.name
-            @Suppress("UNCHECKED_CAST")
-            val source = ksafe.core.getFlowRaw(actualKey, defaultValue, serializer) as Flow<T>
-            val wf = WritableKSafeFlow<T>(
-                source = source,
-                writer = { newValue ->
-                    ksafe.core.putDirectRaw(actualKey, newValue, mode, serializer)
-                },
-            )
-            writable = wf
-            wf
+        writable?.let { return it }
+        return ksafeSynchronized(initLock) {
+            writable ?: run {
+                val actualKey = key ?: property.name
+                @Suppress("UNCHECKED_CAST")
+                val source = ksafe.core.getFlowRaw(actualKey, defaultValue, serializer) as Flow<T>
+                val wf = WritableKSafeFlow<T>(
+                    source = source,
+                    writer = { newValue ->
+                        ksafe.core.putDirectRaw(actualKey, newValue, mode, serializer)
+                    },
+                )
+                writable = wf
+                wf
+            }
         }
     }
 }
@@ -410,30 +432,40 @@ internal class KSafeMutableStateFlowDelegate<T>(
     private val scope: CoroutineScope,
     private val mode: KSafeWriteMode,
 ) : ReadOnlyProperty<Any?, MutableStateFlow<T>> {
-    private var mutableStateFlow: KSafeMutableStateFlow<T>? = null
+    // @Volatile + double-checked init (FEEDBACK_4 M-G): the init launches an observer
+    // coroutine (scope.launch below), so a concurrent double-init would start TWO
+    // observers — a leaked coroutine that re-decrypts on every external change — and
+    // hand a losing caller a StateFlow with its own optimistic/echo state that can
+    // transiently diverge. The build AND the launch run inside the lock so exactly one
+    // canonical instance + observer is created.
+    @Volatile private var mutableStateFlow: KSafeMutableStateFlow<T>? = null
+    private val initLock = Any()
 
     override fun getValue(thisRef: Any?, property: KProperty<*>): MutableStateFlow<T> {
-        return mutableStateFlow ?: run {
-            val actualKey = key ?: property.name
+        mutableStateFlow?.let { return it }
+        return ksafeSynchronized(initLock) {
+            mutableStateFlow ?: run {
+                val actualKey = key ?: property.name
 
-            @Suppress("UNCHECKED_CAST")
-            val initial = ksafe.core.getDirectRaw(actualKey, defaultValue, serializer) as T
-
-            val msf = KSafeMutableStateFlow(initial) { newValue ->
-                ksafe.core.putDirectRaw(actualKey, newValue, mode, serializer)
-            }
-
-            // Observe external changes (other screens, background writes). getFlowRaw
-            // skips transient decrypt failures, so a locked-device emission can't crash
-            // [scope] or kill observation.
-            scope.launch {
                 @Suppress("UNCHECKED_CAST")
-                (ksafe.core.getFlowRaw(actualKey, defaultValue, serializer) as Flow<T>)
-                    .collect { msf.updateFromFlow(it) }
-            }
+                val initial = ksafe.core.getDirectRaw(actualKey, defaultValue, serializer) as T
 
-            mutableStateFlow = msf
-            msf
+                val msf = KSafeMutableStateFlow(initial) { newValue ->
+                    ksafe.core.putDirectRaw(actualKey, newValue, mode, serializer)
+                }
+
+                // Observe external changes (other screens, background writes). getFlowRaw
+                // skips transient decrypt failures, so a locked-device emission can't crash
+                // [scope] or kill observation.
+                scope.launch {
+                    @Suppress("UNCHECKED_CAST")
+                    (ksafe.core.getFlowRaw(actualKey, defaultValue, serializer) as Flow<T>)
+                        .collect { msf.updateFromFlow(it) }
+                }
+
+                mutableStateFlow = msf
+                msf
+            }
         }
     }
 }
