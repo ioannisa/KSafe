@@ -40,4 +40,43 @@ class WebEngineKeyNamespaceTest {
 
         appBReopened.clearAll()
     }
+
+    /**
+     * FEEDBACK_4 L9: the audit proposed that a namespaced instance's delete/clearAll also delete
+     * the un-namespaced IndexedDB key record left behind by the FB3-H1 copy-forward migration.
+     * That is UNSAFE — `unNamespacedIdbName(alias)` is byte-identical to the `idbName` a co-existing
+     * no-appNamespace KSafe on the same fileName uses, so deleting it would destroy that sibling's
+     * LIVE key (an H2-class cross-instance data loss). This locks in the safe behaviour: a namespaced
+     * instance's clearAll must NEVER break a co-existing no-namespace sibling's key. The orphaned
+     * pre-namespace record (a non-extractable key, no plaintext) is the accepted cost instead.
+     */
+    @Test
+    fun namespacedClearAll_doesNotDeleteCoexistingNoNamespaceSiblingsKey() = runTest {
+        val file = WebKSafeTest.generateUniqueFileName()
+
+        // No-appNamespace store writes an encrypted value → its key lives at the un-namespaced
+        // IndexedDB record (REAL engine, real WebCrypto key).
+        val noNs = KSafe(fileName = file)
+        noNs.awaitCacheReady()
+        noNs.put("token", "sibling-secret", KSafeWriteMode.Encrypted())
+
+        // A co-existing same-fileName namespaced store. Touching the key runs the FB3-H1
+        // copy-forward (unNamespacedIdbName → its own namespaced idbName), so both records exist.
+        val nsApp = KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.a"))
+        nsApp.awaitCacheReady()
+        assertEquals("sibling-secret", nsApp.get("token", "GONE"), "precondition: namespaced store migrated + reads the value")
+
+        // The namespaced instance wipes itself. It must NOT delete the un-namespaced record —
+        // that is the no-namespace sibling's live key.
+        nsApp.clearAll()
+
+        // The no-namespace sibling, re-opened from disk, must still decrypt its own value.
+        val noNsReopened = KSafe(fileName = file)
+        noNsReopened.awaitCacheReady()
+        assertEquals(
+            "sibling-secret", noNsReopened.get("token", "GONE"),
+            "a namespaced instance's clearAll must not delete a co-existing no-namespace sibling's live key (L9 must not be 'fixed' by deleting unNamespacedIdbName)",
+        )
+        noNsReopened.clearAll()
+    }
 }

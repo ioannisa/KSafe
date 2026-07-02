@@ -202,12 +202,21 @@ internal class WebSoftwareEncryption(
         localStorageRemove(legacyKey(identifier))
         // …and fire-and-forget the IndexedDB removal (namespaced destination).
         webKeyDeleteNoWait(idbName(identifier))
+        // Deliberately NOT deleting unNamespacedIdbName(identifier) (FEEDBACK_4 L9): once an
+        // appNamespace is set that record is the LIVE key of any co-existing no-appNamespace
+        // KSafe on the same fileName (its idbName == our unNamespacedIdbName), so deleting it
+        // here would be an H2-class cross-instance data loss — the same sibling FB3-M2/FB3-H1's
+        // non-destructive migration exists to protect. The pre-namespace copy that migration
+        // leaves is a non-extractable key (no plaintext), so the orphan is a harmless accepted
+        // cost, never worth risking a live sibling's data. See WebEngineKeyNamespaceTest.
         ensured.remove(identifier)
     }
 
     override suspend fun deleteKeySuspend(identifier: String) {
         localStorageRemove(legacyKey(identifier))
         webKeyDelete(idbName(identifier))
+        // See deleteKey: unNamespacedIdbName is a co-existing no-namespace sibling's live key and
+        // is deliberately never deleted here — deleting it would reintroduce the H2 steal (L9).
         ensured.remove(identifier)
     }
 
