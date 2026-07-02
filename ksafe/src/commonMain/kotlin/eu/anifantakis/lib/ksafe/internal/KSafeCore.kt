@@ -1177,11 +1177,21 @@ internal class KSafeCore(
                 is PendingWrite.Plain -> if (writeOwners[op.userKey] === op.writeToken) {
                     val protLiteral = KeySafeMetadataManager.protectionToLiteral(null)
                     memoryCache.putIfAbsent(op.rawCacheKey, op.value)
+                    postCommitRepairHook?.invoke(op.userKey) // test-only interleaving seam; null in production
                     protectionMap.putIfAbsent(op.userKey, protLiteral)
-                    // TOCTOU guard (deep-review M1 / R2) — metadata rollback coupled to the
-                    // value rollback: only drop protection if our own value was still cached.
+                    // TOCTOU guard (deep-review M1 / R2 / FEEDBACK_4 FB3-M3) — the same
+                    // two-path cleanup as the Encrypted branch above. If we lost ownership
+                    // between the check and these inserts:
+                    //  • our value still cached (removeIf succeeds) → coupled rollback; or
+                    //  • a DELETE won and wiped the value AFTER our value putIfAbsent no-op'd,
+                    //    so our protection putIfAbsent RESURRECTED an orphan literal for a
+                    //    now-deleted key with NO cached value — drop it (else getKeyInfo stays
+                    //    non-null for the deleted key). A live newer put can't be in this
+                    //    state: it caches its value before its protection.
                     if (writeOwners[op.userKey] !== op.writeToken) {
                         if (memoryCache.removeIf(op.rawCacheKey, op.value)) {
+                            protectionMap.removeIf(op.userKey, protLiteral)
+                        } else if (!memoryCache.containsKey(op.rawCacheKey)) {
                             protectionMap.removeIf(op.userKey, protLiteral)
                         }
                     }
@@ -1502,15 +1512,18 @@ internal class KSafeCore(
         // Rollback ownership claimed before any optimistic mutation.
         val writeToken = Any().also { writeOwners[key] = it }
         dirtyKeys.add(key)
-        protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(null)
-        encMetaMap.remove(key)
 
         val toCache: Any = if (value == null) NULL_SENTINEL
         else when (value) {
             is Boolean, is Int, is Long, is Float, is Double, is String -> value
             else -> jsonEncode(json, serializer, value)
         }
+        // Cache the value BEFORE the protection literal (matches putDirect's plain
+        // branch and the post-commit repair's value-before-protection invariant, on
+        // which FB3-M3's `!memoryCache.containsKey` orphan-cleanup relies).
         memoryCache[key] = toCache
+        protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(null)
+        encMetaMap.remove(key)
 
         val storedInBatch: Any = if (value == null) NULL_SENTINEL
         else when (value) {
