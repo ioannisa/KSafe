@@ -234,7 +234,15 @@ internal suspend fun cleanupOrphanedKeychainEntries(
 
     // engine.deleteKey unconditionally removes the plain key, the SE-wrapped
     // generic-password entry, and the SE EC private key for a given identifier.
-    for (keyId in orphanedKeyIds) {
+    //
+    // Re-check the live in-flight guard at DELETE time, not just at classify time
+    // (FEEDBACK_4 H-B): the sweep runs on `collectorScope` while writes run on
+    // `writeScope` (genuinely parallel on Native), so a `put` that committed
+    // ciphertext and re-used a key AFTER we classified it but BEFORE this loop
+    // would otherwise have its live key destroyed, orphaning the just-written
+    // value. A write marks its key in-flight before its commit lands, so filtering
+    // out now-in-flight ids here closes the window the classify-time check left open.
+    for (keyId in keychainOrphansToDelete(orphanedKeyIds, isInFlight)) {
         engine.deleteKeySuspend("$prefixWithDelimiter$keyId")
     }
 }

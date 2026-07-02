@@ -44,3 +44,23 @@ internal fun keychainOrphanKeyId(
     if (isInFlight(keyId)) return null
     return keyId
 }
+
+/**
+ * Final delete-time gate for the Apple orphan sweep: given the set of key-ids
+ * [keychainOrphanKeyId] classified as orphans, drops any that have become
+ * in-flight *since classification*, and returns those still safe to delete.
+ *
+ * The sweep classifies on a frozen DataStore snapshot on `collectorScope`, then
+ * deletes Keychain items on the same pass — but writes run on `writeScope`,
+ * genuinely in parallel on Native. A `put` that commits ciphertext and re-uses a
+ * key AFTER it was classified but BEFORE it is deleted would otherwise have its
+ * live key destroyed, making the just-written value undecryptable (FEEDBACK_4
+ * H-B). A write marks its key in-flight (dirty) at call time, before its commit
+ * lands, so re-checking [isInFlight] immediately before each delete closes the
+ * window that the classify-time check alone left open. Kept pure so the two-phase
+ * (classify → re-check) guarantee is unit-testable without a live Keychain.
+ */
+internal fun keychainOrphansToDelete(
+    classifiedOrphans: Set<String>,
+    isInFlight: (String) -> Boolean,
+): List<String> = classifiedOrphans.filter { !isInFlight(it) }

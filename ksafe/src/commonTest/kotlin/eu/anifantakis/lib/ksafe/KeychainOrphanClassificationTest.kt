@@ -1,9 +1,11 @@
 package eu.anifantakis.lib.ksafe
 
 import eu.anifantakis.lib.ksafe.internal.keychainOrphanKeyId
+import eu.anifantakis.lib.ksafe.internal.keychainOrphansToDelete
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * Unit tests for the Apple orphan sweep's classification step
@@ -79,6 +81,37 @@ class KeychainOrphanClassificationTest {
                 isInFlight = { it == "fresh" },
             ),
             "a key for an in-flight write must be preserved, not reaped",
+        )
+    }
+
+    @Test
+    fun orphanClassifiedThenReusedByConcurrentWrite_isNotDeleted() {
+        // FEEDBACK_4 H-B: the sweep classifies on a frozen snapshot, then deletes on
+        // the same pass while writes run in parallel on Native. A key can be a genuine
+        // orphan at classify time (no valid entry, not in flight) yet be re-used by a
+        // concurrent put BEFORE the delete lands. The delete-time re-check must drop it.
+        val classified = keychainOrphanKeyId(
+            "${prefix}ghost", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters,
+            isInFlight = { false }, // classify time: not yet in flight → orphan
+        )
+        assertEquals("ghost", classified, "precondition: 'ghost' classifies as an orphan")
+
+        // Between classify and delete a concurrent write re-used (and re-committed) it.
+        val toDelete = keychainOrphansToDelete(setOf(classified!!), isInFlight = { it == "ghost" })
+        assertTrue(
+            toDelete.isEmpty(),
+            "a key re-used by a concurrent write after classification must NOT be deleted (H-B)",
+        )
+    }
+
+    @Test
+    fun orphanStillIdleAtDeleteTime_isDeleted() {
+        // The common path: a classified orphan that is not in flight when the delete
+        // loop reaches it must still be reaped.
+        assertEquals(
+            listOf("ghost"),
+            keychainOrphansToDelete(setOf("ghost"), isInFlight = { false }),
+            "a still-idle orphan must be deleted at delete time",
         )
     }
 
