@@ -432,20 +432,25 @@ private fun createJvmBackend(
 /**
  * Deletes residual JVM-fallback files that still hold recoverable secrets — the
  * `*.migrated` archives left by a completed JSON→OS-backed migration (the keys archive is
- * the **plaintext** AES bytes, the JSON archive the ciphertext they decrypt) and the
- * `*.corrupt-<ts>` quarantine copies [DataStoreJsonStorage] makes on corruption. `clearAll()`
- * promises a full wipe including key deletion; leaving these siblings behind would let
- * anyone with file access decrypt every pre-migration secret offline. Matched precisely by
- * the `<baseFileName>.ksafe` prefix so a sibling safe's files in the same dir aren't
- * touched. Best-effort.
+ * the **plaintext** AES bytes, the JSON archive the ciphertext they decrypt), the
+ * `*.corrupt-<ts>` quarantine copies [DataStoreJsonStorage] makes on corruption, and the
+ * LIVE `<base>.ksafe.json` / `<base>.ksafe-keys.json` a prior no-`Unsafe` period (or a
+ * copy-fallback archive whose rename failed) may have left in this directory. `clearAll()`
+ * promises a full wipe including key deletion; leaving any of these siblings behind would
+ * let anyone with file access decrypt every pre-migration secret offline (FEEDBACK_4 low).
+ * Matched precisely by the `<baseFileName>.ksafe` prefix so a sibling safe's files in the
+ * same dir aren't touched. Best-effort.
  */
 private fun deleteResidualFallbackFiles(storageDir: File, baseFileName: String) {
     runCatching {
         val prefix = "$baseFileName.ksafe"
+        val liveJson = "$baseFileName.ksafe.json"
+        val liveKeys = "$baseFileName.ksafe-keys.json"
         storageDir.listFiles()?.forEach { f ->
             val n = f.name
             if (n.startsWith(prefix) &&
-                (n.endsWith(".migrated") || n.endsWith(".migration-pending") || n.contains(".corrupt-"))
+                (n == liveJson || n == liveKeys ||
+                    n.endsWith(".migrated") || n.endsWith(".migration-pending") || n.contains(".corrupt-"))
             ) {
                 runCatching { f.delete() }
             }

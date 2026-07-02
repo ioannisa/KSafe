@@ -61,4 +61,30 @@ class JvmClearAllCorruptFileTest {
             "clearAll() must NOT touch a different safe's corrupt quarantine copy in the same dir",
         )
     }
+
+    @Test
+    fun clearAll_deletesLiveResidualFallbackFiles_butNotSiblingSafes() {
+        // FEEDBACK_4 low: a prior no-Unsafe fallback period (or a copy-fallback archive
+        // whose rename failed) can leave LIVE <base>.ksafe.json (ciphertext) and
+        // <base>.ksafe-keys.json (plaintext AES key) in the OS-backed store's directory.
+        // clearAll() must wipe those too — while sparing a different safe's files.
+        val base = "eu_anifantakis_ksafe_datastore_wipe"
+        val liveJson = File(tmp, "$base.ksafe.json").apply { writeText("residual-ciphertext") }
+        val liveKeys = File(tmp, "$base.ksafe-keys.json").apply { writeText("residual-plaintext-key") }
+        val siblingKeys = File(tmp, "eu_anifantakis_ksafe_datastore_other.ksafe-keys.json").apply { writeText("other-safe-key") }
+
+        val ksafe = KSafe(fileName = "wipe", baseDir = tmp, testEngine = IdentityEngine())
+        try {
+            runBlocking {
+                ksafe.put("k", "v")
+                ksafe.clearAll()
+            }
+        } finally {
+            ksafe.close()
+        }
+
+        assertFalse(liveJson.exists(), "clearAll() must delete the live <base>.ksafe.json (residual ciphertext)")
+        assertFalse(liveKeys.exists(), "clearAll() must delete the live <base>.ksafe-keys.json (residual plaintext key)")
+        assertTrue(siblingKeys.exists(), "clearAll() must NOT touch a different safe's fallback key file")
+    }
 }

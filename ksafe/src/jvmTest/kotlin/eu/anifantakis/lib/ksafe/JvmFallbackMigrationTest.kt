@@ -644,6 +644,21 @@ class JvmFallbackMigrationTest {
     }
 
     @Test
+    fun archiveOrMark_copyFallback_deletesTheLiveSource() {
+        // FEEDBACK_4 low: when rename fails but copy succeeds, the LIVE source (plaintext
+        // AES key / ciphertext) must not linger — the copy path must delete it, mirroring
+        // the rename path which MOVES the file.
+        val src = File(tmp, "cf.ksafe-keys.json").apply { writeText("PLAINTEXT-AES-KEY") }
+        val marker = File(tmp, "cf.ksafe-keys.json.migrated")
+
+        val marked = archiveOrMark(src, rename = { _, _ -> false }) // copy + delete via real defaults
+
+        assertTrue(marked, "the copy fallback marks the migration done")
+        assertTrue(marker.isFile, "the archive copy exists")
+        assertFalse(src.exists(), "the live source must be deleted after a copy-fallback (no lingering secret)")
+    }
+
+    @Test
     fun archiveOrMark_reportsNotDone_onlyWhenEvenTheSentinelCannotBeWritten() {
         // The single irreducible case: a fully unwritable directory where not even a
         // 0-byte sentinel can be created. archiveOrMark must report "not done" so the

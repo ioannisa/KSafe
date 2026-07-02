@@ -317,7 +317,15 @@ internal fun archiveOrMark(
     if (archived.isFile) return true // already archived/marked by an earlier pass
     if (f.exists()) {
         if (rename(f, archived) && archived.isFile) return true
-        if (copy(f, archived) && archived.isFile) return true
+        if (copy(f, archived) && archived.isFile) {
+            // Rename failed but copy succeeded → the LIVE source still exists, holding the
+            // plaintext AES key / ciphertext. Remove it so it doesn't linger as a residual
+            // secret, mirroring the rename path which MOVES the file (FEEDBACK_4 low).
+            // Best-effort: if the delete is also blocked (the same handle that blocked the
+            // rename), clearAll()'s residual-file sweep is the backstop.
+            runCatching { f.delete() }
+            return true
+        }
     }
     // Rename and copy both failed (or the source is already gone). Ensure a
     // durable done-marker regardless — the archived data is only a recoverability
