@@ -95,6 +95,16 @@ internal interface AppleKeychainStore {
 }
 
 /**
+ * Whether [AppleKeychainEncryption.updateKeyAccessibility] needs to run its
+ * `SecItemUpdate` IPC: only when the target `requireUnlocked` policy differs from the
+ * last one successfully applied for this key-id this process ([lastApplied]; `null` =
+ * not yet applied this process). Pure so the guard is unit-testable without a live
+ * Keychain (FEEDBACK_4 FB3-M4).
+ */
+internal fun accessibilityUpdateNeeded(lastApplied: Boolean?, target: Boolean): Boolean =
+    lastApplied != target
+
+/**
  * Apple-platform implementation of [KSafeEncryption] using Keychain Services and CryptoKit.
  * Shared by iOS, iPadOS and macOS — the `SecItem*`/`SecKey*` APIs, the Secure Enclave
  * token attribute and CryptoKit AES-GCM behave identically; only the Keychain database
@@ -211,6 +221,17 @@ internal class AppleKeychainEncryption(
      * — process restart re-populates lazily on first use.
      */
     private val keyBytesCache = KSafeConcurrentMap<ByteArray>()
+
+    /**
+     * Last `requireUnlocked` accessibility successfully applied per key-id this process.
+     * Lets [updateKeyAccessibility] skip its three `SecItemUpdate` IPC round-trips when the
+     * policy is unchanged — the common case, since a HARDWARE_ISOLATED key's accessibility
+     * only needs re-asserting on an actual policy CHANGE, not on every write (FEEDBACK_4
+     * FB3-M4). Set only after all three updates succeed, so a best-effort partial failure
+     * is retried on the next write. Invalidated by [deleteKey]; not persisted (a process
+     * restart re-asserts once per key on its first write).
+     */
+    private val lastAppliedAccessibility = KSafeConcurrentMap<Boolean>()
 
     /**
      * Serializes the *key-resolution* critical section (cache-miss → look up / create →
@@ -409,6 +430,7 @@ internal class AppleKeychainEncryption(
         deleteSecureEnclaveKey(seTag(identifier))
         keychain.delete(identifier)
         keyBytesCache.remove(identifier)
+        lastAppliedAccessibility.remove(identifier)
     }
 
     // ================================================================
@@ -742,9 +764,17 @@ internal class AppleKeychainEncryption(
 
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     override fun updateKeyAccessibility(identifier: String, requireUnlocked: Boolean) {
+        // Skip the three SecItemUpdate IPC round-trips when the policy is unchanged since
+        // the last successful update in this process (FEEDBACK_4 FB3-M4): a first-time
+        // create already stored the correct accessibility, and a same-policy rewrite needs
+        // no change — so re-asserting on EVERY write is pure IPC overhead.
+        if (!accessibilityUpdateNeeded(lastAppliedAccessibility[identifier], requireUnlocked)) return
         updateKeychainItemAccessibility(identifier, requireUnlocked)
         updateKeychainItemAccessibility(seWrappedAccount(identifier), requireUnlocked)
         updateSecureEnclaveKeyAccessibility(seTag(identifier), requireUnlocked)
+        // Record only after all three succeed — a best-effort partial failure (one of the
+        // helpers threw) leaves the cache unset so the next write retries the tightening.
+        lastAppliedAccessibility[identifier] = requireUnlocked
     }
 
     /**
