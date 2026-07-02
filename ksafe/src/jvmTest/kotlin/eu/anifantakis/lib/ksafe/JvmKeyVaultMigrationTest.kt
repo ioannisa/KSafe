@@ -768,6 +768,63 @@ class JvmKeyVaultMigrationTest {
         assertTrue(ex.message.orEmpty().contains("No encryption key found"))
     }
 
+    // ── FEEDBACK_4 H2: probing the shared default must not steal a live sibling's key ──
+    //
+    // Adding an explicit appNamespace makes an instance probe the stable default
+    // "shared" as its read-fallback (the H-D upgrade path). But "shared" is also
+    // the LIVE active namespace of any co-existing no-namespace KSafe instance on
+    // the same host. The pre-H2 MOVE (copy-then-delete) therefore stole and
+    // permanently orphaned the sibling's key. Recovery from the "shared" source
+    // must be COPY-only; the destructive delete is reserved for a genuine derived
+    // legacy namespace (with no live owner).
+
+    @Test
+    fun namespaceUpgrade_sharedSource_isCopiedNotMoved_soLiveSiblingKeySurvives() {
+        val alias = "user:token"
+        val payload = "shared-sibling".toByteArray()
+
+        // A default (no-namespace) instance mints its LIVE key under "shared".
+        val sharedVault = FakeOsVault()
+        val ciphertext = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = sharedVault),
+        ).encrypt(alias, payload)
+        val liveKey = sharedVault.store[alias]
+        assertNotNull(liveKey, "precondition: default instance minted a live key under \"shared\"")
+
+        // A co-existing namespaced instance (appNamespace="x") whose active vault
+        // is empty; it probes "shared" as its legacy source. Recovering the key
+        // must COPY it forward WITHOUT deleting the sibling's live entry.
+        val nsVault = FakeOsVault()
+        val provider = JvmKeyVaultProvider(
+            dataStore,
+            appNamespace = "x",
+            forced = nsVault,
+            legacyNamespaceCandidateForTest = sharedVault,
+            legacyNamespaceNameForTest = DEFAULT_JVM_NAMESPACE,
+        )
+        val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+
+        // The namespaced instance decrypts via the recovered key…
+        assertContentEquals(payload, engine.decrypt(alias, ciphertext))
+        // …the key is copied into the namespaced vault…
+        assertContentEquals(liveKey, nsVault.store[alias], "key must be copied into the namespaced vault")
+        // …and the sibling's LIVE "shared" key MUST survive (not MOVE-deleted).
+        assertContentEquals(
+            liveKey, sharedVault.store[alias],
+            "H2: probing the shared default must not delete a co-existing instance's live key",
+        )
+
+        // The deleteKey vector: deleting on the namespaced instance must also NOT
+        // scrub the shared sibling's key.
+        engine.deleteKey(alias)
+        assertNull(nsVault.store[alias], "deleteKey removes the namespaced copy")
+        assertContentEquals(
+            liveKey, sharedVault.store[alias],
+            "H2: deleteKey on a namespaced instance must not scrub the shared sibling's key",
+        )
+    }
+
     @Test
     fun namespaceUpgrade_deleteKey_alsoScrubsDerivedNamespace() {
         val alias = "user:token"
