@@ -66,12 +66,16 @@ internal actual suspend fun platformVerifyBiometric(
         BiometricHelper.authenticate(reason, allowDeviceCredentialFallback)
         // Only seed the cache when the caller opted into caching (duration > 0);
         // recording an opt-out call would let a later, longer-window call reuse
-        // it without a prompt.
+        // it without a prompt. And only if the caller's coroutine is still active — a
+        // success cached after the caller was cancelled would grant a LATER call a
+        // prompt-free pass off an authorization the caller never received (FEEDBACK_4 low).
         if (BiometricAuthSession.shouldCache(authorizationDuration)) {
-            updateBiometricSession(
-                sessionKeyFor(authorizationDuration!!.scope, allowDeviceCredentialFallback),
-                monotonicNowMs(),
-            )
+            seedBiometricSessionIfActive {
+                updateBiometricSession(
+                    sessionKeyFor(authorizationDuration!!.scope, allowDeviceCredentialFallback),
+                    monotonicNowMs(),
+                )
+            }
         }
         true
     } catch (e: BiometricAuthException) {

@@ -59,7 +59,9 @@ internal actual suspend fun platformVerifyBiometric(
 
     if (isSimulator()) {
         if (BiometricAuthSession.shouldCache(authorizationDuration)) {
-            updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope, requireStrict = !allowDeviceCredentialFallback), monotonicNowMs())
+            seedBiometricSessionIfActive {
+                updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope, requireStrict = !allowDeviceCredentialFallback), monotonicNowMs())
+            }
         }
         return true
     }
@@ -73,7 +75,11 @@ internal actual suspend fun platformVerifyBiometric(
         continuation.invokeOnCancellation { runCatching { context.invalidate() } }
         CoroutineScope(Dispatchers.Main).launch {
             runLAContextEvaluate(context, reason, allowDeviceCredentialFallback) { success ->
-                if (success && BiometricAuthSession.shouldCache(authorizationDuration)) {
+                // Seed only if the continuation is still active — a success arriving after the
+                // caller cancelled must NOT seed the cache, or a later call gets a prompt-free
+                // pass off an authorization the caller never received (FEEDBACK_4 low, the
+                // Apple twin of the Android biometric-gate bypass). Mirrors the resume gate.
+                if (success && BiometricAuthSession.shouldCache(authorizationDuration) && continuation.isActive) {
                     updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope, requireStrict = !allowDeviceCredentialFallback), monotonicNowMs())
                 }
                 if (continuation.isActive) continuation.resumeWith(Result.success(success))
