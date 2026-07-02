@@ -97,7 +97,16 @@ internal object KeySafeMetadataManager {
 
     @PublishedApi
     internal fun isInternalStorageKey(rawKey: String): Boolean {
-        return rawKey.startsWith("__ksafe_") || rawKey.startsWith("ksafe_")
+        // The double-underscore `__ksafe_` namespace is KSafe-reserved (value/meta/
+        // protection entries, the Android DEK, master sentinels) and is never a user
+        // key. The SINGLE-underscore `ksafe_` namespace, by contrast, has exactly one
+        // internal raw-storage-key family: the web engine's legacy localStorage key
+        // store `ksafe_key_<alias>` (surfaced by LocalStorageStorage.snapshot once the
+        // instance prefix is stripped). A blanket `ksafe_` match also swallowed any
+        // pre-2.0 FLAT plaintext user key that merely began with `ksafe_` (e.g.
+        // "ksafe_theme"), silently dropping it on upgrade (FEEDBACK_4 M-C). Match only
+        // the genuine internal prefixes so real user keys survive.
+        return rawKey.startsWith("__ksafe_") || rawKey.startsWith("ksafe_key_")
     }
 
     @PublishedApi
