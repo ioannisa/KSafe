@@ -103,13 +103,25 @@ import kotlin.js.Promise
           return subtle.decrypt({ name: 'AES-GCM', iv: iv }, k, ct).then(function(ptBuf) { return u2b(ptBuf); });
         }); };
         var del = function(name) { mem['delete'](name); if (bc) bc.postMessage({ op: 'evict', name: name }); return idbDel(name).then(function() { return null; }); };
-        G.__ksafeWK = { ensure: ensure, enc: enc, dec: dec, del: del };
+        // Migrate a pre-appNamespace key record to its namespaced name, non-destructively
+        // (copy only if destination absent + source exists; source left in place). FEEDBACK_4 FB3-H1.
+        var copyIfAbsent = function(from, to) {
+          return idbGet(to).then(function(existing) {
+            if (existing) { mem.set(to, existing); return null; }
+            return idbGet(from).then(function(k) {
+              if (!k) return null;
+              return idbAdd(to, k).then(function(added) { if (added) mem.set(to, k); return null; });
+            });
+          });
+        };
+        G.__ksafeWK = { ensure: ensure, enc: enc, dec: dec, del: del, copyIfAbsent: copyIfAbsent };
       }
       var wk = G.__ksafeWK;
       if (op === 'ensure') return wk.ensure(a, b, true);
       if (op === 'ensureNoMint') return wk.ensure(a, b, false);
       if (op === 'enc') return wk.enc(a, b);
       if (op === 'dec') return wk.dec(a, b);
+      if (op === 'copyKey') return wk.copyIfAbsent(a, b);
       if (op === 'delnw') return wk.del(a).catch(function() { return null; });
       return wk.del(a);
     }
@@ -129,6 +141,11 @@ internal actual suspend fun webKeyEncrypt(idbName: String, plaintextB64: String)
 @PublishedApi
 internal actual suspend fun webKeyDecrypt(idbName: String, ivAndCipherB64: String): String =
     (wkDispatch("dec", idbName, ivAndCipherB64).await() as JsString).toString()
+
+@PublishedApi
+internal actual suspend fun webKeyCopyIfAbsent(fromIdbName: String, toIdbName: String) {
+    wkDispatch("copyKey", fromIdbName, toIdbName).await<JsAny?>()
+}
 
 @PublishedApi
 internal actual suspend fun webKeyDelete(idbName: String) {

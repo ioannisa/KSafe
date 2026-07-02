@@ -103,7 +103,19 @@ private val dispatch: (String, String, String?) -> Promise<Any?> = js(
           return subtle.decrypt({ name: 'AES-GCM', iv: iv }, k, ct).then(function(ptBuf) { return u2b(ptBuf); });
         }); };
         var del = function(name) { mem.delete(name); if (bc) bc.postMessage({ op: 'evict', name: name }); return idbDel(name).then(function() { return null; }); };
-        return { ensure: ensure, enc: enc, dec: dec, del: del };
+        // Migrate a pre-appNamespace key record to its namespaced name, non-destructively:
+        // copy only if the destination is absent (atomic 'add' won't clobber a live key) and
+        // the source exists. Leaves the source in place (FEEDBACK_4 FB3-H1).
+        var copyIfAbsent = function(from, to) {
+          return idbGet(to).then(function(existing) {
+            if (existing) { mem.set(to, existing); return null; }
+            return idbGet(from).then(function(k) {
+              if (!k) return null;
+              return idbAdd(to, k).then(function(added) { if (added) mem.set(to, k); return null; });
+            });
+          });
+        };
+        return { ensure: ensure, enc: enc, dec: dec, del: del, copyIfAbsent: copyIfAbsent };
       }
       return function(op, a, b) {
         if (!impl) impl = init();
@@ -111,6 +123,7 @@ private val dispatch: (String, String, String?) -> Promise<Any?> = js(
         if (op === 'ensureNoMint') return impl.ensure(a, b, false);
         if (op === 'enc') return impl.enc(a, b);
         if (op === 'dec') return impl.dec(a, b);
+        if (op === 'copyKey') return impl.copyIfAbsent(a, b);
         if (op === 'delnw') return impl.del(a).catch(function() { return null; });
         return impl.del(a);
       };
@@ -130,6 +143,11 @@ internal actual suspend fun webKeyEncrypt(idbName: String, plaintextB64: String)
 @PublishedApi
 internal actual suspend fun webKeyDecrypt(idbName: String, ivAndCipherB64: String): String =
     dispatch("dec", idbName, ivAndCipherB64).await() as String
+
+@PublishedApi
+internal actual suspend fun webKeyCopyIfAbsent(fromIdbName: String, toIdbName: String) {
+    dispatch("copyKey", fromIdbName, toIdbName).await()
+}
 
 @PublishedApi
 internal actual suspend fun webKeyDelete(idbName: String) {

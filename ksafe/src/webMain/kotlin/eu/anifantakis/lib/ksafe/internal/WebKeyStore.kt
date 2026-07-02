@@ -37,6 +37,16 @@ internal expect suspend fun webKeyEncrypt(idbName: String, plaintextB64: String)
 @PublishedApi
 internal expect suspend fun webKeyDecrypt(idbName: String, ivAndCipherB64: String): String
 
+/**
+ * Copies the CryptoKey record from [fromIdbName] to [toIdbName] **only if** [toIdbName] is
+ * absent and [fromIdbName] exists (atomic `add`, so a concurrent writer is never clobbered).
+ * Used to migrate a pre-`appNamespace` key to its namespaced record name when `appNamespace`
+ * is added on upgrade, so existing encrypted data stays readable (FEEDBACK_4 FB3-H1). The
+ * source record is left in place (migrate-forward, non-destructive).
+ */
+@PublishedApi
+internal expect suspend fun webKeyCopyIfAbsent(fromIdbName: String, toIdbName: String)
+
 /** Awaitable removal of the key for [idbName] from IndexedDB. */
 @PublishedApi
 internal expect suspend fun webKeyDelete(idbName: String)

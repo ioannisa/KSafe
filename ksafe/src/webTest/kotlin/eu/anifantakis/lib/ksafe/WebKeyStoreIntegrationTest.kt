@@ -204,6 +204,41 @@ class WebKeyStoreIntegrationTest {
         }
     }
 
+    /**
+     * FEEDBACK_4 FB3-H1: adding `appNamespace` on upgrade must keep existing encrypted
+     * data readable. The R4 data migration moves the ciphertext to the namespaced prefix,
+     * but the CryptoKey's IndexedDB record name is derived independently (it already
+     * incorporated appNamespace pre-2.1.4), so without a key migration the engine looks
+     * under the new namespaced name, finds nothing, and the data is unreadable. The engine
+     * now migrates the pre-appNamespace key forward on first access.
+     */
+    @Test
+    fun addingAppNamespace_keepsExistingEncryptedDataReadable() = runTest {
+        val file = WebKSafeTest.generateUniqueFileName()
+
+        // Session 1: no appNamespace — writes an encrypted value (key at the
+        // un-namespaced IndexedDB record name, ciphertext at ksafe.<file>:).
+        val before = KSafe(fileName = file)
+        before.awaitCacheReady()
+        before.put("tok", "pre-namespace-secret", KSafeWriteMode.Encrypted())
+        assertEquals("pre-namespace-secret", before.get("tok", "DEFAULT"))
+        before.close()
+
+        // Session 2: the developer adds an appNamespace (the docs encourage it).
+        // Construction migrates the data (R4) AND the key (FB3-H1) forward.
+        val after = KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.app"))
+        after.awaitCacheReady()
+        try {
+            assertEquals(
+                "pre-namespace-secret",
+                after.get("tok", "LOST"),
+                "existing encrypted value must survive adding appNamespace on upgrade",
+            )
+        } finally {
+            after.clearAll()
+        }
+    }
+
     @Test
     fun eagerSweep_importsEveryLegacyLocalStorageKey_andScrubs() = runTest {
         val prefix = uniquePrefix()

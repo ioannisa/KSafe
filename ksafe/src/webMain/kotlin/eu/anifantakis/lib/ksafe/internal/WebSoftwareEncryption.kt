@@ -59,9 +59,34 @@ internal class WebSoftwareEncryption(
     /** IndexedDB record key (the namespaced destination). */
     private fun idbName(alias: String): String = "$appNsPrefix$storagePrefix$KEY_PREFIX$alias"
 
+    /**
+     * The pre-`appNamespace` IndexedDB record name — where the key lived before an
+     * `appNamespace` was configured (`appNsPrefix` was empty). Equals [idbName] when no
+     * namespace is set. Used to migrate the key forward on upgrade (FEEDBACK_4 FB3-H1).
+     */
+    private fun unNamespacedIdbName(alias: String): String = "$storagePrefix$KEY_PREFIX$alias"
+
     /** Aliases whose key+migration has been resolved this session. */
     private val ensured = HashSet<String>()
     private val ensureMutex = Mutex()
+
+    /** Aliases whose pre-appNamespace key has already been namespace-migrated this session. */
+    private val nsMigrated = HashSet<String>()
+
+    /**
+     * One-shot per alias: when an `appNamespace` is set, migrate a key written before the
+     * namespace existed (at [unNamespacedIdbName]) to the namespaced record name ([idbName]),
+     * so adding `appNamespace` on upgrade keeps existing encrypted data readable — the R4
+     * data migration moved the ciphertext but the key's IndexedDB name is derived
+     * independently (FEEDBACK_4 FB3-H1). Non-destructive: copies only if the destination is
+     * absent and the source exists; the source key is left in place. No-op without a namespace.
+     * Callers hold [ensureMutex].
+     */
+    private suspend fun migrateNamespacedKeyOnce(alias: String) {
+        if (appNsPrefix.isEmpty() || alias in nsMigrated) return
+        webKeyCopyIfAbsent(unNamespacedIdbName(alias), idbName(alias))
+        nsMigrated.add(alias)
+    }
 
     /**
      * Idempotently ensures a non-extractable key exists for [alias], migrating
@@ -71,6 +96,8 @@ internal class WebSoftwareEncryption(
         if (alias in ensured) return
         ensureMutex.withLock {
             if (alias in ensured) return
+            // Migrate a pre-appNamespace IndexedDB key forward before resolving (FB3-H1).
+            migrateNamespacedKeyOnce(alias)
             // Read the legacy key from the FROZEN (un-namespaced) localStorage
             // location; import it into the namespaced IndexedDB destination.
             val legacy = localStorageGet(legacyKey(alias)) // Base64 or null
@@ -95,6 +122,9 @@ internal class WebSoftwareEncryption(
         if (alias in ensured) return
         ensureMutex.withLock {
             if (alias in ensured) return
+            // Migrate a pre-appNamespace IndexedDB key forward so a read after adding
+            // appNamespace on upgrade finds it at the namespaced name (FB3-H1).
+            migrateNamespacedKeyOnce(alias)
             val legacy = localStorageGet(legacyKey(alias)) // Base64 or null
             webKeyEnsure(idbName(alias), legacy, mintIfAbsent = false)
             if (legacy != null) {
