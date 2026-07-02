@@ -7,6 +7,7 @@ import eu.anifantakis.lib.ksafe.internal.KSafePlatformStorage
 import eu.anifantakis.lib.ksafe.internal.KeySafeMetadataManager
 import eu.anifantakis.lib.ksafe.internal.StorageOp
 import eu.anifantakis.lib.ksafe.internal.StoredValue
+import eu.anifantakis.lib.ksafe.internal.archiveOrMark
 import eu.anifantakis.lib.ksafe.internal.keyvault.FileKeyVault
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVaultProvider
 import eu.anifantakis.lib.ksafe.internal.migrateJsonFallbackToOsBacked
@@ -613,6 +614,50 @@ class JvmFallbackMigrationTest {
         // Successful migration archives the sources and clears the pending state.
         assertTrue(File(tmp, "rt.ksafe.json.migrated").exists(), "successful retry must archive the source")
         assertFalse(pendingFile.exists(), "successful migration must delete the pending state")
+    }
+
+    @Test
+    fun archiveOrMark_writesDurableSentinel_whenRenameAndCopyBothFail() {
+        // FEEDBACK_4 H-C: the migration commits values to the OS store durably,
+        // then best-effort archives the JSON fallback as the "already migrated"
+        // signal. If BOTH the archive rename AND the copy fail (permissions / AV
+        // lock / disk full), the OLD code left no `.migrated` marker at all, so the
+        // file-based gate said "needs migration" on every next launch and re-drained
+        // the stale fallback over the user's newer writes — a perpetual rollback.
+        // The marker's essential job is only to satisfy the gate, so a failed
+        // archive must still leave a durable 0-byte sentinel.
+        val src = File(tmp, "hc.ksafe.json").apply { writeText("fallback-ciphertext") }
+        val marker = File(tmp, "hc.ksafe.json.migrated")
+        assertFalse(marker.exists(), "precondition: no marker yet")
+
+        // Force rename + copy to fail (as an AV lock / read-only-target would);
+        // the real `touch` (createNewFile) stands in for the 0-byte sentinel a
+        // successful migration can always write into its own storage directory.
+        val marked = archiveOrMark(
+            src,
+            rename = { _, _ -> false },
+            copy = { _, _ -> false },
+        )
+
+        assertTrue(marked, "archiveOrMark must report the migration durably marked done")
+        assertTrue(marker.isFile, "a failed archive must still leave a durable .migrated sentinel (H-C)")
+    }
+
+    @Test
+    fun archiveOrMark_reportsNotDone_onlyWhenEvenTheSentinelCannotBeWritten() {
+        // The single irreducible case: a fully unwritable directory where not even a
+        // 0-byte sentinel can be created. archiveOrMark must report "not done" so the
+        // caller withholds the done-signal and keeps the retry-safety pending state.
+        // (In production this cannot co-occur with a successful migration, whose own
+        // OS-store write lives in the very same directory.)
+        val src = File(tmp, "hc2.ksafe.json").apply { writeText("fallback-ciphertext") }
+        val marked = archiveOrMark(
+            src,
+            rename = { _, _ -> false },
+            copy = { _, _ -> false },
+            touch = { false },
+        )
+        assertFalse(marked, "with no marker creatable at all, the migration must not be reported done")
     }
 
     @Test

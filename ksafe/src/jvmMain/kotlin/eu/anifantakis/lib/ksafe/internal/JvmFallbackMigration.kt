@@ -88,9 +88,16 @@ internal fun migrateJsonFallbackToOsBacked(
             // fallback values. On a transient failure reEncryptAll applied
             // nothing, so the retry has no partial state to roll back.
             if (result.transientFailed == 0) {
-                archiveOrMark(jsonFallback)
-                archiveOrMark(keysFallback)
-                runCatching { pendingFile.delete() }
+                val markedJson = archiveOrMark(jsonFallback)
+                val markedKeys = archiveOrMark(keysFallback)
+                // Drop the retry-safety `.migration-pending` state only once the
+                // migration is DURABLY marked done. If (rarely) even the 0-byte
+                // sentinel could not be written, leaving any prior pending state in
+                // place lets a forced re-run skip already-migrated keys instead of
+                // re-draining stale fallback over the user's newer writes (H-C).
+                if (markedJson && markedKeys) {
+                    runCatching { pendingFile.delete() }
+                }
             } else if (!pendingFile.exists()) {
                 // FIRST transient failure: the session proceeds on the OS-backed
                 // store, so the user may write newer values for the keys this
@@ -279,18 +286,43 @@ private suspend fun reEncryptAll(
 }
 
 /**
- * Archives a drained fallback file to `<name>.migrated`. Renames when possible
- * (preserving the original, recoverable). If the rename is blocked — e.g. a
- * lingering Windows file handle just after `cancelAndJoin` — it copies to the
- * `.migrated` marker instead, leaving the (now-redundant) original in place.
- * Either way the marker exists afterwards, so `buildJvmKSafe`'s gate does not
- * re-run the blocking migration on every launch. Best-effort throughout.
+ * Archives a drained fallback file to `<name>.migrated` and returns whether a
+ * done-marker FILE exists afterwards. Renames when possible (preserving the
+ * original, recoverable); if the rename is blocked — e.g. a lingering Windows
+ * file handle just after `cancelAndJoin` — it copies to the `.migrated` marker
+ * instead, leaving the (now-redundant) original in place; and if BOTH are blocked
+ * (permissions/AV lock/disk full) it falls back to an empty 0-byte sentinel.
+ *
+ * The sentinel matters: the marker's essential job is to make `buildJvmKSafe`'s
+ * gate treat the migration as done. Without a durable marker the gate re-runs the
+ * blocking migration on every launch as a FIRST attempt and re-drains the stale
+ * fallback over whatever the user wrote in between — a perpetual silent rollback
+ * (FEEDBACK_4 H-C). A successful migration has just written the OS-backed store
+ * into this same directory, so a 0-byte sentinel here virtually always succeeds;
+ * `false` is returned only for a fully unwritable directory (in which the
+ * migration's own store write could not have succeeded either), so the caller
+ * can withhold the "done" signal.
+ *
+ * The three I/O steps are injectable so a test can force rename+copy to fail and
+ * prove the sentinel still marks the migration done; production always uses the
+ * real filesystem operations. Best-effort throughout.
  */
-private fun archiveOrMark(f: File) {
-    if (!f.exists()) return
+internal fun archiveOrMark(
+    f: File,
+    rename: (File, File) -> Boolean = { src, dst -> src.renameTo(dst) },
+    copy: (File, File) -> Boolean = { src, dst -> runCatching { src.copyTo(dst, overwrite = true) }.isSuccess },
+    touch: (File) -> Boolean = { dst -> runCatching { dst.createNewFile() }.getOrDefault(false) },
+): Boolean {
     val archived = File(f.parentFile, f.name + ".migrated")
-    if (f.renameTo(archived)) return
-    runCatching { f.copyTo(archived, overwrite = true) }
+    if (archived.isFile) return true // already archived/marked by an earlier pass
+    if (f.exists()) {
+        if (rename(f, archived) && archived.isFile) return true
+        if (copy(f, archived) && archived.isFile) return true
+    }
+    // Rename and copy both failed (or the source is already gone). Ensure a
+    // durable done-marker regardless — the archived data is only a recoverability
+    // bonus; satisfying the gate is what prevents the perpetual rollback.
+    return touch(archived) && archived.isFile
 }
 
 private val migratedWarned = AtomicBoolean(false)
