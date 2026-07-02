@@ -149,7 +149,7 @@ internal class LocalStorageStorage(
  * quota) is retried on a later launch and never loses the only copy. An
  * already-present new entry is never overwritten (it is newer by construction).
  */
-internal fun migrateLegacyLocalStoragePrefix(oldPrefix: String, newPrefix: String) {
+internal fun migrateLegacyLocalStoragePrefix(oldPrefix: String, newPrefix: String, deleteSource: Boolean = true) {
     val keys = buildList {
         for (i in 0 until localStorageLength()) {
             localStorageKey(i)?.takeIf { it.startsWith(oldPrefix) }?.let(::add)
@@ -176,7 +176,14 @@ internal fun migrateLegacyLocalStoragePrefix(oldPrefix: String, newPrefix: Strin
         if (localStorageGet(newKey) == null) {
             runCatching { localStorageSet(newKey, value) }
         }
-        if (localStorageGet(newKey) != null) {
+        // Delete the source only when [deleteSource] (default). For the appNamespace
+        // upgrade migration the source prefix `ksafe.<file>:` is ALSO the LIVE prefix of
+        // a co-existing no-namespace store on the same fileName; deleting it there would
+        // cannibalize that sibling's fresh writes on every construction (FEEDBACK_4
+        // FB3-M2). Copy-if-absent + no-delete is idempotent and makes the data half
+        // consistent with the non-destructive key half (FB3-H1); the only cost is a
+        // harmless orphaned copy under the old prefix after a genuine one-way upgrade.
+        if (deleteSource && localStorageGet(newKey) != null) {
             runCatching { localStorageRemove(oldKey) }
         }
     }

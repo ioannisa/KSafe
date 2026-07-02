@@ -126,7 +126,13 @@ private fun buildWebKSafe(
     // namespaced prefix actually differs (appNs set), so the default path is unchanged.
     if (nsSegment.isNotEmpty()) {
         val unNamespaced = if (fileName != null) "ksafe.${fileName}:" else "ksafe.:"
-        migrateLegacyLocalStoragePrefix(unNamespaced, storagePrefix)
+        // NON-destructive (deleteSource = false): the un-namespaced prefix is ALSO the
+        // live prefix of a co-existing no-namespace store on the same fileName, and this
+        // migration runs on EVERY construction (no done-marker). Deleting the source
+        // would cannibalize that sibling's fresh writes each launch (FEEDBACK_4 FB3-M2).
+        // Copy-if-absent leaves the sibling intact; the namespaced store scopes its own
+        // reads/clear strictly to its prefix, so the orphaned copy never bleeds across.
+        migrateLegacyLocalStoragePrefix(unNamespaced, storagePrefix, deleteSource = false)
     }
 
     // The ENGINE keeps the legacy prefix on purpose: it namespaces the key

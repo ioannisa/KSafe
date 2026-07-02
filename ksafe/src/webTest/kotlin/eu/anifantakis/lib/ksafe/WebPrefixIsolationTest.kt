@@ -175,6 +175,74 @@ class WebPrefixIsolationTest {
     }
 
     /**
+     * FEEDBACK_4 FB3-M2: constructing an appNamespaced store must NOT cannibalize a
+     * co-existing no-namespace store on the same fileName. The un-namespaced upgrade
+     * migration's source prefix `ksafe.<file>:` is that sibling's LIVE prefix, and it
+     * runs on every construction (no done-marker), so a destructive copy+delete stole
+     * the sibling's data each launch. The migration must be non-destructive (copy-if-
+     * absent, no source delete), mirroring the non-destructive key half (FB3-H1).
+     */
+    @Test
+    fun appNamespacedStore_doesNotCannibalize_coexistingNoNamespaceStore() = runTest {
+        val file = WebKSafeTest.generateUniqueFileName()
+
+        // A no-namespace store writes a value…
+        val plain = KSafe(fileName = file, testEngine = FakeEncryption())
+        plain.awaitCacheReady()
+        plain.put("token", "plain-value", KSafeWriteMode.Plain)
+
+        // …then a same-fileName appNamespaced store is constructed (runs the
+        // un-namespaced migration in buildWebKSafe).
+        KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.a"), testEngine = FakeEncryption())
+            .awaitCacheReady()
+
+        // Re-open the no-namespace store fresh so the read comes from localStorage.
+        val plainReopened = KSafe(fileName = file, testEngine = FakeEncryption())
+        plainReopened.awaitCacheReady()
+        assertEquals(
+            "plain-value", plainReopened.get("token", "GONE"),
+            "a co-existing no-namespace store's value must survive construction of a same-fileName appNamespaced store (FB3-M2)",
+        )
+
+        // And a fresh no-namespace write after another namespaced construction must
+        // also survive (proves it isn't just first-launch tolerant).
+        plainReopened.put("token2", "fresh", KSafeWriteMode.Plain)
+        KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.a"), testEngine = FakeEncryption())
+            .awaitCacheReady()
+        val plainReopened2 = KSafe(fileName = file, testEngine = FakeEncryption())
+        plainReopened2.awaitCacheReady()
+        assertEquals(
+            "fresh", plainReopened2.get("token2", "GONE"),
+            "repeated namespaced constructions must not delete the no-namespace store's fresh writes",
+        )
+
+        plainReopened2.clearAll()
+    }
+
+    @Test
+    fun migrate_withDeleteSourceFalse_copiesForward_withoutDeletingLiveSource() {
+        val base = WebKSafeTest.generateUniqueFileName()
+        localStorageSet("ksafe.${base}:__ksafe_value_k", "live-value")
+
+        migrateLegacyLocalStoragePrefix("ksafe.${base}:", "ksafe.ns@${base}:", deleteSource = false)
+
+        assertEquals("live-value", localStorageGet("ksafe.ns@${base}:__ksafe_value_k"), "must be copied forward")
+        assertEquals(
+            "live-value", localStorageGet("ksafe.${base}:__ksafe_value_k"),
+            "the live un-namespaced source must NOT be deleted (deleteSource=false)",
+        )
+
+        // Idempotent + copy-if-absent: overwrite the source, migrate again, destination unchanged.
+        localStorageSet("ksafe.${base}:__ksafe_value_k", "changed")
+        migrateLegacyLocalStoragePrefix("ksafe.${base}:", "ksafe.ns@${base}:", deleteSource = false)
+        assertEquals("live-value", localStorageGet("ksafe.ns@${base}:__ksafe_value_k"), "copy-if-absent: destination not overwritten")
+        assertEquals("changed", localStorageGet("ksafe.${base}:__ksafe_value_k"), "source still present")
+
+        localStorageRemove("ksafe.${base}:__ksafe_value_k")
+        localStorageRemove("ksafe.ns@${base}:__ksafe_value_k")
+    }
+
+    /**
      * Round-3 audit R4 (findings 6/13): on web, `KSafeConfig.appNamespace` must
      * isolate the localStorage DATA namespace, not just the IndexedDB key record.
      * Two same-origin KSafe setups with the SAME fileName but DIFFERENT
