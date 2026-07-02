@@ -199,6 +199,15 @@ internal class KSafeCore(
     private val writeOwners = KSafeConcurrentMap<Any>()
 
     /**
+     * Test-only seam: invoked with the user key inside the post-commit repair,
+     * right after the value `putIfAbsent`, so a test can deterministically inject
+     * a concurrent `delete()` at the exact interleaving that resurrected orphan
+     * metadata (FEEDBACK_4 FB3-H2). Always `null` in production.
+     */
+    @PublishedApi
+    internal var postCommitRepairHook: ((String) -> Unit)? = null
+
+    /**
      * `true` for any policy whose primary [memoryCache] holds Base64 ciphertext at rest:
      * [KSafeMemoryPolicy.ENCRYPTED], [KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE], and
      * [KSafeMemoryPolicy.LAZY_PLAIN_TEXT]. Cold-start skips bulk decryption and the post-batch
@@ -1131,21 +1140,34 @@ internal class KSafeCore(
                             requireUnlockedDevice = op.requireUnlockedDevice,
                         )
                         memoryCache.putIfAbsent(op.rawCacheKey, cacheValue)
+                        postCommitRepairHook?.invoke(op.userKey) // test-only interleaving seam; null in production
                         protectionMap.putIfAbsent(op.userKey, protLiteral)
                         encMetaMap.putIfAbsent(op.userKey, meta)
-                        // TOCTOU guard (deep-review M1): a delete or newer put that
-                        // superseded us claims writeOwners BEFORE clearing caches, so if we
-                        // lost ownership between the check above and these inserts, roll back
-                        // exactly the values we restored. The metadata rollback is COUPLED to
-                        // the value rollback: protection/encMeta are removed ONLY if our own
-                        // value was still the cached one (memoryCache.removeIf succeeded).
-                        // Ciphertext carries a random IV so it's unique to our write — a newer
-                        // put's value differs and removeIf returns false, so we never delete a
-                        // newer writer's identically-valued protection/encMeta (round-3 audit
-                        // R2 / finding 2: protectionToLiteral has only 3 values and EncMeta is
-                        // value-equal, so an UNcoupled metadata removeIf could clobber theirs).
+                        // TOCTOU guard (deep-review M1 / round-3 R2 / FEEDBACK_4 FB3-H2):
+                        // a delete or newer put that superseded us claims writeOwners BEFORE
+                        // clearing caches, so if we lost ownership between the check above and
+                        // these inserts, undo exactly what we restored — without clobbering a
+                        // newer writer's identically-valued metadata.
+                        //  • Newer PUT won: it re-caches its own value BEFORE its
+                        //    protection/encMeta, so a DIFFERENT value now occupies the slot.
+                        //    Ciphertext carries a random IV, so removeIf(cacheValue) fails and
+                        //    the coupled branch is skipped — its metadata is left intact
+                        //    (protectionToLiteral has only 3 values and EncMeta is value-equal,
+                        //    so an uncoupled removeIf could otherwise clobber theirs).
+                        //  • DELETE won: it wiped all three maps AFTER our value putIfAbsent had
+                        //    already no-op'd (the value was still ours then), so our
+                        //    protection/encMeta putIfAbsent RESURRECTED orphan metadata for a
+                        //    now-deleted key with NO cached value. removeIf(cacheValue) fails
+                        //    (value gone), so the coupled branch alone left getKeyInfo non-null
+                        //    and getOrCreateSecret permanently "refusing to overwrite" (FB3-H2).
+                        //    When no value is cached for this key, drop exactly the literals we
+                        //    inserted — a live newer put can't be in this state, because it
+                        //    caches its value before its protection.
                         if (writeOwners[op.userKey] !== op.writeToken) {
                             if (memoryCache.removeIf(op.rawCacheKey, cacheValue)) {
+                                protectionMap.removeIf(op.userKey, protLiteral)
+                                encMetaMap.removeIf(op.userKey, meta)
+                            } else if (!memoryCache.containsKey(op.rawCacheKey)) {
                                 protectionMap.removeIf(op.userKey, protLiteral)
                                 encMetaMap.removeIf(op.userKey, meta)
                             }
