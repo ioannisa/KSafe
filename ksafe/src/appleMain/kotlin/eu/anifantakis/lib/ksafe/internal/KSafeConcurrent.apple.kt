@@ -3,24 +3,28 @@ package eu.anifantakis.lib.ksafe.internal
 import kotlinx.coroutines.runBlocking
 import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicReference
+import platform.Foundation.NSRecursiveLock
 
 @PublishedApi
 internal actual fun <T> runBlockingOnPlatform(block: suspend () -> T): T = runBlocking { block() }
 
-// Kotlin/Native has no object-monitor `synchronized`. A one-shot flow-delegate lazy
-// init is rare and fast, so serialize inits on a single global spin-lock — the [lock]
-// identity is irrelevant to correctness (mutual exclusion is what M-G needs), and a
-// short spin during the exceedingly rare concurrent first-init is cheaper than pulling
-// in a heavier native lock. Non-reentrant, which is fine: an init block never re-enters.
-private val globalInitSpinLock = AtomicInt(0)
-
+// Kotlin/Native has no object-monitor `synchronized`, so back each delegate's init lock
+// with its own NSRecursiveLock (FEEDBACK_4 M11). This replaces the previous single
+// process-wide busy-spin lock, which (a) serialized EVERY delegate's init on one lock —
+// an unrelated delegate's cold-start read blocked all others — and (b) held that spin
+// lock across blocking DataStore/keychain I/O, burning a core on any waiter. NSRecursiveLock
+// is a real OS parking lock (a waiter blocks, no spin) and is per-instance; reentrant, so
+// a nested first-access on the same thread can't deadlock.
 @PublishedApi
-internal actual fun <R> ksafeSynchronized(lock: Any, block: () -> R): R {
-    while (!globalInitSpinLock.compareAndSet(0, 1)) { /* spin until acquired */ }
-    try {
-        return block()
-    } finally {
-        globalInitSpinLock.value = 0
+internal actual class KSafeInitLock actual constructor() {
+    private val lock = NSRecursiveLock()
+    actual fun <R> withLock(block: () -> R): R {
+        lock.lock()
+        try {
+            return block()
+        } finally {
+            lock.unlock()
+        }
     }
 }
 

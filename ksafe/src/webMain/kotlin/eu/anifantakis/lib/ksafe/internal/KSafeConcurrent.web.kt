@@ -62,4 +62,6 @@ internal actual fun <T> runBlockingOnPlatform(block: suspend () -> T): T =
 
 // Single-threaded: no lock needed, just run the block.
 @PublishedApi
-internal actual fun <R> ksafeSynchronized(lock: Any, block: () -> R): R = block()
+internal actual class KSafeInitLock actual constructor() {
+    actual fun <R> withLock(block: () -> R): R = block()
+}

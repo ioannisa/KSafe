@@ -10,7 +10,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import eu.anifantakis.lib.ksafe.internal.KSafeAtomicFlag
-import eu.anifantakis.lib.ksafe.internal.ksafeSynchronized
+import eu.anifantakis.lib.ksafe.internal.KSafeInitLock
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.serializer
 import kotlin.concurrent.Volatile
@@ -70,11 +70,11 @@ internal class KSafeFlowDelegate<T>(
     // FIRST access would otherwise both build the flow and one caller would hold a
     // non-canonical instance. Fast-path read stays lock-free; only first-init locks.
     @Volatile private var flow: Flow<T>? = null
-    private val initLock = Any()
+    private val initLock = KSafeInitLock()
 
     override fun getValue(thisRef: Any?, property: KProperty<*>): Flow<T> {
         flow?.let { return it }
-        return ksafeSynchronized(initLock) {
+        return initLock.withLock {
             flow ?: run {
                 @Suppress("UNCHECKED_CAST")
                 val f = ksafe.core.getFlowRaw(key ?: property.name, defaultValue, serializer) as Flow<T>
@@ -102,11 +102,11 @@ internal class KSafeStateFlowDelegate<T>(
     // coroutine — so a concurrent double-init would ALSO leak an observer coroutine,
     // not just hand out a non-canonical StateFlow. The build must run inside the lock.
     @Volatile private var stateFlow: StateFlow<T>? = null
-    private val initLock = Any()
+    private val initLock = KSafeInitLock()
 
     override fun getValue(thisRef: Any?, property: KProperty<*>): StateFlow<T> {
         stateFlow?.let { return it }
-        return ksafeSynchronized(initLock) {
+        return initLock.withLock {
             stateFlow ?: run {
                 val sf = ksafe.getStateFlowRaw(key ?: property.name, defaultValue, serializer, scope)
                 stateFlow = sf
@@ -194,11 +194,11 @@ internal class KSafeWritableFlowDelegate<T>(
 ) : ReadOnlyProperty<Any?, WritableKSafeFlow<T>> {
     // @Volatile + double-checked init (FEEDBACK_4 M-G).
     @Volatile private var writable: WritableKSafeFlow<T>? = null
-    private val initLock = Any()
+    private val initLock = KSafeInitLock()
 
     override fun getValue(thisRef: Any?, property: KProperty<*>): WritableKSafeFlow<T> {
         writable?.let { return it }
-        return ksafeSynchronized(initLock) {
+        return initLock.withLock {
             writable ?: run {
                 val actualKey = key ?: property.name
                 @Suppress("UNCHECKED_CAST")
@@ -456,11 +456,11 @@ internal class KSafeMutableStateFlowDelegate<T>(
     // transiently diverge. The build AND the launch run inside the lock so exactly one
     // canonical instance + observer is created.
     @Volatile private var mutableStateFlow: KSafeMutableStateFlow<T>? = null
-    private val initLock = Any()
+    private val initLock = KSafeInitLock()
 
     override fun getValue(thisRef: Any?, property: KProperty<*>): MutableStateFlow<T> {
         mutableStateFlow?.let { return it }
-        return ksafeSynchronized(initLock) {
+        return initLock.withLock {
             mutableStateFlow ?: run {
                 val actualKey = key ?: property.name
 

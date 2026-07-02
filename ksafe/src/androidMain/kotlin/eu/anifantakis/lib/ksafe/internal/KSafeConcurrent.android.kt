@@ -3,12 +3,23 @@ package eu.anifantakis.lib.ksafe.internal
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
 
 @PublishedApi
 internal actual fun <T> runBlockingOnPlatform(block: suspend () -> T): T = runBlocking { block() }
 
 @PublishedApi
-internal actual fun <R> ksafeSynchronized(lock: Any, block: () -> R): R = synchronized(lock, block)
+internal actual class KSafeInitLock actual constructor() {
+    private val lock = ReentrantLock()
+    actual fun <R> withLock(block: () -> R): R {
+        lock.lock()
+        try {
+            return block()
+        } finally {
+            lock.unlock()
+        }
+    }
+}
 
 @PublishedApi
 internal actual class KSafeAtomicFlag actual constructor(initial: Boolean) {

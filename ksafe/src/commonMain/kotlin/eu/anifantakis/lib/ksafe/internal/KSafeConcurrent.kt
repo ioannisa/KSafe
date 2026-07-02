@@ -83,11 +83,23 @@ internal expect class KSafeConcurrentSet<T : Any>() {
 internal expect fun <T> runBlockingOnPlatform(block: suspend () -> T): T
 
 /**
- * Runs [block] holding [lock] as a monitor — a non-suspending mutual-exclusion
- * primitive for the one-shot lazy init in the flow delegates (double-checked
- * init: a fast-path read outside, the build inside). JVM/Android/Native use the
- * object monitor via `kotlin.synchronized`; the single-threaded web target calls
- * through with no lock (there is no concurrency to guard).
+ * A per-instance, reentrant, non-suspending mutual-exclusion lock for the
+ * one-shot lazy init in the flow delegates (double-checked init: a fast-path
+ * volatile read outside, the build inside). Each delegate owns its own lock, so
+ * unrelated delegates never contend, and [withLock] may block across the
+ * cold-start read without busy-spinning:
+ *
+ * | Target            | Backing lock |
+ * |-------------------|--------------|
+ * | JVM / Android     | `java.util.concurrent.locks.ReentrantLock` |
+ * | Apple (Native)    | `NSRecursiveLock` — a real OS parking lock |
+ * | Web (wasmJs/js)   | none — single-threaded; [withLock] just calls through |
+ *
+ * Reentrant so a nested first-access on the same thread cannot self-deadlock —
+ * the property the previous Apple global busy-spin lock violated (FEEDBACK_4
+ * M11: one process-wide spin lock, held across blocking disk/keychain I/O).
  */
 @PublishedApi
-internal expect fun <R> ksafeSynchronized(lock: Any, block: () -> R): R
+internal expect class KSafeInitLock() {
+    fun <R> withLock(block: () -> R): R
+}
