@@ -182,6 +182,28 @@ class WebKeyStoreIntegrationTest {
         )
     }
 
+    /**
+     * FEEDBACK_4 H-E: a value written with `requireUnlockedDevice = true` must be
+     * READABLE on web. Web has no device-lock to enforce the flag and forces the
+     * `PLAIN_TEXT` memory policy; but `resolveFromCache` routes strict entries to the
+     * blocking `engine.decrypt`, which the web engine throws `UnsupportedOperationException`
+     * from (WebCrypto is async-only) — so strict values were write-only. The web factory
+     * now strips `requireUnlockedDevice` (it cannot be honored in a browser), so the value
+     * reads back normally. Uses the REAL web engine (a synchronous test engine would hide it).
+     */
+    @Test
+    fun strictEncryptedValue_isReadableOnWeb() = runTest {
+        val ksafe = KSafe(fileName = WebKSafeTest.generateUniqueFileName())
+        ksafe.awaitCacheReady()
+        try {
+            ksafe.put("tok", "strict-secret", KSafeWriteMode.Encrypted(requireUnlockedDevice = true))
+            assertEquals("strict-secret", ksafe.get("tok", "DEFAULT"), "suspend get of a strict value must return it on web")
+            assertEquals("strict-secret", ksafe.getDirect("tok", "DEFAULT"), "getDirect of a strict value must return it on web")
+        } finally {
+            ksafe.clearAll()
+        }
+    }
+
     @Test
     fun eagerSweep_importsEveryLegacyLocalStorageKey_andScrubs() = runTest {
         val prefix = uniquePrefix()

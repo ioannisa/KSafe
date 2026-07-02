@@ -147,6 +147,18 @@ private fun buildWebKSafe(
         // background preload completes. Any user-supplied value is ignored.
         memoryPolicy = KSafeMemoryPolicy.PLAIN_TEXT,
         plaintextCacheTtl = plaintextCacheTtl,
+        // Strip requireUnlockedDevice on web (FEEDBACK_4 H-E): a browser has no
+        // device-lock to bind it to, and the strict read path routes to the engine's
+        // BLOCKING decrypt, which the async-only WebCrypto engine cannot serve —
+        // making strict values write-only. Clearing the flag keeps such values
+        // readable (they were never hardware-lock-enforceable on web anyway).
+        modeTransformer = { mode ->
+            if (mode is KSafeWriteMode.Encrypted && mode.requireUnlockedDevice) {
+                mode.copy(requireUnlockedDevice = false)
+            } else {
+                mode
+            }
+        },
         resolveKeyStorage = { _, _ -> KSafeKeyStorage.SOFTWARE },
         resolveKeyLevel = { _, protection ->
             // Plain values: no key, no protection. Encrypted: the non-extractable
