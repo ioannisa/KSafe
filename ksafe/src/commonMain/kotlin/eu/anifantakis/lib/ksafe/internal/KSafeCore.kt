@@ -1273,7 +1273,20 @@ internal class KSafeCore(
     internal fun getDirectRaw(key: String, defaultValue: Any?, serializer: KSerializer<*>): Any? {
         ensureCacheReadyBlocking()
         val detected = detectProtection(key)
-        return resolveFromCache(key, defaultValue, detected, serializer)
+        return try {
+            resolveFromCache(key, defaultValue, detected, serializer)
+        } catch (e: Throwable) {
+            if (e is CancellationException) throw e
+            // Non-suspend read path (FEEDBACK_4 M-B/M-H): resolveFromCache rethrows a
+            // TRANSIENT decrypt failure (locked device / busy Keystore) so a suspending
+            // caller can await unlock and retry. But getDirect — and the delegate /
+            // StateFlow-seed / Compose-seed sites that funnel through here — have no retry
+            // seam and are documented to return the caller's default when decryption
+            // fails; letting the throw escape crashes property access, StateFlow
+            // construction, and composition on a locked device. Swallow only the transient
+            // case to the default; the suspend get() path (getRaw) still rethrows.
+            if (isTransientDecryptFailure(e)) defaultValue else throw e
+        }
     }
 
     @PublishedApi
