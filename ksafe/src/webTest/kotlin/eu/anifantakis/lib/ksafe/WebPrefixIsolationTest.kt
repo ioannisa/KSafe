@@ -219,6 +219,47 @@ class WebPrefixIsolationTest {
         plainReopened2.clearAll()
     }
 
+    /**
+     * FEEDBACK_4 H1 (twin of FB3-M2): the flat legacy `ksafe_<file>_` prefix has NO
+     * appNamespace segment — one SHARED source for every namespace of a fileName. When an
+     * appNamespace is set the legacy→namespaced migration must be non-destructive, or the
+     * first-constructed namespace copies the legacy data to itself AND deletes the shared
+     * source, so every OTHER namespace of that fileName reads the default for keys it owned.
+     */
+    @Test
+    fun legacyPrefix_withAppNamespace_isNotDeleted_soAllNamespacesCanMigrate() = runTest {
+        val base = WebKSafeTest.generateUniqueFileName()
+        // Shipped pre-namespace canonical data under the flat legacy prefix.
+        localStorageSet("ksafe_${base}___ksafe_value_k", "legacy-value")
+
+        // First namespaced store constructs → migrates the legacy prefix forward. It must
+        // NOT delete the shared legacy source; a second namespace needs it too (H1).
+        KSafe(fileName = base, config = KSafeConfig(appNamespace = "com.example.a"), testEngine = FakeEncryption())
+            .awaitCacheReady()
+
+        assertEquals(
+            "legacy-value", localStorageGet("ksafe_${base}___ksafe_value_k"),
+            "the shared legacy source must survive a namespaced construction (H1)",
+        )
+        assertEquals(
+            "legacy-value", localStorageGet("ksafe.com.example.a@${base}:__ksafe_value_k"),
+            "namespace A must have migrated the legacy value forward",
+        )
+
+        // A second same-fileName namespaced store must STILL find the legacy source and
+        // migrate it — proving the first namespace did not destroy it for the rest.
+        KSafe(fileName = base, config = KSafeConfig(appNamespace = "com.example.b"), testEngine = FakeEncryption())
+            .awaitCacheReady()
+        assertEquals(
+            "legacy-value", localStorageGet("ksafe.com.example.b@${base}:__ksafe_value_k"),
+            "namespace B must ALSO migrate the still-present legacy value (H1: the first namespace must not have deleted the shared source)",
+        )
+
+        localStorageRemove("ksafe_${base}___ksafe_value_k")
+        localStorageRemove("ksafe.com.example.a@${base}:__ksafe_value_k")
+        localStorageRemove("ksafe.com.example.b@${base}:__ksafe_value_k")
+    }
+
     @Test
     fun migrate_withDeleteSourceFalse_copiesForward_withoutDeletingLiveSource() {
         val base = WebKSafeTest.generateUniqueFileName()

@@ -119,8 +119,14 @@ private fun buildWebKSafe(
     val nsSegment: String = if (appNs != null) "$appNs@" else ""
     val storagePrefix: String = if (fileName != null) "ksafe.$nsSegment${fileName}:" else "ksafe.$nsSegment:"
 
-    // Carry existing data forward: the old flat `ksafe_<name>_` layout first…
-    migrateLegacyLocalStoragePrefix(legacyStoragePrefix, storagePrefix)
+    // Carry existing data forward: the old flat `ksafe_<name>_` layout first. Like the
+    // un-namespaced `ksafe.<name>:` prefix below, it has NO appNamespace segment — one
+    // SHARED source for every namespace of a fileName. Reclaim it (delete) only when no
+    // appNamespace is set (a single canonical store); with namespaces active, copy-if-absent
+    // and leave the shared legacy source so EVERY namespace migrates from it, instead of the
+    // first-constructed namespace destroying it for all the others (FEEDBACK_4 H1, twin of
+    // the FB3-M2 fix below).
+    migrateLegacyLocalStoragePrefix(legacyStoragePrefix, storagePrefix, deleteSource = nsSegment.isEmpty())
     // …and, when an appNamespace is set, also the un-namespaced `ksafe.<name>:` prefix that
     // shipped 2.1.x wrote to before appNamespace isolated the data store. Only runs when the
     // namespaced prefix actually differs (appNs set), so the default path is unchanged.
