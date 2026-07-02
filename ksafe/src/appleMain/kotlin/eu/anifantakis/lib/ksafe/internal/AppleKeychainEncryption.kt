@@ -576,6 +576,11 @@ internal class AppleKeychainEncryption(
      */
     private fun getExistingKeychainKeyRaw(keyId: String): ByteArray? = keychain.readBytes(keyId)
 
+    /** Test-only: the in-process cached raw key bytes for [keyId], or null. Lets a test
+     *  assert a strict rewrite evicts a lingering non-strict plaintext key (FEEDBACK_4 low). */
+    @PublishedApi
+    internal fun cachedKeyBytesForTest(keyId: String): ByteArray? = keyBytesCache[keyId]
+
     /**
      * Retrieves an existing encryption key for decryption. Tries the SE-wrapped
      * account first, falls back to the plain account. Throws if neither exists —
@@ -595,6 +600,11 @@ internal class AppleKeychainEncryption(
         // keyBytesCache (idempotent last-writer-wins).
         if (requireUnlockedDevice != true) {
             keyBytesCache[keyId]?.let { return it }
+        } else {
+            // Strict read: never serve or keep the plaintext from the in-process cache —
+            // evict any lingering NON-strict entry so it doesn't survive after the key was
+            // rewritten strict (FEEDBACK_4 low). The Keychain read below enforces the lock.
+            keyBytesCache.remove(keyId)
         }
 
         val wrappedBytes = getExistingKeychainKeyRaw(seWrappedAccount(keyId))
@@ -634,12 +644,21 @@ internal class AppleKeychainEncryption(
     ): ByteArray {
         if (requireUnlockedDevice != true) {
             keyBytesCache[keyId]?.let { return it }
+        } else {
+            // Strict (requireUnlockedDevice) keys must NEVER keep their plaintext in the
+            // in-process cache — otherwise a NON-strict write's cached bytes linger after
+            // the key is rewritten strict, defeating the unlock policy in memory (FEEDBACK_4
+            // low). Reads for a strict key already bypass the cache and go to the Keychain.
+            keyBytesCache.remove(keyId)
         }
 
         return withKeyResolutionLock {
             // Re-check under the lock: a concurrent creator may have just populated the cache
-            // (and the Keychain), in which case we must reuse its key, not mint a clobbering one.
-            keyBytesCache[keyId]?.let { return@withKeyResolutionLock it }
+            // (and the Keychain), in which case we must reuse its key, not mint a clobbering
+            // one. Strict keys never read the cache (they mustn't cache plaintext).
+            if (requireUnlockedDevice != true) {
+                keyBytesCache[keyId]?.let { return@withKeyResolutionLock it }
+            }
 
             val bytes = if (hardwareIsolated) {
                 try {
