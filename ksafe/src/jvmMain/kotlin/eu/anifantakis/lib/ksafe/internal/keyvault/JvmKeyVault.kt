@@ -390,12 +390,15 @@ internal class JvmKeyVaultProvider(
     private val legacyNamespaceVault: JvmKeyVault? by lazy {
         legacyNamespaceCandidateForTest ?: run {
             if (usingTestSeams) return@run null
-            if (appNamespace != DEFAULT_JVM_NAMESPACE) return@run null
             if (!picked.isOsBacked) return@run null
-            val legacyNs = legacyDerivedJvmNamespace() ?: return@run null
+            // Probe the namespace that holds pre-upgrade keys: the 2.1.0/2.1.1 launcher-
+            // derived namespace when on the stable default, OR the stable default itself
+            // when an explicit appNamespace was newly set (FEEDBACK_4 H-D).
+            val fallbackNs = legacyFallbackNamespace(appNamespace, legacyDerivedJvmNamespace())
+                ?: return@run null
             buildOsVault(
                 System.getProperty("os.name").orEmpty().lowercase(),
-                legacyNs,
+                fallbackNs,
                 dataStoreForTwin,
             )
         }
@@ -563,6 +566,21 @@ internal class JvmKeyVaultProvider(
  * it cannot silently move between runs/releases.
  */
 internal const val DEFAULT_JVM_NAMESPACE = "shared"
+
+/**
+ * The OS-vault namespace to probe as a read-fallback migration source for a key that misses
+ * under [currentNamespace], or `null` when there is nothing to probe. Two upgrade paths:
+ *  - [currentNamespace] is the stable default (`"shared"`): probe the 2.1.0/2.1.1 launcher-
+ *    **derived** namespace [derivedNamespace] (keys written before the default became stable).
+ *  - [currentNamespace] is an **explicit** `appNamespace`: probe the stable default
+ *    [DEFAULT_JVM_NAMESPACE] — an app that ran without a namespace and then set one holds its
+ *    keys under `"shared"`, and adding `appNamespace` would otherwise orphan them (FEEDBACK_4 H-D).
+ * Returns `null` when the fallback would equal [currentNamespace] (nothing to migrate).
+ */
+internal fun legacyFallbackNamespace(currentNamespace: String, derivedNamespace: String?): String? {
+    val fallback = if (currentNamespace == DEFAULT_JVM_NAMESPACE) derivedNamespace else DEFAULT_JVM_NAMESPACE
+    return fallback?.takeIf { it != currentNamespace }
+}
 
 private fun String?.cleanNamespaceToken(): String? =
     this?.trim()?.takeIf { it.isNotEmpty() }

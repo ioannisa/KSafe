@@ -7,7 +7,9 @@ import eu.anifantakis.lib.ksafe.internal.JvmSoftwareEncryption
 import eu.anifantakis.lib.ksafe.internal.keyvault.DataStoreKeyVault
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVault
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVaultProvider
+import eu.anifantakis.lib.ksafe.internal.keyvault.DEFAULT_JVM_NAMESPACE
 import eu.anifantakis.lib.ksafe.internal.keyvault.legacyDerivedJvmNamespace
+import eu.anifantakis.lib.ksafe.internal.keyvault.legacyFallbackNamespace
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -31,6 +33,26 @@ import kotlin.test.assertTrue
  * keyring is touched.
  */
 class JvmKeyVaultMigrationTest {
+
+    // ── FEEDBACK_4 H-D: adding appNamespace must not orphan pre-namespace OS-vault keys ──
+
+    @Test
+    fun legacyFallbackNamespace_probesSharedWhenExplicitAppNamespaceSet() {
+        // An app that ran on the default "shared" namespace and then set an explicit
+        // appNamespace holds its keys under "shared"; the read-fallback must probe there
+        // so adding appNamespace migrates the keys forward instead of orphaning them.
+        assertEquals(DEFAULT_JVM_NAMESPACE, legacyFallbackNamespace("myapp", derivedNamespace = null))
+        assertEquals(DEFAULT_JVM_NAMESPACE, legacyFallbackNamespace("com.example.app", derivedNamespace = "ignored-when-explicit"))
+    }
+
+    @Test
+    fun legacyFallbackNamespace_probesDerivedWhenOnDefaultNamespace() {
+        // On the stable default, the fallback is the 2.1.0/2.1.1 launcher-derived namespace.
+        assertEquals("derived-ns", legacyFallbackNamespace(DEFAULT_JVM_NAMESPACE, derivedNamespace = "derived-ns"))
+        // Nothing to probe when there is no derived namespace, or it equals the current one.
+        assertNull(legacyFallbackNamespace(DEFAULT_JVM_NAMESPACE, derivedNamespace = null))
+        assertNull(legacyFallbackNamespace(DEFAULT_JVM_NAMESPACE, derivedNamespace = DEFAULT_JVM_NAMESPACE))
+    }
 
     /** In-memory stand-in for an OS-backed vault. */
     private class FakeOsVault : JvmKeyVault {
