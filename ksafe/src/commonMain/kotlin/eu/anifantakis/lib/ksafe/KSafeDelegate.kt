@@ -291,11 +291,47 @@ internal class KSafeMutableStateFlow<T>(
     @kotlin.concurrent.Volatile
     private var lastUserWrite: T? = null
 
+    // The value last known to be in sync with storage — what a stale/older observer
+    // emission would carry. A divergence to protect exists ONLY while the written
+    // value differs from this. If a write nets back to the synced value (an idempotent
+    // `value = X` from a synced state, or an A→B→A toggle within one coalescing window),
+    // no distinct echo can ever arrive, so the guard must NOT be raised/held — otherwise
+    // external observation is suppressed permanently (deep-review M2).
+    //
+    // KNOWN LIMITATION (round-3 audit R7, accepted): if an intermediate value B in an
+    // A→B→A sequence actually reached disk in a SEPARATE batch (not coalesced away), a
+    // stale "B" snapshot can still arrive after the net-zero "A" write cleared the guard
+    // and transiently revert the value — until B's follow-up "A" snapshot arrives and
+    // restores it. This is a brief, self-correcting flicker, never data loss. It is the
+    // accepted cost of clearing the guard on net-zero: a value-only observer cannot tell a
+    // stale intermediate echo from a genuine external change, and permanently latching the
+    // guard (the alternative) is the strictly worse M2 bug (external observation dies for
+    // the StateFlow's lifetime). Fixing it fully needs a versioned/epoch-tagged observer.
+    @kotlin.concurrent.Volatile
+    private var syncedValue: T? = null
+    @kotlin.concurrent.Volatile
+    private var hasSynced: Boolean = false
+
+    /**
+     * Raise the echo guard only for a write that actually diverges from storage.
+     * [oldValue] is the value present BEFORE this write — used to seed [syncedValue]
+     * on the first write (the setter passes the pre-mutation value; compareAndSet
+     * passes `expect`, which it just matched).
+     */
+    private fun markUserWrite(newValue: T, oldValue: T) {
+        if (!hasSynced) {
+            syncedValue = oldValue
+            hasSynced = true
+        }
+        lastUserWrite = newValue
+        // No net divergence → nothing to echo, nothing to protect: clear the guard.
+        awaitingWriteEcho.set(newValue != syncedValue)
+    }
+
     override var value: T
         get() = delegate.value
         set(newValue) {
-            lastUserWrite = newValue
-            awaitingWriteEcho.set(true)
+            markUserWrite(newValue, delegate.value)
             delegate.value = newValue
             persist(newValue)
         }
@@ -303,8 +339,7 @@ internal class KSafeMutableStateFlow<T>(
     override fun compareAndSet(expect: T, update: T): Boolean {
         val changed = delegate.compareAndSet(expect, update)
         if (changed) {
-            lastUserWrite = update
-            awaitingWriteEcho.set(true)
+            markUserWrite(update, expect)
             persist(update)
         }
         return changed
@@ -347,12 +382,17 @@ internal class KSafeMutableStateFlow<T>(
     internal fun updateFromFlow(newValue: T) {
         if (!awaitingWriteEcho.get()) {
             delegate.value = newValue
+            // This emission is now the in-sync baseline for future divergence checks.
+            syncedValue = newValue
+            hasSynced = true
             return
         }
         if (newValue == lastUserWrite) {
             // The echo of the user's own write: consume it (the StateFlow
             // already shows this value) and resume external-change reflection.
             awaitingWriteEcho.compareAndSet(true, false)
+            syncedValue = newValue
+            hasSynced = true
         }
     }
 }

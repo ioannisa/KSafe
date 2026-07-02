@@ -157,6 +157,19 @@ internal fun migrateLegacyLocalStoragePrefix(oldPrefix: String, newPrefix: Strin
     }
     for (oldKey in keys) {
         val rest = oldKey.removePrefix(oldPrefix)
+        // Migrate ONLY canonical entries (`__ksafe_value_*`, `__ksafe_meta_*`). The
+        // canonical-shape gate is what keeps the migration order-independent for nested
+        // names: a store `user` scanning `ksafe_user_` sees the nested sibling `user_cache`'s
+        // canonical entry as the non-canonical remainder `cache___ksafe_value_x` and leaves
+        // it for `user_cache`'s own migration.
+        //
+        // Legacy 1.6/1.7 FLAT entries (bare `<key>` / `encrypted_<key>`) carry NO canonical
+        // marker, so a shorter-named store cannot distinguish its own flat key from a nested
+        // sibling's — migrating them steals the sibling's only copy AND surfaces it under the
+        // wrong store (round-3 audit R1 / findings 1,3,5). Carrying pre-canonical flat data
+        // forward safely needs a scheme that can disambiguate nested names; until then it is
+        // deferred and such entries are left untouched (orphaned-but-private, recoverable —
+        // strictly safer than the cross-store data loss+bleed a blind widening caused).
         if (!rest.startsWith("__ksafe_")) continue
         val value = localStorageGet(oldKey) ?: continue
         val newKey = newPrefix + rest

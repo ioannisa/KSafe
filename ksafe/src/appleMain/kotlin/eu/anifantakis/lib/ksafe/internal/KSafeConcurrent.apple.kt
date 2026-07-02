@@ -80,6 +80,15 @@ internal actual class KSafeConcurrentMap<V : Any> actual constructor() {
             if (ref.compareAndSet(current, next)) return null
         }
     }
+
+    actual fun removeIf(key: String, expected: V): Boolean {
+        while (true) {
+            val current = ref.value
+            if (current[key] != expected) return false
+            val next = HashMap(current).also { it.remove(key) }
+            if (ref.compareAndSet(current, next)) return true
+        }
+    }
 }
 
 @PublishedApi

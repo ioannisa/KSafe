@@ -59,6 +59,22 @@ class KSafeComposeState<T>(
     @Volatile
     private var lastUserWrite: T? = null
 
+    // The value last known in sync with storage — what a stale/older emission carries.
+    // The echo guard must be held ONLY while the written value diverges from this; a
+    // write that nets back to it (an A→B→A toggle within one coalescing window) never
+    // produces a distinct echo, so an unconditional latch would suppress external
+    // observation forever (deep-review M2). Seeded from the initial value; updated
+    // whenever an external emission or the echo brings the state back in sync.
+    //
+    // KNOWN LIMITATION (round-3 audit R7, accepted): if an intermediate value in an
+    // A→B→A sequence reached disk in a SEPARATE batch, a stale snapshot of it can briefly
+    // revert the state after the net-zero write clears the guard, until the follow-up
+    // snapshot restores it — a self-correcting flicker, never data loss. Accepted because
+    // the alternative (permanent latch) is the worse M2 bug; a full fix needs an
+    // epoch-tagged observer. See KSafeMutableStateFlow in KSafeDelegate.kt for detail.
+    @Volatile
+    private var syncedValue: T? = initialValue
+
     override var value: T
         get() {
             return _internalState.value
@@ -70,7 +86,10 @@ class KSafeComposeState<T>(
             // Persist only if the value has changed according to the policy
             if (!policy.equivalent(oldValueToCompare, newValue)) {
                 lastUserWrite = newValue
-                awaitingWriteEcho = true
+                @Suppress("UNCHECKED_CAST")
+                // Guard only a genuine divergence from storage; a write that returns to
+                // the synced value will never echo, so don't hold the latch for it.
+                awaitingWriteEcho = !policy.equivalent(newValue, syncedValue as T)
                 valueSaver(newValue)
             }
         }
@@ -85,6 +104,7 @@ class KSafeComposeState<T>(
     @PublishedApi internal fun updateFromStorage(newValue: T) {
         if (!awaitingWriteEcho) {
             _internalState.value = newValue
+            syncedValue = newValue
         }
     }
 
@@ -109,6 +129,7 @@ class KSafeComposeState<T>(
     @PublishedApi internal fun updateFromFlow(newValue: T) {
         if (!awaitingWriteEcho) {
             _internalState.value = newValue
+            syncedValue = newValue
             return
         }
         @Suppress("UNCHECKED_CAST")
@@ -116,6 +137,7 @@ class KSafeComposeState<T>(
             // The echo of the user's own write: consume it (the state already
             // shows this value) and resume external-change reflection.
             awaitingWriteEcho = false
+            syncedValue = newValue
         }
     }
 

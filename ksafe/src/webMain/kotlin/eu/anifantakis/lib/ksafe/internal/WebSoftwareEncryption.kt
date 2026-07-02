@@ -83,6 +83,22 @@ internal class WebSoftwareEncryption(
         }
     }
 
+    /**
+     * Drops [alias] from the per-instance [ensured] short-circuit and ensures it
+     * again — regenerating the IndexedDB key if it is gone. Used to self-heal
+     * after another tab deleted the key (clearAll / logout): the cross-tab
+     * `BroadcastChannel` eviction only clears the JS `mem` cache, not this Kotlin
+     * set, so without this a surviving tab would short-circuit [ensureKey] forever
+     * and every encrypted write would fail "web key missing" (deep-review H5).
+     */
+    private suspend fun reEnsureKey(alias: String) {
+        ensureMutex.withLock { ensured.remove(alias) }
+        ensureKey(alias)
+    }
+
+    private fun isWebKeyMissing(e: Throwable): Boolean =
+        e.message?.contains("web key missing", ignoreCase = true) == true
+
     override fun encrypt(
         identifier: String,
         data: ByteArray,
@@ -102,8 +118,18 @@ internal class WebSoftwareEncryption(
         requireUnlockedDevice: Boolean?,
     ): ByteArray {
         ensureKey(identifier)
-        val outB64 = webKeyEncrypt(idbName(identifier), Base64.encode(data))
-        return Base64.decode(outB64)
+        return try {
+            Base64.decode(webKeyEncrypt(idbName(identifier), Base64.encode(data)))
+        } catch (e: Throwable) {
+            if (e is CancellationException) throw e
+            // Another tab deleted this key (clearAll / logout) after we cached it in
+            // `ensured`; regenerate a fresh IndexedDB key and retry once so this tab's
+            // write succeeds instead of silently failing forever (deep-review H5).
+            if (isWebKeyMissing(e)) {
+                reEnsureKey(identifier)
+                Base64.decode(webKeyEncrypt(idbName(identifier), Base64.encode(data)))
+            } else throw e
+        }
     }
 
     @OptIn(ExperimentalEncodingApi::class)

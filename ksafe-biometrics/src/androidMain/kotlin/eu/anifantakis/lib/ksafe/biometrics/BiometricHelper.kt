@@ -382,6 +382,18 @@ object BiometricHelper {
 
                 biometricPrompt.authenticate(promptInfo)
 
+                // If the caller's coroutine is cancelled while the prompt is showing
+                // (navigation away, timeout, structured-concurrency cancel), dismiss it.
+                // androidx.biometric reuses ONE activity-scoped fragment/view-model, so an
+                // orphaned prompt left on screen rebinds to the NEXT caller's BiometricPrompt
+                // and can be satisfied under the wrong security configuration — e.g. the stale
+                // prompt still offers device-credential fallback while the next caller demanded
+                // biometrics-only (allowDeviceCredentialFallback = false). cancelAuthentication
+                // must run on the main thread. (deep-review: cancelled-prompt rebind.)
+                continuation.invokeOnCancellation {
+                    activity.runOnUiThread { runCatching { biometricPrompt.cancelAuthentication() } }
+                }
+
             } catch (e: Exception) {
                 if (continuation.isActive) {
                     continuation.resumeWithException(

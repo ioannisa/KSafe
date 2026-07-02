@@ -32,6 +32,14 @@ private val biometricAuthSessions = AtomicReference<Map<String, Long>>(emptyMap(
 // `SystemClock.elapsedRealtime()` (CLOCK_BOOTTIME) satisfies both.
 private fun monotonicNowMs(): Long = SystemClock.elapsedRealtime()
 
+// Strict (biometrics-only) authorizations are cached under a separate slot so a
+// device-credential (PIN/password) success can NEVER satisfy a later
+// allowDeviceCredentialFallback = false call within the window (deep-review L3). The
+// injective strength discriminator lives in the shared BiometricAuthSession.sessionKey
+// (round-3 audit R3 — the old "$base|strict" suffix was NOT injective).
+private fun sessionKeyFor(rawScope: String?, allowDeviceCredentialFallback: Boolean): String =
+    BiometricAuthSession.sessionKey(rawScope, requireStrict = !allowDeviceCredentialFallback)
+
 private fun updateBiometricSession(scope: String, timestamp: Long) {
     while (true) {
         val current = biometricAuthSessions.get()
@@ -46,7 +54,7 @@ internal actual suspend fun platformVerifyBiometric(
     allowDeviceCredentialFallback: Boolean,
 ): Boolean {
     if (BiometricAuthSession.shouldCache(authorizationDuration)) {
-        val scope = BiometricAuthSession.sessionKey(authorizationDuration!!.scope)
+        val scope = sessionKeyFor(authorizationDuration!!.scope, allowDeviceCredentialFallback)
         val lastAuth = biometricAuthSessions.get()[scope] ?: 0L
         val now = monotonicNowMs()
         if (lastAuth > 0 && (now - lastAuth) < authorizationDuration.duration) {
@@ -60,7 +68,10 @@ internal actual suspend fun platformVerifyBiometric(
         // recording an opt-out call would let a later, longer-window call reuse
         // it without a prompt.
         if (BiometricAuthSession.shouldCache(authorizationDuration)) {
-            updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope), monotonicNowMs())
+            updateBiometricSession(
+                sessionKeyFor(authorizationDuration!!.scope, allowDeviceCredentialFallback),
+                monotonicNowMs(),
+            )
         }
         true
     } catch (e: BiometricAuthException) {
@@ -101,10 +112,12 @@ internal actual fun platformClearBiometricAuth(scope: String?) {
         biometricAuthSessions.set(emptyMap())
         return
     }
-    val key = BiometricAuthSession.sessionKey(scope)
+    // Clear BOTH the permissive and strict slots for this scope (see [sessionKeyFor]).
+    val permissiveKey = sessionKeyFor(scope, allowDeviceCredentialFallback = true)
+    val strictKey = sessionKeyFor(scope, allowDeviceCredentialFallback = false)
     while (true) {
         val current = biometricAuthSessions.get()
-        val updated = current - key
+        val updated = current - permissiveKey - strictKey
         if (biometricAuthSessions.compareAndSet(current, updated)) break
     }
 }

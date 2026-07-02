@@ -49,7 +49,7 @@ internal actual suspend fun platformVerifyBiometric(
     allowDeviceCredentialFallback: Boolean,
 ): Boolean {
     if (BiometricAuthSession.shouldCache(authorizationDuration)) {
-        val scope = BiometricAuthSession.sessionKey(authorizationDuration!!.scope)
+        val scope = BiometricAuthSession.sessionKey(authorizationDuration!!.scope, requireStrict = !allowDeviceCredentialFallback)
         val lastAuth = biometricAuthSessions.value[scope] ?: 0L
         val now = monotonicNowMs()
         if (lastAuth > 0 && (now - lastAuth) < authorizationDuration.duration) {
@@ -59,7 +59,7 @@ internal actual suspend fun platformVerifyBiometric(
 
     if (isSimulator()) {
         if (BiometricAuthSession.shouldCache(authorizationDuration)) {
-            updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope), monotonicNowMs())
+            updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope, requireStrict = !allowDeviceCredentialFallback), monotonicNowMs())
         }
         return true
     }
@@ -74,7 +74,7 @@ internal actual suspend fun platformVerifyBiometric(
         CoroutineScope(Dispatchers.Main).launch {
             runLAContextEvaluate(context, reason, allowDeviceCredentialFallback) { success ->
                 if (success && BiometricAuthSession.shouldCache(authorizationDuration)) {
-                    updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope), monotonicNowMs())
+                    updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope, requireStrict = !allowDeviceCredentialFallback), monotonicNowMs())
                 }
                 if (continuation.isActive) continuation.resumeWith(Result.success(success))
             }
@@ -90,7 +90,7 @@ internal actual fun platformVerifyBiometricDirect(
 ) {
     CoroutineScope(Dispatchers.Main).launch {
         if (BiometricAuthSession.shouldCache(authorizationDuration)) {
-            val scope = BiometricAuthSession.sessionKey(authorizationDuration!!.scope)
+            val scope = BiometricAuthSession.sessionKey(authorizationDuration!!.scope, requireStrict = !allowDeviceCredentialFallback)
             val lastAuth = biometricAuthSessions.value[scope] ?: 0L
             val now = monotonicNowMs()
             if (lastAuth > 0 && (now - lastAuth) < authorizationDuration.duration) {
@@ -100,14 +100,14 @@ internal actual fun platformVerifyBiometricDirect(
         }
         if (isSimulator()) {
             if (BiometricAuthSession.shouldCache(authorizationDuration)) {
-                updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope), monotonicNowMs())
+                updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope, requireStrict = !allowDeviceCredentialFallback), monotonicNowMs())
             }
             onResult(true)
             return@launch
         }
         runLAContextEvaluate(platform.LocalAuthentication.LAContext(), reason, allowDeviceCredentialFallback) { success ->
             if (success && BiometricAuthSession.shouldCache(authorizationDuration)) {
-                updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope), monotonicNowMs())
+                updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope, requireStrict = !allowDeviceCredentialFallback), monotonicNowMs())
             }
             onResult(success)
         }
@@ -119,10 +119,12 @@ internal actual fun platformClearBiometricAuth(scope: String?) {
         biometricAuthSessions.value = emptyMap()
         return
     }
-    val key = BiometricAuthSession.sessionKey(scope)
+    // Clear BOTH the permissive and strict slots for this scope (see BiometricAuthSession).
+    val permissiveKey = BiometricAuthSession.sessionKey(scope, requireStrict = false)
+    val strictKey = BiometricAuthSession.sessionKey(scope, requireStrict = true)
     while (true) {
         val current = biometricAuthSessions.value
-        val updated = current - key
+        val updated = current - permissiveKey - strictKey
         if (biometricAuthSessions.compareAndSet(current, updated)) break
     }
 }

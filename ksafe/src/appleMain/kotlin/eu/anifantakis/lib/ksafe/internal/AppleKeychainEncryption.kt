@@ -369,6 +369,22 @@ internal class AppleKeychainEncryption(
         requireUnlockedDevice: Boolean?,
     ): ByteArray {
         val keyBytes = getOrCreateKeychainKey(identifier, hardwareIsolated, requireUnlockedDevice)
+        // HARDWARE_ISOLATED entries reuse ONE per-entry Keychain alias regardless of the
+        // unlock policy, so a rewrite that tightens requireUnlockedDevice on an existing
+        // key must re-assert kSecAttrAccessible — otherwise the stored item keeps its
+        // original (looser) accessibility and the tightened policy is silently unenforced
+        // (deep-review H3). DEFAULT entries encode the policy in which master alias they
+        // use, so they need no update.
+        //
+        // BEST-EFFORT (round-3 audit R6): a first-time create already stored the correct
+        // accessibility, so this only matters for a policy CHANGE on an existing key. It must
+        // NOT fail an otherwise-successful encrypt — a transient securityd error inside
+        // SecItemUpdate would otherwise throw "device is locked" and drop the write. On such a
+        // failure the OS still enforces the key's current accessibility and the tightening is
+        // retried on the next write, so swallow it here.
+        if (hardwareIsolated) {
+            runCatching { updateKeyAccessibility(identifier, resolvedRequireUnlockedDevice(requireUnlockedDevice)) }
+        }
         return runBlocking {
             val aesGcm = CryptographyProvider.CryptoKit.get(AES.GCM)
             val symmetricKey = aesGcm.keyDecoder().decodeFromByteArray(AES.Key.Format.RAW, keyBytes)

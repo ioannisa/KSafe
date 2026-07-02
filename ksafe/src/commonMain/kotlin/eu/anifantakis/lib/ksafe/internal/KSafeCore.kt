@@ -546,7 +546,12 @@ internal class KSafeCore(
                 async {
                     gate.withPermit {
                         try {
-                            engine.decryptSuspend(aliasForRead(c.userKey, c.protection), b64Decode(c.ciphertextB64))
+                            // Pass the recorded unlock policy so a strict entry probes
+                            // the native store (not a cached key) — a locked-device probe
+                            // throws transient, NOT "No encryption key found", so it is
+                            // correctly never classified as an orphan (deep-review H1).
+                            val reqUnlocked = encMetaMap[c.userKey]?.requireUnlockedDevice == true
+                            engine.decryptSuspend(aliasForRead(c.userKey, c.protection), b64Decode(c.ciphertextB64), reqUnlocked)
                             null
                         } catch (e: Throwable) {
                             if (e is CancellationException) throw e
@@ -680,7 +685,13 @@ internal class KSafeCore(
             if (explicitEncrypted) {
                 hasAnyEncryptedKey.set(true)
                 val encryptedString = (storedValue as? StoredValue.Text)?.value ?: continue
-                if (cacheHoldsCiphertext) {
+                // Strict (requireUnlockedDevice) entries are NEVER eagerly decrypted
+                // into the plaintext cache — even under a plaintext memory policy they
+                // stay as ciphertext so every read goes through the native store and
+                // enforces the lock (deep-review H2). Their plaintext must not reside
+                // in RAM.
+                val strict = encMetaMap[userKey]?.requireUnlockedDevice == true
+                if (cacheHoldsCiphertext || strict) {
                     // Re-check the LIVE dirty set: a write landing after the snapshot
                     // must not be clobbered with the older disk value (dirty flags are
                     // never cleared, so it would never re-merge).
@@ -705,7 +716,12 @@ internal class KSafeCore(
                         gate.withPermit {
                             try {
                                 val alias = aliasForRead(p.userKey, p.protection)
-                                val plain = engine.decryptSuspend(alias, b64Decode(p.ciphertextB64))
+                                // Strict entries are excluded from this eager-plaintext
+                                // preload upstream (kept as ciphertext); pass the flag
+                                // defensively so any that slip through still enforce the
+                                // lock instead of caching plaintext (deep-review H1/H2).
+                                val reqUnlocked = encMetaMap[p.userKey]?.requireUnlockedDevice == true
+                                val plain = engine.decryptSuspend(alias, b64Decode(p.ciphertextB64), reqUnlocked)
                                 // Live re-check AFTER the (slow, suspending) decrypt: a write
                                 // for this key may have landed during the round-trip — don't
                                 // overwrite its optimistic value with this stale disk decrypt.
@@ -1075,7 +1091,10 @@ internal class KSafeCore(
         for (op in finalByKey.values) {
             when (op) {
                 is PendingWrite.Encrypted -> if (op.userKey !in encryptFailures) {
-                    val cacheValue: Any = if (cacheHoldsCiphertext) {
+                    // Strict entries always settle to ciphertext in cache (even under a
+                    // plaintext policy) so reads native-decrypt and enforce the lock
+                    // (deep-review H2) — mirrors updateCache and resolveFromCache.
+                    val cacheValue: Any = if (cacheHoldsCiphertext || op.requireUnlockedDevice) {
                         val base64 = b64Encode(encryptedCiphertext[op.userKey]!!)
                         memoryCache.replaceIf(op.rawCacheKey, op.jsonString, base64)
                         base64
@@ -1083,23 +1102,44 @@ internal class KSafeCore(
                         op.jsonString
                     }
                     if (writeOwners[op.userKey] === op.writeToken) {
+                        val protLiteral = KeySafeMetadataManager.protectionToLiteral(op.protection)
+                        val meta = EncMeta(
+                            envelopeVersion = KeySafeMetadataManager.ENVELOPE_VERSION_LATEST,
+                            requireUnlockedDevice = op.requireUnlockedDevice,
+                        )
                         memoryCache.putIfAbsent(op.rawCacheKey, cacheValue)
-                        protectionMap.putIfAbsent(
-                            op.userKey,
-                            KeySafeMetadataManager.protectionToLiteral(op.protection),
-                        )
-                        encMetaMap.putIfAbsent(
-                            op.userKey,
-                            EncMeta(
-                                envelopeVersion = KeySafeMetadataManager.ENVELOPE_VERSION_LATEST,
-                                requireUnlockedDevice = op.requireUnlockedDevice,
-                            ),
-                        )
+                        protectionMap.putIfAbsent(op.userKey, protLiteral)
+                        encMetaMap.putIfAbsent(op.userKey, meta)
+                        // TOCTOU guard (deep-review M1): a delete or newer put that
+                        // superseded us claims writeOwners BEFORE clearing caches, so if we
+                        // lost ownership between the check above and these inserts, roll back
+                        // exactly the values we restored. The metadata rollback is COUPLED to
+                        // the value rollback: protection/encMeta are removed ONLY if our own
+                        // value was still the cached one (memoryCache.removeIf succeeded).
+                        // Ciphertext carries a random IV so it's unique to our write — a newer
+                        // put's value differs and removeIf returns false, so we never delete a
+                        // newer writer's identically-valued protection/encMeta (round-3 audit
+                        // R2 / finding 2: protectionToLiteral has only 3 values and EncMeta is
+                        // value-equal, so an UNcoupled metadata removeIf could clobber theirs).
+                        if (writeOwners[op.userKey] !== op.writeToken) {
+                            if (memoryCache.removeIf(op.rawCacheKey, cacheValue)) {
+                                protectionMap.removeIf(op.userKey, protLiteral)
+                                encMetaMap.removeIf(op.userKey, meta)
+                            }
+                        }
                     }
                 }
                 is PendingWrite.Plain -> if (writeOwners[op.userKey] === op.writeToken) {
+                    val protLiteral = KeySafeMetadataManager.protectionToLiteral(null)
                     memoryCache.putIfAbsent(op.rawCacheKey, op.value)
-                    protectionMap.putIfAbsent(op.userKey, KeySafeMetadataManager.protectionToLiteral(null))
+                    protectionMap.putIfAbsent(op.userKey, protLiteral)
+                    // TOCTOU guard (deep-review M1 / R2) — metadata rollback coupled to the
+                    // value rollback: only drop protection if our own value was still cached.
+                    if (writeOwners[op.userKey] !== op.writeToken) {
+                        if (memoryCache.removeIf(op.rawCacheKey, op.value)) {
+                            protectionMap.removeIf(op.userKey, protLiteral)
+                        }
+                    }
                 }
                 // A delete's desired in-memory state IS the wiped state.
                 is PendingWrite.Delete, is PendingWrite.ClearAll -> Unit
@@ -1243,7 +1283,13 @@ internal class KSafeCore(
                             } else {
                                 keyAlias(key)
                             }
-                            val plainBytes = engine.decryptSuspend(alias, b64Decode(enc))
+                            // Pass the recorded unlock policy so a strict entry bypasses the
+                            // engine's in-memory key cache and the native store enforces the
+                            // lock on every emission — the flow twin of resolveFromCache's
+                            // requireUnlocked path (deep-review H1: this was the gap 2.1.3's
+                            // getDirect fix didn't cover). On a locked device the strict
+                            // decrypt throws transient and the emission is skipped below.
+                            val plainBytes = engine.decryptSuspend(alias, b64Decode(enc), requireUnlocked)
                             val rawString = plainBytes.decodeToString()
                             if (rawString == NULL_SENTINEL) null
                             else jsonDecode(json, serializer, rawString)
@@ -1284,8 +1330,14 @@ internal class KSafeCore(
             )
             hasAnyEncryptedKey.set(true)
 
+            // Strict entries never enter the plaintext side cache — reads skip it for
+            // them, and leaving plaintext in a never-expiring cache would defeat the
+            // lock policy in memory (deep-review L2). On a non-strict→strict rewrite,
+            // also EVICT any prior side-cache entry so stale plaintext doesn't linger
+            // (round-3 audit R5).
             if (usesPlaintextSideCache) {
-                plaintextCache[rawCacheKey] = CachedPlaintext(jsonString, plaintextExpiry())
+                if (requireUnlockedDevice) plaintextCache.remove(rawCacheKey)
+                else plaintextCache[rawCacheKey] = CachedPlaintext(jsonString, plaintextExpiry())
             }
 
             writeChannel.trySend(
@@ -1354,8 +1406,11 @@ internal class KSafeCore(
 
         val jsonString = if (value == null) NULL_SENTINEL else jsonEncode(json, serializer, value)
         memoryCache[rawCacheKey] = jsonString
+        // Strict entries never enter the plaintext side cache; a non-strict→strict rewrite
+        // also evicts any prior entry so stale plaintext doesn't linger (deep-review L2 / R5).
         if (usesPlaintextSideCache) {
-            plaintextCache[rawCacheKey] = CachedPlaintext(jsonString, plaintextExpiry())
+            if (requireUnlockedDevice) plaintextCache.remove(rawCacheKey)
+            else plaintextCache[rawCacheKey] = CachedPlaintext(jsonString, plaintextExpiry())
         }
 
         // Route through the same coalescing channel as `putDirect`, but await the
@@ -1516,7 +1571,13 @@ internal class KSafeCore(
 
             val reqUnlocked = encMetaMap[key]?.requireUnlockedDevice == true
 
-            if (cacheHoldsCiphertext) {
+            // Strict (requireUnlockedDevice) entries ALWAYS take the native-decrypt
+            // branch, even under a plaintext memory policy: their memoryCache slot
+            // holds ciphertext (see updateCache / the post-batch swap), never the
+            // plaintext `else` branch below — otherwise a locked-device read would
+            // return the secret straight from RAM (deep-review H2, the PLAIN_TEXT twin
+            // of the 2.1.3 getDirect fix).
+            if (cacheHoldsCiphertext || reqUnlocked) {
                 if (usesPlaintextSideCache && !reqUnlocked) {
                     val cached = plaintextCache[cacheKey]
                     if (cached != null && plaintextStillValid(cached)) {

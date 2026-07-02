@@ -39,6 +39,12 @@ internal actual class KSafeConcurrentMap<V : Any> actual constructor() {
         map[key] = value
         return null
     }
+
+    actual fun removeIf(key: String, expected: V): Boolean {
+        if (map[key] != expected) return false
+        map.remove(key)
+        return true
+    }
 }
 
 @PublishedApi

@@ -86,4 +86,50 @@ class KSafeStateFlowClobberTest {
         msf.updateFromFlow("external")
         assertEquals("external", msf.value)
     }
+
+    /**
+     * deep-review M2: an idempotent write (`value = X` when already X and in sync
+     * with storage) must NOT permanently latch the guard. `distinctUntilChanged`
+     * eats the re-write so no echo can ever arrive; if the guard latched, every
+     * future external change would be suppressed for the StateFlow's lifetime.
+     */
+    @Test
+    fun updateFromFlow_idempotentWrite_doesNotLatchGuard() {
+        val msf = KSafeMutableStateFlow(initialValue = "init", persist = { /* no-op */ })
+
+        // Sync with storage, then re-write the SAME value (very common: re-submitting
+        // an unchanged form, `flow.value = repo.compute()` returning the same result).
+        msf.updateFromFlow("synced")
+        msf.value = "synced"
+
+        // External changes must still reflect — the guard must not be stuck.
+        msf.updateFromFlow("external_new")
+        assertEquals(
+            "external_new", msf.value,
+            "an idempotent write must not permanently suppress external observation",
+        )
+    }
+
+    /**
+     * deep-review M2: a write sequence that nets back to the synced value
+     * (A→B→A within one coalescing window) produces no distinct echo either, so
+     * it must not latch the guard permanently.
+     */
+    @Test
+    fun updateFromFlow_netZeroToggle_doesNotLatchGuard() {
+        val msf = KSafeMutableStateFlow(initialValue = "A", persist = { /* no-op */ })
+        // Establish "A" as the synced baseline.
+        msf.updateFromFlow("A")
+
+        // A → B → A: each step changes the value, but the net persisted value is
+        // unchanged, so distinctUntilChanged emits nothing and no echo arrives.
+        msf.value = "B"
+        msf.value = "A"
+
+        msf.updateFromFlow("external_new")
+        assertEquals(
+            "external_new", msf.value,
+            "an A→B→A net-zero write must not permanently suppress external observation",
+        )
+    }
 }

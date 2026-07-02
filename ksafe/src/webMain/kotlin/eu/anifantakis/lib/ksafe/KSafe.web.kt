@@ -106,8 +106,28 @@ private fun buildWebKSafe(
     // Existing data under the old `ksafe_<name>_` prefix is carried forward
     // by the one-time migration below.
     val legacyStoragePrefix: String = if (fileName != null) "ksafe_${fileName}_" else "ksafe_default_"
-    val storagePrefix: String = if (fileName != null) "ksafe.${fileName}:" else "ksafe.:"
+
+    // appNamespace isolates the DATA namespace too, not just the engine's IndexedDB key
+    // record (round-3 audit R4 / findings 6,13). Without this, two same-origin setups with
+    // the same fileName but different appNamespace collide on the same localStorage slots
+    // and overwrite each other with mutually-undecryptable ciphertext. The namespace
+    // segment uses `@` as the delimiter — outside both the fileName alphabet ([a-z][a-z0-9_]*)
+    // and the sanitized appNamespace charset ([A-Za-z0-9._-]) — so the scheme stays
+    // prefix-free and injective (appNs has no `@`, so the first `@` is the unambiguous split).
+    val appNs: String? = config.appNamespace?.trim()?.takeIf { it.isNotEmpty() }
+        ?.replace(Regex("[^A-Za-z0-9._-]"), "_")?.take(120)?.takeIf { it.isNotEmpty() }
+    val nsSegment: String = if (appNs != null) "$appNs@" else ""
+    val storagePrefix: String = if (fileName != null) "ksafe.$nsSegment${fileName}:" else "ksafe.$nsSegment:"
+
+    // Carry existing data forward: the old flat `ksafe_<name>_` layout first…
     migrateLegacyLocalStoragePrefix(legacyStoragePrefix, storagePrefix)
+    // …and, when an appNamespace is set, also the un-namespaced `ksafe.<name>:` prefix that
+    // shipped 2.1.x wrote to before appNamespace isolated the data store. Only runs when the
+    // namespaced prefix actually differs (appNs set), so the default path is unchanged.
+    if (nsSegment.isNotEmpty()) {
+        val unNamespaced = if (fileName != null) "ksafe.${fileName}:" else "ksafe.:"
+        migrateLegacyLocalStoragePrefix(unNamespaced, storagePrefix)
+    }
 
     // The ENGINE keeps the legacy prefix on purpose: it namespaces the key
     // records — including the IndexedDB record NAMES that hold the

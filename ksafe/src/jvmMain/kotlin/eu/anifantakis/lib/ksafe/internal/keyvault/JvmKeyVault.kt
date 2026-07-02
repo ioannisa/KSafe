@@ -234,6 +234,24 @@ internal class JvmKeyVaultProvider(
     private val osVaultSelfTestFailed = AtomicBoolean(false)
 
     /**
+     * Set when the explicit software opt-out (`-Dksafe.jvm.keyVault=software`) selected
+     * the legacy store. Like [osVaultSelfTestFailed] it makes a null key lookup ambiguous
+     * — a store that previously used the OS vault still has ciphertext whose key lives
+     * only there — so reads must report "unavailable" (preserve) rather than "absent"
+     * (which the orphan sweep would delete). Unlike [osVaultSelfTestFailed] it does NOT
+     * refuse key creation: opting out deliberately mints new keys into the software store.
+     *
+     * TRADEOFF (round-3 audit R8, accepted): because we cannot tell — under opt-out,
+     * without probing the very OS vault the user opted out of — whether a store was ever
+     * OS-backed, we treat ALL opt-out stores as "possibly OS-migrated" and preserve. For a
+     * genuinely software-only store this disables orphan-ciphertext reclamation (a key
+     * that was deleted leaves its ciphertext on disk unread), which is harmless clutter,
+     * not data loss or leakage. Erring toward preserve is the correct bias for a security
+     * library: never risk deleting data that a re-enabled OS vault could still recover.
+     */
+    private val softwareOptOut = AtomicBoolean(false)
+
+    /**
      * Picked at construction (after OS detection + self-test). Declared *after*
      * [degraded] / [osVaultSelfTestFailed] because [pick] writes the latter on a
      * self-test failure — initialising it earlier would dereference a not-yet-
@@ -256,7 +274,7 @@ internal class JvmKeyVaultProvider(
      * sweep from deleting still-recoverable ciphertext.
      */
     val hasDegraded: Boolean
-        get() = degraded.get() || osVaultSelfTestFailed.get()
+        get() = degraded.get() || osVaultSelfTestFailed.get() || softwareOptOut.get()
 
     /**
      * True when an OS vault exists for this platform but was unavailable at
@@ -296,6 +314,14 @@ internal class JvmKeyVaultProvider(
         val override = System.getProperty(PROP_KEY_VAULT)
             ?: System.getenv(ENV_KEY_VAULT)
         if (override != null && override.lowercase() in OPT_OUT_VALUES) {
+            // Preserve, don't delete: a store that used the OS vault before the opt-out
+            // still holds ciphertext whose key lives only there. Flag it so a missing
+            // legacy key reads as "unavailable" (orphan sweep skips it) instead of
+            // "absent" (which would permanently delete recoverable data). New keys still
+            // mint into the software store — that's the point of the opt-out (deep-review
+            // M3). A from-start opt-out store keeps its software keys in [legacy], so this
+            // never fires for keys that are genuinely present.
+            softwareOptOut.set(true)
             return legacy
         }
 

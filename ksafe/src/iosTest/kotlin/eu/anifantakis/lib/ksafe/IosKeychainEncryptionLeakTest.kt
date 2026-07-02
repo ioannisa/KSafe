@@ -70,7 +70,13 @@ class IosKeychainEncryptionLeakTest {
         }
         val finalPeakBytes = peakResidentMemoryBytes()
 
-        assertBoundedGrowth(baselinePeakBytes, finalPeakBytes, "decrypt")
+        // The decrypt path throws every iteration here (no keychain entitlements in the
+        // test runner), and Kotlin/Native 2.3+ captures a stack trace per exception, which
+        // inflates peak RSS by 5-10 MB of transient allocations unrelated to the bridging
+        // leak. This test therefore uses the loose threshold and is only a secondary check;
+        // testNoLeakOnBackgroundThread_deleteKey (which never throws) is the STRICT guard
+        // that can actually fail on the ~5 MB bridging-leak signature (deep-review L1).
+        assertBoundedGrowth(baselinePeakBytes, finalPeakBytes, "decrypt", LEAK_GROWTH_THRESHOLD_LOOSE_BYTES)
     }
 
     @Test
@@ -87,16 +93,19 @@ class IosKeychainEncryptionLeakTest {
         }
         val finalPeakBytes = peakResidentMemoryBytes()
 
-        assertBoundedGrowth(baselinePeakBytes, finalPeakBytes, "deleteKey")
+        // deleteKey never throws, so peak RSS reflects only the CFBridgingRetain/autorelease
+        // balance under test — use the STRICT threshold so a real leak (≥5 MB over 5k iters)
+        // actually fails the build (deep-review L1).
+        assertBoundedGrowth(baselinePeakBytes, finalPeakBytes, "deleteKey", LEAK_GROWTH_THRESHOLD_STRICT_BYTES)
     }
 
-    private fun assertBoundedGrowth(baseline: Long, final: Long, opName: String) {
+    private fun assertBoundedGrowth(baseline: Long, final: Long, opName: String, thresholdBytes: Long) {
         val growthBytes = final - baseline
         val growthMb = growthBytes / 1_048_576
         assertTrue(
-            growthBytes < LEAK_GROWTH_THRESHOLD_BYTES,
+            growthBytes < thresholdBytes,
             "Peak RSS grew by $growthMb MB after $LEAK_TEST_ITERATIONS background-thread $opName calls " +
-                "(threshold: ${LEAK_GROWTH_THRESHOLD_BYTES / 1_048_576} MB). " +
+                "(threshold: ${thresholdBytes / 1_048_576} MB). " +
                 "Indicates Kotlin→NSString bridging allocations are leaking — missing autoreleasepool in AppleKeychainEncryption?"
         )
     }
@@ -118,9 +127,17 @@ class IosKeychainEncryptionLeakTest {
 
         // A leaking implementation costs ≥1KB of NSString/Malloc allocations
         // per iteration (measured with Instruments), so 5k iterations push
-        // peak RSS up by multiple MB. With autorelease pools in place, growth
-        // is dominated by allocator slack and stays under 2 MB.
-        // Exceptions capture stack traces on Kotlin Native 2.3+ which may take 5-10MB.
-        private const val LEAK_GROWTH_THRESHOLD_BYTES: Long = 10L * 1024 * 1024
+        // peak RSS up by ≥5 MB. With autorelease pools in place, growth is
+        // dominated by allocator slack and stays under 2 MB.
+        //
+        // STRICT: for non-throwing ops (deleteKey) whose peak RSS reflects only the
+        // bridging balance — kept BELOW the ~5 MB leak signature so a regression fails.
+        private const val LEAK_GROWTH_THRESHOLD_STRICT_BYTES: Long = 2L * 1024 * 1024
+
+        // LOOSE: only for the throwing decrypt path, where Kotlin/Native 2.3+ exception
+        // stack traces add 5-10 MB of transient allocations that inflate peak RSS. This
+        // path can't distinguish a leak from exception overhead, so it's a secondary
+        // check; the strict deleteKey test is the real guard.
+        private const val LEAK_GROWTH_THRESHOLD_LOOSE_BYTES: Long = 12L * 1024 * 1024
     }
 }

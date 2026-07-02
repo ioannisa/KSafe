@@ -27,6 +27,8 @@ internal actual class KSafeConcurrentMap<V : Any> actual constructor() {
     actual fun replaceIf(key: String, expected: V, new: V): Boolean = map.replace(key, expected, new)
 
     actual fun putIfAbsent(key: String, value: V): V? = map.putIfAbsent(key, value)
+
+    actual fun removeIf(key: String, expected: V): Boolean = map.remove(key, expected)
 }
 
 @PublishedApi

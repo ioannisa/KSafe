@@ -447,6 +447,32 @@ class JvmKeyVaultMigrationTest {
     }
 
     @Test
+    fun softwareOptOut_flagsDegraded_toPreserveOsVaultCiphertext() {
+        // deep-review M3: the documented `-Dksafe.jvm.keyVault=software` opt-out returns
+        // the legacy vault before any self-test. On a store that PREVIOUSLY used the OS
+        // vault, its ciphertext's key lives only there — so a missing legacy key must read
+        // as "unavailable" (orphan sweep preserves it) rather than "absent" (which would
+        // permanently delete recoverable data). But the opt-out must still MINT new keys
+        // into the software store, so it must NOT set osVaultUnavailable (which refuses
+        // key creation). An OS candidate is present to prove the opt-out short-circuits it.
+        System.setProperty("ksafe.jvm.keyVault", "software")
+        try {
+            val provider = JvmKeyVaultProvider(dataStore, osCandidateForTest = FakeOsVault())
+            assertEquals(provider.legacy, provider.active, "opt-out ⇒ legacy is the active vault")
+            assertTrue(
+                provider.hasDegraded,
+                "opt-out on a possibly-OS-vault store must report reads as 'unavailable' so the sweep preserves ciphertext",
+            )
+            assertFalse(
+                provider.osVaultUnavailable,
+                "opt-out must still mint new keys into the software store (unlike a self-test failure)",
+            )
+        } finally {
+            System.clearProperty("ksafe.jvm.keyVault")
+        }
+    }
+
+    @Test
     fun healthyOsCandidate_selectsOsVault_viaSelfTestSeam() {
         // Sanity-check the seam itself: a candidate that PASSES self-test is
         // selected as the active OS vault and nothing is flagged unavailable.

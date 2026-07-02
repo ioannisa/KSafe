@@ -52,6 +52,14 @@ internal expect class KSafeConcurrentMap<V : Any>() {
      * write's optimistic value, which would already occupy it.
      */
     fun putIfAbsent(key: String, value: V): V?
+
+    /**
+     * Atomically removes the mapping only when the current value is `==` [expected].
+     * Returns `true` if the removal happened. Used by the post-commit cache repair to
+     * roll back exactly the value it just restored when it discovers a concurrent
+     * delete/newer write superseded it — without ever removing a third writer's value.
+     */
+    fun removeIf(key: String, expected: V): Boolean
 }
 
 @PublishedApi

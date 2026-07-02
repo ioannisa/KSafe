@@ -199,7 +199,47 @@ internal class AndroidKeystoreEncryption(
         out[DEK_MAGIC.size] = DEK_VERSION
         System.arraycopy(iv, 0, out, DEK_HEADER_LEN, GCM_IV_LENGTH)
         System.arraycopy(ct, 0, out, DEK_HEADER_LEN + GCM_IV_LENGTH, ct.size)
+        // Cross-instance clearAll race (deep-review H4): two KSafe instances on one file
+        // share this engine's dekCache but have separate write consumers, so a sibling's
+        // clearAll can wipe the persisted DEK slot + KEK *after* we read the cached DEK and
+        // *before* our ciphertext lands. We captured the raw DEK bytes above, so the
+        // ciphertext stays recoverable as long as SOME wrapped copy of this DEK survives.
+        // dekCache[alias] going null is the precise, cheap signal that a teardown for this
+        // alias ran during our encrypt; re-persist the DEK (re-wrapping under a fresh KEK if
+        // the old one was deleted) so an acknowledged post-clear write isn't orphaned. Normal
+        // path: dekCache still holds our DEK → one map lookup, no I/O.
+        if (dekCache[alias] == null) {
+            ensureDekPersisted(alias, dek)
+        }
         return out
+    }
+
+    /**
+     * Best-effort repair after a concurrent teardown (clearAll on a sibling instance sharing
+     * this engine): ensure the DEK we just encrypted under is durably wrapped so its ciphertext
+     * stays decryptable. If the slot already holds a *different* valid DEK (a concurrent writer
+     * minted a fresh one and now owns the single per-safe slot), we leave it — that write's data
+     * wins the single-slot race, and ours is subject to the same generic lost-write hazard any
+     * two-instances-one-file clearAll race has. Only runs when a teardown was observed.
+     */
+    private fun ensureDekPersisted(alias: String, dek: ByteArray) {
+        synchronized(lockFor(alias)) {
+            val stored = try { dekStore.load() } catch (_: Throwable) { null }
+            if (stored != null) {
+                val existing = try { unwrapDek(alias, stored) } catch (_: Throwable) { null }
+                if (existing != null) {
+                    // Slot already holds a usable DEK. If it's ours, just repopulate the cache;
+                    // if it's a different one, a fresh mint owns the slot — don't clobber it.
+                    if (existing.contentEquals(dek)) dekCache[alias] = dek
+                    return
+                }
+            }
+            // Slot empty or unusable: re-wrap our DEK (minting a KEK if the old one was deleted)
+            // and persist, so the ciphertext just produced under it remains decryptable.
+            val wrapped = wrapDek(alias, dek)
+            dekStore.save(wrapped)
+            dekCache[alias] = dek
+        }
     }
 
     // ── decrypt ──────────────────────────────────────────────────────────────

@@ -129,4 +129,79 @@ class WebPrefixIsolationTest {
         localStorageRemove("ksafe.${base}:__ksafe_value_k")
         localStorageRemove("ksafe.${base}_cache:__ksafe_value_k")
     }
+
+    /**
+     * Round-3 audit R1 (findings 1/3/5): the migration must NOT move a nested
+     * sibling store's FLAT 1.6/1.7 entry (bare `<key>` / `encrypted_<key>`).
+     * Those remainders carry no canonical marker, so a shorter-named store's
+     * migration cannot tell them apart from its own flat keys — moving them
+     * both DELETES the sibling's only copy and SURFACES it under the shorter
+     * store (cross-store plaintext bleed). The migration must leave every
+     * non-canonical entry untouched to preserve the prefix-free isolation
+     * guarantee; carrying legacy flat data forward is deferred to a design that
+     * can disambiguate nested names.
+     */
+    @Test
+    fun legacyFlatData_ofNestedSibling_isNotStolenByShorterStore() {
+        val base = WebKSafeTest.generateUniqueFileName()
+        // 1.6/1.7 flat layout: the nested sibling store "<base>_cache"'s plain
+        // value for key "foo" lives at "ksafe_<base>_cache_foo" (no marker),
+        // and its encrypted value at "ksafe_<base>_cache_encrypted_foo".
+        localStorageSet("ksafe_${base}_cache_foo", "sibling-flat-plain")
+        localStorageSet("ksafe_${base}_cache_encrypted_foo", "sibling-flat-cipher")
+
+        // The shorter-named store migrates.
+        migrateLegacyLocalStoragePrefix("ksafe_${base}_", "ksafe.${base}:")
+
+        // The sibling's flat entries must be left exactly where they were…
+        assertEquals(
+            "sibling-flat-plain",
+            localStorageGet("ksafe_${base}_cache_foo"),
+            "a nested sibling's flat plain entry must not be stolen by the shorter-named store",
+        )
+        assertEquals(
+            "sibling-flat-cipher",
+            localStorageGet("ksafe_${base}_cache_encrypted_foo"),
+            "a nested sibling's flat encrypted entry must not be stolen by the shorter-named store",
+        )
+        // …and must NOT have leaked into the shorter store's namespace.
+        assertNull(
+            localStorageGet("ksafe.${base}:cache_foo"),
+            "the shorter store must not surface the sibling's flat data under its own prefix",
+        )
+
+        localStorageRemove("ksafe_${base}_cache_foo")
+        localStorageRemove("ksafe_${base}_cache_encrypted_foo")
+    }
+
+    /**
+     * Round-3 audit R4 (findings 6/13): on web, `KSafeConfig.appNamespace` must
+     * isolate the localStorage DATA namespace, not just the IndexedDB key record.
+     * Two same-origin KSafe setups with the SAME fileName but DIFFERENT
+     * appNamespace (the exact case appNamespace exists to separate) must not
+     * collide on the same data slots and overwrite each other.
+     */
+    @Test
+    fun appNamespace_isolatesTheDataStore_forSameFileName() = runTest {
+        val file = WebKSafeTest.generateUniqueFileName()
+        val appA = KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.a"), testEngine = FakeEncryption())
+        val appB = KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.b"), testEngine = FakeEncryption())
+        appA.awaitCacheReady()
+        appB.awaitCacheReady()
+
+        appA.put("token", "value-A", KSafeWriteMode.Plain)
+        appB.put("token", "value-B", KSafeWriteMode.Plain)
+
+        // Read through FRESH instances so the answer comes from localStorage, not
+        // the original instance's optimistic cache.
+        val appAReopened = KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.a"), testEngine = FakeEncryption())
+        val appBReopened = KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.b"), testEngine = FakeEncryption())
+        appAReopened.awaitCacheReady()
+        appBReopened.awaitCacheReady()
+
+        assertEquals("value-A", appAReopened.get("token", "GONE"), "app A must keep its own value across a same-fileName different-appNamespace app")
+        assertEquals("value-B", appBReopened.get("token", "GONE"), "app B must keep its own value")
+
+        appAReopened.clearAll(); appBReopened.clearAll()
+    }
 }
