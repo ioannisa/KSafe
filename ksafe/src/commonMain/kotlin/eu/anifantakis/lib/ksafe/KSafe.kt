@@ -265,6 +265,14 @@ class KSafe @PublishedApi internal constructor(
      * Like [getDirect], this checks the memory cache first for performance.
      * If the cache is not ready, it suspends (instead of blocking) until data is loaded.
      * Protection is auto-detected from stored metadata.
+     *
+     * **Transient-failure contract (differs from [getDirect]/[getFlow]).** On a *transient*
+     * decrypt failure — a locked device or a momentarily busy Keystore/Keychain for an
+     * encrypted key — this suspend variant **rethrows** rather than collapsing to
+     * [defaultValue], so a coroutine caller can await device unlock and retry. [getDirect]
+     * (which has no retry seam) returns [defaultValue] and [getFlow] skips the emission for
+     * the same state. A *non-transient* failure (genuinely absent / corrupt ciphertext) still
+     * returns [defaultValue] here too.
      */
     suspend inline fun <reified T> get(key: String, defaultValue: T): T {
         @Suppress("UNCHECKED_CAST")

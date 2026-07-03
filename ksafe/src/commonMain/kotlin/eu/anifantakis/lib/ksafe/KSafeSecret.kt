@@ -1,6 +1,7 @@
 package eu.anifantakis.lib.ksafe
 
 import eu.anifantakis.lib.ksafe.internal.secureRandomBytes
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.io.encoding.Base64
@@ -71,7 +72,21 @@ suspend fun KSafe.getOrCreateSecret(
     val storageKey = "ksafe_secret_${key.replace(Regex("[^a-zA-Z0-9_]"), "_")}"
 
     return secretMutex.withLock {
-        val stored = get<String>(storageKey, defaultValue = "")
+        val stored = try {
+            get<String>(storageKey, defaultValue = "")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // Unlike getDirect, the suspend get() path RETHROWS a transient decrypt failure
+            // (locked device / momentarily-unavailable vault) instead of collapsing it to ""
+            // (FEEDBACK_4 M6). A secret only has ciphertext to decrypt once it exists, so this
+            // is the "exists but can't be read right now" case: fall through to the
+            // refuse-to-rotate branch below (never regenerate over a still-present secret, and
+            // never surface a raw keystore exception). If nothing is stored yet, the read
+            // should not have thrown — re-raise the unexpected failure rather than masking it.
+            if (getKeyInfo(storageKey) == null) throw e
+            ""
+        }
         when {
             stored.isNotEmpty() -> Base64.decode(stored)
 
