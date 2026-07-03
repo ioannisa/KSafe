@@ -171,7 +171,7 @@ internal class JvmKeyVaultProvider(
     private val osCandidateForTest: JvmKeyVault? = null,
     /**
      * Test seam: stands in for the lazily-built legacy-derived-namespace twin
-     * (see [legacyProbe]) so the 2.1.0/2.1.1 namespace-upgrade
+     * (see [legacyProbes]) so the 2.1.0/2.1.1 namespace-upgrade
      * recovery can be tested without a real OS secret store.
      */
     private val legacyNamespaceCandidateForTest: JvmKeyVault? = null,
@@ -185,16 +185,23 @@ internal class JvmKeyVaultProvider(
      * (FEEDBACK_4 H2).
      */
     private val legacyNamespaceNameForTest: String? = null,
+    /**
+     * Test seam: multiple legacy-namespace candidate twins, each paired with the
+     * namespace it stands for, in probe order. Models the FEEDBACK_4 H3 case where
+     * an explicit `appNamespace` must probe BOTH `"shared"` and the 2.1.0/2.1.1
+     * launcher-derived namespace. Takes precedence over the single-candidate seams.
+     */
+    private val legacyNamespaceCandidatesForTest: List<Pair<JvmKeyVault, String?>>? = null,
 ) {
     /**
-     * Retained for [legacyProbe]: the Windows DPAPI twin needs the
+     * Retained for [legacyProbes]: the Windows DPAPI twin needs the
      * same DataStore (it stores the wrapped blob there).
      */
     private val dataStoreForTwin: DataStore<Preferences>? = dataStore
 
     /**
      * True when a test injected the active vault or the OS candidate. Guards
-     * [legacyProbe] from lazily constructing a REAL OS vault (and
+     * [legacyProbes] from lazily constructing a REAL OS vault (and
      * probing the developer's actual Keychain/keyring) inside unit tests that
      * only stubbed the primary path.
      */
@@ -364,7 +371,7 @@ internal class JvmKeyVaultProvider(
         return legacy
     }
 
-    /** OS-detected vault construction, shared by [pick] and [legacyProbe]. */
+    /** OS-detected vault construction, shared by [pick] and [legacyProbes]. */
     private fun buildOsVault(
         os: String,
         namespace: String,
@@ -384,7 +391,7 @@ internal class JvmKeyVaultProvider(
     /**
      * The legacy-namespace read-fallback: the OS-vault twin used as a migration
      * source (see [recoverFromLegacyNamespace]), paired with the **namespace it
-     * lives under**. Two upgrade paths feed it (see [legacyFallbackNamespace]):
+     * lives under**. Two upgrade paths feed it (see [legacyFallbackNamespaces]):
      * the 2.1.0/2.1.1 launcher-**derived** namespace when on the stable default
      * (those releases derived it from `sun.java.command`; the default is now the
      * constant [DEFAULT_JVM_NAMESPACE]), OR the stable default `"shared"` itself
@@ -403,21 +410,21 @@ internal class JvmKeyVaultProvider(
      * (no test seams), an OS-backed pick, and a fallback namespace that differs
      * from the active one.
      */
-    private val legacyProbe: Pair<JvmKeyVault, String?>? by lazy {
-        legacyNamespaceCandidateForTest?.let { return@lazy it to legacyNamespaceNameForTest }
-        if (usingTestSeams) return@lazy null
-        if (!picked.isOsBacked) return@lazy null
-        // Probe the namespace that holds pre-upgrade keys: the 2.1.0/2.1.1 launcher-
-        // derived namespace when on the stable default, OR the stable default itself
-        // when an explicit appNamespace was newly set (FEEDBACK_4 H-D).
-        val fallbackNs = legacyFallbackNamespace(appNamespace, legacyDerivedJvmNamespace())
-            ?: return@lazy null
-        val vault = buildOsVault(
-            System.getProperty("os.name").orEmpty().lowercase(),
-            fallbackNs,
-            dataStoreForTwin,
-        ) ?: return@lazy null
-        vault to fallbackNs
+    private val legacyProbes: List<Pair<JvmKeyVault, String?>> by lazy {
+        legacyNamespaceCandidatesForTest?.let { return@lazy it }
+        legacyNamespaceCandidateForTest?.let { return@lazy listOf(it to legacyNamespaceNameForTest) }
+        if (usingTestSeams) return@lazy emptyList()
+        if (!picked.isOsBacked) return@lazy emptyList()
+        // Probe every namespace that could hold pre-upgrade keys, in order (FEEDBACK_4 H3):
+        // the 2.1.0/2.1.1 launcher-derived namespace AND the stable default "shared", minus
+        // whichever equals the active namespace. On the default the set is just the derived
+        // namespace (the H-D single-hop); with an explicit appNamespace it is BOTH, since a
+        // 2.1.0/2.1.1 stable-launcher app that later adds an appNamespace holds its key under
+        // the derived namespace, not "shared".
+        val os = System.getProperty("os.name").orEmpty().lowercase()
+        legacyFallbackNamespaces(appNamespace, legacyDerivedJvmNamespace()).mapNotNull { ns ->
+            buildOsVault(os, ns, dataStoreForTwin)?.let { it to ns }
+        }
     }
 
     /**
@@ -435,35 +442,37 @@ internal class JvmKeyVaultProvider(
      * states never route to the OS vault in the first place).
      */
     internal fun recoverFromLegacyNamespace(alias: String): ByteArray? {
-        val (source, sourceNamespace) = legacyProbe ?: return null
-        val bytes = try {
-            source.get(alias)
-        } catch (e: LinkageError) {
-            throw e
-        } catch (_: Throwable) {
-            null
-        } ?: return null
-        try {
-            picked.put(alias, bytes)
-            // Reclaim the old entry only for a genuine derived legacy namespace
-            // (no live owner). NEVER delete from the stable default "shared": a
-            // co-existing no-namespace KSafe instance may be actively using that
-            // key, and a MOVE would orphan the sibling's ciphertext (FEEDBACK_4
-            // H2). Leaving it is harmless — the key now lives under the active
-            // namespace, so active.get() hits next launch and this fallback
-            // won't re-run.
-            if (sourceNamespace != DEFAULT_JVM_NAMESPACE &&
-                picked.get(alias)?.contentEquals(bytes) == true
-            ) {
-                runCatching { source.delete(alias) }
+        for ((source, sourceNamespace) in legacyProbes) {
+            val bytes = try {
+                source.get(alias)
+            } catch (e: LinkageError) {
+                throw e
+            } catch (_: Throwable) {
+                null
+            } ?: continue // this namespace has no such key — try the next candidate
+            try {
+                picked.put(alias, bytes)
+                // Reclaim the old entry only for a genuine derived legacy namespace
+                // (no live owner). NEVER delete from the stable default "shared": a
+                // co-existing no-namespace KSafe instance may be actively using that
+                // key, and a MOVE would orphan the sibling's ciphertext (FEEDBACK_4
+                // H2). Leaving it is harmless — the key now lives under the active
+                // namespace, so active.get() hits next launch and this fallback
+                // won't re-run.
+                if (sourceNamespace != DEFAULT_JVM_NAMESPACE &&
+                    picked.get(alias)?.contentEquals(bytes) == true
+                ) {
+                    runCatching { source.delete(alias) }
+                }
+            } catch (e: LinkageError) {
+                throw e
+            } catch (_: Throwable) {
+                // Keep serving the recovered bytes; the un-deleted old entry makes
+                // the migration retry next launch.
             }
-        } catch (e: LinkageError) {
-            throw e
-        } catch (_: Throwable) {
-            // Keep serving the recovered bytes; the un-deleted old entry makes
-            // the migration retry next launch.
+            return bytes
         }
-        return bytes
+        return null
     }
 
     /**
@@ -475,9 +484,12 @@ internal class JvmKeyVaultProvider(
      * that key, so a namespaced instance must never scrub it (FEEDBACK_4 H2).
      */
     internal fun deleteFromLegacyNamespace(alias: String) {
-        val (twin, twinNamespace) = legacyProbe ?: return
-        if (twinNamespace == DEFAULT_JVM_NAMESPACE) return
-        runCatching { twin.delete(alias) }
+        for ((twin, twinNamespace) in legacyProbes) {
+            // Never scrub the stable default "shared" — a co-existing no-namespace instance
+            // may own that key (FEEDBACK_4 H2). Genuine derived legacy namespaces are scrubbed.
+            if (twinNamespace == DEFAULT_JVM_NAMESPACE) continue
+            runCatching { twin.delete(alias) }
+        }
     }
 
     /**
@@ -597,19 +609,22 @@ internal class JvmKeyVaultProvider(
 internal const val DEFAULT_JVM_NAMESPACE = "shared"
 
 /**
- * The OS-vault namespace to probe as a read-fallback migration source for a key that misses
- * under [currentNamespace], or `null` when there is nothing to probe. Two upgrade paths:
- *  - [currentNamespace] is the stable default (`"shared"`): probe the 2.1.0/2.1.1 launcher-
- *    **derived** namespace [derivedNamespace] (keys written before the default became stable).
- *  - [currentNamespace] is an **explicit** `appNamespace`: probe the stable default
- *    [DEFAULT_JVM_NAMESPACE] — an app that ran without a namespace and then set one holds its
- *    keys under `"shared"`, and adding `appNamespace` would otherwise orphan them (FEEDBACK_4 H-D).
- * Returns `null` when the fallback would equal [currentNamespace] (nothing to migrate).
+ * The OS-vault namespaces to probe, in order, as read-fallback migration sources for a key
+ * that misses under [currentNamespace] — the 2.1.0/2.1.1 launcher-**derived** namespace
+ * [derivedNamespace] and the stable default [DEFAULT_JVM_NAMESPACE], minus whichever equals
+ * [currentNamespace] (nothing to migrate from the active namespace). Empty when neither
+ * differs. Two upgrade paths, and the case that needs BOTH (FEEDBACK_4 H3):
+ *  - [currentNamespace] is the stable default (`"shared"`): the set is just [derivedNamespace]
+ *    — keys written before the default became stable (the H-D single hop).
+ *  - [currentNamespace] is an **explicit** `appNamespace`: the set is `[derived, "shared"]`.
+ *    An app that ran without a namespace and then set one holds keys under `"shared"`; an app
+ *    that shipped on 2.1.0/2.1.1 with a stable launcher and then set one holds them under the
+ *    derived namespace. A single app can need EITHER, so both are probed (derived first).
  */
-internal fun legacyFallbackNamespace(currentNamespace: String, derivedNamespace: String?): String? {
-    val fallback = if (currentNamespace == DEFAULT_JVM_NAMESPACE) derivedNamespace else DEFAULT_JVM_NAMESPACE
-    return fallback?.takeIf { it != currentNamespace }
-}
+internal fun legacyFallbackNamespaces(currentNamespace: String, derivedNamespace: String?): List<String> =
+    listOfNotNull(derivedNamespace, DEFAULT_JVM_NAMESPACE)
+        .filter { it != currentNamespace }
+        .distinct()
 
 private fun String?.cleanNamespaceToken(): String? =
     this?.trim()?.takeIf { it.isNotEmpty() }
