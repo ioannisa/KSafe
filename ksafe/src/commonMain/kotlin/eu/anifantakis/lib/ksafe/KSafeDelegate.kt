@@ -300,6 +300,16 @@ internal class KSafeMutableStateFlow<T>(
 
     private val delegate = MutableStateFlow(initialValue)
 
+    // Serializes the write-side echo bookkeeping (FEEDBACK_4 M12). markUserWrite mutates the
+    // (lastUserWrite, syncedValue, hasSynced, awaitingWriteEcho) tuple across separate @Volatile
+    // fields; MutableStateFlow permits concurrent writers, so without a lock two setters could
+    // interleave and leave the guard's armed/disarmed decision paired with the wrong
+    // lastUserWrite — clearing on the wrong echo or suppressing external changes. Every mutation
+    // of the tuple (the setter, compareAndSet, and updateFromFlow) runs under this lock so a
+    // concurrent writer never observes a half-updated tuple. persist() runs OUTSIDE the lock
+    // (never hold a lock across I/O — FEEDBACK_4 M11).
+    private val writeLock = KSafeInitLock()
+
     // Latched while the user's latest write through this StateFlow
     // (value/emit/tryEmit/compareAndSet) is still propagating to disk: stale
     // disk echoes from the observer flow must not revert it. Cleared by
@@ -353,17 +363,21 @@ internal class KSafeMutableStateFlow<T>(
     override var value: T
         get() = delegate.value
         set(newValue) {
-            markUserWrite(newValue, delegate.value)
-            delegate.value = newValue
+            writeLock.withLock {
+                markUserWrite(newValue, delegate.value)
+                betweenMarkAndPublishForTest?.invoke()
+                delegate.value = newValue
+            }
             persist(newValue)
         }
 
     override fun compareAndSet(expect: T, update: T): Boolean {
-        val changed = delegate.compareAndSet(expect, update)
-        if (changed) {
-            markUserWrite(update, expect)
-            persist(update)
+        val changed = writeLock.withLock {
+            val c = delegate.compareAndSet(expect, update)
+            if (c) markUserWrite(update, expect)
+            c
         }
+        if (changed) persist(update)
         return changed
     }
 
@@ -410,28 +424,38 @@ internal class KSafeMutableStateFlow<T>(
         delegate.value = staleValue
     }
 
+    /**
+     * Test-only (FEEDBACK_4 M12): invoked inside the write lock, AFTER markUserWrite and BEFORE
+     * the delegate.value publish. Lets a test start a concurrent writer at that exact point and
+     * verify it is SERIALIZED (blocks on the lock) rather than interleaving and leaving
+     * lastUserWrite paired with a different visible value. Null in production.
+     */
+    @PublishedApi internal var betweenMarkAndPublishForTest: (() -> Unit)? = null
+
     internal fun updateFromFlow(newValue: T) {
-        if (!awaitingWriteEcho.get()) {
-            delegate.value = newValue
-            // This emission is now the in-sync baseline for future divergence checks.
-            syncedValue = newValue
-            hasSynced = true
-            return
-        }
-        if (newValue == lastUserWrite) {
-            // The echo of the user's own write: consume it and resume external-change
-            // reflection. Re-apply the echoed value too (FEEDBACK_4 M-F, twin of the
-            // Compose KSafeComposeState fix): the guard check-then-apply above is not
-            // atomic against the setter, so a stale emission that read the latch as
-            // false before the setter armed it can clobber the visible value AFTER the
-            // setter ran. The source flow is distinctUntilChanged, so the user's value is
-            // never re-emitted — without this the StateFlow would stay stuck on the stale
-            // value. In the non-raced case delegate.value already equals newValue, so a
-            // StateFlow's own distinct-until-changed makes this a no-op.
-            delegate.value = newValue
-            awaitingWriteEcho.compareAndSet(true, false)
-            syncedValue = newValue
-            hasSynced = true
+        // Runs under writeLock so it reads/writes a consistent (guard, lastUserWrite,
+        // syncedValue) tuple against a concurrent setter (FEEDBACK_4 M12).
+        writeLock.withLock {
+            if (!awaitingWriteEcho.get()) {
+                delegate.value = newValue
+                // This emission is now the in-sync baseline for future divergence checks.
+                syncedValue = newValue
+                hasSynced = true
+            } else if (newValue == lastUserWrite) {
+                // The echo of the user's own write: consume it and resume external-change
+                // reflection. Re-apply the echoed value too (FEEDBACK_4 M-F, twin of the
+                // Compose KSafeComposeState fix): the guard check-then-apply is not atomic
+                // against the setter, so a stale emission that read the latch as false before
+                // the setter armed it can clobber the visible value AFTER the setter ran. The
+                // source flow is distinctUntilChanged, so the user's value is never re-emitted
+                // — without this the StateFlow would stay stuck on the stale value. In the
+                // non-raced case delegate.value already equals newValue, so a StateFlow's own
+                // distinct-until-changed makes this a no-op.
+                delegate.value = newValue
+                awaitingWriteEcho.compareAndSet(true, false)
+                syncedValue = newValue
+                hasSynced = true
+            }
         }
     }
 }
