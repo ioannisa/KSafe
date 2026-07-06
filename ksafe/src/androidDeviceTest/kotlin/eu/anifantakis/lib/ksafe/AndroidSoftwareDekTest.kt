@@ -42,6 +42,16 @@ import kotlin.test.assertTrue
  *    per-call TEE path (no DEK, no header, no DEK entry),
  *  - deleteKey / a missing DEK behave correctly for orphan reclamation, and
  *  - deleting an unrelated key never wipes the shared per-safe DEK.
+ *
+ * KNOWN FLAKE (device-side, not a product bug): the key-creation/encrypt calls below can
+ * intermittently throw a TRANSIENT AndroidKeyStore error (keystore2 throttling under the burst of
+ * key ops the full 181-test suite fires on a busy device) — surfacing as a failure AT the
+ * `encrypt(...)` line, not at a DEK assertion. It reproduces only under the full suite, never in
+ * isolation (each of these tests, and this whole class, passes reliably run alone), and is
+ * independent of the strict/DEK logic: the `requireUnlockedDevice`/`hardwareIsolated` paths
+ * provably never take the DEK branch (see [AndroidKeystoreEncryption.encrypt]'s
+ * `!resolvedRequireUnlocked` guard), so a strict write can never persist a DEK. If one of these
+ * fails intermittently, re-run in isolation before suspecting a regression.
  */
 @RunWith(AndroidJUnit4::class)
 class AndroidSoftwareDekTest {
@@ -143,7 +153,8 @@ class AndroidSoftwareDekTest {
         val e = engine(storage)
         try {
             val plain = "locked-master-value".encodeToByteArray()
-            // requireUnlockedDevice = true → strict TEE path, no DEK (device is unlocked during the test).
+            // requireUnlockedDevice = true → strict TEE path, never the DEK branch (see class KDoc:
+            // an intermittent throw here under full-suite load is a transient keystore flake).
             val blob = e.encrypt(alias, plain, hardwareIsolated = false, requireUnlockedDevice = true)
             assertFalse(blob.startsWithMagic(), "locked variant must stay on the TEE path (no DEK header)")
             assertFalse(dekPresent(storage), "locked variant must not persist a DEK")
