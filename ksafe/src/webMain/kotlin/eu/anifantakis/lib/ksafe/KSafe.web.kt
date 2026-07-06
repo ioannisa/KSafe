@@ -119,14 +119,25 @@ private fun buildWebKSafe(
     val nsSegment: String = if (appNs != null) "$appNs@" else ""
     val storagePrefix: String = if (fileName != null) "ksafe.$nsSegment${fileName}:" else "ksafe.$nsSegment:"
 
+    // The legacy prefix `ksafe_default_` is ALSO shared by two distinct valid constructions:
+    // KSafe() (unnamed) and KSafe(fileName = "default") both mapped to it pre-2.1.4. Their new
+    // prefixes are distinct (`ksafe.:` vs `ksafe.default:`) but the legacy MIGRATION source is
+    // the same ambiguous data, so neither may delete it or the shipped data vanishes for the
+    // other (FEEDBACK_4 H9).
+    val legacyPrefixShared: Boolean = fileName == null || fileName == "default"
+
     // Carry existing data forward: the old flat `ksafe_<name>_` layout first. Like the
     // un-namespaced `ksafe.<name>:` prefix below, it has NO appNamespace segment — one
-    // SHARED source for every namespace of a fileName. Reclaim it (delete) only when no
-    // appNamespace is set (a single canonical store); with namespaces active, copy-if-absent
-    // and leave the shared legacy source so EVERY namespace migrates from it, instead of the
-    // first-constructed namespace destroying it for all the others (FEEDBACK_4 H1, twin of
-    // the FB3-M2 fix below).
-    migrateLegacyLocalStoragePrefix(legacyStoragePrefix, storagePrefix, deleteSource = nsSegment.isEmpty())
+    // SHARED source for every namespace of a fileName. Reclaim it (delete) only for a UNIQUE
+    // legacy prefix with no appNamespace (a single canonical store); with namespaces active,
+    // OR when the prefix is the shared `ksafe_default_` (H9), copy-if-absent and leave the
+    // source so every valid construction migrates from it, instead of the first-constructed one
+    // destroying it for the others (FEEDBACK_4 H1/H9, twin of the FB3-M2 fix below).
+    migrateLegacyLocalStoragePrefix(
+        legacyStoragePrefix,
+        storagePrefix,
+        deleteSource = nsSegment.isEmpty() && !legacyPrefixShared,
+    )
     // …and, when an appNamespace is set, also the un-namespaced `ksafe.<name>:` prefix that
     // shipped 2.1.x wrote to before appNamespace isolated the data store. Only runs when the
     // namespaced prefix actually differs (appNs set), so the default path is unchanged.

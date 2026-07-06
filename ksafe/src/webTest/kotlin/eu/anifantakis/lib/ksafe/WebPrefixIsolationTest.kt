@@ -260,6 +260,41 @@ class WebPrefixIsolationTest {
         localStorageRemove("ksafe.com.example.b@${base}:__ksafe_value_k")
     }
 
+    /**
+     * FEEDBACK_4 H9: pre-2.1.4, `KSafe()` (unnamed) and `KSafe(fileName = "default")` shared the
+     * on-disk prefix `ksafe_default_`. 2.1.4 gives them distinct new prefixes but the SAME legacy
+     * migration source, so a destructive migration lets whichever constructs first copy the
+     * shared legacy data to itself and delete the source, stranding it for the other. The legacy
+     * migration must be non-destructive for this reserved-name collision.
+     */
+    @Test
+    fun legacyDefaultPrefix_sharedByUnnamedAndDefaultNamed_isNotDeleted_soBothMigrate() = runTest {
+        val k = "token_${WebKSafeTest.generateUniqueFileName()}" // unique key under the shared prefix
+        localStorageSet("ksafe_default___ksafe_value_$k", "shared-legacy")
+
+        // Unnamed instance constructs → migrates to `ksafe.:` WITHOUT deleting the shared source.
+        KSafe(testEngine = FakeEncryption()).awaitCacheReady()
+        assertEquals(
+            "shared-legacy", localStorageGet("ksafe.:__ksafe_value_$k"),
+            "the unnamed store must migrate the legacy value",
+        )
+        assertEquals(
+            "shared-legacy", localStorageGet("ksafe_default___ksafe_value_$k"),
+            "the shared legacy source must survive an unnamed construction (H9)",
+        )
+
+        // The 'default'-named instance still finds the source and migrates it too.
+        KSafe(fileName = "default", testEngine = FakeEncryption()).awaitCacheReady()
+        assertEquals(
+            "shared-legacy", localStorageGet("ksafe.default:__ksafe_value_$k"),
+            "the 'default'-named store must ALSO migrate the still-present shared legacy value (H9)",
+        )
+
+        localStorageRemove("ksafe_default___ksafe_value_$k")
+        localStorageRemove("ksafe.:__ksafe_value_$k")
+        localStorageRemove("ksafe.default:__ksafe_value_$k")
+    }
+
     @Test
     fun migrate_withDeleteSourceFalse_copiesForward_withoutDeletingLiveSource() {
         val base = WebKSafeTest.generateUniqueFileName()
