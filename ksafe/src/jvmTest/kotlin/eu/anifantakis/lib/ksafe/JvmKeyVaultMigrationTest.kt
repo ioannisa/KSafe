@@ -868,6 +868,37 @@ class JvmKeyVaultMigrationTest {
     }
 
     @Test
+    fun namespaceUpgrade_legacyProbeUnavailable_reportsUnavailable_notOrphan() {
+        // FEEDBACK_4 H4: a transient 'vault unavailable' from the legacy-namespace probe (a
+        // login keychain re-locked between round-trips) must NOT be misread as a genuine miss —
+        // that would let the orphan sweep delete the still-recoverable ciphertext.
+        val alias = "user:token"
+
+        // Ciphertext whose key lives in the legacy namespace (produced under a healthy vault).
+        val ciphertext = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = FakeOsVault()),
+        ).encrypt(alias, "secret".toByteArray())
+
+        // Fresh launch: the active vault is empty (genuine miss under the current namespace) and
+        // the legacy probe throws 'vault unavailable' instead of returning the key.
+        val provider = JvmKeyVaultProvider(
+            dataStore,
+            forced = FakeOsVault(),
+            legacyNamespaceCandidateForTest = UnavailableOsVault(),
+        )
+        val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+
+        val ex = assertFailsWith<IllegalStateException> { engine.decrypt(alias, ciphertext) }
+        val msg = ex.message.orEmpty()
+        assertTrue(msg.contains("unavailable", ignoreCase = true), "should report vault unavailable; was: $msg")
+        assertFalse(
+            msg.contains("No encryption key found", ignoreCase = true),
+            "a transient legacy-probe outage must NOT use the orphan-sweep delete message; was: $msg",
+        )
+    }
+
+    @Test
     fun namespaceUpgrade_deleteKey_alsoScrubsDerivedNamespace() {
         val alias = "user:token"
         val derivedNsVault = FakeOsVault().apply { store[alias] = ByteArray(32) { 1 } }

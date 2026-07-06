@@ -447,7 +447,16 @@ internal class JvmKeyVaultProvider(
                 source.get(alias)
             } catch (e: LinkageError) {
                 throw e
-            } catch (_: Throwable) {
+            } catch (e: Throwable) {
+                // The OS vaults deliberately THROW a "vault unavailable" error (never null) when
+                // the store is unreachable — a locked login keychain, a keyring not yet on D-Bus,
+                // a spurious OSStatus — precisely so a transient outage isn't misread as a genuine
+                // miss. Propagate it so the caller reports "vault unavailable" (which KSafeCore's
+                // orphan sweep treats as non-deletable) instead of collapsing to null, which would
+                // let the sweep delete recoverable ciphertext or mint a shadowing key under the
+                // active namespace (FEEDBACK_4 H4). All probes here read the SAME underlying store,
+                // so an outage on one means the rest are unreachable too — surface it now.
+                if (e.message?.contains("vault unavailable", ignoreCase = true) == true) throw e
                 null
             } ?: continue // this namespace has no such key — try the next candidate
             try {
