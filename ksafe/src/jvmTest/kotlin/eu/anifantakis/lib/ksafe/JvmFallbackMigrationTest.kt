@@ -617,6 +617,80 @@ class JvmFallbackMigrationTest {
     }
 
     @Test
+    fun retryWithCorruptPendingFile_keepsNewerTargetWrites_insteadOfRollingBack() {
+        // FEEDBACK_4 H5: the `.migration-pending` file PROVES this run is a retry. If it is
+        // present but corrupt/truncated (a partial write from process death / full disk), the
+        // OLD code reverted to a first-attempt "fallback wins" and rolled back every user write
+        // since the failed attempt. A corrupt-but-present pending file must be treated as a
+        // retry with an unknown baseline — conservatively keep any value the target holds.
+        val jsonFallback = File(tmp, "cp.ksafe.json")
+        val keysFallback = File(tmp, "cp.ksafe-keys.json")
+        val targetFile = File(tmp, "cp.target.json")
+        val targetKeys = File(tmp, "cp.target-keys.json")
+        val pendingFile = File(tmp, "cp.ksafe.json.migration-pending")
+        val config = KSafeConfig()
+
+        // Fallback period: two keys live in the fallback store.
+        val srcScope = newScope()
+        runBlocking {
+            val src = DataStoreJsonStorage(jsonFallback, srcScope)
+            val srcEngine = JvmSoftwareEncryption(
+                config = config,
+                vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFallback)),
+            )
+            putEncrypted(src, srcEngine, "session", "fallback-session", KSafeProtection.DEFAULT)
+            putEncrypted(src, srcEngine, "theme", "fallback-theme", KSafeProtection.DEFAULT)
+        }
+        runBlocking { srcScope.coroutineContext[Job]!!.cancelAndJoin() }
+
+        val targetScope = newScope()
+        val target = DataStoreJsonStorage(targetFile, targetScope)
+        val goodTargetEngine = JvmSoftwareEncryption(
+            config = config,
+            vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(targetKeys)),
+        )
+
+        // Attempt 1: transient target failure → nothing applied, pending state recorded.
+        migrateJsonFallbackToOsBacked(
+            config, jsonFallback, keysFallback, target,
+            targetEngine = TransientFailTargetEngine(),
+            keyAlias = keyAlias, masterAlias = masterAlias,
+        )
+        assertTrue(pendingFile.exists(), "a transient failure must record the pending state")
+
+        // The session proceeds on the target: the user overwrites "session".
+        runBlocking { putEncrypted(target, goodTargetEngine, "session", "user-fresh", KSafeProtection.DEFAULT) }
+
+        // The pending file is left CORRUPT (truncated / partial write).
+        pendingFile.writeText("{ this is not valid json — truncated")
+
+        // Attempt 2 (next launch): vault healthy → migration runs against the corrupt pending.
+        migrateJsonFallbackToOsBacked(
+            config, jsonFallback, keysFallback, target,
+            targetEngine = goodTargetEngine,
+            keyAlias = keyAlias, masterAlias = masterAlias,
+        )
+
+        runBlocking {
+            val snap = target.snapshot()
+            // The user's post-attempt write must survive — NOT be rolled back to the fallback.
+            val sessionCipher = (snap[KeySafeMetadataManager.valueRawKey("session")] as StoredValue.Text).value
+            assertEquals(
+                "user-fresh",
+                goodTargetEngine.decryptSuspend(masterAlias(false), Base64.decode(sessionCipher)).decodeToString(),
+                "a corrupt pending file must NOT let the retry roll a newer target write back to the fallback (H5)",
+            )
+            // A key absent in the target still migrates from the fallback.
+            val themeCipher = (snap[KeySafeMetadataManager.valueRawKey("theme")] as StoredValue.Text).value
+            assertEquals(
+                "fallback-theme",
+                goodTargetEngine.decryptSuspend(masterAlias(false), Base64.decode(themeCipher)).decodeToString(),
+                "a key the target lacks still migrates under the conservative retry",
+            )
+        }
+    }
+
+    @Test
     fun archiveOrMark_writesDurableSentinel_whenRenameAndCopyBothFail() {
         // FEEDBACK_4 H-C: the migration commits values to the OS store durably,
         // then best-effort archives the JSON fallback as the "already migrated"

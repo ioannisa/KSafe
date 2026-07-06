@@ -58,16 +58,24 @@ internal fun migrateJsonFallbackToOsBacked(
             // below). Present ⇒ this run is a RETRY and the session(s) since may
             // have written newer values into the target.
             val pendingFile = File(jsonFallback.parentFile, jsonFallback.name + ".migration-pending")
-            val priorTargetState: Map<String, String>? = if (pendingFile.exists()) {
+            val pendingExists = pendingFile.exists()
+            val priorTargetState: Map<String, String>? = if (pendingExists) {
                 runCatching {
                     Json.decodeFromString(
                         MapSerializer(String.serializer(), String.serializer()),
                         pendingFile.readText(),
                     )
-                }.getOrNull() // unreadable/corrupt pending state ⇒ behave like a first attempt
+                }.getOrNull()
             } else {
                 null
             }
+            // A present-but-unreadable pending file (a partial write from process death / full
+            // disk at record time) still PROVES this run is a RETRY: the first-attempt session
+            // ran on the target and may have written newer values. Falling through to null would
+            // re-enable "fallback wins" for every key and silently roll those writes back
+            // (FEEDBACK_4 H5). Treat it as a retry with an UNKNOWN baseline instead —
+            // conservatively keep any key the target already holds a value for.
+            val unknownRetryBaseline = pendingExists && priorTargetState == null
 
             val migScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
             val result = try {
@@ -76,7 +84,7 @@ internal fun migrateJsonFallbackToOsBacked(
                     config = config,
                     vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFallback)),
                 )
-                reEncryptAll(source, sourceEngine, target, targetEngine, keyAlias, masterAlias, priorTargetState)
+                reEncryptAll(source, sourceEngine, target, targetEngine, keyAlias, masterAlias, priorTargetState, unknownRetryBaseline)
             } finally {
                 // Release the .ksafe.json DataStore handle before renaming the file.
                 migScope.coroutineContext[Job]?.cancelAndJoin()
@@ -107,12 +115,21 @@ internal fun migrateJsonFallbackToOsBacked(
                 // the attempt" (fallback superseded → keep the user's value).
                 // Recorded once and kept until a successful migration deletes it.
                 runCatching {
-                    pendingFile.writeText(
-                        Json.encodeToString(
-                            MapSerializer(String.serializer(), String.serializer()),
-                            result.targetStateForPending,
-                        )
+                    val json = Json.encodeToString(
+                        MapSerializer(String.serializer(), String.serializer()),
+                        result.targetStateForPending,
                     )
+                    // Atomic publish: write a temp file then rename it into place, so a crash /
+                    // full disk mid-write can't leave a truncated pending file (FEEDBACK_4 H5).
+                    // pendingFile doesn't exist here (guarded by !pendingFile.exists()), so the
+                    // rename has no destination to clobber; only a blocked rename falls back to a
+                    // direct write (and the corrupt-pending handling above is the safety net).
+                    val tmp = File(pendingFile.parentFile, pendingFile.name + ".tmp")
+                    tmp.writeText(json)
+                    if (!tmp.renameTo(pendingFile)) {
+                        tmp.copyTo(pendingFile, overwrite = true)
+                        tmp.delete()
+                    }
                 }
             }
             if (result.migrated > 0) warnMigratedFromFallbackOnce(result.migrated)
@@ -177,6 +194,7 @@ private suspend fun reEncryptAll(
     keyAlias: (String) -> String,
     masterAlias: (Boolean) -> String,
     priorTargetState: Map<String, String>? = null,
+    unknownRetryBaseline: Boolean = false,
 ): MigrationResult {
     val srcSnap = source.snapshot()
     val targetSnap = target.snapshot()
@@ -199,6 +217,13 @@ private suspend fun reEncryptAll(
         ) {
             // Newer user write in the target — the fallback copy is superseded.
             // Resolved, not failed: doesn't block the apply or the archiving.
+            continue
+        }
+        if (unknownRetryBaseline && nowFingerprint != ABSENT_FINGERPRINT) {
+            // Corrupt-but-present pending file: this IS a retry, but the baseline is
+            // unknown, so any non-absent target value could be a newer user write.
+            // Conservatively keep it — migrate only keys the target lacks (FEEDBACK_4 H5).
+            // The fallback copy stays recoverable in the `.migrated` archive.
             continue
         }
 
