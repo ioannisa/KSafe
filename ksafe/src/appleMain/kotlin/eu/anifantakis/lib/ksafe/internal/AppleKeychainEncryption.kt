@@ -317,14 +317,22 @@ internal class AppleKeychainEncryption(
         block: (CFMutableDictionaryRef?) -> R,
     ): R {
         val dict = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, null, null)
+        // CFBridgingRetain takes a +1 the caller owns. This dict has null value-callbacks, so it
+        // does NOT retain its values — releasing only the dict leaks every bridged value, one pair
+        // per call, on the hot strict-read path (FEEDBACK_4 H6). Hold each +1 until after [block]
+        // (the values must stay alive during the SecItem* call), then release it.
+        val serviceRef = CFBridgingRetain(serviceName)
+        val accountRef = CFBridgingRetain(account)
         return try {
             CFDictionarySetValue(dict, kSecClass, kSecClassGenericPassword)
-            CFDictionarySetValue(dict, kSecAttrService, CFBridgingRetain(serviceName))
-            CFDictionarySetValue(dict, kSecAttrAccount, CFBridgingRetain(account))
+            CFDictionarySetValue(dict, kSecAttrService, serviceRef)
+            CFDictionarySetValue(dict, kSecAttrAccount, accountRef)
             configure(dict)
             block(dict)
         } finally {
             CFRelease(dict as CFTypeRef?)
+            CFRelease(serviceRef)
+            CFRelease(accountRef)
         }
     }
 
@@ -339,14 +347,18 @@ internal class AppleKeychainEncryption(
         block: (CFMutableDictionaryRef?) -> R,
     ): R {
         val dict = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, null, null)
+        // null value-callbacks → the dict does not retain [tagData]; hold the bridged +1 until
+        // after [block] and release it, or it leaks every call (FEEDBACK_4 H6).
+        val tagRef = CFBridgingRetain(tagData)
         return try {
             CFDictionarySetValue(dict, kSecClass, kSecClassKey)
             CFDictionarySetValue(dict, kSecAttrKeyType, kSecAttrKeyTypeECSECPrimeRandom)
-            CFDictionarySetValue(dict, kSecAttrApplicationTag, CFBridgingRetain(tagData))
+            CFDictionarySetValue(dict, kSecAttrApplicationTag, tagRef)
             configure(dict)
             block(dict)
         } finally {
             CFRelease(dict as CFTypeRef?)
+            CFRelease(tagRef)
         }
     }
 
@@ -461,14 +473,18 @@ internal class AppleKeychainEncryption(
                 ?: throw IllegalStateException("KSafe: Failed to encode SE tag")
             val accessibility = accessibleAttr(resolvedRequireUnlockedDevice(requireUnlockedDevice))
 
+            // null value-callbacks → hold each bridged +1 until after SecKeyCreateRandomKey,
+            // then release, or they leak on every SE key creation (FEEDBACK_4 H6).
+            val tagRef = CFBridgingRetain(tagData)
+            val keySizeRef = CFBridgingRetain(NSNumber(int = 256))
             val privateKeyAttrs = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, null, null).apply {
                 CFDictionarySetValue(this, kSecAttrIsPermanent, kCFBooleanTrue)
-                CFDictionarySetValue(this, kSecAttrApplicationTag, CFBridgingRetain(tagData))
+                CFDictionarySetValue(this, kSecAttrApplicationTag, tagRef)
                 CFDictionarySetValue(this, kSecAttrAccessible, accessibility)
             }
             val attributes = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, null, null).apply {
                 CFDictionarySetValue(this, kSecAttrKeyType, kSecAttrKeyTypeECSECPrimeRandom)
-                CFDictionarySetValue(this, kSecAttrKeySizeInBits, CFBridgingRetain(NSNumber(int = 256)))
+                CFDictionarySetValue(this, kSecAttrKeySizeInBits, keySizeRef)
                 CFDictionarySetValue(this, kSecAttrTokenID, kSecAttrTokenIDSecureEnclave)
                 CFDictionarySetValue(this, kSecPrivateKeyAttrs, privateKeyAttrs)
             }
@@ -477,6 +493,8 @@ internal class AppleKeychainEncryption(
             val privateKey = SecKeyCreateRandomKey(attributes, keyErrorRef.ptr)
             CFRelease(privateKeyAttrs as CFTypeRef?)
             CFRelease(attributes as CFTypeRef?)
+            CFRelease(tagRef)
+            CFRelease(keySizeRef)
 
             privateKey ?: throw IllegalStateException(
                 "KSafe: Failed to create Secure Enclave key: ${cfErrorDescription(keyErrorRef)}"
@@ -758,10 +776,13 @@ internal class AppleKeychainEncryption(
             // Delete any pre-existing item at this account.
             usingPasswordQuery(keyId) { deleteQuery -> SecItemDelete(deleteQuery) }
 
+            // null value-callbacks → hold the bridged +1 across the SecItemAdd, then release
+            // (FEEDBACK_4 H6). The dict is built + consumed inside usingPasswordQuery's block.
+            val nsDataRef = CFBridgingRetain(nsData)
             val addStatus = usingPasswordQuery(
                 account = keyId,
                 configure = { dict ->
-                    CFDictionarySetValue(dict, kSecValueData, CFBridgingRetain(nsData))
+                    CFDictionarySetValue(dict, kSecValueData, nsDataRef)
                     CFDictionarySetValue(
                         dict,
                         kSecAttrAccessible,
@@ -769,6 +790,7 @@ internal class AppleKeychainEncryption(
                     )
                 },
             ) { addQuery -> SecItemAdd(addQuery, null) }
+            CFRelease(nsDataRef)
 
             if (addStatus != errSecSuccess) when (addStatus) {
                 errSecInteractionNotAllowed -> throw IllegalStateException(

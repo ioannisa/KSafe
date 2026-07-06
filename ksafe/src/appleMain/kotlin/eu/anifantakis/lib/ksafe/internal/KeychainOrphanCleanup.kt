@@ -146,15 +146,19 @@ internal suspend fun cleanupOrphanedKeychainEntries(
 
     // --- Scan 1: generic-password items (plain keys + SE-wrapped keys) ---
     memScoped {
+        // null value-callbacks → hold the bridged +1 across SecItemCopyMatching, then release,
+        // or every orphan-sweep probe leaks a CFString (FEEDBACK_4 H6).
+        val serviceRef = CFBridgingRetain(serviceName)
         val query = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, null, null).apply {
             CFDictionarySetValue(this, kSecClass, kSecClassGenericPassword)
-            CFDictionarySetValue(this, kSecAttrService, CFBridgingRetain(serviceName))
+            CFDictionarySetValue(this, kSecAttrService, serviceRef)
             CFDictionarySetValue(this, kSecReturnAttributes, kCFBooleanTrue)
             CFDictionarySetValue(this, kSecMatchLimit, kSecMatchLimitAll)
         }
         val resultRef = alloc<CFTypeRefVar>()
         val status = SecItemCopyMatching(query, resultRef.ptr)
         CFRelease(query as CFTypeRef?)
+        CFRelease(serviceRef)
 
         if (status == errSecSuccess) {
             (CFBridgingRelease(resultRef.value) as? NSArray)?.let { array ->
