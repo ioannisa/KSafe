@@ -205,7 +205,13 @@ class JvmNullFilenameTest {
 
         ksafe.put(key, "secret")
         stateFlow.test(timeout = 30.seconds) {
-            assertEquals("secret", awaitItem())
+            // getFlow now decrypts on Dispatchers.Default (FEEDBACK_4 H8: keeps blocking
+            // keystore IPC off the collector's thread), so the write propagates to the
+            // StateFlow asynchronously — an intermediate default emission may precede the
+            // written value. Await until the written value arrives.
+            var item = awaitItem()
+            while (item == "def") item = awaitItem()
+            assertEquals("secret", item)
             cancelAndIgnoreRemainingEvents()
         }
         sharingScope.cancel()

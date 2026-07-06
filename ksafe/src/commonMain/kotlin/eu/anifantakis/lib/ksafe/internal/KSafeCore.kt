@@ -21,6 +21,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -1417,7 +1418,17 @@ internal class KSafeCore(
                     } else defaultValue
                 }
             }
-        }.filter { it !== transientDecryptSkip }.distinctUntilChanged()
+        }
+            // Decrypt each snapshot off the collector's dispatcher (FEEDBACK_4 H8): the .map
+            // above calls engine.decryptSuspend — on Android a synchronous Binder round-trip to
+            // the Keystore daemon — and getStateFlow's stateIn collects on the caller's scope
+            // (viewModelScope ⇒ Dispatchers.Main.immediate), so without flowOn every emission
+            // ran blocking keystore IPC on the main thread → ANR. This mirrors getRaw's
+            // withContext(Dispatchers.Default). flowOn affects only the upstream (snapshotFlow +
+            // map); the cheap filter/distinctUntilChanged stay in the collector's context.
+            .flowOn(Dispatchers.Default)
+            .filter { it !== transientDecryptSkip }
+            .distinctUntilChanged()
     }
 
     @PublishedApi
