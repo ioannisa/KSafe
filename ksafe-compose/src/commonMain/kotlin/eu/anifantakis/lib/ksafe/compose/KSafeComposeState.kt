@@ -81,16 +81,25 @@ class KSafeComposeState<T>(
         }
         set(newValue) {
             val oldValueToCompare = _internalState.value
-            _internalState.value = newValue
-
-            // Persist only if the value has changed according to the policy
+            // Persist only if the value has changed according to the policy.
             if (!policy.equivalent(oldValueToCompare, newValue)) {
+                // Arm the write-echo guard BEFORE publishing to _internalState (FEEDBACK_4 H7):
+                // a concurrent cold-start self-heal (updateFromStorage) checks the guard then
+                // writes, so publishing our value first — while the flag is still clear — lets
+                // the heal clobber it with the stale persisted value, with no later emission to
+                // correct it (a one-shot path). Arming first means the heal either sees the flag
+                // and skips, or its post-write re-check catches the race.
                 lastUserWrite = newValue
                 @Suppress("UNCHECKED_CAST")
                 // Guard only a genuine divergence from storage; a write that returns to
                 // the synced value will never echo, so don't hold the latch for it.
                 awaitingWriteEcho = !policy.equivalent(newValue, syncedValue as T)
+                _internalState.value = newValue
                 valueSaver(newValue)
+            } else {
+                // Policy-equal: no divergence to guard, no persistence — still publish so Compose
+                // sees the assignment (it treats a policy-equal write as a no-op).
+                _internalState.value = newValue
             }
         }
 
@@ -103,10 +112,29 @@ class KSafeComposeState<T>(
      */
     @PublishedApi internal fun updateFromStorage(newValue: T) {
         if (!awaitingWriteEcho) {
+            betweenCheckAndPublishForTest?.invoke()
             _internalState.value = newValue
-            syncedValue = newValue
+            // Re-check for a user write that raced in and armed the guard between the outer
+            // check and this publish (FEEDBACK_4 H7): this one-shot cold-start path has no later
+            // emission to self-heal (unlike updateFromFlow), so a clobber would be PERMANENT.
+            // Re-apply the user's value; the setter arms the guard before publishing its value,
+            // so an armed flag here means a user write happened and lastUserWrite holds it. In the
+            // non-raced case the flag is still clear and this simply commits the synced baseline.
+            @Suppress("UNCHECKED_CAST")
+            if (awaitingWriteEcho) {
+                _internalState.value = lastUserWrite as T
+            } else {
+                syncedValue = newValue
+            }
         }
     }
+
+    /**
+     * Test-only (FEEDBACK_4 H7): invoked inside [updateFromStorage] between the guard check and
+     * the publish, so a test can deterministically race a user write into that window and verify
+     * the one-shot self-heal re-applies it instead of clobbering it. Null in production.
+     */
+    @PublishedApi internal var betweenCheckAndPublishForTest: (() -> Unit)? = null
 
     /**
      * Updates the state from a live flow emission without triggering persistence.

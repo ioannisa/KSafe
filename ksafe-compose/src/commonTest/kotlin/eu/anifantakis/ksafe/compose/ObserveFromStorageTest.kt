@@ -153,6 +153,33 @@ class ObserveFromStorageTest {
     }
 
     /**
+     * FEEDBACK_4 H7: the one-shot cold-start self-heal (`updateFromStorage`) has the same
+     * check-then-apply race as `updateFromFlow`, but — being one-shot — has NO later emission
+     * to self-heal, so a clobber used to be PERMANENT. A user write racing into the window
+     * between the guard check and the publish must not be clobbered by the stale persisted value;
+     * `updateFromStorage` now re-checks the guard after its publish and re-applies the user's value.
+     */
+    @Test
+    fun updateFromStorage_racingUserWrite_isNotClobbered() {
+        val state = newState("A") // syncedValue = "A"
+        // Race a user write of "B" into the window AFTER updateFromStorage's guard check but
+        // BEFORE its publish (the non-atomic window). The setter arms the guard + publishes "B".
+        state.betweenCheckAndPublishForTest = {
+            state.betweenCheckAndPublishForTest = null
+            state.value = "B"
+        }
+
+        // The cold-start heal delivers the stale persisted value.
+        state.updateFromStorage("A-persisted")
+
+        assertEquals(
+            "B", state.value,
+            "a user write racing the one-shot cold-start self-heal must not be clobbered (H7); " +
+                "before the fix it stayed stuck on the stale persisted value",
+        )
+    }
+
+    /**
      * Cold-start one-shot mode: when `observeExternalChanges = false` and
      * `coldStart = true`, the helper takes the first flow emission and
      * propagates it via `updateFromStorage` (which respects the user-write
