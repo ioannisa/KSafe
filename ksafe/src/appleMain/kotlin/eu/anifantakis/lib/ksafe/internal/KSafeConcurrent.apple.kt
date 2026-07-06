@@ -1,12 +1,17 @@
 package eu.anifantakis.lib.ksafe.internal
 
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicReference
+import kotlin.coroutines.CoroutineContext
 import platform.Foundation.NSRecursiveLock
 
 @PublishedApi
 internal actual fun <T> runBlockingOnPlatform(block: suspend () -> T): T = runBlocking { block() }
+
+@PublishedApi
+internal actual val decryptFlowContext: CoroutineContext = Dispatchers.Default
 
 // Kotlin/Native has no object-monitor `synchronized`, so back each delegate's init lock
 // with its own NSRecursiveLock (FEEDBACK_4 M11). This replaces the previous single

@@ -60,6 +60,13 @@ internal actual class KSafeConcurrentSet<T : Any> actual constructor() {
 internal actual fun <T> runBlockingOnPlatform(block: suspend () -> T): T =
     error("runBlockingOnPlatform is not available on the web target; the web cache must be pre-populated synchronously.")
 
+// Single-threaded web: no worker thread to off-load the decrypt to, and forcing a dispatcher
+// hop would break the synchronous cold-start getFlow().first() self-heal. flowOn(Empty) is a
+// no-op, so getFlowRaw keeps running inline on the collector (FEEDBACK_4 H8).
+@PublishedApi
+internal actual val decryptFlowContext: kotlin.coroutines.CoroutineContext =
+    kotlin.coroutines.EmptyCoroutineContext
+
 // Single-threaded: no lock needed, just run the block.
 @PublishedApi
 internal actual class KSafeInitLock actual constructor() {

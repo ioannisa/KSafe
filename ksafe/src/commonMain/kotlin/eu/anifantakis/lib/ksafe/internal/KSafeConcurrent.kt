@@ -1,5 +1,7 @@
 package eu.anifantakis.lib.ksafe.internal
 
+import kotlin.coroutines.CoroutineContext
+
 /**
  * Internal thread-safe primitives used by [KSafeCore]. Each target provides an
  * `actual` implementation tuned to its concurrency model:
@@ -81,6 +83,19 @@ internal expect class KSafeConcurrentSet<T : Any>() {
  */
 @PublishedApi
 internal expect fun <T> runBlockingOnPlatform(block: suspend () -> T): T
+
+/**
+ * The `flowOn` context for off-loading `getFlowRaw`'s per-emission decrypt (FEEDBACK_4 H8).
+ *
+ * `Dispatchers.Default` on JVM / Android / Apple — the OS-vault decrypt is a **blocking** IPC
+ * call (on Android a synchronous Keystore Binder round-trip) that must not run on the collector's
+ * dispatcher, which for a `getStateFlow` collected on a `viewModelScope` is the main thread.
+ * `EmptyCoroutineContext` on single-threaded **web** (a `flowOn` no-op): decryption there is async
+ * WebCrypto and there is no worker thread to move to, and forcing a dispatcher hop would break the
+ * synchronous cold-start `getFlow().first()` self-heal.
+ */
+@PublishedApi
+internal expect val decryptFlowContext: CoroutineContext
 
 /**
  * A per-instance, reentrant, non-suspending mutual-exclusion lock for the

@@ -1,12 +1,17 @@
 package eu.anifantakis.lib.ksafe.internal
 
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
+import kotlin.coroutines.CoroutineContext
 
 @PublishedApi
 internal actual fun <T> runBlockingOnPlatform(block: suspend () -> T): T = runBlocking { block() }
+
+@PublishedApi
+internal actual val decryptFlowContext: CoroutineContext = Dispatchers.Default
 
 @PublishedApi
 internal actual class KSafeInitLock actual constructor() {

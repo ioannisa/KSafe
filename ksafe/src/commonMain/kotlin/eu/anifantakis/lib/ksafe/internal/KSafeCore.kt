@@ -1424,9 +1424,11 @@ internal class KSafeCore(
             // the Keystore daemon — and getStateFlow's stateIn collects on the caller's scope
             // (viewModelScope ⇒ Dispatchers.Main.immediate), so without flowOn every emission
             // ran blocking keystore IPC on the main thread → ANR. This mirrors getRaw's
-            // withContext(Dispatchers.Default). flowOn affects only the upstream (snapshotFlow +
-            // map); the cheap filter/distinctUntilChanged stay in the collector's context.
-            .flowOn(Dispatchers.Default)
+            // withContext(Dispatchers.Default). decryptFlowContext is Dispatchers.Default on
+            // JVM/Android/Apple and a no-op on single-threaded web. flowOn affects only the
+            // upstream (snapshotFlow + map); the cheap filter/distinctUntilChanged stay in the
+            // collector's context.
+            .flowOn(decryptFlowContext)
             .filter { it !== transientDecryptSkip }
             .distinctUntilChanged()
     }
