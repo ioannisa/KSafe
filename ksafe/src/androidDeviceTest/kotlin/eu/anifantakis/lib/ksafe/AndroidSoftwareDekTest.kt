@@ -27,7 +27,18 @@ import kotlin.test.assertFails
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** Locks in: the Android software-DEK fast path — relaxed DEFAULT entries wrap a userspace DEK while strict/hardware-isolated writes stay on the per-call TEE path, legacy TEE ciphertext survives the upgrade, and DEK self-heal/regeneration never lose acknowledged writes. */
+/**
+ * Locks in: the Android software-DEK fast path — relaxed DEFAULT entries wrap a userspace DEK
+ * while strict/hardware-isolated writes stay on the per-call TEE path, legacy TEE ciphertext
+ * survives the upgrade, and DEK self-heal/regeneration never lose acknowledged writes.
+ *
+ * Known flake (device-side, not a product bug): under the full suite's burst of key ops,
+ * keystore2 can throttle and make an `encrypt(...)`/key-creation call throw a transient
+ * AndroidKeyStore error — surfacing at the `encrypt` line, never at a DEK assertion. It
+ * reproduces only under the full suite (each test, and this class, passes reliably in
+ * isolation) and is independent of the strict/DEK logic. Re-run in isolation before
+ * suspecting a regression.
+ */
 @RunWith(AndroidJUnit4::class)
 class AndroidSoftwareDekTest {
 

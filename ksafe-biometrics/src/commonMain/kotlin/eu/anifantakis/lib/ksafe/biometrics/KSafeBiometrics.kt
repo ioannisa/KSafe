@@ -3,6 +3,10 @@ package eu.anifantakis.lib.ksafe.biometrics
 /**
  * Process-wide static API for biometric authentication — no instance, no DI, zero-config init
  * (real prompts on Android/iOS/macOS; JVM/JS/WasmJS have no hardware and always return `true`).
+ *
+ * **Security note:** because the desktop/web targets have no biometric hardware, every call
+ * there returns `true` — an unconditional pass — so shared `commonMain` logic can call in
+ * without branching. If you need a hard refusal on those platforms, gate the call yourself.
  */
 @Suppress("unused")
 object KSafeBiometrics {

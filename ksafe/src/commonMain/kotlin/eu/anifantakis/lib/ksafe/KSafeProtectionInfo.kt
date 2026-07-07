@@ -29,7 +29,13 @@ data class KSafeProtectionInfo(
     /**
      * Stable lowercase_snake notes on the negotiation outcome; empty when
      * nothing noteworthy happened. New codes may be added, so ignore unknown
-     * ones rather than rejecting them.
+     * ones rather than rejecting them. Defined codes:
+     *  - `"jvm_os_vault_unavailable"` — JVM: OS-vault self-test failed (no libsecret
+     *    daemon, locked Keychain, JNA link error, …); keys fall back to software.
+     *  - `"jvm_user_opted_out"` — JVM: `-Dksafe.jvm.keyVault=software` (or env
+     *    `KSAFE_JVM_KEY_VAULT=software`) forced the software vault.
+     *  - `"android_strongbox_absent"` — Android: device lacks StrongBox.
+     *  - `"apple_secure_enclave_absent"` — Apple: device lacks a Secure Enclave.
      */
     val notes: List<String>,
 
