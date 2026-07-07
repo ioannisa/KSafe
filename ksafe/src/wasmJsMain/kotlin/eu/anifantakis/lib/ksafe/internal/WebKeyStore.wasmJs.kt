@@ -8,11 +8,9 @@ import kotlin.js.JsString
 import kotlin.js.Promise
 
 /**
- * Kotlin/Wasm actuals for [webKeyEnsure] et al.
- *
- * The JS body of [wkDispatch] is kept behaviourally identical to the Kotlin/JS
- * variant in `WebKeyStore.js.kt`; only the binding mechanism (`@JsFun` vs `js()`)
- * differs. enc/dec resolve to JS strings; ensure/del resolve to null.
+ * Kotlin/Wasm actuals for [webKeyEnsure] et al. The [wkDispatch] JS body is behaviourally
+ * identical to the Kotlin/JS variant in `WebKeyStore.js.kt`; only the binding (`@JsFun` vs
+ * `js()`) differs.
  */
 @JsFun(
     """
@@ -52,31 +50,24 @@ import kotlin.js.Promise
         var u2b = function(buf) { var u = new Uint8Array(buf); var s = ''; for (var i = 0; i < u.length; i++) s += String.fromCharCode(u[i]); return btoa(s); };
         var mem = new Map();
         var subtle = G.crypto.subtle;
-        // Cross-tab key-invalidation: a key deleted in another tab (clearAll / logout)
-        // would leave this tab's page-local `mem` entry stale — it would keep encrypting
-        // under a durably-deleted key and lose those writes after reload. The deleting tab
-        // broadcasts an eviction so other tabs drop the key from `mem` and re-read
-        // IndexedDB on next use. Feature-detected.
+        // Cross-tab key invalidation: a key deleted in another tab (clearAll / logout) leaves this
+        // tab's page-local `mem` entry stale, so it would keep encrypting under a deleted key and
+        // lose those writes. The deleting tab broadcasts an eviction to drop it from `mem`.
         var bc = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('ksafe-keys') : null;
         if (bc) bc.onmessage = function(e) { if (e && e.data && e.data.op === 'evict' && e.data.name) mem['delete'](e.data.name); };
-        // Legacy-first: a legacy localStorage raw key, when present, is authoritative —
-        // it provably encrypted the current ciphertext. Import it and overwrite any
-        // (possibly stale) IndexedDB key under this name; only fall back to an existing
-        // IDB key when there is no legacy key.
+        // Legacy-first: a legacy localStorage raw key, when present, is authoritative (it provably
+        // encrypted the current ciphertext) — import it and overwrite any stale IDB key.
         var ensure = function(name, legacy, mint) {
-          // The legacy import/overwrite must precede the mem short-circuit:
-          // the page-global `mem` cache can hold a stale entry too.
+          // Legacy import must precede the mem short-circuit: `mem` can hold a stale entry too.
           if (legacy) { return subtle.importKey('raw', b2u(legacy), 'AES-GCM', false, ['encrypt', 'decrypt']).then(function(nk) { return idbPut(name, nk).then(function() { mem.set(name, nk); return null; }); }); }
           if (mem.has(name)) return Promise.resolve(null);
           return idbGet(name).then(function(k) {
             if (k) { mem.set(name, k); return null; }
-            // Read path (mint=false): NEVER create a key. A genuinely absent key stays
-            // absent so decrypt fails recoverably ('web key missing') instead of minting
-            // a key that can't decrypt the surviving ciphertext (FEEDBACK_4 H-A).
+            // Read path (mint=false): never create a key. An absent key stays absent so decrypt
+            // fails recoverably ('web key missing') rather than minting one that can't decrypt.
             if (!mint) return null;
-            // Create via atomic 'add', not 'put': if two same-origin tabs race on first
-            // launch, only one 'add' wins and the loser adopts the winner's key instead
-            // of writing ciphertext no other context can decrypt.
+            // Create via atomic 'add', not 'put': if two same-origin tabs race on first launch,
+            // only one 'add' wins and the loser adopts the winner's key.
             return subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']).then(function(nk) {
               return idbAdd(name, nk).then(function(added) {
                 if (added) { mem.set(name, nk); return null; }
@@ -103,8 +94,8 @@ import kotlin.js.Promise
           return subtle.decrypt({ name: 'AES-GCM', iv: iv }, k, ct).then(function(ptBuf) { return u2b(ptBuf); });
         }); };
         var del = function(name) { mem['delete'](name); if (bc) bc.postMessage({ op: 'evict', name: name }); return idbDel(name).then(function() { return null; }); };
-        // Migrate a pre-appNamespace key record to its namespaced name, non-destructively
-        // (copy only if destination absent + source exists; source left in place). FEEDBACK_4 FB3-H1.
+        // Migrate a pre-appNamespace key record to its namespaced name, non-destructively (copy
+        // only if destination absent + source exists; source left in place).
         var copyIfAbsent = function(from, to) {
           return idbGet(to).then(function(existing) {
             if (existing) { mem.set(to, existing); return null; }

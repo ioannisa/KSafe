@@ -8,16 +8,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import kotlin.test.assertEquals
 
-/**
- * Tests the Android DataStore close→recreate lifecycle (see `KSafe.android.kt`).
- *
- * Closing a safe cancels its DataStore scope; DataStore releases the underlying file only
- * once that scope's `Job` completes. Recreating a safe on the **same file** must therefore
- * await the previous owner's teardown, or it trips DataStore's
- * `IllegalStateException: There are multiple DataStores active for the same file`.
- * The loop here reproduces the create-after-close pressure deterministically so a
- * regression of that await is caught.
- */
+/** Locks in: recreating a safe on the same file awaits the previous owner's DataStore teardown, so rapid close→recreate never trips "multiple DataStores active for the same file". */
 @RunWith(AndroidJUnit4::class)
 class AndroidDataStoreLifecycleTest {
 
@@ -27,18 +18,15 @@ class AndroidDataStoreLifecycleTest {
     fun closeThenRecreate_sameFile_survives_andDataPersists() = runBlocking {
         val fileName = "lifecycle_${System.nanoTime()}"
         try {
-            // Each iteration: a fresh safe on the SAME file → encrypted write (DEK + value
-            // DataStore activity) → read back → close (cancels the store's scope). A
-            // regressed await would throw "multiple DataStores active for the same file"
-            // on one of the recreates.
+            // Each iteration recreates a safe on the SAME file, writes, reads, and closes;
+            // a regressed await would throw "multiple DataStores active for the same file".
             repeat(30) { i ->
                 val ks = KSafe(context, fileName = fileName)
-                ks.put("counter", i) // encrypted by default
+                ks.put("counter", i)
                 assertEquals(i, ks.get("counter", -1), "value must round-trip within the instance")
                 ks.close()
             }
-            // The value written by the last living instance must survive a final reopen
-            // (encrypted with a DEK that persisted across every recreate).
+            // The last write must survive a final reopen (its DEK persisted across every recreate).
             val reopened = KSafe(context, fileName = fileName)
             assertEquals(29, reopened.get("counter", -1), "data must persist across close→recreate")
             reopened.close()

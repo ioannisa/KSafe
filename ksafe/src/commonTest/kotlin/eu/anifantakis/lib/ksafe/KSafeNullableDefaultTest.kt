@@ -8,21 +8,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /**
- * Dedicated, **intentionally small** suite pinning that retrieving a
- * `@Serializable` class with a *nullable* default (`null as T?`) deserializes
- * the value rather than returning the raw stored JSON string
- * (`ClassCastException: String cannot be cast to <Type>`).
- *
- * This is deliberately NOT a method on [KSafeTest]. The legacy Kotlin/JS
- * `kotlin-test` runner silently truncates the trailing `@Test`s of that
- * oversized class (it stops registering past ~62), so a test appended there
- * is compiled but never executed on Kotlin/JS — with zero failure signal.
- * Small focused classes register fully on every target, so cross-platform
- * regressions belong here, one concern per class.
- *
- * Subclasses supply a platform [KSafe] via [newKSafe], mirroring
- * [KSafeTest]'s contract.
+ * Locks in: retrieving a `@Serializable` class with a nullable default (`null as T?`) deserializes the value instead of returning the raw stored JSON string.
  */
+// Kept as its own small class: the Kotlin/JS kotlin-test runner stops registering @Tests past
+// ~62 in an oversized class, so cross-platform regressions live in focused classes, one concern each.
 abstract class KSafeNullableDefaultTest {
 
     private val tracked = mutableListOf<KSafe>()
@@ -38,26 +27,19 @@ abstract class KSafeNullableDefaultTest {
         tracked.clear()
     }
 
-    /**
-     * `get`/`getFlow` with a nullable `@Serializable` default whose first
-     * property is a primitive must round-trip on every platform.
-     */
     @Test
     fun issue31_nullableDefault_complexType_roundTrips() = runTest {
         val ksafe = createKSafe()
         val value = Issue31Data(name = "alice", count = 7)
 
-        // Plain path — exercises convertStoredValue / primitiveKindOrNull,
-        // where the nullable-default type detection happens.
+        // Plain path exercises the nullable-default type detection.
         ksafe.put("issue31_plain", value, KSafeWriteMode.Plain)
         assertEquals(value, ksafe.get("issue31_plain", null as Issue31Data?))
         assertEquals(value, ksafe.getFlow("issue31_plain", null as Issue31Data?).first())
 
-        // Encrypted (default) path with a nullable default.
         ksafe.put("issue31_enc", value)
         assertEquals(value, ksafe.get("issue31_enc", null as Issue31Data?))
 
-        // Non-null default still works (the path that already worked).
         assertEquals(value, ksafe.get("issue31_plain", Issue31Data("", 0)))
 
         // Missing key with a nullable default returns null, not a String.

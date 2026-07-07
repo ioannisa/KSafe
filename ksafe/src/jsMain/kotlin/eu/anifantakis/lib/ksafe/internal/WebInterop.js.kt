@@ -3,13 +3,7 @@ package eu.anifantakis.lib.ksafe.internal
 import kotlinx.browser.localStorage
 import kotlin.js.Date
 
-/**
- * Kotlin/JS actual implementations of the web-interop surface.
- *
- * Unlike wasmJs, Kotlin/JS has rich built-in bindings for browser globals
- * (`kotlinx.browser.localStorage`, `kotlin.js.Date`), so these actuals are
- * noticeably shorter than their wasmJs counterparts.
- */
+/** Kotlin/JS actuals for the web-interop surface. */
 
 @PublishedApi
 internal actual fun localStorageGet(key: String): String? = localStorage.getItem(key)

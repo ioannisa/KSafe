@@ -15,33 +15,7 @@ import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
-/**
- * Pins the startup ordering that protects 1.x → 2.0 Apple-platform Secure
- * Enclave data: [KSafeCore.startBackgroundCollector] must invoke the
- * `migrateAccessPolicy` lambda only *after* the first
- * [KSafePlatformStorage.snapshotFlow] emission has populated the cache.
- *
- * On Apple platforms that lambda is `cleanupOrphanedKeychainEntries`, which
- * starts by calling `storage.snapshot()` to compute the live key set. Run
- * too early, that call can race the 1.x → 2.0 path migration in
- * `KSafe.apple.kt` (where the DataStore file gets `moveItemAtPath`-ed from
- * `NSDocumentDirectory` to `NSApplicationSupportDirectory` immediately
- * before DataStore is constructed) and return an empty snapshot — the sweep
- * would then interpret every Keychain entry as orphaned and call
- * `engine.deleteKeySuspend(...)`, destroying the SE EC private keys
- * irreversibly (the SE never exports private keys).
- *
- * The ordering is verified with a fake [KSafePlatformStorage] that records
- * the order of every call (snapshot, snapshotFlow subscription/emission,
- * applyBatch), recording into an [AtomicReference]-backed list so the
- * multi-threaded interleaving across `Dispatchers.Default` (where
- * [KSafeCore]'s collector and write scopes run) and the test coroutine is
- * observed safely on every target.
- *
- * If a future refactor moves `migrateAccessPolicy()` above the snapshot
- * subscription this test will fail with a clear ordering mismatch in the
- * events list.
- */
+/** Locks in: startBackgroundCollector runs migrateAccessPolicy only AFTER the first snapshotFlow emission has populated the cache — on Apple platforms, running it early would let the orphan-Keychain sweep observe an empty snapshot and irreversibly delete Secure Enclave keys. */
 class KSafeCoreStartupOrderingTest {
 
     private var core: KSafeCore? = null
@@ -74,14 +48,8 @@ class KSafeCoreStartupOrderingTest {
             masterAlias = { reqUnlocked -> if (reqUnlocked) "__test_master_locked__" else "__test_master__" },
         )
 
-        // KSafeCore's collector runs on Dispatchers.Default (real
-        // threads), not the test dispatcher. `runTest`'s virtual time
-        // would advance past any timeout before the Default-thread
-        // coroutines had a chance to run, so the test must execute on
-        // real time via `runBlocking`. The 10-second timeout is real
-        // wall-clock time — generous enough for any reasonable CI
-        // runner, tight enough that a regression hangs visibly instead
-        // of stalling the whole suite.
+        // The collector runs on Dispatchers.Default (real threads), so runTest's virtual clock
+        // can't drive it — use runBlocking with a real wall-clock timeout that hangs visibly on regression.
         withTimeout(10_000L) { migrateFired.await() }
 
         val events = recorder.snapshot()
@@ -109,30 +77,16 @@ class KSafeCoreStartupOrderingTest {
     }
 }
 
-/**
- * Thread-safe ordered event recorder. Uses an unlimited [Channel] so
- * concurrent writers from any dispatcher push events in arrival order on
- * every KMP target. Channel ordering is FIFO and per-thread `trySend`
- * never blocks on UNLIMITED — so the recorder can be called from
- * non-suspend lambdas (the storage's `snapshotFlow` body) and from
- * suspend boundaries alike.
- */
+/** Thread-safe FIFO event recorder over an UNLIMITED channel: safe to call from any dispatcher and from non-suspend lambdas. */
 private class OrderRecorder {
     private val channel = Channel<String>(Channel.UNLIMITED)
 
     fun record(event: String) {
-        // trySend on UNLIMITED never returns failure under normal
-        // operation; defensive `getOrThrow()` would only fire if
-        // the channel got closed mid-test.
+        // trySend on UNLIMITED never fails unless the channel is closed mid-test.
         channel.trySend(event).getOrThrow()
     }
 
-    /**
-     * Drain everything queued so far. The channel stays open so a
-     * subsequent `record(...)` still works — handy when the test
-     * snapshots events at one point, then expects a few more events
-     * to land before the suite completes.
-     */
+    /** Drains everything queued so far; the channel stays open so later records still work. */
     fun snapshot(): List<String> {
         val out = mutableListOf<String>()
         while (true) {

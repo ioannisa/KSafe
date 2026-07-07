@@ -17,21 +17,9 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * macOS proof-test that the encryption plumbing routes correctly.
- *
- * **What this proves:** an encrypted KSafe write never lands the raw plaintext
- * sentinel in the DataStore file on disk. If a refactor accidentally routed a
- * `put()` through the plain path, this test would immediately fail.
- *
- * **What this does NOT prove:** the cryptographic strength of the production
- * Keychain + CryptoKit round-trip. Like the iOS variant, we substitute
- * [FakeEncryption] (XOR-based) so the test runner doesn't need Keychain
- * entitlements. Real-Keychain coverage on macOS belongs in an integration
- * test inside a properly signed app bundle.
- *
- * Storage is rooted at a temp directory under `NSTemporaryDirectory()` —
- * never `~/Library/Application Support/`, which is shared and persistent
- * on a real macOS host.
+ * Locks in: an encrypted write never lands the raw plaintext sentinel in the on-disk
+ * DataStore file, while a `KSafeWriteMode.Plain` write does. Uses [FakeEncryption] (no
+ * Keychain entitlements in the test runner) and a temp directory, not `~/Library`.
  */
 @OptIn(ExperimentalForeignApi::class)
 class MacosEncryptionProofTest {
@@ -69,7 +57,7 @@ class MacosEncryptionProofTest {
             testEngine = FakeEncryption(),
         )
 
-        ksafe.put(KEY, SENTINEL) // default = encrypted
+        ksafe.put(KEY, SENTINEL) // put() defaults to encrypted
         delay(500)
 
         assertEquals(SENTINEL, ksafe.get(KEY, "DEFAULT"), "encryption must round-trip")

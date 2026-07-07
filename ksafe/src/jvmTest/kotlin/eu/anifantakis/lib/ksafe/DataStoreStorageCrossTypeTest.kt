@@ -20,18 +20,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Tests for DataStore cross-type value collisions.
- *
- * A DataStore `Preferences.Key` is identified by **(name, type)**, so a `Put` of
- * one type does NOT overwrite an existing value of a different type with the same
- * name. KSafe writes both plain values and encrypted ciphertext under the same
- * raw key `__ksafe_value_<k>` (only the [StoredValue] type differs — e.g. `IntVal`
- * → `intPreferencesKey` for plain vs `Text` → `stringPreferencesKey` for
- * encrypted), so switching a key plain↔encrypted would otherwise leave BOTH on
- * disk: nondeterministic reads (`snapshot()` collapses by name), an incomplete
- * delete, and — switching plain→encrypted — the plaintext lingering in the file.
- * `writeOne` must purge same-name entries before writing, and `removeByName`
- * must remove every same-name entry.
+ * Locks in: switching a DataStore key plain↔encrypted (same raw name, different [StoredValue] type) leaves no stale entry of the old type on disk, and delete removes every same-name entry.
  */
 class DataStoreStorageCrossTypeTest {
 
@@ -55,11 +44,10 @@ class DataStoreStorageCrossTypeTest {
         val storage = newStorage()
         val rawKey = "__ksafe_value_token"
 
-        // First written plain (Int 42) — plaintext on disk.
         storage.applyBatch(listOf(StorageOp.Put(rawKey, StoredValue.IntVal(42))))
         assertEquals(StoredValue.IntVal(42), storage.snapshot()[rawKey])
 
-        // Then re-written as encrypted ciphertext (Text) under the SAME raw key.
+        // Re-write as encrypted Text under the SAME raw key.
         storage.applyBatch(listOf(StorageOp.Put(rawKey, StoredValue.Text("ciphertext-base64"))))
 
         val snap = storage.snapshot()

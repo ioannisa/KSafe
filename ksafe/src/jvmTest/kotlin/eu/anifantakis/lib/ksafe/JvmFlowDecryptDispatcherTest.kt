@@ -11,12 +11,7 @@ import kotlin.test.Test
 import kotlin.test.assertTrue
 
 /**
- * FEEDBACK_4 H8: getFlowRaw's .map calls engine.decryptSuspend — on Android a synchronous
- * Binder round-trip to the Keystore daemon — and getStateFlow collects on the caller's scope
- * (viewModelScope ⇒ Dispatchers.Main.immediate). Without a flowOn the decrypt ran on the
- * collector's dispatcher (the main thread) on every snapshot emission → ANR. getFlowRaw now
- * appends .flowOn(Dispatchers.Default), matching getRaw's withContext(Dispatchers.Default), so
- * the blocking keystore IPC never runs on the collector's dispatcher.
+ * Locks in: getFlow decrypts on Dispatchers.Default (via flowOn), never on the collector's dispatcher, so a blocking keystore decrypt can't run on the main thread and ANR.
  */
 class JvmFlowDecryptDispatcherTest {
 
@@ -45,8 +40,7 @@ class JvmFlowDecryptDispatcherTest {
         runBlocking { ksafe.put("k", "v", KSafeWriteMode.Encrypted()) }
 
         // A single-threaded "main-like" dispatcher stands in for viewModelScope's
-        // Dispatchers.Main.immediate. Collecting the flow here would run the decrypt on this
-        // thread without flowOn; with flowOn it runs on a Dispatchers.Default worker.
+        // Dispatchers.Main.immediate; without flowOn the decrypt would run on it.
         val collector = Executors.newSingleThreadExecutor { r -> Thread(r, "ksafe-test-collector") }
         val collectorDispatcher = collector.asCoroutineDispatcher()
         try {
@@ -59,7 +53,7 @@ class JvmFlowDecryptDispatcherTest {
             assertTrue(engine.decryptThreads.isNotEmpty(), "precondition: the flow decrypted at least one snapshot")
             assertTrue(
                 engine.decryptThreads.all { it.contains("DefaultDispatcher") },
-                "getFlow must decrypt on Dispatchers.Default, never the collector's dispatcher (H8 ANR). Threads: ${engine.decryptThreads}",
+                "getFlow must decrypt on Dispatchers.Default, never the collector's dispatcher (ANR). Threads: ${engine.decryptThreads}",
             )
         } finally {
             collectorDispatcher.close()

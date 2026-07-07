@@ -13,22 +13,16 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Concurrency test for [AppleKeychainEncryption] key resolution.
- *
- * Real Keychain round-trips can't run in the Kotlin/Native test runner (no entitlements →
- * `errSecMissingEntitlement`), so this injects an in-memory [AppleKeychainStore]. The fake is
- * thread-safe but **last-write-wins** on `store`, faithfully reproducing the production clobber:
- * two unsynchronized creators both read "absent", both generate a key, and the second store
- * overwrites the first.
- *
- * Without the engine's `keyResolutionLock`, concurrent first-creation of one alias returns
- * several different keys (each creator's own) and loses data — the losing key's ciphertext
- * becomes undecryptable. With the lock, all callers resolve to the one surviving key.
+ * Locks in: the engine's `keyResolutionLock` makes concurrent first-creation of one alias
+ * resolve to exactly one key. Without it, unsynchronized creators each generate their own key
+ * under a last-write-wins store and the losing key's ciphertext becomes undecryptable. Uses an
+ * in-memory [AppleKeychainStore] since real Keychain round-trips need entitlements the test
+ * runner lacks.
  */
 class IosKeychainConcurrencyTest {
 
-    /** In-memory stand-in for the Keychain. Thread-safe (CAS) but last-write-wins, like the
-     *  real delete-then-add `SecItemAdd` under a race. */
+    // In-memory Keychain stand-in: thread-safe (CAS) but last-write-wins, like the real
+    // delete-then-add SecItemAdd under a race.
     private class FakeKeychainStore : AppleKeychainStore {
         val map = KSafeConcurrentMap<ByteArray>()
         override fun readBytes(account: String): ByteArray? = map[account]

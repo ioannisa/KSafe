@@ -1,23 +1,16 @@
 package eu.anifantakis.lib.ksafe
 
 /**
- * Describes the protection and storage details of a specific key.
+ * Protection and storage details of a specific key.
  *
- * @property protection The encrypted protection tier the *write* asked for
- *   ([KSafeProtection.DEFAULT] / [KSafeProtection.HARDWARE_ISOLATED]), or
- *   `null` for plaintext entries (`KSafeWriteMode.Plain`).
- * @property storage Where the encryption key material actually resides on
- *   this device, in the **legacy three-value capability vocabulary**
- *   ([KSafeKeyStorage]). Kept for binary compatibility with KSafe ≤ 2.0
- *   consumers; prefer [level].
- * @property level Where the encryption key actually resides on the new
- *   universally-ordered protection scale ([KSafeProtectionLevel]). More
- *   granular than [storage] on JVM (distinguishes
- *   [KSafeProtectionLevel.SANDBOX_PROTECTED] OS-vault keys from
- *   [KSafeProtectionLevel.SOFTWARE] plaintext-in-file fallback) and on Web
- *   (reports [KSafeProtectionLevel.SANDBOX_PROTECTED] for the browser-origin
- *   non-extractable key, where `storage` could only say `SOFTWARE`).
- *   Match-up with [storage] on Android / Apple is 1:1.
+ * @property protection The tier the write asked for, or `null` for plaintext
+ *   entries ([KSafeWriteMode.Plain]).
+ * @property storage Where key material resides in the legacy three-value
+ *   [KSafeKeyStorage] vocabulary; kept for binary compatibility, prefer [level].
+ * @property level Where key material resides on the universally-ordered
+ *   [KSafeProtectionLevel] scale — more granular than [storage] on JVM and Web
+ *   (distinguishes [KSafeProtectionLevel.SANDBOX_PROTECTED] from
+ *   [KSafeProtectionLevel.SOFTWARE]), 1:1 on Android / Apple.
  */
 data class KSafeKeyInfo(
     val protection: KSafeProtection?,

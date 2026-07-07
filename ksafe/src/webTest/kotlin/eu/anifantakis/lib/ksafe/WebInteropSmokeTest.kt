@@ -12,13 +12,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * Verifies the web-interop `actual` bindings work in both the wasmJs and
- * js targets. These tests live in `webTest` so both targets run the same
- * assertions — any behavioural divergence between the two actual sets
- * (e.g. a Long-conversion bug on js, a `@JsFun` regression on wasmJs)
- * will surface here first.
- */
+/** Locks in: the web-interop `actual` bindings behave identically on the wasmJs and js targets. */
 class WebInteropSmokeTest {
 
     @Test
@@ -64,8 +58,7 @@ class WebInteropSmokeTest {
     @Test
     fun currentTimeMillisIsPlausible() {
         val now = currentTimeMillisWeb()
-        // 2020-01-01 in ms — a sanity floor that guards against e.g. a 0 return
-        // from a broken Long conversion on either target.
+        // 2020-01-01 in ms: sanity floor catching a broken Long conversion (e.g. a 0 return).
         assertTrue(now > 1_577_836_800_000L, "expected a recent epoch ms, got $now")
     }
 

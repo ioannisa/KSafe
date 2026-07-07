@@ -10,10 +10,9 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * The [KSafeMutableStateFlow] backing `asMutableStateFlow` must not let a
- * stale, disk-derived observer-flow emission clobber a value the user just
- * wrote through it: `updateFromFlow` respects a user-write guard until the
- * write's own echo arrives.
+ * Locks in: `updateFromFlow` never lets a stale, disk-derived observer emission clobber a value
+ * the user just wrote — a user-write guard holds until the write's own echo arrives, then external
+ * reflection resumes.
  */
 class KSafeStateFlowClobberTest {
 
@@ -21,14 +20,12 @@ class KSafeStateFlowClobberTest {
     fun updateFromFlow_appliesBeforeWrite_thenSkipsAfterUserWrite() {
         val msf = KSafeMutableStateFlow(initialValue = "init", persist = { /* no-op */ })
 
-        // Before any local write, external/observer emissions reflect.
         msf.updateFromFlow("external")
         assertEquals("external", msf.value)
 
-        // User writes through the StateFlow.
         msf.value = "user"
 
-        // A stale disk echo (older value) must NOT revert the user's write.
+        // A stale disk echo (older value) must not revert the user's write.
         msf.updateFromFlow("stale_echo")
         assertEquals("user", msf.value, "a stale observer emission must not clobber the user's write")
     }
@@ -37,32 +34,25 @@ class KSafeStateFlowClobberTest {
     fun updateFromFlow_isGuarded_afterCompareAndSetWrite() {
         val msf = KSafeMutableStateFlow(initialValue = "init", persist = { /* no-op */ })
 
-        // compareAndSet is also a user-write path → must arm the guard.
         msf.compareAndSet("init", "user_cas")
         msf.updateFromFlow("stale_echo")
         assertEquals("user_cas", msf.value, "compareAndSet must arm the guard like a plain set")
     }
 
-    /**
-     * The guard must be precise, not permanent: once the observer flow catches
-     * up with the user's write (the echo arrives), genuinely newer external
-     * changes must reflect again, as the public KDoc promises.
-     */
+    /** The guard is precise, not permanent: once the write's echo arrives, newer external changes reflect again. */
     @Test
     fun updateFromFlow_resumesExternalReflection_afterEchoCatchesUp() {
         val msf = KSafeMutableStateFlow(initialValue = "init", persist = { /* no-op */ })
 
         msf.value = "user"
 
-        // Stale pre-write echo: suppressed.
         msf.updateFromFlow("stale_echo")
         assertEquals("user", msf.value)
 
-        // The user's own write round-trips through disk → the flow caught up.
+        // The user's own write round-trips through disk → the flow has caught up.
         msf.updateFromFlow("user")
         assertEquals("user", msf.value)
 
-        // A genuinely newer external write must now reflect again.
         msf.updateFromFlow("external_new")
         assertEquals(
             "external_new", msf.value,
@@ -88,21 +78,18 @@ class KSafeStateFlowClobberTest {
     }
 
     /**
-     * deep-review M2: an idempotent write (`value = X` when already X and in sync
-     * with storage) must NOT permanently latch the guard. `distinctUntilChanged`
-     * eats the re-write so no echo can ever arrive; if the guard latched, every
-     * future external change would be suppressed for the StateFlow's lifetime.
+     * An idempotent write (`value = X` when already X and in sync with storage) must not
+     * permanently latch the guard: `distinctUntilChanged` eats the re-write so no echo ever
+     * arrives, and a latched guard would suppress every future external change.
      */
     @Test
     fun updateFromFlow_idempotentWrite_doesNotLatchGuard() {
         val msf = KSafeMutableStateFlow(initialValue = "init", persist = { /* no-op */ })
 
-        // Sync with storage, then re-write the SAME value (very common: re-submitting
-        // an unchanged form, `flow.value = repo.compute()` returning the same result).
+        // Sync with storage, then re-write the same value (a common no-op update).
         msf.updateFromFlow("synced")
         msf.value = "synced"
 
-        // External changes must still reflect — the guard must not be stuck.
         msf.updateFromFlow("external_new")
         assertEquals(
             "external_new", msf.value,
@@ -111,18 +98,15 @@ class KSafeStateFlowClobberTest {
     }
 
     /**
-     * deep-review M2: a write sequence that nets back to the synced value
-     * (A→B→A within one coalescing window) produces no distinct echo either, so
-     * it must not latch the guard permanently.
+     * A write sequence that nets back to the synced value (A→B→A within one coalescing window)
+     * produces no distinct echo either, so it must not latch the guard permanently.
      */
     @Test
     fun updateFromFlow_netZeroToggle_doesNotLatchGuard() {
         val msf = KSafeMutableStateFlow(initialValue = "A", persist = { /* no-op */ })
-        // Establish "A" as the synced baseline.
         msf.updateFromFlow("A")
 
-        // A → B → A: each step changes the value, but the net persisted value is
-        // unchanged, so distinctUntilChanged emits nothing and no echo arrives.
+        // A → B → A: distinctUntilChanged emits nothing for the net-unchanged value, so no echo arrives.
         msf.value = "B"
         msf.value = "A"
 
@@ -134,29 +118,27 @@ class KSafeStateFlowClobberTest {
     }
 
     /**
-     * FEEDBACK_4 M-F (core twin of the Compose fix): the user-write guard's
-     * check-then-apply in `updateFromFlow` is not atomic against the setter, so a
-     * stale emission that read the guard as clear before the setter armed it can
-     * clobber the visible value AFTER the setter ran. The source flow is
-     * distinctUntilChanged, so the user's value is never re-emitted — the clobber was
-     * permanent. The user-write echo must now re-apply the value (self-heal).
+     * The user-write guard's check-then-apply in `updateFromFlow` is not atomic against the
+     * setter, so a stale emission that read the guard as clear before the setter armed it can
+     * clobber the visible value after the setter ran. The source flow is distinctUntilChanged, so
+     * the user's value is never re-emitted — the clobber would be permanent. The user-write echo
+     * must re-apply the value (self-heal).
      */
     @Test
     fun updateFromFlow_userWriteEcho_selfHealsAStaleClobber() {
         val msf = KSafeMutableStateFlow(initialValue = "A", persist = { /* no-op */ })
         msf.updateFromFlow("A")   // sync baseline
-        msf.value = "B"           // arms the guard; delegate = "B", lastUserWrite = "B"
+        msf.value = "B"           // arms the guard
         assertEquals("B", msf.value)
 
-        // Reproduce the raced outcome: a stale "A" emission clobbered the visible value
-        // AFTER the guard was armed (the non-atomic check-then-apply the fix addresses).
+        // A stale "A" emission clobbers the visible value after the guard was armed (the raced check-then-apply).
         msf.simulateStaleClobberForTest("A")
         assertEquals("A", msf.value, "precondition: the stale emission diverged the visible state")
 
         msf.updateFromFlow("B")   // the echo of the user's own write
         assertEquals(
             "B", msf.value,
-            "the user-write echo must restore the value a stale emission clobbered (M-F); " +
+            "the user-write echo must restore the value a stale emission clobbered; " +
                 "before the fix it stayed stuck on the stale value",
         )
     }

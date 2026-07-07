@@ -3,92 +3,30 @@ package eu.anifantakis.lib.ksafe
 import kotlinx.serialization.json.Json
 
 /**
- * Configuration for KSafe encryption parameters.
+ * Configuration for KSafe encryption parameters. The algorithm (AES-GCM) is
+ * intentionally not configurable to prevent insecure setups.
  *
- * This allows customization of the underlying encryption without compromising security.
- * The encryption algorithm (AES-GCM) and block mode are intentionally NOT configurable
- * to prevent insecure configurations.
- *
- * ## Example
- * ```kotlin
- * // Default configuration (AES-256)
- * val ksafe = KSafe(context)
- *
- * // Custom key size
- * val ksafe128 = KSafe(context, config = KSafeConfig(keySize = 128))
- * ```
- *
- * ## Biometric Authentication
- *
- * Biometric authentication is a **standalone helper** decoupled from storage operations.
- * Use `verifyBiometric()` or `verifyBiometricDirect()` to protect any action:
- *
- * ```kotlin
- * val ksafe = KSafe(context)
- *
- * // Protect storage with biometrics
- * ksafe.verifyBiometricDirect("Authenticate to save") { success ->
- *     if (success) {
- *         ksafe.putDirect("authToken", token)
- *     }
- * }
- *
- * // With duration caching (60 seconds, scoped to ViewModel)
- * ksafe.verifyBiometricDirect(
- *     reason = "Authenticate",
- *     authorizationDuration = BiometricAuthorizationDuration(60_000L, viewModelScope.hashCode().toString())
- * ) { success ->
- *     if (success) { /* ... */ }
- * }
- * ```
- *
- * | Platform | Behavior |
- * |----------|----------|
- * | **Android** | BiometricPrompt with fingerprint/face/device credential |
- * | **iOS** | Face ID / Touch ID / Passcode via LocalAuthentication |
- * | **JVM** | Always returns true (no biometric hardware available) |
- *
- * @property keySize The size of the AES key in bits. Supported values: 128, 256. Default is 256.
- *           **Note:** 128-bit keys may offer marginally faster encryption on very old devices,
- *           but 256-bit is strongly recommended for all modern devices (negligible performance difference).
- * @property androidAuthValiditySeconds Reserved for future use. Default is 30 seconds.
- * @property requireUnlockedDevice Default unlock policy for encrypted writes when using
- *           no-mode APIs (`put/putDirect` without explicit [KSafeWriteMode]).
- *
- *   | Platform    | `false` (default)                                  | `true`                                           |
- *   |-------------|----------------------------------------------------|-------------------------------------------------|
- *   | **Android** | Keys accessible at any time (no lock restriction)  | Keys created with `setUnlockedDeviceRequired(true)` (API 28+) |
- *   | **iOS**     | `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` | `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`   |
- *   | **JVM**     | No effect (software-backed keys)                   | No effect (software-backed keys)                 |
- *
- *   For per-entry control, prefer [KSafeWriteMode.Encrypted] and set
- *   `requireUnlockedDevice` explicitly on each write.
- * @property json The [Json] instance used for serializing and deserializing user payloads.
- *           Override this to register a custom [kotlinx.serialization.modules.SerializersModule]
- *           for `@Contextual` types (e.g., `UUID`, `Instant`) or to change JSON behaviour
- *           (e.g., `encodeDefaults`, `coerceInputValues`).
- *
- *           **Important:** changing the format for an existing `fileName` namespace may make
- *           previously stored non-primitive values unreadable.
- *
- *           Defaults to [KSafeDefaults.json] (`Json { ignoreUnknownKeys = true }`).
- * @property appNamespace Optional application identifier that isolates this
- *           app's encryption keys from other apps on **JVM/Desktop and Web**.
- *
- *           Android and iOS keystores are already per-app (OS-sandboxed), so
- *           this has no effect there. But the desktop OS secret store
- *           (macOS Keychain / Linux Secret Service) is **per-OS-user, shared
- *           by every process**, and Web IndexedDB/localStorage is shared
- *           within a browser origin — so two different apps (or two KSafe
- *           setups) that use the same `fileName` would otherwise collide on
- *           the same key. Set this to a stable, app-unique string (e.g. your
- *           reverse-DNS app id) to namespace the key-store destination.
- *
- *           If `null`, JVM best-effort-derives a stable id from the app's
- *           main class (override with `-Dksafe.appNamespace=` / env
- *           `KSAFE_APP_NAMESPACE`); Web falls back to its origin isolation.
- *           Only the key-store **destination** is namespaced — legacy
- *           KSafe ≤ 2.0 keys still migrate unchanged.
+ * @property keySize AES key size in bits: 128 or 256 (default 256, recommended).
+ * @property androidAuthValiditySeconds Reserved for future use.
+ * @property requireUnlockedDevice Default unlock policy for encrypted writes
+ *           made without an explicit [KSafeWriteMode]. When `true`, keys are
+ *           only usable while the device is unlocked (Android API 28+ / iOS
+ *           Keychain accessibility); no effect on JVM. For per-entry control,
+ *           set `requireUnlockedDevice` on [KSafeWriteMode.Encrypted] instead.
+ * @property json The [Json] instance used for user-payload serialization.
+ *           Override to register a custom SerializersModule or change JSON
+ *           behaviour. Changing the format for an existing `fileName`
+ *           namespace may make previously stored non-primitive values
+ *           unreadable. Defaults to [KSafeDefaults.json].
+ * @property appNamespace Optional app-unique identifier (e.g. reverse-DNS id)
+ *           that namespaces the encryption-key destination on JVM/Desktop and
+ *           Web, where the OS secret store / browser origin storage is shared
+ *           and same-`fileName` apps would otherwise collide on the same key.
+ *           No effect on Android/iOS (keystores are already per-app). If
+ *           `null`, JVM derives a best-effort id from the app's main class
+ *           (override via `-Dksafe.appNamespace=` / env `KSAFE_APP_NAMESPACE`);
+ *           Web falls back to origin isolation. Legacy KSafe ≤ 2.0 keys still
+ *           migrate unchanged.
  */
 data class KSafeConfig(
     val keySize: Int = 256,

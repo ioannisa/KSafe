@@ -12,25 +12,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 
-/**
- * Android-specific concurrency and race condition stress tests.
- *
- * These tests run on a real device/emulator with the Android Keystore,
- * exercising code paths that JVM tests (with FakeEncryption) cannot reach:
- *   - Real Keystore encryption/decryption timing
- *   - Background collector + migration interaction with concurrent reads
- *   - Cache cleanup under real DataStore persistence latency
- */
+/** Locks in: encrypted putDirect/getDirect and mixed read/write stress on the real Android Keystore never transiently return the default. */
 @RunWith(AndroidJUnit4::class)
 class AndroidConcurrencyTest {
 
     companion object {
         private var counter = 0
 
-        /**
-         * Generates a unique file name using only lowercase letters.
-         * KSafe requires file names to match regex [a-z]+
-         */
+        /** Unique lowercase-only file name (KSafe requires file names to match [a-z]+). */
         @Synchronized
         private fun uniqueName(): String {
             counter++
@@ -50,16 +39,7 @@ class AndroidConcurrencyTest {
         return KSafe(context, fileName ?: uniqueName())
     }
 
-    // ============ ENCRYPTED putDirect/getDirect STRESS ============
-
-    /**
-     * Stress test: encrypted putDirect followed by immediate getDirect — the
-     * read must never transiently return the default (the ksafe.mutableStateOf
-     * initial-read scenario).
-     *
-     * On Android with real Keystore, the timing of background collector,
-     * migration, and encryption is different from JVM's FakeEncryption.
-     */
+    /** Encrypted putDirect then immediate getDirect must never transiently return the default (the mutableStateOf initial-read scenario). */
     @Test
     fun testEncryptedPutGetNeverReturnsDefault() = runTest {
         val ksafe = createKSafe()
@@ -67,7 +47,6 @@ class AndroidConcurrencyTest {
         val errors = AtomicInteger(0)
         val iterations = 100
 
-        // Let cache initialize
         delay(200)
 
         val jobs = (0 until 10).map { writerId ->
@@ -99,10 +78,7 @@ class AndroidConcurrencyTest {
         )
     }
 
-    /**
-     * Tests that pre-populated encrypted values are never transiently lost
-     * when concurrent writes trigger DataStore emissions and cache refreshes.
-     */
+    /** Pre-populated encrypted values must never transiently vanish while concurrent writes trigger DataStore emissions and cache refreshes. */
     @Test
     fun testExistingEncryptedValuesStableDuringConcurrentWrites() = runTest {
         val ksafe = createKSafe()
@@ -110,17 +86,14 @@ class AndroidConcurrencyTest {
         val defaultsReturned = AtomicInteger(0)
         val errors = AtomicInteger(0)
 
-        // Pre-populate encrypted values using suspend put (durable)
         repeat(keyCount) { i ->
             ksafe.put("stablekey$i", "stablevalue$i")
         }
 
-        // Let persistence complete
         delay(300)
 
         val running = AtomicBoolean(true)
 
-        // Readers: continuously verify pre-populated keys
         val readers = (0 until 3).map { readerId ->
             launch(Dispatchers.Default) {
                 while (running.get()) {
@@ -138,7 +111,7 @@ class AndroidConcurrencyTest {
             }
         }
 
-        // Writers: write NEW keys to trigger cache refresh cycles
+        // Writers churn NEW keys to trigger cache-refresh cycles.
         val writers = (0 until 3).map { writerId ->
             launch(Dispatchers.Default) {
                 repeat(50) { i ->
@@ -162,19 +135,14 @@ class AndroidConcurrencyTest {
         )
     }
 
-    // ============ MIXED ENCRYPTED/UNENCRYPTED STRESS ============
-
-    /**
-     * Stress test mixing encrypted and unencrypted operations on the same KSafe instance.
-     * This exercises the cache handling for both key prefixes simultaneously.
-     */
+    /** Mixed encrypted + unencrypted ops on one KSafe exercise cache handling for both key prefixes at once. */
     @Test
     fun testMixedEncryptedUnencryptedStress() = runTest {
         val ksafe = createKSafe()
         val errors = AtomicInteger(0)
         val iterations = 50
 
-        delay(200) // Let cache init
+        delay(200)
 
         val jobs = (0 until 5).map { writerId ->
             launch(Dispatchers.Default) {
@@ -187,7 +155,6 @@ class AndroidConcurrencyTest {
                         ksafe.putDirect(key, encValue)
                         ksafe.putDirect("plain$key", plainValue, KSafeWriteMode.Plain)
 
-                        // Read back both
                         val encRead = ksafe.getDirect(key, "ENCDEFAULT")
                         val plainRead = ksafe.getDirect("plain$key", "PLAINDEFAULT")
 
@@ -209,12 +176,7 @@ class AndroidConcurrencyTest {
         )
     }
 
-    // ============ RAPID OVERWRITE STRESS ============
-
-    /**
-     * Rapidly overwrites the same encrypted key from multiple coroutines.
-     * After all writes, the final value should be one of the written values (not the default).
-     */
+    /** Rapid concurrent overwrites of one encrypted key must leave a written value, never the default. */
     @Test
     fun testRapidOverwriteSameEncryptedKey() = runTest {
         val ksafe = createKSafe()
@@ -224,10 +186,8 @@ class AndroidConcurrencyTest {
 
         delay(200)
 
-        // Write initial value
         ksafe.putDirect(key, "initial")
 
-        // Rapid overwrite from multiple coroutines
         val jobs = (0 until 10).map { writerId ->
             launch(Dispatchers.Default) {
                 repeat(50) { i ->
@@ -242,47 +202,32 @@ class AndroidConcurrencyTest {
 
         jobs.joinAll()
 
-        // The value should be SOMETHING written, never the default
         val finalValue = ksafe.getDirect(key, default)
         assertNotEquals(default, finalValue, "Contended key must never revert to default")
         assertEquals(0, errors.get(), "No exceptions during rapid overwrite")
     }
 
-    // ============ putDirect PERSISTENCE VERIFICATION ============
-
-    /**
-     * Verifies that values written via putDirect are eventually persisted to DataStore
-     * and readable via the suspend get API (which reads DataStore directly when cache
-     * is not yet initialized).
-     */
+    /** putDirect values are eventually persisted and readable via the suspend get API. */
     @Test
     fun testPutDirectEventuallyPersists() = runTest {
         val ksafe = createKSafe()
 
         delay(200)
 
-        // Write via putDirect
         ksafe.putDirect("persistkey", "persistvalue")
 
-        // Wait for background flush (16ms coalesce + DataStore write)
+        // Wait for the background flush (16ms coalesce + DataStore write).
         delay(1000)
 
-        // Read via suspend get (reads from cache which should have the persisted value)
         val result = ksafe.get("persistkey", "DEFAULT")
         assertEquals("persistvalue", result, "putDirect value must be readable via suspend get after flush")
     }
 
-    // ============ IMMEDIATE getDirect AFTER INIT ============
-
-    /**
-     * Creates a KSafe instance and immediately calls getDirect on a key that
-     * doesn't exist yet. This verifies that getDirect returns the default
-     * gracefully even when the background collector hasn't finished.
-     */
+    /** getDirect on a missing key returns the default gracefully even before the background collector finishes. */
     @Test
     fun testGetDirectBeforeCacheInitReturnsDefault() = runTest {
         val ksafe = createKSafe()
-        // No delay — read immediately
+        // No delay — read before the collector initializes.
         val result = ksafe.getDirect("nonexistent", "DEFAULT")
         assertEquals("DEFAULT", result, "getDirect on non-existent key should return default")
     }

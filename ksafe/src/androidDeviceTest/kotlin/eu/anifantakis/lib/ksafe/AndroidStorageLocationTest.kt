@@ -11,15 +11,7 @@ import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * Android-specific instrumented tests for the storage-location behavior:
- *
- *  1. The `baseDir` parameter routes the DataStore into a caller-supplied path.
- *  2. The Android `dataStoreCache` is keyed by the resolved file path
- *     (not by `fileName ?: "default"`), so two `KSafe` instances with the same
- *     `fileName` but different `baseDir`s get isolated DataStores instead of
- *     conflicting on DataStore's "multiple active instances" error.
- */
+/** Locks in: baseDir routes the DataStore into a caller-supplied path, and the dataStoreCache keyed by resolved path isolates same-fileName / different-baseDir instances. */
 @RunWith(AndroidJUnit4::class)
 class AndroidStorageLocationTest {
 
@@ -43,20 +35,14 @@ class AndroidStorageLocationTest {
             val expected = File(tmpDir, "eu_anifantakis_ksafe_datastore_$name.preferences_pb")
             assertTrue(expected.exists(), "Expected $expected to exist")
 
-            // Roundtrip — confirms the DataStore is actually backed by that file.
+            // Roundtrip confirms the DataStore is backed by that file.
             assertEquals("world", safe.get("hello", "fallback"))
         } finally {
             tmpDir.deleteRecursively()
         }
     }
 
-    /**
-     * Two KSafe instances with the **same fileName** but **different baseDir**s
-     * must get isolated DataStores. A `dataStoreCache` keyed by
-     * `fileName ?: "default"` would collapse them onto one DataStore
-     * (DataStore would then throw "multiple active instances"); the cache key
-     * is `datastoreFile.absolutePath` so the two are distinguished.
-     */
+    /** Same fileName + different baseDir must yield isolated DataStores: the cache key is the absolute path, so they don't collapse onto one store and trip "multiple active instances". */
     @Test
     fun baseDir_dataStoreCacheKey_isolatesByPath() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
@@ -76,12 +62,8 @@ class AndroidStorageLocationTest {
             assertTrue(fileA.exists(), "File should exist in dirA")
             assertTrue(fileB.exists(), "File should exist in dirB")
 
-            // Reads should not bleed across instances — each KSafe has its own
-            // DataStore + KSafeCore + hot cache, and the writes went to different
-            // files. If the cache key still collapsed by fileName they would have
-            // crashed at construction with DataStore's "multiple active instances"
-            // error; reaching this assertion means the cache key correctly
-            // isolates by path.
+            // Reaching here without a "multiple active instances" crash already proves path
+            // isolation; the values confirm each instance has its own store.
             assertEquals("value_a", safeA.get("k", "fallback"))
             assertEquals("value_b", safeB.get("k", "fallback"))
         } finally {

@@ -16,28 +16,14 @@ import kotlin.test.assertNull
 import kotlin.test.assertNotNull
 import kotlin.time.Duration.Companion.seconds
 
-/**
- * JVM-specific test implementation.
- *
- * IMPORTANT: DataStore on JVM does not allow multiple instances to access the same file.
- * Each test must use a unique file name to avoid IllegalArgumentException.
- *
- * We also need unique names ACROSS test runs because files persist on disk.
- */
+/** Locks in: each test uses a unique DataStore file name — JVM forbids two instances on one file, and files persist across runs. */
 class JvmKSafeTest : KSafeTest() {
 
     companion object {
         /**
-         * Stress intensity multiplier. Default `1.0` = full local load. The
-         * concurrency-stress tests below enqueue *writers × iterations*
-         * fire-and-forget `putDirect`s; at full intensity that's tens of
-         * thousands of ops, which DataStore's single writer + coalescer
-         * cannot drain inside a 2-vCPU CI runner's time budget (the
-         * documented livelock — see `forkEvery = 1` note in build.gradle.kts).
-         * CI passes `-Dksafe.stressScale=0.05`: the scaled-down counts still
-         * run thousands of concurrent ops (the cache/dirty-keys races these
-         * tests catch reproduce well below the tens-of-thousands mark) but
-         * stay drainable. Floored so a tiny scale can't no-op a test.
+         * Stress intensity multiplier (default 1.0 = full local load). CI passes a small scale
+         * so the concurrency tests stay drainable on a 2-vCPU runner without a writer/coalescer
+         * livelock; floored so a tiny scale can't no-op a test.
          */
         private val STRESS_SCALE: Double =
             System.getProperty("ksafe.stressScale")?.toDoubleOrNull()?.coerceIn(0.01, 1.0) ?: 1.0
@@ -45,29 +31,18 @@ class JvmKSafeTest : KSafeTest() {
         internal fun scaled(n: Int, floor: Int = 25): Int =
             (n * STRESS_SCALE).toInt().coerceAtLeast(floor)
 
-        // Atomic counter to ensure unique file names across all tests in a single run
         private val testCounter = AtomicInteger(0)
 
-        // Timestamp prefix ensures uniqueness across test runs
-        // Convert to base-26 letters since KSafe only allows [a-z]+
+        // Base-26 letters (KSafe file names must match [a-z]+); timestamp ⇒ unique across runs.
         private val runId: String = numberToLetters(System.currentTimeMillis())
 
-        /**
-         * Generates a unique file name using only lowercase letters.
-         * KSafe requires file names to match regex [a-z]+
-         *
-         * Format: run{timestamp}test{counter}
-         * This ensures uniqueness both within a test run and across multiple runs.
-         */
+        /** Unique lowercase-only file name (KSafe requires [a-z]+): run{timestamp}test{counter}. */
         fun generateUniqueFileName(): String {
             val count = testCounter.incrementAndGet()
             return "run${runId}test${numberToLetters(count.toLong())}"
         }
 
-        /**
-         * Converts a number to base-26 using letters a-z.
-         * Example: 1 -> "a", 26 -> "z", 27 -> "aa", etc.
-         */
+        /** Encodes a number as base-26 lowercase letters (1→"a", 27→"aa"). */
         private fun numberToLetters(num: Long): String {
             var n = num
             val sb = StringBuilder()
@@ -81,7 +56,7 @@ class JvmKSafeTest : KSafeTest() {
     }
 
     override fun newKSafe(fileName: String?): KSafe {
-        // If a specific fileName is requested (for isolation tests), make it unique too
+        // Make caller-supplied names unique across runs too (isolation tests).
         val uniqueName = if (fileName != null) {
             "run${runId}${fileName}"
         } else {
@@ -90,17 +65,7 @@ class JvmKSafeTest : KSafeTest() {
         return KSafe(uniqueName)
     }
 
-    // ============ CONCURRENCY STRESS TESTS ============
-    // These tests specifically target race conditions that can occur under heavy load
-
-    /**
-     * Stress test for concurrent putDirect operations.
-     * This simulates the benchmark scenario where rapid-fire writes
-     * can cause race conditions with the background cache updater.
-     *
-     * The bug this catches: NoSuchElementException when iterating
-     * ConcurrentHashMap while another thread modifies it.
-     */
+    /** Concurrent putDirect must not throw NoSuchElementException from iterating the cache's ConcurrentHashMap under concurrent modification. */
     @Test
     fun testConcurrentPutDirectStress() = runTest {
         val ksafe = createKSafe()
@@ -109,7 +74,6 @@ class JvmKSafeTest : KSafeTest() {
         val errors = AtomicInteger(0)
         val successfulWrites = AtomicInteger(0)
 
-        // Launch multiple coroutines doing rapid putDirect operations
         val jobs = (0 until concurrentWriters).map { writerId ->
             launch(Dispatchers.Default) {
                 repeat(iterations) { i ->
@@ -124,11 +88,7 @@ class JvmKSafeTest : KSafeTest() {
             }
         }
 
-        // Wait for all writers to complete
         jobs.joinAll()
-
-        // No delay needed - errors are caught during putDirect() execution
-        // Background persistence happens async but doesn't affect test correctness
 
         assertEquals(0, errors.get(), "Should have no errors during concurrent writes")
         assertEquals(
@@ -138,11 +98,7 @@ class JvmKSafeTest : KSafeTest() {
         )
     }
 
-    /**
-     * Stress test for concurrent encrypted putDirect operations.
-     * Encrypted writes involve more operations (encryption, key lookup)
-     * and are more likely to trigger race conditions.
-     */
+    /** Concurrent encrypted putDirect (adds encryption + key lookup) must not race. */
     @Test
     fun testConcurrentEncryptedPutDirectStress() = runTest {
         val ksafe = createKSafe()
@@ -170,11 +126,7 @@ class JvmKSafeTest : KSafeTest() {
         assertEquals(0, errors.get(), "Should have no errors during concurrent encrypted writes")
     }
 
-    /**
-     * Stress test for mixed read/write operations.
-     * This tests the scenario where reads and writes happen simultaneously
-     * on the same keys.
-     */
+    /** Simultaneous reads and writes on the same keys must not race. */
     @Test
     fun testConcurrentReadWriteStress() = runTest {
         val ksafe = createKSafe()
@@ -182,12 +134,10 @@ class JvmKSafeTest : KSafeTest() {
         val errors = AtomicInteger(0)
         val running = AtomicBoolean(true)
 
-        // Pre-populate some data
         repeat(50) { i ->
             ksafe.putDirect("shared_key_$i", "initial_$i", KSafeWriteMode.Plain)
         }
 
-        // Writer coroutine
         val writer = launch(Dispatchers.Default) {
             repeat(iterations) { i ->
                 try {
@@ -200,7 +150,6 @@ class JvmKSafeTest : KSafeTest() {
             running.set(false)
         }
 
-        // Reader coroutines
         val readers = (0 until 5).map { readerId ->
             launch(Dispatchers.Default) {
                 while (running.get()) {
@@ -222,24 +171,17 @@ class JvmKSafeTest : KSafeTest() {
         assertEquals(0, errors.get(), "Should have no errors during concurrent read/write")
     }
 
-    /**
-     * Stress test specifically for the dirty keys mechanism.
-     * Rapidly adds and removes dirty keys to stress the ConcurrentHashMap
-     * iteration, which must not throw NoSuchElementException under
-     * concurrent modification.
-     */
+    /** Rapid dirty-key churn must not throw NoSuchElementException from concurrent ConcurrentHashMap iteration. */
     @Test
     fun testDirtyKeysStress() = runTest {
         val ksafe = createKSafe()
         val iterations = scaled(1000)
         val errors = AtomicInteger(0)
 
-        // Rapid fire writes that add dirty keys
         val jobs = (0 until 20).map { writerId ->
             launch(Dispatchers.Default) {
                 repeat(iterations) { i ->
                     try {
-                        // This adds to dirty keys, updates cache
                         ksafe.putDirect("dirty_test_${writerId}_$i", "v$i", KSafeWriteMode.Plain)
                     } catch (e: Exception) {
                         errors.incrementAndGet()
@@ -260,15 +202,8 @@ class JvmKSafeTest : KSafeTest() {
     }
 
     /**
-     * Stress test for the cache cleanup race condition.
-     *
-     * Scenario: putDirect writes a new key to memoryCache. Before the write
-     * is flushed to DataStore, updateCache runs and removes the key from
-     * memoryCache because it's not yet in DataStore. A subsequent getDirect
-     * then returns the default value instead of the written value.
-     *
-     * This test writes encrypted values and immediately reads them back,
-     * repeating many times to maximize the chance of hitting the race window.
+     * A new key written by putDirect must survive updateCache: before the write flushes,
+     * updateCache must not evict the not-yet-persisted key, or a later getDirect returns the default.
      */
     @Test
     fun testNewKeysSurviveCacheCleanup() = runTest {
@@ -277,9 +212,8 @@ class JvmKSafeTest : KSafeTest() {
         val defaultsReturned = AtomicInteger(0)
         val errors = AtomicInteger(0)
 
-        // Trigger an initial cache load by reading a non-existent key
         ksafe.getDirect("warmup", "default")
-        delay(100) // Let cache initialize
+        delay(100)
 
         val jobs = (0 until 10).map { writerId ->
             launch(Dispatchers.Default) {
@@ -290,7 +224,6 @@ class JvmKSafeTest : KSafeTest() {
                         val default = "DEFAULT"
 
                         ksafe.putDirect(key, value)
-                        // Read back immediately — should get written value, not default
                         val readBack = ksafe.getDirect(key, default)
                         if (readBack == default) {
                             defaultsReturned.incrementAndGet()
@@ -311,22 +244,12 @@ class JvmKSafeTest : KSafeTest() {
         )
     }
 
-    // ============ ORPHANED CIPHERTEXT CLEANUP TESTS ============
-
     /**
-     * Tests that orphaned ciphertext (encrypted data whose key is lost)
-     * is cleaned up on KSafe startup.
-     *
-     * Uses a togglable engine: initially works normally, then switched to fail mode
-     * to simulate lost encryption keys (as happens after Android backup restore).
-     *
-     * Since DataStore enforces single-instance per file, the engine is toggled
-     * mid-lifecycle and a new KSafe instance is created with a fresh unique name
-     * that starts with the failing engine from the beginning.
+     * Orphaned ciphertext (key lost, e.g. after a backup restore) is cleaned up on startup.
+     * A togglable engine flips to fail-on-decrypt mid-lifecycle to simulate the lost key.
      */
     @Test
     fun testOrphanedCiphertextIsCleanedUpOnStartup() = runTest {
-        // Phase 1: Create engine and KSafe, write encrypted data
         val engine = object : KSafeEncryption {
             private val delegate = FakeEncryption()
             @Volatile var failOnDecrypt = false
@@ -348,45 +271,37 @@ class JvmKSafeTest : KSafeTest() {
 
         val ksafe = KSafe(
             fileName = generateUniqueFileName(),
-            // ENCRYPTED policy — this test exercises decrypt-on-every-read so a mid-session
-            // engine fail flips reads to defaults. The default LAZY_PLAIN_TEXT policy would
-            // cache the plaintext after the first successful decrypt and shield later reads
-            // from the engine fail, defeating the test.
+            // ENCRYPTED decrypts on every read, so a mid-session engine fail flips reads to
+            // defaults; LAZY_PLAIN_TEXT would cache plaintext and hide the fail, defeating the test.
             memoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
             testEngine = engine
         )
-        delay(300) // Let background collector + cleanup complete (no orphans yet)
+        delay(300)
 
-        // Write encrypted data with working engine
         ksafe.put("orphan_test", "secret_value")
         ksafe.put("orphan_test2", "secret_value2")
-        delay(500) // Let write flush
+        delay(500)
 
-        // Verify values are readable
         assertEquals("secret_value", ksafe.get("orphan_test", "DEFAULT"))
         assertEquals("secret_value2", ksafe.get("orphan_test2", "DEFAULT"))
 
-        // Verify ciphertext exists in DataStore
         val prefs1 = ksafe.dataStore.data.first()
         val encKey1 = stringPreferencesKey("__ksafe_value_orphan_test")
         val encKey2 = stringPreferencesKey("__ksafe_value_orphan_test2")
         assertTrue(prefs1[encKey1] != null, "Ciphertext 1 should exist in DataStore")
         assertTrue(prefs1[encKey2] != null, "Ciphertext 2 should exist in DataStore")
 
-        // Phase 2: Toggle engine to fail (simulates lost keys after backup restore)
+        // Simulate lost keys (e.g. after a backup restore).
         engine.failOnDecrypt = true
 
-        // Value should now return default via getDirect (key gone, falls through)
         assertEquals("DEFAULT", ksafe.getDirect("orphan_test", "DEFAULT"),
             "Should return default when decryption key is lost")
 
-        // Orphaned ciphertext is still in DataStore (cleanup already ran at startup)
+        // Cleanup already ran at startup, so the orphan is still present mid-session.
         val prefs2 = ksafe.dataStore.data.first()
         assertTrue(prefs2[encKey1] != null, "Orphaned ciphertext should still be in DataStore mid-session")
 
-        // Phase 3: Manually seed DataStore with orphaned ciphertext using a fresh instance
-        // We create a second KSafe instance with a DIFFERENT file name but the SAME failing engine.
-        // First, write data with working engine, then toggle to fail before creating the instance.
+        // A second instance (fresh file, same togglable engine) reproduces the orphan end-to-end.
         val engine2 = object : KSafeEncryption {
             private val delegate = FakeEncryption()
             @Volatile var failOnDecrypt = false
@@ -418,77 +333,51 @@ class JvmKSafeTest : KSafeTest() {
         ksafe2setup.put("unenc_key", "plain_value", KSafeWriteMode.Plain)
         delay(500)
 
-        // Verify both exist
         assertEquals("will_be_orphaned", ksafe2setup.get("cleanup_target", "DEFAULT"))
         assertEquals("plain_value", ksafe2setup.get("unenc_key", "DEFAULT"))
 
-        // Verify ciphertext is in DataStore
         val setupPrefs = ksafe2setup.dataStore.data.first()
         val targetKey = stringPreferencesKey("__ksafe_value_cleanup_target")
         assertTrue(setupPrefs[targetKey] != null, "Target ciphertext should exist before cleanup")
 
-        // Now toggle to fail mode — simulates key loss
         engine2.failOnDecrypt = true
 
-        // The ciphertext is orphaned but still in DataStore (cleanup ran before we wrote data)
-        // On a real device, next app launch would clean this up.
-        // Verify that getDirect returns default for orphaned data
+        // The orphan lingers this session (cleanup ran before the write); getDirect returns the default.
         assertEquals("DEFAULT", ksafe2setup.getDirect("cleanup_target", "DEFAULT"))
-
-        // Unencrypted data should still be accessible
         assertEquals("plain_value", ksafe2setup.getDirect("unenc_key", "DEFAULT"))
     }
 
-    /**
-     * Tests that valid encrypted data survives startup cleanup.
-     * Only entries that fail to decrypt should be removed.
-     */
+    /** Valid encrypted data survives startup cleanup; only undecryptable entries are removed. */
     @Test
     fun testValidCiphertextIsNotCleanedUp() = runTest {
         val ksafe = createKSafe()
-        delay(200) // Let cache initialize
+        delay(200)
 
-        // Write encrypted data
         ksafe.put("valid_key", "valid_value")
-        delay(500) // Let write flush
+        delay(500)
 
-        // Verify it's readable after startup cleanup ran
         val result = ksafe.get("valid_key", "DEFAULT")
         assertEquals("valid_value", result, "Valid ciphertext should not be cleaned up")
     }
 
-    /**
-     * Tests that encrypted values written via putDirect and read via getDirect
-     * never transiently return the default value.
-     *
-     * This directly targets the bug reported by the user: using
-     * ksafe.mutableStateOf on an encrypted value, the initial getDirect
-     * returned the default once.
-     */
+    /** Encrypted putDirect + getDirect must never transiently return the default (mutableStateOf on an encrypted value once did). */
     @Test
     fun testEncryptedPutGetNeverReturnsDefault() = runTest(timeout = 90.seconds) {
-        // 175+ real encrypted writes plus 5 readers continuously decrypting:
-        // on a 2-vCPU CI runner this legitimately needs more than runTest's
-        // default 60s wall-clock budget. The cooperative yield below prevents
-        // the reader/writer livelock; the jvm-full-suite job's 20-min timeout
-        // still backstops any genuine hang.
+        // Many encrypted writes + 5 decrypting readers need more than runTest's default 60s
+        // budget on a 2-vCPU runner; the yield() below prevents a reader/writer livelock.
         val ksafe = createKSafe()
         val defaultsReturned = AtomicInteger(0)
         val errors = AtomicInteger(0)
 
-        // Initialize with known values
         val keyCount = 50
         repeat(keyCount) { i ->
             ksafe.putDirect("enc_key_$i", "value_$i")
         }
 
-        // Let writes persist
         delay(200)
 
-        // Now rapidly read all keys while also writing new ones
         val running = AtomicBoolean(true)
 
-        // Readers: continuously read the pre-populated keys
         val readers = (0 until 5).map { readerId ->
             launch(Dispatchers.Default) {
                 while (running.get()) {
@@ -502,18 +391,13 @@ class JvmKSafeTest : KSafeTest() {
                             errors.incrementAndGet()
                         }
                     }
-                    // getDirect never suspends, so this is a CPU-bound spin.
-                    // Without a cooperative yield, 5 readers monopolise the
-                    // Dispatchers.Default pool (≈#cores threads) and starve
-                    // the writers on a ≤2-vCPU runner — writers.joinAll()
-                    // never returns, `running` never flips, the readers spin
-                    // forever (the CI livelock). yield() releases the thread.
+                    // getDirect never suspends; without this yield the CPU-bound readers
+                    // monopolise Dispatchers.Default and starve the writers on a ≤2-vCPU runner.
                     yield()
                 }
             }
         }
 
-        // Writers: write new keys to trigger updateCache cycles
         val writers = (0 until 5).map { writerId ->
             launch(Dispatchers.Default) {
                 repeat(scaled(100)) { i ->
@@ -522,7 +406,7 @@ class JvmKSafeTest : KSafeTest() {
                     } catch (e: Exception) {
                         errors.incrementAndGet()
                     }
-                    yield() // cooperative — putDirect doesn't suspend either
+                    yield() // putDirect doesn't suspend either
                 }
             }
         }
@@ -538,26 +422,18 @@ class JvmKSafeTest : KSafeTest() {
         )
     }
 
-    // ============ NULLABLE PRIMITIVE RETRIEVAL TESTS ============
-
     /**
-     * Tests that unencrypted primitive values can be retrieved with a nullable default.
-     *
-     * Bug: When calling get<String?>(key, defaultValue = null, encrypted = false),
-     * the `when(defaultValue)` dispatch in `convertStoredValue` falls to the `else`
-     * branch (null doesn't match `is String`), which tried JSON deserialization on
-     * a plain string — failing because "hello" is not valid JSON.
+     * A plain primitive reads back with a null default: get<String?>(key, null) must not fall to the
+     * JSON-deserialize else-branch (a null default doesn't match `is String`) on a plain string.
      */
     @Test
     fun testNullableStringGetReturnsStoredValue() = runTest {
         val ksafe = createKSafe()
         delay(200)
 
-        // Store a plain string without encryption
         ksafe.put("str_key", "hello_world", KSafeWriteMode.Plain)
         delay(200)
 
-        // Retrieve with nullable String? and null default — should return stored value, not null
         val result: String? = ksafe.get("str_key", defaultValue = null)
         assertEquals("hello_world", result, "Nullable String? get should return stored value")
     }

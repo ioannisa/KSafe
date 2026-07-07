@@ -8,12 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertTrue
 
 /**
- * FEEDBACK_4 low: the one-time startup cleanup — the legacy-key sweep that moves
- * plaintext key material out of the weak location into the secure store, plus the
- * orphaned-ciphertext sweep and (Apple) the access-policy migration — ran only in the
- * background collector, which `lazyLoad = true` never starts. So a lazy instance left
- * plaintext keys in the weak location and skipped the migrations. It must run once on
- * first access instead.
+ * Locks in: a `lazyLoad = true` instance still runs the one-time startup cleanup (legacy-key sweep and related migrations) on first access, even though the background collector never starts.
  */
 class JvmLazyLoadStartupCleanupTest {
 
@@ -31,7 +26,7 @@ class JvmLazyLoadStartupCleanupTest {
         val ksafe = KSafe(fileName = JvmKSafeTest.generateUniqueFileName(), lazyLoad = true, testEngine = engine)
         try {
             runBlocking {
-                // First access readies the cache and must trigger the one-time cleanup.
+                // First access must trigger the one-time cleanup.
                 ksafe.get("k", "def")
                 val ran = withTimeoutOrNull(5_000) { engine.legacySweepCalled.await(); true } ?: false
                 assertTrue(ran, "a lazyLoad instance must run the legacy-key sweep on first access (low)")

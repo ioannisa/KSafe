@@ -11,15 +11,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 /**
- * FEEDBACK_4 M-B/M-H: the NON-suspend read path must return the caller's default
- * (never throw) when decryption fails transiently — a locked device / busy
- * Keystore. `resolveFromCache` rethrows transient decrypt failures so a suspending
- * `get()` caller can await unlock and retry, but `getDirect` (and the by-property
- * value delegate, the `getStateFlow` seed, and Compose seeding — all of which
- * funnel through `getDirectRaw`) have no retry seam and are documented to return
- * the default. Letting the throw escape crashes property access / StateFlow
- * construction / composition on a locked device. The suspend `get()` path must
- * still throw (its documented, retryable asymmetry).
+ * Locks in: the non-suspend read path (getDirect, the by-property value delegate, and the getStateFlow seed) returns the caller's default on a transient decrypt failure, while suspend get() still throws so callers can await unlock and retry.
  */
 class JvmDirectReadTransientTest {
 
@@ -53,7 +45,7 @@ class JvmDirectReadTransientTest {
         engine.failTransient = true
         assertEquals(
             "def", ksafe.getDirect("k", "def"),
-            "getDirect must return the default on a transient decrypt failure, not throw (M-B)",
+            "getDirect must return the default on a transient decrypt failure, not throw",
         )
         ksafe.close()
     }
@@ -66,7 +58,7 @@ class JvmDirectReadTransientTest {
 
         engine.failTransient = true
         val value: String by ksafe("def", key = "k")
-        assertEquals("def", value, "a `by ksafe(...)` value read must return the default on a locked device (M-H)")
+        assertEquals("def", value, "a `by ksafe(...)` value read must return the default on a locked device")
         ksafe.close()
     }
 
@@ -80,7 +72,7 @@ class JvmDirectReadTransientTest {
         val scope = CoroutineScope(SupervisorJob())
         try {
             // getStateFlow seeds its initial value synchronously via getDirectRaw — this
-            // must not throw during StateFlow construction on a locked device (M-H).
+            // must not throw during StateFlow construction on a locked device.
             val sf = ksafe.getStateFlow("k", "def", scope)
             assertEquals("def", sf.value, "the StateFlow seed must fall back to the default, not crash")
         } finally {

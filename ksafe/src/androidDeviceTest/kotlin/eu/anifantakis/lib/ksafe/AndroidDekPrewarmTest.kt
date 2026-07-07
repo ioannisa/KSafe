@@ -21,14 +21,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * FEEDBACK_4 low (ANR): the software-DEK read happened lazily on the first encrypted
- * READ via a blocking storage round-trip on the caller thread — an ANR when that caller is
- * the UI thread. [AndroidKeystoreEncryption.prewarmDekReadIfPresent] warms an
- * already-persisted DEK into the in-process cache in the background at construction, so the
- * first read is served from cache. It must be strictly read-only (never create/persist a
- * DEK), so an unencrypted-only safe stays DEK-free.
- */
+/** Locks in: prewarmDekReadIfPresent warms an already-persisted DEK into the in-process cache in the background (so the first encrypted read avoids a blocking storage round-trip / UI-thread ANR), and stays strictly read-only so an unencrypted-only safe never persists a DEK. */
 @RunWith(AndroidJUnit4::class)
 class AndroidDekPrewarmTest {
 
@@ -64,11 +57,10 @@ class AndroidDekPrewarmTest {
         val master = uniqueAlias()
         val e1 = engine(storage)
         try {
-            // A first encrypt persists the wrapped DEK.
             val blob = e1.encrypt(master, "secret".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
             assertTrue(dekPresent(storage))
 
-            // A fresh (cold-cache) engine sharing the same storage warms the DEK read.
+            // A fresh cold-cache engine on the same storage warms the DEK.
             val e2 = engine(storage)
             assertFalse(e2.isDekCachedForTest(master), "precondition: the cold engine has no cached DEK")
             runBlocking { e2.prewarmDekReadIfPresent(master, requireUnlockedDevice = false) }
@@ -79,7 +71,7 @@ class AndroidDekPrewarmTest {
             assertContentEquals(
                 "secret".encodeToByteArray(),
                 e2.decrypt(master, blob),
-                "the prewarmed DEK must serve the read from cache without a storage round-trip (L-ANR)",
+                "the prewarmed DEK must serve the read from cache without a storage round-trip",
             )
         } finally {
             e1.deleteKey(master)

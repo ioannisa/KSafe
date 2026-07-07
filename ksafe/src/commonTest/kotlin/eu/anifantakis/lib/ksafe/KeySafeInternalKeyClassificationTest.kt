@@ -9,13 +9,9 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * FEEDBACK_4 M-C: [KeySafeMetadataManager.isInternalStorageKey] filters KSafe's
- * own storage keys out of the user-value view. It matched a blanket single-
- * underscore `ksafe_` prefix, which also swallowed pre-2.0 FLAT plaintext user
- * keys that merely began with `ksafe_` (e.g. "ksafe_theme") — silently dropping
- * them on upgrade. The filter must match only the genuine internal prefixes
- * (`__ksafe_*` and the web engine's `ksafe_key_*`), while still letting real
- * internal keys be skipped.
+ * Locks in: [KeySafeMetadataManager.isInternalStorageKey] matches only the genuine internal
+ * prefixes (`__ksafe_*` and the web engine's `ksafe_key_*`), so a flat user key that merely
+ * begins with `ksafe_` (e.g. "ksafe_theme") is preserved as a user value, not filtered out.
  */
 class KeySafeInternalKeyClassificationTest {
 
@@ -30,10 +26,10 @@ class KeySafeInternalKeyClassificationTest {
 
     @Test
     fun flatUserKeyBeginningWithKsafe_isNotTreatedAsInternal() {
-        // The exact regression: a pre-2.0 flat plaintext user key named "ksafe_theme".
+        // A flat plaintext user key named "ksafe_theme".
         assertFalse(
             KeySafeMetadataManager.isInternalStorageKey("ksafe_theme"),
-            "a user key that merely begins with 'ksafe_' must NOT be filtered as internal (M-C)",
+            "a user key that merely begins with 'ksafe_' must NOT be filtered as internal",
         )
         assertFalse(KeySafeMetadataManager.isInternalStorageKey("ksafe_user_settings"), "another 'ksafe_'-prefixed user key")
     }
@@ -41,8 +37,7 @@ class KeySafeInternalKeyClassificationTest {
     @Test
     fun flatPlaintextUserKey_survivesClassification_asAUserValue() {
         // classifyStorageEntry routes non-internal, non-enveloped raw keys to a flat
-        // plaintext user value. Before the fix "ksafe_theme" classified as internal → null
-        // → the value was dropped on load.
+        // plaintext user value, so "ksafe_theme" survives as a user value rather than being dropped.
         val classified = KeySafeMetadataManager.classifyStorageEntry(
             rawKey = "ksafe_theme",
             legacyEncryptedPrefix = "encrypted_",
@@ -50,7 +45,7 @@ class KeySafeInternalKeyClassificationTest {
             stagedMetadata = emptyMap(),
             existingMetadata = emptyMap(),
         )
-        assertNotNull(classified, "a flat plaintext 'ksafe_theme' must survive as a user value (M-C)")
+        assertNotNull(classified, "a flat plaintext 'ksafe_theme' must survive as a user value")
         assertEquals("ksafe_theme", classified.userKey)
         assertFalse(classified.encrypted)
 

@@ -15,14 +15,13 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * The Keychain orphan sweep must NOT run on macOS, whose shared per-user login
- * keychain (no app-identity scoping) would let one KSafe-using app's sweep
- * delete another app's keys. These tests run natively on macOS
- * (`Platform.osFamily == MACOSX`).
+ * Locks in: the Keychain orphan sweep is a no-op on macOS, whose shared per-user login
+ * keychain (no app-identity scoping) would otherwise let one app's sweep delete another
+ * app's keys.
  */
 class MacosKeychainSweepTest {
 
-    /** Records whether the sweep got far enough to read storage (i.e. did NOT short-circuit). */
+    /** Records whether the sweep read storage, i.e. did NOT short-circuit. */
     private class SpyStorage : KSafePlatformStorage {
         var snapshotCalled = false
         override suspend fun snapshot(): Map<String, StoredValue> {
@@ -47,7 +46,6 @@ class MacosKeychainSweepTest {
             seKeyTagPrefix = "se.",
             reservedKeyIds = emptySet(),
         )
-        // The macOS gate must short-circuit before any storage read or Keychain enumeration.
         assertFalse(
             spy.snapshotCalled,
             "the Keychain orphan sweep must be a no-op on macOS (shared login keychain)",

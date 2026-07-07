@@ -8,14 +8,9 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Contract tests for [KSafeConcurrentMap]'s compare-and-set primitives.
- *
- * [KSafeConcurrentMap.removeIf] backs the deep-review M1 fix: the post-commit
- * cache repair re-checks ownership after its `putIfAbsent` and, if a concurrent
- * delete/newer write superseded it, rolls back **exactly its own value** — never
- * a third writer's — so an acknowledged delete can't be resurrected in memory.
- * That correctness hinges on `removeIf` removing only when the current value
- * matches, which these tests pin on every platform.
+ * Locks in: [KSafeConcurrentMap.removeIf] removes only when the current value matches, so the
+ * post-commit cache repair rolls back exactly its own value — never a third writer's — and an
+ * acknowledged delete can't be resurrected in memory.
  */
 class KSafeConcurrentMapTest {
 
@@ -24,20 +19,18 @@ class KSafeConcurrentMapTest {
         val map = KSafeConcurrentMap<String>()
         map["k"] = "v1"
 
-        // Wrong expected value → no removal, entry intact.
         assertFalse(map.removeIf("k", "other"), "removeIf must not remove when the value differs")
         assertEquals("v1", map["k"], "a non-matching removeIf must leave the entry untouched")
 
-        // Matching expected value → removed.
         assertTrue(map.removeIf("k", "v1"), "removeIf must remove when the value matches")
         assertNull(map["k"], "the entry must be gone after a matching removeIf")
     }
 
     @Test
     fun removeIf_neverClobbersAThirdWritersValue() {
-        // The exact M1 rollback safety property: our repair inserted "mine", but a
-        // newer writer has since overwritten the slot with "theirs". Rolling back with
-        // our own value must be a no-op — it must not delete the newer writer's value.
+        // Rollback safety: our repair inserted "mine", but a newer writer has since overwritten
+        // the slot with "theirs". Rolling back with our own value must be a no-op — it must not
+        // delete the newer writer's value.
         val map = KSafeConcurrentMap<String>()
         map["k"] = "theirs"
 

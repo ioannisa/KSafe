@@ -1,30 +1,19 @@
 package eu.anifantakis.lib.ksafe.internal
 
 /**
- * Non-extractable AES-GCM key storage for the web (wasmJs + js), backed by
- * WebCrypto + IndexedDB.
- *
- * - Keys are generated/imported with `extractable = false` and persisted as live
- *   `CryptoKey` objects in IndexedDB (structured clone), so raw key material is
- *   never exposed to JS.
- * - A legacy raw key found in `localStorage` is migrated: imported as a
- *   non-extractable key, then the `localStorage` entry is deleted.
- * - Framing is a 12-byte random IV prepended to `ciphertext‖tag`, matching the
- *   layout older versions wrote, so existing data still decrypts after migration.
- *
- * All payloads cross the JS-interop boundary as Base64 strings so the js
- * (`external`) and wasmJs (`@JsFun`) bindings stay primitive-only; the actuals
- * bridge the underlying Promises to `suspend`.
+ * Non-extractable AES-GCM key storage for the web (wasmJs + js) over WebCrypto + IndexedDB. Keys
+ * are generated/imported with `extractable = false` and persisted as live `CryptoKey` objects in
+ * IndexedDB, so raw key material never reaches JS. Framing is a 12-byte random IV prepended to
+ * `ciphertext‖tag` — the layout older versions wrote — so existing data still decrypts. Payloads
+ * cross the interop boundary as Base64 so the js (`external`) / wasmJs (`@JsFun`) bindings stay
+ * primitive-only.
  */
 
 /**
- * Ensures the key state for [idbName], migrating [legacyRawKeyB64] into IndexedDB if provided.
- *
- * When [mintIfAbsent] is `true` (the write path) a fresh non-extractable key is generated and
- * persisted if none exists. When `false` (the read path) no key is ever created — a genuinely
- * absent key is left absent so the subsequent decrypt fails recoverably with "web key missing"
- * instead of minting a key that can never decrypt the surviving ciphertext (FEEDBACK_4 H-A).
- * A legacy `localStorage` key is still migrated regardless, since it provably decrypts existing data.
+ * Ensures key state for [idbName], migrating [legacyRawKeyB64] into IndexedDB if provided. With
+ * [mintIfAbsent] true (write path) a fresh non-extractable key is minted if none exists; false
+ * (read path) never mints — an absent key is left absent so decrypt fails recoverably ("web key
+ * missing") rather than minting one that can't decrypt the surviving ciphertext.
  */
 @PublishedApi
 internal expect suspend fun webKeyEnsure(idbName: String, legacyRawKeyB64: String?, mintIfAbsent: Boolean)
@@ -38,11 +27,10 @@ internal expect suspend fun webKeyEncrypt(idbName: String, plaintextB64: String)
 internal expect suspend fun webKeyDecrypt(idbName: String, ivAndCipherB64: String): String
 
 /**
- * Copies the CryptoKey record from [fromIdbName] to [toIdbName] **only if** [toIdbName] is
- * absent and [fromIdbName] exists (atomic `add`, so a concurrent writer is never clobbered).
- * Used to migrate a pre-`appNamespace` key to its namespaced record name when `appNamespace`
- * is added on upgrade, so existing encrypted data stays readable (FEEDBACK_4 FB3-H1). The
- * source record is left in place (migrate-forward, non-destructive).
+ * Copies the CryptoKey from [fromIdbName] to [toIdbName] only if [toIdbName] is absent and
+ * [fromIdbName] exists (atomic `add`, never clobbering a concurrent writer). Migrates a
+ * pre-`appNamespace` key to its namespaced name so data stays readable on upgrade; the source
+ * is left in place (non-destructive).
  */
 @PublishedApi
 internal expect suspend fun webKeyCopyIfAbsent(fromIdbName: String, toIdbName: String)

@@ -8,19 +8,11 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * `updateCache` must not clobber a write that lands **during** the merge with
- * the OLD on-disk value: mergeability has to be decided from the LIVE
- * `dirtyKeys` right before each merge write, because the actual `memoryCache`
- * write happens well after entry (once the second-pass decrypt round-trips),
- * and dirty flags are never cleared, so a clobbered write would stay stale for
- * the process lifetime. The race is driven deterministically: the racing write
- * is performed from inside the engine's `decrypt`, i.e. precisely while
- * `updateCache`'s second pass is mid-flight for that key.
+ * Locks in: a write that lands during updateCache's second-pass decrypt is not clobbered by the stale on-disk value — neither its value nor its protection/routing metadata reverts — because mergeability is re-decided from the live dirtyKeys just before each merge write.
  */
 class JvmCollectorWriteRaceTest {
 
-    /** Engine whose `decrypt` runs [onDecrypt] (the racing write) before returning a
-     *  fixed "old" plaintext, simulating a write that lands during the decrypt window. */
+    /** Engine whose `decrypt` runs [onDecrypt] (the racing write) before returning a fixed "old" plaintext. */
     private class RaceEngine : KSafeEncryption {
         @Volatile var onDecrypt: (() -> Unit)? = null
         override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray = data
@@ -56,7 +48,6 @@ class JvmCollectorWriteRaceTest {
 
         runBlocking { ksafe.core.updateCache(seeded) }
 
-        // The write that raced the decrypt must win — not be reverted to the stale "old".
         assertEquals(
             "new", ksafe.getDirect("k", "def"),
             "a write landing during updateCache's decrypt must not be clobbered by the stale disk value",
@@ -66,11 +57,9 @@ class JvmCollectorWriteRaceTest {
     }
 
     /**
-     * The live re-check must also cover the `protectionMap`/`encMetaMap`
-     * syncs, not just the `memoryCache` merges: a write that CHANGES a key's
-     * protection during the merge window (here: encrypted on disk → racing
-     * Plain rewrite) must keep its fresh routing metadata, or reads route to
-     * the wrong slot for the rest of the session.
+     * The live re-check must also cover the protectionMap/encMetaMap syncs, not just memoryCache: a
+     * write that CHANGES a key's protection mid-merge (encrypted on disk → racing Plain rewrite) must
+     * keep its fresh routing metadata, or reads route to the wrong slot for the rest of the session.
      */
     @Test
     fun updateCache_doesNotRevertProtection_ofAWriteThatLandsDuringDecrypt() {
@@ -96,9 +85,7 @@ class JvmCollectorWriteRaceTest {
 
         runBlocking { ksafe.core.updateCache(seeded) }
 
-        // If the metadata sync reverted protection to the stale "DEFAULT", the read
-        // routes to the (empty) encrypted slot and misses the racing plain write —
-        // the freshly-written value must stay reachable instead.
+        // A reverted protection would route the read to the empty encrypted slot and miss the plain write.
         assertEquals(
             "new-plain", ksafe.getDirect("k", "def"),
             "a protection-changing write landing during updateCache must not have its routing metadata reverted",

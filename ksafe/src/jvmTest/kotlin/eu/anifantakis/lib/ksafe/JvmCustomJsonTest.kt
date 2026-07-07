@@ -20,10 +20,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * Tests for custom [Json] configuration via [KSafeConfig.json].
- *
- * Verifies that users can register custom serializers (e.g., for `@Contextual` types)
- * and that the configured format is used for all user-payload operations.
+ * Locks in: a custom Json (KSafeConfig.json) with user-registered serializers is used for all user-payload operations, so @Contextual types round-trip; the default Json rejects them.
  */
 class JvmCustomJsonTest {
 
@@ -58,8 +55,6 @@ class JvmCustomJsonTest {
         return KSafe(runId, config = KSafeConfig(json = json))
     }
 
-    // ============ putDirect / getDirect ============
-
     @Test
     fun putDirect_getDirect_withContextualType() {
         val ksafe = createKSafe(customJson)
@@ -81,8 +76,6 @@ class JvmCustomJsonTest {
 
         assertEquals(profile, result)
     }
-
-    // ============ suspend put / get ============
 
     @Test
     fun put_get_withContextualType() = runTest {
@@ -106,8 +99,6 @@ class JvmCustomJsonTest {
         assertEquals(profile, result)
     }
 
-    // ============ Delegate ============
-
     @Test
     fun delegate_withContextualType() {
         val ksafe = createKSafe(customJson)
@@ -121,8 +112,6 @@ class JvmCustomJsonTest {
         assertEquals(expected, readBack)
     }
 
-    // ============ getFlow ============
-
     @Test
     fun getFlow_withContextualType() = runTest {
         val ksafe = createKSafe(customJson)
@@ -134,8 +123,6 @@ class JvmCustomJsonTest {
         assertEquals(profile, result)
     }
 
-    // ============ Default json rejects @Contextual UUID ============
-
     @Test
     fun defaultJson_rejectsContextualType() {
         val ksafe = createKSafe() // uses KSafeDefaults.json — no UUID serializer registered
@@ -146,14 +133,11 @@ class JvmCustomJsonTest {
         }
     }
 
-    // ============ KSafeDefaults.json is a shared singleton ============
-
     @Test
     fun defaultJson_isSameSingleton() {
         val config1 = KSafeConfig()
         val config2 = KSafeConfig()
 
-        // Same reference — data class equality works as expected
         assertTrue(config1.json === config2.json, "Default json should be the same singleton instance")
         assertEquals(config1, config2)
     }

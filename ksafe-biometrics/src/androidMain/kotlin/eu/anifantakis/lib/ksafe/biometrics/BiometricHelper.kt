@@ -18,26 +18,16 @@ import java.lang.ref.WeakReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-/**
- * Exception thrown when biometric authentication fails or is cancelled.
- */
+/** Thrown when biometric authentication fails or is cancelled. */
 class BiometricAuthException(message: String) : Exception(message)
 
-/**
- * Exception thrown when biometric authentication is required but no Activity is available.
- */
+/** Thrown when biometric authentication is required but no Activity is available. */
 class BiometricActivityNotFoundException(message: String) : Exception(message)
 
 /**
- * Helper object that tracks the current Activity and handles biometric authentication.
- *
- * This is initialized automatically when [KSafeBiometrics] is created with a Context.
- * It enables zero-config biometric support for ViewModel-style usage.
- *
- * You can customize the biometric prompt text:
- * ```kotlin
- * BiometricHelper.promptTitle = "Unlock Secure Data"
- * ```
+ * Tracks the current Activity and drives biometric authentication. Auto-initialized when
+ * [KSafeBiometrics] is created with a Context, enabling zero-config use from ViewModels.
+ * Prompt text is customizable via [promptTitle] / [promptSubtitle].
  */
 object BiometricHelper {
 
@@ -48,46 +38,32 @@ object BiometricHelper {
     /** Process-wide guard so only one biometric prompt is ever in flight. */
     private val promptGate = BiometricPromptGate()
 
-    /**
-     * Track activities from onCreate so they're available during ViewModel initialization.
-     * These may not yet be in STARTED state.
-     */
+    // Tracked from onCreate (may be pre-STARTED) so it's available during ViewModel init.
     private var createdFragmentActivity: WeakReference<FragmentActivity>? = null
 
-    /**
-     * Timeout in milliseconds to wait for an Activity to become available.
-     * Default is 5 seconds - covers most app startup scenarios.
-     */
+    /** How long to wait for an Activity to become available. */
     var activityWaitTimeoutMs: Long = 5_000L
 
-    /**
-     * Biometric prompt configuration. Can be customized by the app.
-     */
     var promptTitle: String = "Authentication Required"
     // Default fallback; the subtitle is normally passed per-call.
     var promptSubtitle: String = "Authenticate to access secure data"
 
     /**
-     * Whether users must explicitly confirm after successful biometric recognition.
-     * Keep `true` for sensitive actions; set `false` to allow faster passive-auth flows.
-     *
-     * Note: this only affects weak/passive biometric modalities (e.g. face). For
-     * `BIOMETRIC_STRONG` modalities like fingerprint, the physical action is the
-     * confirmation and this flag has no effect.
+     * Whether the user must explicitly confirm after biometric recognition. Only affects
+     * weak/passive modalities (e.g. face); for `BIOMETRIC_STRONG` (fingerprint) the physical
+     * action is the confirmation and this has no effect.
      */
     var confirmationRequired: Boolean = true
 
-    /**
-     * Initialize activity tracking. Called automatically by [KSafeBiometrics].
-     */
+    /** Initialize activity tracking. Called automatically by [KSafeBiometrics]. */
     fun init(application: Application) {
         if (isInitialized) return
         isInitialized = true
 
         application.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
-                // Track FragmentActivity early - this fires during super.onCreate()
-                // before setContent { } runs, so it's available for ViewModel initialization
+                // Fires during super.onCreate(), before setContent {}, so it's available for
+                // ViewModel init — even though the activity isn't STARTED yet.
                 currentAnyActivity = WeakReference(activity)
                 if (activity is FragmentActivity) {
                     createdFragmentActivity = WeakReference(activity)
@@ -95,7 +71,6 @@ object BiometricHelper {
             }
 
             override fun onActivityStarted(activity: Activity) {
-                // Activity is now in STARTED state - can show BiometricPrompt
                 currentAnyActivity = WeakReference(activity)
                 if (activity is FragmentActivity) {
                     currentFragmentActivity = WeakReference(activity)
@@ -110,21 +85,18 @@ object BiometricHelper {
             }
 
             override fun onActivityPaused(activity: Activity) {
-                // Clear resumed reference
                 if (currentFragmentActivity?.get() == activity) {
                     currentFragmentActivity = null
                 }
             }
 
             override fun onActivityStopped(activity: Activity) {
-                // Clear started reference
                 if (currentAnyActivity?.get() == activity) {
                     currentAnyActivity = null
                 }
             }
 
             override fun onActivityDestroyed(activity: Activity) {
-                // Clear created reference
                 if (createdFragmentActivity?.get() == activity) {
                     createdFragmentActivity = null
                 }
@@ -134,56 +106,39 @@ object BiometricHelper {
         })
     }
 
-    /**
-     * Get the currently resumed FragmentActivity, or null if none available.
-     */
+    /** The currently resumed FragmentActivity, or null if none available. */
     fun getCurrentActivity(): FragmentActivity? = currentFragmentActivity?.get()
 
-    /**
-     * Wait for a FragmentActivity in STARTED state to become available.
-     * If we have a CREATED activity, wait for it to reach STARTED.
-     * Returns null if timeout expires.
-     */
+    // Waits (up to [activityWaitTimeoutMs]) for a STARTED FragmentActivity, needed before a
+    // BiometricPrompt can show. Returns null on timeout.
     private suspend fun waitForFragmentActivity(): FragmentActivity? {
-        // First check if we already have a STARTED FragmentActivity
         currentFragmentActivity?.get()?.let { return it }
 
-        // Fallback: if lifecycle callbacks missed the current activity (e.g. KSafe was
-        // initialized after the Activity already reached RESUMED), find it via ActivityThread.
+        // Fallback for when lifecycle callbacks missed the current activity (e.g. KSafe was
+        // initialized after it already reached RESUMED): find it via ActivityThread.
         findCurrentActivity()?.let { return it }
 
-        // Check if we have a CREATED activity that will reach STARTED soon
         val createdActivity = createdFragmentActivity?.get()
         if (createdActivity != null) {
-            // Wait for this activity to reach STARTED state
             return waitForActivityStarted(createdActivity)
         }
 
-        // No activity at all - poll for one to appear
         val startTime = System.currentTimeMillis()
         val pollIntervalMs = 50L
 
         while (System.currentTimeMillis() - startTime < activityWaitTimeoutMs) {
-            // Check if a STARTED Activity is now available
             currentFragmentActivity?.get()?.let { return it }
-
-            // Check if a CREATED activity appeared
             createdFragmentActivity?.get()?.let { activity ->
                 return waitForActivityStarted(activity)
             }
-
             delay(pollIntervalMs)
         }
 
         return currentFragmentActivity?.get()
     }
 
-    /**
-     * Finds the current resumed FragmentActivity via ActivityThread reflection.
-     * This handles the case where BiometricHelper.init() was called after the Activity
-     * already reached RESUMED state (common with lazy DI like Koin singletons),
-     * so lifecycle callbacks never fired for the current Activity.
-     */
+    // Finds the resumed FragmentActivity via ActivityThread reflection, covering the case where
+    // init() ran after the Activity reached RESUMED (common with lazy DI) so no callback fired.
     private fun findCurrentActivity(): FragmentActivity? {
         try {
             val activityThread = Class.forName("android.app.ActivityThread")
@@ -201,7 +156,7 @@ object BiometricHelper {
                     activityField.isAccessible = true
                     val activity = activityField.get(record) as? Activity ?: continue
                     if (activity is FragmentActivity && !activity.isDestroyed && !activity.isFinishing) {
-                        // Cache so lifecycle callbacks track it going forward
+                        // Cache so lifecycle callbacks track it going forward.
                         currentFragmentActivity = WeakReference(activity)
                         createdFragmentActivity = WeakReference(activity)
                         currentAnyActivity = WeakReference(activity)
@@ -210,18 +165,13 @@ object BiometricHelper {
                 }
             }
         } catch (_: Exception) {
-            // Reflection may fail on some OEM/Android versions — that's OK,
-            // the polling mechanism remains as fallback.
+            // Reflection may fail on some OEM/Android versions; polling remains as fallback.
         }
         return null
     }
 
-    /**
-     * Wait for a specific FragmentActivity to reach STARTED state.
-     * BiometricPrompt requires the activity to be at least STARTED.
-     */
+    // Waits for a specific FragmentActivity to reach STARTED, which BiometricPrompt requires.
     private suspend fun waitForActivityStarted(activity: FragmentActivity): FragmentActivity? {
-        // Check if already started
         if (activity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
             return activity
         }
@@ -245,9 +195,8 @@ object BiometricHelper {
                         }
                     }
 
-                    // Add observer on main thread
+                    // Lifecycle must be touched on the main thread; re-check state after posting.
                     activity.runOnUiThread {
-                        // Double-check state after posting to main thread
                         if (activity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
                             if (continuation.isActive) {
                                 continuation.resume(activity)
@@ -259,7 +208,6 @@ object BiometricHelper {
                         } else {
                             activity.lifecycle.addObserver(observer)
 
-                            // Remove observer on cancellation
                             continuation.invokeOnCancellation {
                                 activity.runOnUiThread {
                                     activity.lifecycle.removeObserver(observer)
@@ -275,16 +223,11 @@ object BiometricHelper {
     }
 
     /**
-     * Authenticate the user with biometrics, optionally allowing device credential fallback.
+     * Suspends until biometric authentication succeeds or fails, waiting up to
+     * [activityWaitTimeoutMs] for an Activity. Must NOT be called from the Main thread (deadlocks).
      *
-     * This suspends until authentication succeeds or fails.
-     * If no Activity is immediately available, waits up to [activityWaitTimeoutMs] for one.
-     * Must NOT be called from the Main thread (will deadlock).
-     *
-     * @param subtitle The subtitle to display in the prompt.
-     * @param allowDeviceCredentialFallback When `true`, accepts PIN/password/pattern as a
-     *        fallback (`BIOMETRIC_STRONG | DEVICE_CREDENTIAL`). When `false`, restricts to
-     *        biometrics only (`BIOMETRIC_STRONG`); a Cancel button is shown instead.
+     * @param allowDeviceCredentialFallback `true` accepts PIN/password fallback
+     *        (`BIOMETRIC_STRONG | DEVICE_CREDENTIAL`); `false` is biometrics-only with a Cancel button.
      * @throws BiometricActivityNotFoundException if no FragmentActivity becomes available within timeout
      * @throws BiometricAuthException if authentication fails or is cancelled
      */
@@ -295,7 +238,6 @@ object BiometricHelper {
         val fragmentActivity = waitForFragmentActivity()
 
         if (fragmentActivity == null) {
-            // Check if there's a non-FragmentActivity visible - provide helpful error
             val anyActivity = currentAnyActivity?.get()
             if (anyActivity != null) {
                 throw BiometricActivityNotFoundException(
@@ -311,24 +253,20 @@ object BiometricHelper {
             }
         }
 
-        // Serialize prompt presentation: a second concurrent prompt would overwrite the
-        // shared activity-scoped BiometricPrompt callback and silently drop its own
-        // authenticate(), stranding the first caller's coroutine forever. The gate makes
-        // concurrent callers queue; the activity wait above stays outside it.
+        // Serialize prompts: a second concurrent prompt would overwrite the shared
+        // activity-scoped callback and strand the first caller's coroutine forever. The gate
+        // queues concurrent callers; the activity wait above stays outside it.
         promptGate.withSinglePrompt {
             showBiometricPrompt(fragmentActivity, subtitle, allowDeviceCredentialFallback)
         }
     }
 
-    /**
-     * Shows the BiometricPrompt on the given activity.
-     */
     private suspend fun showBiometricPrompt(
         activity: FragmentActivity,
         subtitle: String,
         allowDeviceCredentialFallback: Boolean,
     ): Unit = suspendCancellableCoroutine { continuation ->
-        // BiometricPrompt must be created and shown on the main thread
+        // BiometricPrompt must be created and shown on the main thread.
         activity.runOnUiThread {
             try {
                 val executor = ContextCompat.getMainExecutor(activity)
@@ -352,8 +290,7 @@ object BiometricHelper {
                         }
 
                         override fun onAuthenticationFailed() {
-                            // Don't fail the continuation - user can retry
-                            // The prompt stays open for retry
+                            // A single rejected attempt; the prompt stays open for retry.
                         }
                     }
                 )
@@ -382,14 +319,10 @@ object BiometricHelper {
 
                 biometricPrompt.authenticate(promptInfo)
 
-                // If the caller's coroutine is cancelled while the prompt is showing
-                // (navigation away, timeout, structured-concurrency cancel), dismiss it.
-                // androidx.biometric reuses ONE activity-scoped fragment/view-model, so an
-                // orphaned prompt left on screen rebinds to the NEXT caller's BiometricPrompt
-                // and can be satisfied under the wrong security configuration — e.g. the stale
-                // prompt still offers device-credential fallback while the next caller demanded
-                // biometrics-only (allowDeviceCredentialFallback = false). cancelAuthentication
-                // must run on the main thread. (deep-review: cancelled-prompt rebind.)
+                // Dismiss the prompt if the caller's coroutine is cancelled. androidx.biometric
+                // reuses ONE activity-scoped fragment, so an orphaned prompt would rebind to the
+                // next caller and could be satisfied under the wrong security config (e.g. offering
+                // device-credential fallback the next caller refused). Must run on the main thread.
                 continuation.invokeOnCancellation {
                     activity.runOnUiThread { runCatching { biometricPrompt.cancelAuthentication() } }
                 }

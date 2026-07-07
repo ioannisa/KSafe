@@ -15,17 +15,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * Abstract base class for KSafe tests.
- * Platform-specific implementations extend this class to provide actual KSafe instances.
- *
- * Subclasses implement [newKSafe] to construct a platform-appropriate instance;
- * tests call [createKSafe], which forwards to [newKSafe] and registers the
- * returned instance for teardown. [close][KSafe.close] is invoked on every
- * tracked instance in [tearDown] so abandoned KSafes do not pin their
- * background coroutines (and the DataStore + caches they reference) in heap
- * across tests. Without this, the JVM-side test suite OOMs on CI.
- */
+/** Locks in: KSafe put/get/flow/delegation round-trips across value types, nullability, and plain vs encrypted modes. */
 abstract class KSafeTest {
     private val tracked = mutableListOf<KSafe>()
 
@@ -34,22 +24,18 @@ abstract class KSafeTest {
     fun createKSafe(fileName: String? = null): KSafe =
         newKSafe(fileName).also { tracked += it }
 
+    // Close every tracked instance so abandoned KSafes don't pin their background
+    // coroutines (and the DataStore + caches they hold) in heap and OOM the suite on CI.
     @AfterTest
     fun tearDown() {
         tracked.forEach { runCatching { it.close() } }
         tracked.clear()
     }
 
-    // ============ PRIMITIVE-KIND CUSTOM SERIALIZERS ============
-    //
-    // Types whose serializer declares a PRIMITIVE descriptor kind while their
-    // runtime values are not that Kotlin primitive (Duration is STRING-kind;
-    // so are Uuid, kotlinx-datetime types, and the common hand-written
-    // PrimitiveSerialDescriptor custom-serializer pattern). The plain write
-    // path JSON-encodes them (runtime-type dispatch); reads must decode that
-    // JSON rather than return it verbatim, or the caller's reified cast fails.
+    // Serializers with a PRIMITIVE descriptor but non-primitive runtime values (Duration,
+    // Uuid, datetime) are JSON-encoded on the plain path; reads must JSON-decode them,
+    // else the caller's reified cast fails.
 
-    /** A hand-written custom serializer with a primitive (STRING) descriptor. */
     @Serializable(with = TagSerializer::class)
     data class Tag(val raw: String)
 
@@ -87,9 +73,6 @@ abstract class KSafeTest {
         assertEquals(Tag("alpha"), ksafe.getDirect("tag_plain", Tag("default")))
     }
 
-    // ============ BASIC STRING OPERATIONS ============
-
-    /** Verifies that unencrypted strings can be stored and retrieved correctly */
     @Test
     fun testPutAndGetUnencryptedString() = runTest {
         val ksafe = createKSafe()
@@ -102,7 +85,6 @@ abstract class KSafeTest {
         assertEquals(value, retrieved)
     }
 
-    /** Verifies that encrypted strings can be stored and retrieved correctly */
     @Test
     fun testPutAndGetEncryptedString() = runTest {
         val ksafe = createKSafe()
@@ -115,9 +97,6 @@ abstract class KSafeTest {
         assertEquals(value, retrieved)
     }
 
-    // ============ NUMERIC TYPE OPERATIONS ============
-
-    /** Verifies that unencrypted integers can be stored and retrieved correctly */
     @Test
     fun testPutAndGetUnencryptedInt() = runTest {
         val ksafe = createKSafe()
@@ -130,7 +109,6 @@ abstract class KSafeTest {
         assertEquals(value, retrieved)
     }
 
-    /** Verifies that encrypted integers can be stored and retrieved correctly */
     @Test
     fun testPutAndGetEncryptedInt() = runTest {
         val ksafe = createKSafe()
@@ -143,7 +121,6 @@ abstract class KSafeTest {
         assertEquals(value, retrieved)
     }
 
-    /** Verifies that unencrypted booleans can be stored and retrieved correctly */
     @Test
     fun testPutAndGetUnencryptedBoolean() = runTest {
         val ksafe = createKSafe()
@@ -156,7 +133,6 @@ abstract class KSafeTest {
         assertEquals(value, retrieved)
     }
 
-    /** Verifies that encrypted booleans can be stored and retrieved correctly */
     @Test
     fun testPutAndGetEncryptedBoolean() = runTest {
         val ksafe = createKSafe()
@@ -169,7 +145,6 @@ abstract class KSafeTest {
         assertEquals(value, retrieved)
     }
 
-    /** Verifies that unencrypted Long values can be stored and retrieved correctly */
     @Test
     fun testPutAndGetUnencryptedLong() = runTest {
         val ksafe = createKSafe()
@@ -182,7 +157,6 @@ abstract class KSafeTest {
         assertEquals(value, retrieved)
     }
 
-    /** Verifies that encrypted Long values can be stored and retrieved correctly */
     @Test
     fun testPutAndGetEncryptedLong() = runTest {
         val ksafe = createKSafe()
@@ -195,7 +169,6 @@ abstract class KSafeTest {
         assertEquals(value, retrieved)
     }
 
-    /** Verifies that unencrypted Float values can be stored and retrieved correctly */
     @Test
     fun testPutAndGetUnencryptedFloat() = runTest {
         val ksafe = createKSafe()
@@ -208,7 +181,6 @@ abstract class KSafeTest {
         assertEquals(value, retrieved)
     }
 
-    /** Verifies that encrypted Float values can be stored and retrieved correctly */
     @Test
     fun testPutAndGetEncryptedFloat() = runTest {
         val ksafe = createKSafe()
@@ -221,7 +193,6 @@ abstract class KSafeTest {
         assertEquals(value, retrieved)
     }
 
-    /** Verifies that unencrypted Double values can be stored and retrieved correctly */
     @Test
     fun testPutAndGetUnencryptedDouble() = runTest {
         val ksafe = createKSafe()
@@ -234,7 +205,6 @@ abstract class KSafeTest {
         assertEquals(value, retrieved)
     }
 
-    /** Verifies that encrypted Double values can be stored and retrieved correctly */
     @Test
     fun testPutAndGetEncryptedDouble() = runTest {
         val ksafe = createKSafe()
@@ -247,9 +217,6 @@ abstract class KSafeTest {
         assertEquals(value, retrieved)
     }
 
-    // ============ DEFAULT VALUE BEHAVIOR ============
-
-    /** Verifies that default value is returned for non-existent unencrypted keys */
     @Test
     fun testGetWithDefaultValue() = runTest {
         val ksafe = createKSafe()
@@ -260,7 +227,6 @@ abstract class KSafeTest {
         assertEquals(defaultValue, retrieved)
     }
 
-    /** Verifies that default value is returned for non-existent encrypted keys */
     @Test
     fun testGetEncryptedWithDefaultValue() = runTest {
         val ksafe = createKSafe()
@@ -271,9 +237,6 @@ abstract class KSafeTest {
         assertEquals(defaultValue, retrieved)
     }
 
-    // ============ DELETE OPERATIONS ============
-
-    /** Verifies that unencrypted values can be deleted and return default afterward */
     @Test
     fun testDelete() = runTest {
         val ksafe = createKSafe()
@@ -288,7 +251,6 @@ abstract class KSafeTest {
         assertEquals(defaultValue, ksafe.get(key, defaultValue))
     }
 
-    /** Verifies that encrypted values can be deleted and return default afterward */
     @Test
     fun testDeleteEncrypted() = runTest {
         val ksafe = createKSafe()
@@ -303,9 +265,6 @@ abstract class KSafeTest {
         assertEquals(defaultValue, ksafe.get(key, defaultValue))
     }
 
-    // ============ OVERWRITE OPERATIONS ============
-
-    /** Verifies that unencrypted values can be overwritten with new values */
     @Test
     fun testOverwriteValue() = runTest {
         val ksafe = createKSafe()
@@ -321,7 +280,6 @@ abstract class KSafeTest {
         assertEquals(value2, ksafe.get(key, defaultValue))
     }
 
-    /** Verifies that encrypted values can be overwritten with new values */
     @Test
     fun testOverwriteEncryptedValue() = runTest {
         val ksafe = createKSafe()
@@ -337,9 +295,6 @@ abstract class KSafeTest {
         assertEquals(value2, ksafe.get(key, defaultValue))
     }
 
-    // ============ FLOW API TESTS ============
-
-    /** Verifies that Flow emits updates for unencrypted values */
     @Test
     fun testFlowUnencrypted() = runTest {
         val ksafe = createKSafe()
@@ -363,7 +318,6 @@ abstract class KSafeTest {
         }
     }
 
-    /** Verifies that encrypted Flow returns default value and put/get work correctly */
     @Test
     fun testFlowEncrypted() = runTest {
         val ksafe = createKSafe()
@@ -372,22 +326,17 @@ abstract class KSafeTest {
         val value2 = "encrypted_flow_2"
         val defaultValue = "default"
 
-        // Verify initial default value from flow
         assertEquals(defaultValue, ksafe.getFlow(key, defaultValue).first())
 
-        // Store first value and verify via get
         ksafe.put(key, value1)
         assertEquals(value1, ksafe.get(key, defaultValue))
 
-        // Store second value and verify
         ksafe.put(key, value2)
         assertEquals(value2, ksafe.get(key, defaultValue))
 
-        // Note: Flow reactive updates for encrypted values are tested implicitly via
-        // testFlowUnencrypted (same code path) and testPutGetEncrypted
+        // Encrypted flow reactivity shares the plain code path (testFlowUnencrypted); not re-asserted here.
     }
 
-    /** Verifies that Flow does not emit duplicate values (distinctUntilChanged) */
     @Test
     fun testFlowDistinctUntilChanged() = runTest {
         val ksafe = createKSafe()
@@ -403,7 +352,7 @@ abstract class KSafeTest {
             ksafe.put(key, value, KSafeWriteMode.Plain)
             assertEquals(value, awaitItem())
 
-            // Writing same value should not emit
+            // Writing the same value must not emit.
             ksafe.put(key, value, KSafeWriteMode.Plain)
             expectNoEvents()
 
@@ -411,9 +360,6 @@ abstract class KSafeTest {
         }
     }
 
-    // ============ asWritableFlow / WritableKSafeFlow TESTS ============
-
-    /** Verifies that a WritableKSafeFlow returned from asWritableFlow emits writes made via set() (plain mode) */
     @Test
     fun testAsMutableFlowEmitsOnSetUnencrypted() = runTest {
         val ksafe = createKSafe()
@@ -436,7 +382,6 @@ abstract class KSafeTest {
         }
     }
 
-    /** Verifies that the default mode of asWritableFlow is encrypted and round-trips correctly */
     @Test
     fun testAsMutableFlowEmitsOnSetEncryptedByDefault() = runTest {
         val ksafe = createKSafe()
@@ -466,7 +411,6 @@ abstract class KSafeTest {
         )
     }
 
-    /** Verifies that external writes (via ksafe.put) propagate to a WritableKSafeFlow's collectors */
     @Test
     fun testAsMutableFlowReflectsExternalWrites() = runTest {
         val ksafe = createKSafe()
@@ -487,7 +431,6 @@ abstract class KSafeTest {
             ksafe.put(key, "external", KSafeWriteMode.Plain)
             assertEquals("external", awaitItem())
 
-            // Set via WritableKSafeFlow path interleaves correctly.
             host.pref.set("local")
             assertEquals("local", awaitItem())
 
@@ -495,7 +438,6 @@ abstract class KSafeTest {
         }
     }
 
-    /** Verifies asWritableFlow uses the property name as key when none is given */
     @Test
     fun testAsMutableFlowUsesPropertyNameAsKey() = runTest {
         val ksafe = createKSafe()
@@ -508,13 +450,10 @@ abstract class KSafeTest {
         val host = Host(ksafe)
 
         host.derived.set("named_by_property")
-        // Property name "derived" must be the persisted key.
+        // The property name "derived" must be the persisted key.
         assertEquals("named_by_property", ksafe.get("derived", "fallback"))
     }
 
-    // ============ STATE FLOW API TESTS ============
-
-    /** Verifies that StateFlow has defaultValue as initial value (unencrypted) */
     @Test
     fun testStateFlowUnencrypted() = runTest {
         val ksafe = createKSafe()
@@ -525,10 +464,8 @@ abstract class KSafeTest {
         val stateFlow = ksafe.getStateFlow(key, defaultValue, scope = sharingScope)
         assertEquals(defaultValue, stateFlow.value)
 
-        // Subscribe BEFORE writing so the put's resulting emission is observed
-        // deterministically. Putting before subscribing races against StateFlow's
-        // replay-of-current-value semantics — the new subscriber may see either
-        // "default" or "updated" depending on whether the write propagated first.
+        // Subscribe before writing so the put's emission is observed deterministically;
+        // writing first races StateFlow's replay-of-current-value semantics.
         stateFlow.test(timeout = 30.seconds) {
             assertEquals(defaultValue, awaitItem())
             ksafe.put(key, "updated", KSafeWriteMode.Plain)
@@ -538,7 +475,6 @@ abstract class KSafeTest {
         sharingScope.cancel()
     }
 
-    /** Verifies that StateFlow has defaultValue as initial value (encrypted) */
     @Test
     fun testStateFlowEncrypted() = runTest {
         val ksafe = createKSafe()
@@ -558,7 +494,6 @@ abstract class KSafeTest {
         sharingScope.cancel()
     }
 
-    /** Verifies that StateFlow reflects updates reactively */
     @Test
     fun testStateFlowReflectsUpdates() = runTest {
         val ksafe = createKSafe()
@@ -582,9 +517,6 @@ abstract class KSafeTest {
         sharingScope.cancel()
     }
 
-    // ============ KEY INDEPENDENCE TESTS ============
-
-    /** Verifies that different keys are independent of each other */
     @Test
     fun testMultipleKeysIndependence() = runTest {
         val ksafe = createKSafe()
@@ -605,9 +537,6 @@ abstract class KSafeTest {
         assertEquals(value2, ksafe.get(key2, defaultValue))
     }
 
-    // ============ ENCRYPTION VERIFICATION TESTS ============
-
-    /** Verifies that auto-detection finds encrypted data regardless of how it was stored */
     @Test
     fun testEncryptedDataAutoDetected() = runTest {
         val ksafe = createKSafe()
@@ -617,14 +546,10 @@ abstract class KSafeTest {
 
         ksafe.put(key, value)
 
-        // Auto-detection finds the encrypted value and decrypts it
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
     }
 
-    // ============ COMPLEX OBJECT SERIALIZATION TESTS ============
-
-    /** Verifies that complex serializable objects can be stored and retrieved */
     @Test
     fun testComplexObject() = runTest {
         val ksafe = createKSafe()
@@ -644,21 +569,16 @@ abstract class KSafeTest {
             metadata = emptyMap()
         )
 
-        // Test unencrypted
         ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
 
-        // Test encrypted
         val encryptedKey = "${key}_encrypted"
         ksafe.put(encryptedKey, value)
         val encryptedRetrieved = ksafe.get(encryptedKey, defaultValue)
         assertEquals(value, encryptedRetrieved)
     }
 
-    // ============ NULLABLE VALUE TESTS ============
-
-    /** Verifies that null strings can be stored and retrieved (unencrypted) */
     @Test
     fun testNullableStringUnencrypted() = runTest {
         val ksafe = createKSafe()
@@ -671,7 +591,6 @@ abstract class KSafeTest {
         assertNull(retrieved, "Retrieved value should be null")
     }
 
-    /** Verifies that null strings can be stored and retrieved (encrypted) */
     @Test
     fun testNullableStringEncrypted() = runTest {
         val ksafe = createKSafe()
@@ -684,7 +603,6 @@ abstract class KSafeTest {
         assertNull(retrieved, "Retrieved encrypted value should be null")
     }
 
-    /** Verifies that null integers can be stored and retrieved (unencrypted) */
     @Test
     fun testNullableIntUnencrypted() = runTest {
         val ksafe = createKSafe()
@@ -697,7 +615,6 @@ abstract class KSafeTest {
         assertNull(retrieved, "Retrieved Int? should be null")
     }
 
-    /** Verifies that null integers can be stored and retrieved (encrypted) */
     @Test
     fun testNullableIntEncrypted() = runTest {
         val ksafe = createKSafe()
@@ -710,7 +627,6 @@ abstract class KSafeTest {
         assertNull(retrieved, "Retrieved encrypted Int? should be null")
     }
 
-    /** Verifies that null values can be overwritten with non-null values */
     @Test
     fun testNullableOverwriteWithNonNull() = runTest {
         val ksafe = createKSafe()
@@ -726,7 +642,6 @@ abstract class KSafeTest {
         assertEquals(nonNullValue, ksafe.get(key, defaultValue))
     }
 
-    /** Verifies that non-null values can be overwritten with null values */
     @Test
     fun testNonNullOverwriteWithNull() = runTest {
         val ksafe = createKSafe()
@@ -749,7 +664,6 @@ abstract class KSafeTest {
         val description: String?
     )
 
-    /** Verifies that serializable objects with nullable fields preserve null correctly */
     @Test
     fun testSerializableWithNullFields() = runTest {
         val ksafe = createKSafe()
@@ -761,21 +675,18 @@ abstract class KSafeTest {
         )
         val defaultValue = NullableFieldData(0, "default", "default")
 
-        // Test unencrypted
         ksafe.put(key, value, KSafeWriteMode.Plain)
         val retrieved = ksafe.get(key, defaultValue)
         assertEquals(value, retrieved)
         assertNull(retrieved.name)
         assertEquals("Has description but no name", retrieved.description)
 
-        // Test encrypted
         val encKey = "${key}_enc"
         ksafe.put(encKey, value)
         val encRetrieved = ksafe.get(encKey, defaultValue)
         assertEquals(value, encRetrieved)
     }
 
-    /** Verifies that null values work with Direct (non-blocking) API - unencrypted */
     @Test
     fun testNullableWithDirectApi() = runTest {
         val ksafe = createKSafe()
@@ -788,7 +699,6 @@ abstract class KSafeTest {
         assertNull(retrieved, "getDirect should return null for null value")
     }
 
-    /** Verifies that null values work with Direct (non-blocking) API - encrypted */
     @Test
     fun testNullableWithDirectApiEncrypted() = runTest {
         val ksafe = createKSafe()
@@ -801,9 +711,6 @@ abstract class KSafeTest {
         assertNull(retrieved, "getDirect should return null for encrypted null value")
     }
 
-    // ============ EDGE CASE TESTS ============
-
-    /** Verifies that empty strings are handled correctly (not treated as null) */
     @Test
     fun testEmptyString() = runTest {
         val ksafe = createKSafe()
@@ -816,7 +723,6 @@ abstract class KSafeTest {
         assertEquals(value, retrieved)
     }
 
-    /** Verifies that special characters are preserved during storage/retrieval */
     @Test
     fun testSpecialCharacters() = runTest {
         val ksafe = createKSafe()
@@ -824,17 +730,14 @@ abstract class KSafeTest {
         val value = "Special chars: !@#$%^&*()_+{}[]|\\:\";<>?,./~`'"
         val defaultValue = "default"
 
-        // Test unencrypted
         ksafe.put(key, value, KSafeWriteMode.Plain)
         assertEquals(value, ksafe.get(key, defaultValue))
 
-        // Test encrypted
         val encryptedKey = "${key}_encrypted"
         ksafe.put(encryptedKey, value)
         assertEquals(value, ksafe.get(encryptedKey, defaultValue))
     }
 
-    /** Verifies that Unicode characters (emoji, CJK, Arabic) are preserved */
     @Test
     fun testUnicodeCharacters() = runTest {
         val ksafe = createKSafe()
@@ -842,35 +745,29 @@ abstract class KSafeTest {
         val value = "Unicode: 你好世界 🌍 مرحبا بالعالم"
         val defaultValue = "default"
 
-        // Test unencrypted
         ksafe.put(key, value, KSafeWriteMode.Plain)
         assertEquals(value, ksafe.get(key, defaultValue))
 
-        // Test encrypted
         val encryptedKey = "${key}_encrypted"
         ksafe.put(encryptedKey, value)
         assertEquals(value, ksafe.get(encryptedKey, defaultValue))
     }
 
-    /** Verifies that large data (10KB) can be stored and retrieved correctly */
     @Test
     fun testLargeData() = runTest {
         val ksafe = createKSafe()
         val key = "test_large"
-        val value = "x".repeat(10000) // 10KB of data
+        val value = "x".repeat(10000)
         val defaultValue = ""
 
-        // Test unencrypted
         ksafe.put(key, value, KSafeWriteMode.Plain)
         assertEquals(value, ksafe.get(key, defaultValue))
 
-        // Test encrypted
         val encryptedKey = "${key}_encrypted"
         ksafe.put(encryptedKey, value)
         assertEquals(value, ksafe.get(encryptedKey, defaultValue))
     }
 
-    /** Verifies that concurrent access to multiple keys works correctly */
     @Test
     fun testConcurrentAccess() = runTest {
         val ksafe = createKSafe()
@@ -890,7 +787,6 @@ abstract class KSafeTest {
         assertTrue(results.all { it })
     }
 
-    /** Verifies that different KSafe instances with different filenames are isolated */
     @Test
     fun testFileNameIsolation() = runTest {
         val ksafe1 = createKSafe("fileone")
@@ -907,9 +803,6 @@ abstract class KSafeTest {
         assertEquals(value2, ksafe2.get(key, defaultValue))
     }
 
-    // ============ NUMERIC EDGE CASES ============
-
-    /** Verifies that negative numbers are stored and retrieved correctly */
     @Test
     fun testNegativeNumbers() = runTest {
         val ksafe = createKSafe()
@@ -935,7 +828,6 @@ abstract class KSafeTest {
         assertEquals(doubleValue, ksafe.get(doubleKey, 0.0))
     }
 
-    /** Verifies that boundary values (MIN/MAX) are stored and retrieved correctly */
     @Test
     fun testEdgeCaseNumbers() = runTest {
         val ksafe = createKSafe()
@@ -957,16 +849,9 @@ abstract class KSafeTest {
         assertEquals(Long.MIN_VALUE, ksafe.get(minLongKey, 0L))
     }
 
-    // ============ CROSS-TYPE MIGRATION TESTS ============
-    //
-    // These guarantee that an app that changes a stored value's type between
-    // releases doesn't silently lose data. A user who originally called
-    // `put(key, 42)` (Int) should still be able to read the same key as a Long
-    // after upgrading — and vice versa when the stored Long still fits in Int.
-    // Out-of-range narrowing must fall back to the default rather than
-    // silently truncate.
+    // Reading a key as a different numeric type than it was written must widen/narrow
+    // safely across app upgrades; out-of-range narrowing falls back to default, never truncates.
 
-    /** Plain Int → read as Long: widening must succeed. */
     @Test
     fun testCrossTypeIntToLongPlain() = runTest {
         val ksafe = createKSafe()
@@ -975,7 +860,6 @@ abstract class KSafeTest {
         assertEquals(42L, ksafe.get(key, 0L), "Int 42 should widen to Long 42 on read")
     }
 
-    /** Plain Long in Int range → read as Int: range-checked narrow must succeed. */
     @Test
     fun testCrossTypeLongToIntPlainInRange() = runTest {
         val ksafe = createKSafe()
@@ -984,7 +868,6 @@ abstract class KSafeTest {
         assertEquals(42, ksafe.get(key, 0), "Long 42 (in Int range) should narrow to Int 42 on read")
     }
 
-    /** Plain Long out of Int range → read as Int: must return defaultValue, never silently truncate. */
     @Test
     fun testCrossTypeLongToIntPlainOutOfRange() = runTest {
         val ksafe = createKSafe()
@@ -997,7 +880,6 @@ abstract class KSafeTest {
         )
     }
 
-    /** Encrypted Int → read as Long: widening must survive the encrypt/decrypt round-trip. */
     @Test
     fun testCrossTypeIntToLongEncrypted() = runTest {
         val ksafe = createKSafe()
@@ -1006,7 +888,6 @@ abstract class KSafeTest {
         assertEquals(42L, ksafe.get(key, 0L))
     }
 
-    /** Encrypted Long in Int range → read as Int: narrow after decrypt must succeed. */
     @Test
     fun testCrossTypeLongToIntEncrypted() = runTest {
         val ksafe = createKSafe()
@@ -1016,13 +897,9 @@ abstract class KSafeTest {
     }
 
     /**
-     * Sequential writes of different types to the same key.
-     *
-     * Simulates an app that shipped `put(key, 42)` (Int) in v1 and later
-     * switched to `put(key, largeLong)` in v2. The second write must cleanly
-     * replace the first (no coexistence, no corruption), and reads must
-     * reflect whichever type they ask for — correctly for Long, and with a
-     * safe default fallback for Int (out of range).
+     * Sequential writes of different types to the same key: the second write cleanly
+     * replaces the first, reads return the value for the type actually written (Long),
+     * and a read of a type it no longer fits (Int) falls back to the default.
      */
     @Test
     fun testSequentialTypeMigrationIntThenLong() = runTest {
@@ -1030,21 +907,18 @@ abstract class KSafeTest {
         val key = "type_migration_int_then_long"
         val bigLong = 8_223_372_036_854_775_807L   // > Int.MAX_VALUE, < Long.MAX_VALUE
 
-        // v1 — user stores an Int
         ksafe.put(key, 42, KSafeWriteMode.Plain)
         assertEquals(42, ksafe.get(key, 0), "v1 write should round-trip as Int")
 
-        // v2 — user overwrites with a Long that doesn't fit in Int
         ksafe.put(key, bigLong, KSafeWriteMode.Plain)
 
-        // Reading as Long returns the updated value
         assertEquals(
             bigLong,
             ksafe.get(key, 0L),
             "v2 write should replace v1 and read back as Long"
         )
 
-        // Reading as Int must refuse to silently truncate — returns default
+        // Reading as Int must refuse to silently truncate — returns the default.
         assertEquals(
             -1,
             ksafe.get(key, -1),
@@ -1067,9 +941,6 @@ abstract class KSafeTest {
         assertEquals(-1, ksafe.get(key, -1))
     }
 
-    // ============ DIRECT API TESTS ============
-
-    /** Verifies that getDirect reflects values written with suspend put */
     @Test
     fun testGetDirectReflectsSuspendingPut() = runTest {
         val ksafe = createKSafe()
@@ -1081,7 +952,6 @@ abstract class KSafeTest {
         assertEquals(value, result)
     }
 
-    /** Verifies that putDirect immediately updates the cache for getDirect */
     @Test
     fun testPutDirect() = runTest {
         val ksafe = createKSafe()
@@ -1093,7 +963,6 @@ abstract class KSafeTest {
         assertEquals(value, result)
     }
 
-    /** Verifies that putDirect eventually persists values (optimistic update) */
     @Test
     fun testPutDirectEventuallyUpdatesValue() = runTest {
         val ksafe = createKSafe()
@@ -1112,7 +981,6 @@ abstract class KSafeTest {
         assertEquals(value, result, "getDirect should eventually return the value set by putDirect")
     }
 
-    /** Verifies that Direct API encrypted round-trip works with auto-detection */
     @Test
     fun testDirectEncryptedRoundTrip() = runTest {
         val ksafe = createKSafe()
@@ -1126,13 +994,9 @@ abstract class KSafeTest {
             attempts++
         }
 
-        // Auto-detection finds the encrypted value and decrypts it
         assertEquals(value, ksafe.getDirect(key, -1))
     }
 
-    // ============ PROPERTY DELEGATION TESTS ============
-
-    /** Verifies delegate uses property name as key and encrypts by default */
     @Test
     fun delegate_defaultEncrypted_and_propertyNameKey() = runTest {
         val ksafe = createKSafe()
@@ -1140,11 +1004,9 @@ abstract class KSafeTest {
         assertEquals("init", secret)
         secret = "z"
         assertEquals("z", secret)
-        // Auto-detection finds the encrypted value
         assertEquals("z", ksafe.get("secret", "x"))
     }
 
-    /** Verifies delegate can use explicit key and unencrypted mode */
     @Test
     fun delegate_explicitKey_unencrypted() = runTest {
         val ksafe = createKSafe()
@@ -1152,30 +1014,22 @@ abstract class KSafeTest {
         assertEquals(0, count)
         count = 3
         assertEquals(3, count)
-        // Auto-detection finds the unencrypted value
         assertEquals(3, ksafe.get("count", -1))
     }
-
-    // ============ SERIALIZABLE OBJECT TESTS ============
 
     @Serializable
     data class Person(val id: Long, val name: String)
 
-    /** Verifies that serializable objects are encrypted correctly and auto-detected on read */
     @Test
     fun serializable_encrypted_roundTrip() = runTest {
         val ksafe = createKSafe()
         val k = "person"
         val p = Person(7, "Grace")
-        ksafe.put(k, p) // encrypted by default
-        // Auto-detection finds the encrypted value and decrypts it
+        ksafe.put(k, p)
         assertEquals(p, ksafe.get(k, Person(0, "")))
     }
 
-    // NOTE: the nullable-default regression lives in the dedicated *small*
-    // `KSafeNullableDefaultTest` class, NOT here. Appending tests to this
-    // oversized class makes Kotlin/JS silently drop them (the legacy
-    // kotlin-test JS runner truncates this class's trailing @Tests). Keep new
-    // regressions in small focused classes so every target — including
-    // Kotlin/JS — runs them.
+    // Do not append @Tests here: the legacy Kotlin/JS kotlin-test runner silently
+    // truncates trailing @Tests from an oversized class. Put new tests in small
+    // focused classes (e.g. KSafeNullableDefaultTest) so every target runs them.
 }

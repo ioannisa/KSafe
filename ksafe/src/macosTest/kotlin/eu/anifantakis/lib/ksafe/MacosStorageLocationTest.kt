@@ -150,7 +150,6 @@ class MacosStorageLocationTest {
         assertEquals("yes", second.get("persist", "no"))
         second.close()
 
-        // Sanity check that the original file still exists at the expected path
         val expectedPath = "$tmpRoot/eu_anifantakis_ksafe_datastore_$name.preferences_pb"
         assertTrue(
             MacosTestPaths.fileExists(expectedPath),

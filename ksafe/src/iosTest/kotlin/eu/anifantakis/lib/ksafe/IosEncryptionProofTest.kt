@@ -21,21 +21,15 @@ import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
 /**
- * Proof-test for encryption on iOS.
+ * Proves an encrypted KSafe write never lands the raw plaintext in the
+ * DataStore file — anything that accidentally routed a `put()` through the
+ * plain path would immediately fail.
  *
- * **Test-engine note:** The Kotlin/Native test runner does not carry the
- * Keychain entitlement, so the production [AppleKeychainEncryption] path
- * fails with `errSecMissingEntitlement` (-25291) — see [IosKeychainEncryptionTest]
- * for the coverage of that error path. To exercise KSafe's *write plumbing*
- * (the part that decides whether plaintext or ciphertext is written to the
- * DataStore file) we inject [FakeEncryption], whose XOR output is still not
- * the plaintext bytes. The real Keychain + CryptoKit round-trip is covered
- * by the iOS integration app and by `IosKeychainEncryptionTest`.
- *
- * What these tests do prove: an encrypted KSafe write never lands the raw
- * plaintext in the DataStore file. Anything that accidentally bypassed
- * encryption (e.g. a refactor that routed a `put()` through the plain path)
- * would immediately fail.
+ * The Kotlin/Native test runner lacks the Keychain entitlement, so the
+ * production [AppleKeychainEncryption] path fails with `errSecMissingEntitlement`
+ * (-25291). [FakeEncryption] is injected to exercise the write plumbing; the
+ * real Keychain + CryptoKit round-trip is covered by the iOS integration app
+ * and [IosKeychainEncryptionTest].
  */
 class IosEncryptionProofTest {
 
@@ -45,8 +39,8 @@ class IosEncryptionProofTest {
 
     @OptIn(ExperimentalForeignApi::class)
     private fun readDataStoreFile(fileName: String): ByteArray? {
-        // 2.0 iOS stores the DataStore in NSApplicationSupportDirectory, not in
-        // NSDocumentDirectory as it did pre-2.0. (See iOS migration in CHANGELOG.)
+        // Since 2.0, iOS stores the DataStore in NSApplicationSupportDirectory
+        // (pre-2.0 it was NSDocumentDirectory).
         val supportDir: NSURL = NSFileManager.defaultManager.URLForDirectory(
             directory = NSApplicationSupportDirectory,
             inDomain = NSUserDomainMask,

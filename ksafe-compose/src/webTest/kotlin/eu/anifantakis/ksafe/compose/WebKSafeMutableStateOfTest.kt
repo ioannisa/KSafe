@@ -11,13 +11,10 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
 
 /**
- * Pins the web (wasmJs + js) cold-start contract that [KSafe.mutableStateOf]'s
- * self-heal depends on: web's `getDirect` cannot block on the async cache
- * preload, so a fresh instance returns the default until the cache warms, while
- * `getFlow(...).first()` must already carry the persisted (and, for encrypted
- * entries, decrypted) value because `LocalStorageStorage` seeds its flow from
- * `localStorage` synchronously. Plain [String] values keep this file free of
- * the kotlinx-serialization compiler plugin.
+ * Locks in: the web (wasmJs + js) cold-start contract behind [KSafe.mutableStateOf]'s self-heal —
+ * synchronous `getDirect` returns the default until the async cache warms, while `getFlow().first()`
+ * already carries the persisted (and, for encrypted entries, decrypted) value because
+ * `LocalStorageStorage` seeds its flow from `localStorage` synchronously.
  */
 class WebKSafeMutableStateOfTest {
 
@@ -30,34 +27,25 @@ class WebKSafeMutableStateOfTest {
 
         val writer = KSafe(fileName = fileName)
         writer.awaitCacheReady()
-        // Suspending put — actually flushes to localStorage before returning,
-        // unlike fire-and-forget putDirect (whose 16ms batch window is on
-        // real time and would not advance under runTest's virtual clock).
+        // Suspending put flushes before returning; putDirect's 16ms real-time batch window
+        // would not advance under runTest's virtual clock.
         writer.put(key, stored, KSafeWriteMode.Plain)
 
-        // Fresh instance with the same fileName simulates a page reload —
-        // the in-memory cache is empty until something warms it.
+        // Fresh instance (same fileName) simulates a page reload: the cache is empty until warmed.
         val reader = KSafe(fileName = fileName)
 
-        // Cold-start contract: synchronous reads return the default until
-        // the cache warms, which is exactly why mutableStateOf ends up with
-        // initialValue == defaultValue and triggers self-heal.
+        // Cold start: synchronous reads return the default until the cache warms — this is what
+        // makes mutableStateOf boot with the default and trigger self-heal.
         assertEquals(default, reader.getDirect(key, default))
 
-        // Self-heal relies on this: getFlow's first emission must already
-        // carry the persisted value, even with a cold KSafeCore cache,
-        // because LocalStorageStorage seeds its MutableStateFlow from
-        // localStorage on construction.
+        // Self-heal relies on getFlow's first emission already carrying the persisted value, even
+        // with a cold cache, because LocalStorageStorage seeds its flow from localStorage on construction.
         val flowed = reader.getFlow(key, default).first()
         assertEquals(stored, flowed)
 
-        // End-to-end self-heal check. The delegate boots with the default;
-        // the self-heal coroutine launches on Dispatchers.Default and is
-        // expected to update the state via getFlow().first(). Repeatedly
-        // yielding gives the browser event loop a chance to run pending
-        // microtasks (the self-heal launch + its single getFlow emission)
-        // without relying on real wall-clock time, which runTest's
-        // TestDispatcher virtualises away.
+        // End-to-end self-heal: the delegate boots with the default, then a coroutine on
+        // Dispatchers.Default updates it via getFlow().first(). Repeated yield() lets the browser
+        // event loop run those microtasks without real wall-clock time (which runTest virtualises away).
         var value by reader.mutableStateOf(
             defaultValue = default,
             key = key,
@@ -79,16 +67,14 @@ class WebKSafeMutableStateOfTest {
 
         val writer = KSafe(fileName = fileName)
         writer.awaitCacheReady()
-        // Suspending put — actually awaits the WebCrypto encrypt + the
-        // localStorage write, so the data is durably visible to the reader.
+        // Suspending put awaits the WebCrypto encrypt + localStorage write, so data is durably visible.
         writer.put(key, stored) // default mode = encrypted
 
         val reader = KSafe(fileName = fileName)
 
         assertEquals(default, reader.getDirect(key, default))
 
-        // getFlow decrypts inline on each snapshot emission — the first
-        // emission must therefore already carry the decrypted plaintext.
+        // getFlow decrypts inline per emission, so the first emission already carries the plaintext.
         val flowed = reader.getFlow(key, default).first()
         assertEquals(stored, flowed)
 
@@ -107,9 +93,7 @@ class WebKSafeMutableStateOfTest {
     companion object {
         private var counter = 0
 
-        // localStorage is shared across tests in the same browser instance, so
-        // each test needs its own namespace. KSafe enforces lowercase-letter
-        // file names.
+        // localStorage is shared across tests; each needs its own namespace. KSafe enforces lowercase-letter fileNames.
         private fun uniqueFileName(): String {
             counter++
             val sb = StringBuilder("composeselfheal")

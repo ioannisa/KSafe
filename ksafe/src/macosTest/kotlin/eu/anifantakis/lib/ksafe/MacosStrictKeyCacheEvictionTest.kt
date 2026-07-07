@@ -8,10 +8,8 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 /**
- * FEEDBACK_4 low: a strict (`requireUnlockedDevice`) key's plaintext must NEVER live in
- * the engine's in-process key-bytes cache. A NON-strict write caches the plaintext; if the
- * same key is later rewritten strict, the cached bytes used to linger — defeating the
- * unlock policy in memory. A strict access must evict any lingering entry.
+ * Locks in: a strict (`requireUnlockedDevice`) access evicts any plaintext key bytes that a
+ * previous non-strict write left in the engine's in-process key-bytes cache.
  *
  * Real Keychain round-trips can't run in the Kotlin/Native test runner, so an in-memory
  * [AppleKeychainStore] stands in.

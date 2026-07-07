@@ -3,58 +3,22 @@ package eu.anifantakis.lib.ksafe
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
 
 /**
- * Fake implementation of [KSafeEncryption] for testing purposes.
- *
- * This implementation performs a simple XOR "encryption" that is NOT secure but allows
- * testing the KSafe logic without requiring platform-specific keystores or emulators.
- *
- * Features:
- * - Deterministic: Same input + identifier produces same output
- * - Reversible: XOR with same key reverses the operation
- * - Tracks calls for verification in tests
- *
- * ## Usage in Tests
- * ```kotlin
- * val fakeEngine = FakeEncryption()
- * val ksafe = KSafe(
- *     context = testContext,
- *     encryptionEngine = fakeEngine
- * )
- *
- * ksafe.putDirect("key", "value")
- * assertEquals("value", ksafe.getDirect("key", ""))
- *
- * // Verify encryption was called
- * assertTrue(fakeEngine.encryptedKeys.contains("expectedKeyAlias"))
- * ```
+ * Test-only [KSafeEncryption] that "encrypts" via a deterministic, reversible XOR so KSafe
+ * logic can be exercised without platform keystores or emulators. Tracks encrypt/decrypt/delete
+ * calls so tests can assert which identifiers were touched.
  */
 @PublishedApi
 internal class FakeEncryption : KSafeEncryption {
 
-    /**
-     * Set of key identifiers that have been encrypted.
-     * Useful for verifying in tests that encryption was called.
-     */
+    /** Key identifiers that have been encrypted. */
     val encryptedKeys = mutableSetOf<String>()
 
-    /**
-     * Set of key identifiers that have been decrypted.
-     * Useful for verifying in tests that decryption was called.
-     */
+    /** Key identifiers that have been decrypted. */
     val decryptedKeys = mutableSetOf<String>()
 
-    /**
-     * Set of key identifiers that have been deleted.
-     * Useful for verifying in tests that key deletion was called.
-     */
+    /** Key identifiers that have been deleted. */
     val deletedKeys = mutableSetOf<String>()
 
-    /**
-     * "Encrypts" data using a simple XOR operation.
-     *
-     * The XOR key is derived from the identifier, making the encryption deterministic
-     * and allowing the same data to be "decrypted" by applying the same operation.
-     */
     override fun encrypt(
         identifier: String,
         data: ByteArray,
@@ -66,39 +30,23 @@ internal class FakeEncryption : KSafeEncryption {
         return xorWithKey(data, key)
     }
 
-    /**
-     * "Decrypts" data using the same XOR operation.
-     *
-     * Since XOR is its own inverse, this produces the original plaintext.
-     */
     override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
         decryptedKeys.add(identifier)
         val key = deriveKey(identifier)
         return xorWithKey(data, key)
     }
 
-    /**
-     * Records that a key was "deleted".
-     *
-     * Since there's no actual key storage, this just tracks the call.
-     */
     override fun deleteKey(identifier: String) {
         deletedKeys.add(identifier)
     }
 
-    /**
-     * Resets all tracking sets. Call this between tests to ensure isolation.
-     */
+    /** Clears all tracking sets; call between tests for isolation. */
     fun reset() {
         encryptedKeys.clear()
         decryptedKeys.clear()
         deletedKeys.clear()
     }
 
-    /**
-     * Derives a simple XOR key from the identifier.
-     * Uses the identifier's hash code to generate a repeatable key.
-     */
     private fun deriveKey(identifier: String): ByteArray {
         val hash = identifier.hashCode()
         return byteArrayOf(
@@ -109,9 +57,6 @@ internal class FakeEncryption : KSafeEncryption {
         )
     }
 
-    /**
-     * Performs XOR operation on data with a repeating key.
-     */
     private fun xorWithKey(data: ByteArray, key: ByteArray): ByteArray {
         return ByteArray(data.size) { i ->
             (data[i].toInt() xor key[i % key.size].toInt()).toByte()

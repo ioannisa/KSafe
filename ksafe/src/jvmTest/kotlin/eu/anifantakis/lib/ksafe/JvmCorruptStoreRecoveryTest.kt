@@ -8,11 +8,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * A corrupt DataStore `.preferences_pb` must not throw `CorruptionException`
- * on every read forever — that would crash the background collector and make
- * `getDirect` silently return defaults while suspend `get()` throws. The
- * factory installs a corruption handler that quarantines the unreadable file
- * and continues from an empty store (matching the JSON-fallback backend).
+ * Locks in: a corrupt DataStore .preferences_pb is quarantined and recovered to an empty store instead of throwing CorruptionException on every read, so the store stays usable.
  */
 class JvmCorruptStoreRecoveryTest {
 
@@ -27,18 +23,14 @@ class JvmCorruptStoreRecoveryTest {
         // Garbage that the DataStore Preferences (protobuf) reader can't parse → CorruptionException.
         pb.writeBytes(ByteArray(64) { 0xFF.toByte() })
 
-        // Construct (lazyLoad=false → the collector reads the store at startup,
-        // hitting the corruption immediately).
+        // lazyLoad=false → the collector reads the store at startup, hitting the corruption immediately.
         val ksafe = KSafe(fileName = fileName, baseDir = tmp, testEngine = FakeEncryption())
         try {
-            // Read returns the default rather than crashing.
             assertEquals("def", ksafe.getDirect("anything", "def"))
 
-            // The store recovered to empty — a fresh write round-trips.
             ksafe.put("k", "v")
             assertEquals("v", ksafe.get("k", "none"), "store must be usable again after corruption recovery")
 
-            // The corrupt bytes were quarantined for recovery, not silently discarded.
             val quarantined = tmp.listFiles()?.any { it.name.contains(".preferences_pb.corrupt-") } == true
             assertTrue(quarantined, "the corrupt file must be copied aside (.corrupt-*) for recovery")
         } finally {

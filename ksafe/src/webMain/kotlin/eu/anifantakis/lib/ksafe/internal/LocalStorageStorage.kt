@@ -6,20 +6,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.yield
 
 /**
- * [KSafePlatformStorage] backed by the browser's `localStorage`.
+ * [KSafePlatformStorage] over the browser's `localStorage`, which is synchronous and string-only:
+ * every [StoredValue] flattens to `.toString()` on write and the core re-types it through the
+ * request's serializer on read. Keys are prefixed with [storagePrefix] so instances with
+ * different `fileName`s don't collide.
  *
- * localStorage is synchronous and stores only string values, so every
- * [StoredValue] flattens to its `.toString()` representation on write.
- * [KSafeCore.resolveFromCache] reconstitutes the original type using the
- * request's [KSerializer] — see `convertStoredValue`'s slow path.
- *
- * All keys this adapter touches on disk are prefixed with [storagePrefix] so
- * multiple `KSafe` instances with different `fileName`s share the same
- * localStorage namespace without colliding.
- *
- * Change observation: the Web Storage `storage` event only fires for *other*
- * tabs, so we can't rely on it. Instead we maintain a [MutableStateFlow] and
- * re-emit after every [applyBatch] or [clear].
+ * The Web Storage `storage` event only fires for other tabs, so change observation instead
+ * re-emits a [MutableStateFlow] after every [applyBatch] or [clear].
  */
 @PublishedApi
 internal class LocalStorageStorage(
@@ -34,11 +27,9 @@ internal class LocalStorageStorage(
 
     override suspend fun applyBatch(ops: List<StorageOp>) {
         if (ops.isEmpty()) return
-        // localStorage has no transaction API, so emulate the all-or-nothing
-        // semantics the DataStore backends get from `edit {}`: snapshot the prior
-        // value of every key the batch touches, and on any failure (typically a
-        // QuotaExceededError mid-batch) restore them. Without this a partial batch
-        // can persist a value without its metadata — which a later read
+        // localStorage has no transaction API, so emulate all-or-nothing: snapshot every key the
+        // batch touches and restore on failure (typically QuotaExceededError mid-batch). Otherwise
+        // a partial batch can persist a value without its metadata, which a later read
         // misclassifies as plaintext and hands back as the raw ciphertext string.
         val priors = HashMap<String, String?>()
         for (op in ops) {
@@ -51,29 +42,19 @@ internal class LocalStorageStorage(
                 is StorageOp.Delete -> localStorageRemove(storagePrefix + op.rawKey)
             }
         } catch (e: Throwable) {
-            // Roll back to the pre-batch state. See [rollbackPriors] for why the
-            // order matters (removals first) and why a failed restore must be
-            // surfaced rather than swallowed.
             try {
                 rollbackPriors(priors, ::localStorageSet, ::localStorageRemove)
             } catch (rollbackError: Throwable) {
-                // The rollback itself could not fully restore — strictly worse
-                // than the original write failure (silent data loss), and the
-                // caller must hear about it instead of being told the batch
-                // atomically failed with nothing changed. Surface it, keeping
-                // the original write failure attached.
+                // A rollback that couldn't fully restore is worse than the write failure (silent
+                // data loss); surface it with the original write failure attached.
                 rollbackError.addSuppressed(e)
                 throw rollbackError
             }
             throw e
         } finally {
-            // Re-emit on both success (new state) and failure (rolled-back state).
             changes.value = readSnapshotSync()
-            // Browsers are single-threaded: without yielding, downstream
-            // collectors (Flow/StateFlow observers) don't run until the current
-            // coroutine fully returns. Tests call `put()` and immediately
-            // subscribe — they need the collector to have already propagated the
-            // new value by then. `yield()` gives the event loop a tick.
+            // Single-threaded browsers: without a yield, collectors don't run until this coroutine
+            // returns, so a put()-then-subscribe wouldn't see the new value yet.
             yield()
         }
     }
@@ -102,11 +83,7 @@ internal class LocalStorageStorage(
         changes.value = emptyMap()
     }
 
-    /**
-     * localStorage stores only strings, so every [StoredValue] collapses to its
-     * `.toString()` here. The core re-types the read value through the
-     * request's serializer on the way back up.
-     */
+    /** localStorage is string-only; every [StoredValue] collapses to `.toString()` here. */
     private fun StoredValue.asString(): String = when (this) {
         is StoredValue.BoolVal -> value.toString()
         is StoredValue.IntVal -> value.toString()
@@ -124,8 +101,7 @@ internal class LocalStorageStorage(
             if (!fullKey.startsWith(storagePrefix)) continue
             val short = fullKey.removePrefix(storagePrefix)
             val value = localStorageGet(fullKey) ?: continue
-            // Reads always return Text — primitives survive because the core
-            // converts using the requested serializer's primitive kind.
+            // Always Text; primitives survive via the core's serializer-driven conversion.
             out[short] = StoredValue.Text(value)
         }
         return out
@@ -133,21 +109,16 @@ internal class LocalStorageStorage(
 }
 
 /**
- * One-time migration of a store's data entries from the legacy non-prefix-free
- * namespace (`ksafe_<name>_…`) to the prefix-free one (`ksafe.<name>:…`).
+ * One-time migration of a store's data entries from the legacy `ksafe_<name>_…` namespace to the
+ * prefix-free `ksafe.<name>:…` one.
  *
- * Only **canonical** entries are moved — those whose key remainder starts with
- * `__ksafe_` (`__ksafe_value_*`, `__ksafe_meta_*`). The gate makes the migration
- * order-independent for nested store names: store "user" looking at
- * `ksafe_user_cache___ksafe_value_x` sees the non-canonical remainder
- * `cache___ksafe_value_x` and leaves it for store "user_cache". The engine's
- * legacy key records (`…ksafe_key_<alias>`) are likewise not canonical-shaped
- * and stay in place — the engine still owns that namespace.
+ * Only canonical entries (remainder starts with `__ksafe_`) move. That gate keeps the migration
+ * order-independent for nested store names: store "user" scanning `ksafe_user_cache___ksafe_value_x`
+ * sees the non-canonical remainder `cache___ksafe_value_x` and leaves it for store "user_cache".
+ * Engine key records (`…ksafe_key_<alias>`) aren't canonical-shaped and stay put.
  *
- * Copy → verify → delete per entry: the old location is cleared only once the
- * new location verifiably holds the value, so a mid-migration failure (e.g.
- * quota) is retried on a later launch and never loses the only copy. An
- * already-present new entry is never overwritten (it is newer by construction).
+ * Copy-if-absent then delete: the source is cleared only once the destination verifiably holds the
+ * value, so a mid-migration failure (e.g. quota) retries later and never loses the only copy.
  */
 internal fun migrateLegacyLocalStoragePrefix(oldPrefix: String, newPrefix: String, deleteSource: Boolean = true) {
     val keys = buildList {
@@ -157,32 +128,22 @@ internal fun migrateLegacyLocalStoragePrefix(oldPrefix: String, newPrefix: Strin
     }
     for (oldKey in keys) {
         val rest = oldKey.removePrefix(oldPrefix)
-        // Migrate ONLY canonical entries (`__ksafe_value_*`, `__ksafe_meta_*`). The
-        // canonical-shape gate is what keeps the migration order-independent for nested
-        // names: a store `user` scanning `ksafe_user_` sees the nested sibling `user_cache`'s
-        // canonical entry as the non-canonical remainder `cache___ksafe_value_x` and leaves
-        // it for `user_cache`'s own migration.
-        //
-        // Legacy 1.6/1.7 FLAT entries (bare `<key>` / `encrypted_<key>`) carry NO canonical
-        // marker, so a shorter-named store cannot distinguish its own flat key from a nested
-        // sibling's — migrating them steals the sibling's only copy AND surfaces it under the
-        // wrong store (round-3 audit R1 / findings 1,3,5). Carrying pre-canonical flat data
-        // forward safely needs a scheme that can disambiguate nested names; until then it is
-        // deferred and such entries are left untouched (orphaned-but-private, recoverable —
-        // strictly safer than the cross-store data loss+bleed a blind widening caused).
+        // Only canonical entries migrate (gate explained above). Legacy 1.6/1.7 FLAT entries
+        // (bare `<key>` / `encrypted_<key>`) carry no canonical marker, so a shorter-named store
+        // can't tell its own flat key from a nested sibling's; migrating them would steal the
+        // sibling's only copy and surface it under the wrong store. They're left untouched
+        // (orphaned-but-private, recoverable) until a scheme can disambiguate nested names.
         if (!rest.startsWith("__ksafe_")) continue
         val value = localStorageGet(oldKey) ?: continue
         val newKey = newPrefix + rest
         if (localStorageGet(newKey) == null) {
             runCatching { localStorageSet(newKey, value) }
         }
-        // Delete the source only when [deleteSource] (default). For the appNamespace
-        // upgrade migration the source prefix `ksafe.<file>:` is ALSO the LIVE prefix of
-        // a co-existing no-namespace store on the same fileName; deleting it there would
-        // cannibalize that sibling's fresh writes on every construction (FEEDBACK_4
-        // FB3-M2). Copy-if-absent + no-delete is idempotent and makes the data half
-        // consistent with the non-destructive key half (FB3-H1); the only cost is a
-        // harmless orphaned copy under the old prefix after a genuine one-way upgrade.
+        // Delete the source only when [deleteSource]. For the appNamespace upgrade the source
+        // prefix `ksafe.<file>:` is also the live prefix of a co-existing no-namespace store on the
+        // same fileName; deleting it would cannibalize that sibling's writes on every construction.
+        // Copy-if-absent + no-delete is idempotent; the only cost is a harmless orphaned copy under
+        // the old prefix after a genuine one-way upgrade.
         if (deleteSource && localStorageGet(newKey) != null) {
             runCatching { localStorageRemove(oldKey) }
         }
@@ -190,28 +151,24 @@ internal fun migrateLegacyLocalStoragePrefix(oldPrefix: String, newPrefix: Strin
 }
 
 /**
- * Restores the pre-batch state captured in [priors] (full key → prior value, or
- * `null` if the key did not exist) after an [LocalStorageStorage.applyBatch]
- * failure. Extracted as a pure function over [set]/[remove] so the order and
- * failure-handling contract can be tested without a real `localStorage`.
+ * Restores the pre-batch state in [priors] (full key → prior value, or `null` if absent) after an
+ * [LocalStorageStorage.applyBatch] failure. Pure over [set]/[remove] so the ordering and failure
+ * contract are testable without a real `localStorage`.
  *
- * Order matters: every touched key is removed first, freeing all the space the
- * partial batch consumed, before non-null priors are restored — restoring in
- * arbitrary map order could hit the same quota that failed the batch and lose a
- * deleted key's prior value. Since the priors fit before the batch ran, they
- * fit again. A restore that still fails is surfaced (not swallowed): the caller
- * must not be told the batch atomically failed while a key is actually gone.
+ * Order matters: all touched keys are removed first — freeing the space the partial batch
+ * consumed — before priors are restored, so a restore can't hit the same quota that failed the
+ * batch. A restore that still fails is surfaced, not swallowed.
  */
 internal fun rollbackPriors(
     priors: Map<String, String?>,
     set: (String, String) -> Unit,
     remove: (String) -> Unit,
 ) {
-    // 1. Free all space the partial batch consumed before restoring anything.
+    // Free all space the partial batch consumed before restoring anything.
     for (fullKey in priors.keys) {
         runCatching { remove(fullKey) }
     }
-    // 2. Restore prior values; collect (don't swallow) any that still fail.
+    // Restore prior values; collect (don't swallow) any that still fail.
     val failures = ArrayList<Pair<String, Throwable>>()
     for ((fullKey, prior) in priors) {
         if (prior != null) {

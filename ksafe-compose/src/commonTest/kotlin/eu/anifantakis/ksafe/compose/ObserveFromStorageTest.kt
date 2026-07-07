@@ -17,28 +17,18 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Unit tests for [KSafeComposeState.observeFromStorage].
- *
- * The helper is the single source of truth for the persistent-state
- * observation lifecycle used by both [eu.anifantakis.lib.ksafe.compose.mutableStateOf]
- * (property-delegate path) and `rememberKSafeState` (composition-scoped path).
- * Testing it in isolation — outside any composition — verifies the behavior
- * contract both call sites depend on.
+ * Locks in: observeFromStorage's live/cold-start/warm-start lifecycle — external emissions reflect, the user-write guard suppresses stale echoes yet self-heals, and cold-start honors its timeout.
  */
 class ObserveFromStorageTest {
 
     private fun newState(initial: String = "initial"): KSafeComposeState<String> =
         KSafeComposeState(
             initialValue = initial,
-            valueSaver = { /* no-op */ },
+            valueSaver = { },
             policy = structuralEqualityPolicy(),
         )
 
-    /**
-     * Live mode (`observeExternalChanges = true`): flow emissions propagate
-     * into the state until the user writes, after which stale disk echoes are
-     * suppressed so they can't clobber the in-flight write.
-     */
+    // Live mode: emissions reflect until the user writes, then stale disk echoes are suppressed.
     @Test
     fun observeFromStorage_liveMode_appliesUntilUserWrites_thenStopsClobbering() = runTest {
         val state = newState("initial")
@@ -53,7 +43,6 @@ class ObserveFromStorageTest {
         }
         advanceUntilIdle()
 
-        // Before any local write, external emissions reflect.
         flow.emit("first")
         advanceUntilIdle()
         assertEquals("first", state.value)
@@ -62,8 +51,7 @@ class ObserveFromStorageTest {
         advanceUntilIdle()
         assertEquals("second", state.value)
 
-        // After the user writes, a stale/older disk echo must NOT revert the
-        // write (the disk-derived flow lags optimistic writes).
+        // After a user write, a stale disk echo must not revert it.
         state.value = "user_wrote"
         flow.emit("stale_echo")
         advanceUntilIdle()
@@ -72,12 +60,7 @@ class ObserveFromStorageTest {
         job.cancel()
     }
 
-    /**
-     * The user-write guard must be precise, not permanent: once the observed
-     * flow catches up with the user's own write (the echo arrives), genuinely
-     * newer external changes must reflect again, as the `scope` /
-     * `observeExternalChanges` KDocs promise.
-     */
+    // The write guard is precise, not permanent: once the write's echo arrives, newer external changes reflect again.
     @Test
     fun observeFromStorage_liveMode_resumesExternalReflection_afterEchoCatchesUp() = runTest {
         val state = newState("initial")
@@ -99,13 +82,12 @@ class ObserveFromStorageTest {
         advanceUntilIdle()
         assertEquals("user_wrote", state.value)
 
-        // The user's own write round-trips through disk → the flow caught up.
+        // The user's own write round-trips through disk, so the flow catches up.
         flow.emit("user_wrote")
         advanceUntilIdle()
         assertEquals("user_wrote", state.value)
 
-        // A genuinely newer external write (another screen / background sync)
-        // must now reflect again.
+        // A genuinely newer external write must now reflect again.
         flow.emit("external_new")
         advanceUntilIdle()
         assertEquals(
@@ -113,32 +95,24 @@ class ObserveFromStorageTest {
             "after the write's echo, newer external changes must reflect again",
         )
 
-        // And a fresh user write re-arms the guard until its own echo.
+        // A fresh user write re-arms the guard until its own echo.
         state.value = "user_2"
-        flow.emit("external_new") // late re-emission, stale vs user_2
+        flow.emit("external_new")
         advanceUntilIdle()
         assertEquals("user_2", state.value, "a re-armed guard must suppress stale echoes again")
 
         job.cancel()
     }
 
-    /**
-     * FEEDBACK_4 M-F: the user-write guard's check-then-apply in `updateFromFlow` is
-     * not atomic against the setter, so a stale flow emission that read the guard as
-     * clear before the setter armed it can clobber the visible value to the pre-write
-     * value AFTER the setter ran. Because the observed flow is `distinctUntilChanged`,
-     * the user's value is never re-emitted — the clobber used to be PERMANENT. The
-     * user-write echo must now re-apply the value (self-heal), turning a permanent loss
-     * into (at worst) the already-accepted transient flicker.
-     */
+    // updateFromFlow's guard check-then-apply isn't atomic against the setter, so a stale emission can clobber a write.
+    // The user-write echo re-applies the value (self-heal), since distinctUntilChanged means no other emission would.
     @Test
     fun updateFromFlow_userWriteEcho_selfHealsAStaleClobber() {
         val state = newState("A")            // syncedValue = "A"
         state.value = "B"                     // arms the guard; _internalState = "B", lastUserWrite = "B"
         assertEquals("B", state.value)
 
-        // Reproduce the raced outcome: a stale "A" emission clobbered the visible value
-        // AFTER the guard was armed (the non-atomic check-then-apply the fix addresses).
+        // Reproduce the raced outcome: a stale "A" emission clobbers the visible value after the guard was armed.
         state.simulateStaleClobberForTest("A")
         assertEquals("A", state.value, "precondition: the stale emission diverged the visible state")
 
@@ -147,23 +121,18 @@ class ObserveFromStorageTest {
 
         assertEquals(
             "B", state.value,
-            "the user-write echo must restore the value a stale emission clobbered (M-F); " +
+            "the user-write echo must restore the value a stale emission clobbered; " +
                 "before the fix it stayed stuck on the stale value",
         )
     }
 
-    /**
-     * FEEDBACK_4 H7: the one-shot cold-start self-heal (`updateFromStorage`) has the same
-     * check-then-apply race as `updateFromFlow`, but — being one-shot — has NO later emission
-     * to self-heal, so a clobber used to be PERMANENT. A user write racing into the window
-     * between the guard check and the publish must not be clobbered by the stale persisted value;
-     * `updateFromStorage` now re-checks the guard after its publish and re-applies the user's value.
-     */
+    // updateFromStorage is a one-shot cold-start self-heal with the same check-then-apply race but no later emission
+    // to recover. A user write racing between its guard check and publish must not be clobbered: it re-checks the
+    // guard after publishing and re-applies the user's value.
     @Test
     fun updateFromStorage_racingUserWrite_isNotClobbered() {
         val state = newState("A") // syncedValue = "A"
-        // Race a user write of "B" into the window AFTER updateFromStorage's guard check but
-        // BEFORE its publish (the non-atomic window). The setter arms the guard + publishes "B".
+        // Race a user write of "B" into the window between updateFromStorage's guard check and its publish.
         state.betweenCheckAndPublishForTest = {
             state.betweenCheckAndPublishForTest = null
             state.value = "B"
@@ -174,17 +143,12 @@ class ObserveFromStorageTest {
 
         assertEquals(
             "B", state.value,
-            "a user write racing the one-shot cold-start self-heal must not be clobbered (H7); " +
+            "a user write racing the one-shot cold-start self-heal must not be clobbered; " +
                 "before the fix it stayed stuck on the stale persisted value",
         )
     }
 
-    /**
-     * Cold-start one-shot mode: when `observeExternalChanges = false` and
-     * `coldStart = true`, the helper takes the first flow emission and
-     * propagates it via `updateFromStorage` (which respects the user-write
-     * guard).
-     */
+    // Cold-start one-shot: observeExternalChanges=false + coldStart=true takes the first emission via updateFromStorage.
     @Test
     fun observeFromStorage_coldStart_takesFirstEmissionAndCompletes() = runTest {
         val state = newState("default")
@@ -198,12 +162,7 @@ class ObserveFromStorageTest {
         assertEquals("persisted", state.value)
     }
 
-    /**
-     * Warm-start no-op: when `observeExternalChanges = false` and
-     * `coldStart = false`, the helper does nothing — no flow subscription,
-     * no state mutation. This is the path taken when `mutableStateOf` is
-     * declared without a `scope` and the cache was already warm.
-     */
+    // Warm-start no-op: observeExternalChanges=false + coldStart=false subscribes to nothing and mutates nothing.
     @Test
     fun observeFromStorage_warmStart_noScope_noOp() = runTest {
         val state = newState("warm_initial")
@@ -223,12 +182,7 @@ class ObserveFromStorageTest {
         assertEquals(false, flowCollected, "warm-start path must not subscribe to flow")
     }
 
-    /**
-     * Cold-start self-heal must not clobber a value the user has written
-     * between the helper launching and the flow's first emission. The
-     * `updateFromStorage` path is gated by [KSafeComposeState]'s
-     * user-write guard (`awaitingWriteEcho`).
-     */
+    // Cold-start self-heal must not clobber a value written between launch and the flow's first emission (gated by the user-write guard).
     @Test
     fun observeFromStorage_coldStart_doesNotClobberUserWrite() = runTest {
         val state = newState("default")
@@ -246,7 +200,7 @@ class ObserveFromStorageTest {
         // User writes before the persisted value arrives.
         state.value = "user_set"
 
-        // Persisted value finally lands. Must not overwrite the user's value.
+        // Persisted value finally lands; it must not overwrite the user's value.
         flow.emit("persisted")
         advanceUntilIdle()
         assertEquals("user_set", state.value)
@@ -254,16 +208,11 @@ class ObserveFromStorageTest {
         job.cancel()
     }
 
-    /**
-     * Cold-start self-heal honors the `selfHealTimeoutMs` deadline: if the
-     * flow does not emit within the timeout, the state stays at its initial
-     * value and the helper returns.
-     */
+    // Cold-start self-heal honors selfHealTimeoutMs: if the flow never emits, state stays initial and the helper returns.
     @Test
     fun observeFromStorage_coldStart_timeoutLeavesStateUntouched() = runTest {
         val state = newState("default")
         val neverEmits = flow<String> {
-            // Suspend forever — simulates a flow that never delivers.
             delay(Long.MAX_VALUE)
         }
 
@@ -279,7 +228,6 @@ class ObserveFromStorageTest {
         advanceUntilIdle()
 
         assertEquals("default", state.value)
-        // Helper should have returned (job completed) once the timeout fired.
         assertEquals(true, job.isCompleted)
     }
 }

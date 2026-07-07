@@ -13,13 +13,9 @@ internal actual fun <T> runBlockingOnPlatform(block: suspend () -> T): T = runBl
 @PublishedApi
 internal actual val decryptFlowContext: CoroutineContext = Dispatchers.Default
 
-// Kotlin/Native has no object-monitor `synchronized`, so back each delegate's init lock
-// with its own NSRecursiveLock (FEEDBACK_4 M11). This replaces the previous single
-// process-wide busy-spin lock, which (a) serialized EVERY delegate's init on one lock —
-// an unrelated delegate's cold-start read blocked all others — and (b) held that spin
-// lock across blocking DataStore/keychain I/O, burning a core on any waiter. NSRecursiveLock
-// is a real OS parking lock (a waiter blocks, no spin) and is per-instance; reentrant, so
-// a nested first-access on the same thread can't deadlock.
+// Kotlin/Native has no object-monitor `synchronized`, so back each delegate's init lock with
+// its own NSRecursiveLock: a real OS parking lock (waiters block, no spin), per-instance so
+// unrelated delegates don't serialize, reentrant so a nested first-access can't deadlock.
 @PublishedApi
 internal actual class KSafeInitLock actual constructor() {
     private val lock = NSRecursiveLock()
@@ -78,8 +74,7 @@ internal actual class KSafeConcurrentMap<V : Any> actual constructor() {
     actual fun containsKey(key: String): Boolean = ref.value.containsKey(key)
 
     actual fun clear() {
-        // CAS loop, consistent with set/remove/replaceIf, so `clear()` can't be
-        // silently undone by a concurrent mutation retrying against the
+        // CAS loop so `clear()` can't be undone by a concurrent mutation retrying against the
         // pre-clear snapshot.
         while (true) {
             val current = ref.value

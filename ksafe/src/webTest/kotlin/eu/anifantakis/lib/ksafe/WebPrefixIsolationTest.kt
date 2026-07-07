@@ -10,20 +10,16 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /**
- * The localStorage key scheme must be prefix-free. The legacy `ksafe_<name>_`
- * scheme was not: `KSafe("user")`'s startsWith() scoping would ingest
- * `KSafe("user_cache")`'s entries and its `clearAll()` would DELETE the
- * sibling store, while `KSafe("default")` collided byte-for-byte with the
- * unnamed `KSafe()` despite using different crypto aliases. The
- * `ksafe.<name>:` scheme is prefix-free (`.`/`:` are outside the fileName
- * alphabet), with a one-time canonical-entry migration carrying shipped data
- * forward.
+ * Locks in: the prefix-free `ksafe.<name>:` localStorage scheme — sibling and nested
+ * stores never collide on `startsWith()` scoping or `clearAll()`, and the unnamed
+ * `KSafe()` stays distinct from `KSafe("default")` — plus its one-time migration from
+ * the legacy `ksafe_<name>_` scheme.
  */
 class WebPrefixIsolationTest {
 
     @Test
     fun nestedFileNames_clearAll_doesNotWipeSiblingStore() = runTest {
-        // "user"-style nested pair, unique per run so reruns don't collide.
+        // Nested pair, unique per run so reruns don't collide.
         val base = WebKSafeTest.generateUniqueFileName()
         val outer = KSafe(fileName = base, testEngine = FakeEncryption())
         val nested = KSafe(fileName = "${base}_cache", testEngine = FakeEncryption())
@@ -33,12 +29,10 @@ class WebPrefixIsolationTest {
         outer.put("k", "outer-value", KSafeWriteMode.Plain)
         nested.put("k", "nested-value", KSafeWriteMode.Plain)
 
-        // The wipe must be scoped prefix-free: a startsWith() wipe would delete
-        // every `ksafe_<base>_cache_*` entry too, destroying the sibling store.
+        // Wipe must be prefix-free: a startsWith() wipe would also delete the sibling's entries.
         outer.clearAll()
 
-        // Read through a FRESH instance so the answer comes from DISK — the
-        // original instance's optimistic in-memory cache would mask the wipe.
+        // Read via a FRESH instance so the answer comes from disk, not the optimistic cache.
         val nestedReopened = KSafe(fileName = "${base}_cache", testEngine = FakeEncryption())
         nestedReopened.awaitCacheReady()
         assertEquals(
@@ -56,8 +50,7 @@ class WebPrefixIsolationTest {
         nested.awaitCacheReady()
         nested.put("secret", "nested-only", KSafeWriteMode.Plain)
 
-        // Constructed AFTER the nested store has data on disk: its snapshot
-        // must not ingest the sibling's entries under garbled keys.
+        // Constructed after the sibling has data on disk; its snapshot must not ingest the sibling's entries.
         val outer = KSafe(fileName = base, testEngine = FakeEncryption())
         outer.awaitCacheReady()
         assertEquals(
@@ -72,8 +65,7 @@ class WebPrefixIsolationTest {
 
     @Test
     fun fileNameDefault_isDistinctFromUnnamedInstance() = runTest {
-        // Old scheme: both produced the prefix `ksafe_default_` — one shared
-        // data slot under two different crypto aliases.
+        // Old scheme: both produced prefix `ksafe_default_` — one shared slot under two crypto aliases.
         val unnamed = KSafe(testEngine = FakeEncryption())
         val named = KSafe(fileName = "default", testEngine = FakeEncryption())
         unnamed.awaitCacheReady()
@@ -83,10 +75,8 @@ class WebPrefixIsolationTest {
         unnamed.put(key, "from-unnamed", KSafeWriteMode.Plain)
         named.put(key, "from-named", KSafeWriteMode.Plain)
 
-        // Read through a FRESH unnamed instance so the answer comes from DISK
-        // — under the old shared `ksafe_default_` slot the named put was the
-        // last writer and overwrote the unnamed store's value on disk, masked
-        // only by the original instance's optimistic cache.
+        // Read via a FRESH unnamed instance (from disk): under the old shared slot the named put
+        // was last writer and overwrote the unnamed store, masked only by the optimistic cache.
         val unnamedReopened = KSafe(testEngine = FakeEncryption())
         unnamedReopened.awaitCacheReady()
         assertEquals(
@@ -104,18 +94,16 @@ class WebPrefixIsolationTest {
     fun legacyPrefixData_isMigratedForward_andNestedSiblingLeftAlone() {
         val base = WebKSafeTest.generateUniqueFileName()
 
-        // Simulate shipped 2.1.x data: canonical entries under the OLD prefixes
-        // of both a store and its nested sibling.
+        // Legacy data: canonical entries under the OLD prefixes of a store and its nested sibling.
         localStorageSet("ksafe_${base}___ksafe_value_k", "legacy-value")
         localStorageSet("ksafe_${base}_cache___ksafe_value_k", "sibling-value")
 
         migrateLegacyLocalStoragePrefix("ksafe_${base}_", "ksafe.${base}:")
 
-        // Own canonical entry moved (copy + verify + delete)…
+        // Own canonical entry moved (copy + verify + delete).
         assertEquals("legacy-value", localStorageGet("ksafe.${base}:__ksafe_value_k"))
         assertNull(localStorageGet("ksafe_${base}___ksafe_value_k"), "old entry must be removed after a verified copy")
-        // …while the nested sibling's entry (non-canonical remainder for THIS
-        // store) is left for the sibling's own migration.
+        // The nested sibling's entry is left for the sibling's own migration.
         assertEquals(
             "sibling-value",
             localStorageGet("ksafe_${base}_cache___ksafe_value_k"),
@@ -131,29 +119,24 @@ class WebPrefixIsolationTest {
     }
 
     /**
-     * Round-3 audit R1 (findings 1/3/5): the migration must NOT move a nested
-     * sibling store's FLAT 1.6/1.7 entry (bare `<key>` / `encrypted_<key>`).
-     * Those remainders carry no canonical marker, so a shorter-named store's
-     * migration cannot tell them apart from its own flat keys — moving them
-     * both DELETES the sibling's only copy and SURFACES it under the shorter
-     * store (cross-store plaintext bleed). The migration must leave every
-     * non-canonical entry untouched to preserve the prefix-free isolation
-     * guarantee; carrying legacy flat data forward is deferred to a design that
-     * can disambiguate nested names.
+     * The migration must NOT move a nested sibling store's FLAT legacy entry (bare `<key>` /
+     * `encrypted_<key>`): it carries no canonical marker, so a shorter-named store cannot tell it
+     * from its own flat keys — moving it would delete the sibling's only copy and surface it under
+     * the shorter store (cross-store plaintext bleed). Every non-canonical entry is left untouched
+     * to preserve prefix-free isolation.
      */
     @Test
     fun legacyFlatData_ofNestedSibling_isNotStolenByShorterStore() {
         val base = WebKSafeTest.generateUniqueFileName()
-        // 1.6/1.7 flat layout: the nested sibling store "<base>_cache"'s plain
-        // value for key "foo" lives at "ksafe_<base>_cache_foo" (no marker),
-        // and its encrypted value at "ksafe_<base>_cache_encrypted_foo".
+        // Flat legacy layout: the sibling's plain value at "ksafe_<base>_cache_foo" (no marker),
+        // encrypted at "ksafe_<base>_cache_encrypted_foo".
         localStorageSet("ksafe_${base}_cache_foo", "sibling-flat-plain")
         localStorageSet("ksafe_${base}_cache_encrypted_foo", "sibling-flat-cipher")
 
         // The shorter-named store migrates.
         migrateLegacyLocalStoragePrefix("ksafe_${base}_", "ksafe.${base}:")
 
-        // The sibling's flat entries must be left exactly where they were…
+        // The sibling's flat entries must be left exactly where they were.
         assertEquals(
             "sibling-flat-plain",
             localStorageGet("ksafe_${base}_cache_foo"),
@@ -164,7 +147,7 @@ class WebPrefixIsolationTest {
             localStorageGet("ksafe_${base}_cache_encrypted_foo"),
             "a nested sibling's flat encrypted entry must not be stolen by the shorter-named store",
         )
-        // …and must NOT have leaked into the shorter store's namespace.
+        // And must NOT have leaked into the shorter store's namespace.
         assertNull(
             localStorageGet("ksafe.${base}:cache_foo"),
             "the shorter store must not surface the sibling's flat data under its own prefix",
@@ -175,12 +158,10 @@ class WebPrefixIsolationTest {
     }
 
     /**
-     * FEEDBACK_4 FB3-M2: constructing an appNamespaced store must NOT cannibalize a
-     * co-existing no-namespace store on the same fileName. The un-namespaced upgrade
-     * migration's source prefix `ksafe.<file>:` is that sibling's LIVE prefix, and it
-     * runs on every construction (no done-marker), so a destructive copy+delete stole
-     * the sibling's data each launch. The migration must be non-destructive (copy-if-
-     * absent, no source delete), mirroring the non-destructive key half (FB3-H1).
+     * Constructing an appNamespaced store must NOT cannibalize a co-existing no-namespace store on
+     * the same fileName. The un-namespaced upgrade migration's source prefix `ksafe.<file>:` is that
+     * sibling's LIVE prefix and runs on every construction, so it must be non-destructive
+     * (copy-if-absent, no source delete), mirroring the non-destructive key migration.
      */
     @Test
     fun appNamespacedStore_doesNotCannibalize_coexistingNoNamespaceStore() = runTest {
@@ -191,8 +172,7 @@ class WebPrefixIsolationTest {
         plain.awaitCacheReady()
         plain.put("token", "plain-value", KSafeWriteMode.Plain)
 
-        // …then a same-fileName appNamespaced store is constructed (runs the
-        // un-namespaced migration in buildWebKSafe).
+        // …then a same-fileName appNamespaced store is constructed (runs the un-namespaced migration).
         KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.a"), testEngine = FakeEncryption())
             .awaitCacheReady()
 
@@ -201,11 +181,10 @@ class WebPrefixIsolationTest {
         plainReopened.awaitCacheReady()
         assertEquals(
             "plain-value", plainReopened.get("token", "GONE"),
-            "a co-existing no-namespace store's value must survive construction of a same-fileName appNamespaced store (FB3-M2)",
+            "a co-existing no-namespace store's value must survive construction of a same-fileName appNamespaced store",
         )
 
-        // And a fresh no-namespace write after another namespaced construction must
-        // also survive (proves it isn't just first-launch tolerant).
+        // A fresh no-namespace write after another namespaced construction must also survive.
         plainReopened.put("token2", "fresh", KSafeWriteMode.Plain)
         KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.a"), testEngine = FakeEncryption())
             .awaitCacheReady()
@@ -220,39 +199,36 @@ class WebPrefixIsolationTest {
     }
 
     /**
-     * FEEDBACK_4 H1 (twin of FB3-M2): the flat legacy `ksafe_<file>_` prefix has NO
-     * appNamespace segment — one SHARED source for every namespace of a fileName. When an
-     * appNamespace is set the legacy→namespaced migration must be non-destructive, or the
-     * first-constructed namespace copies the legacy data to itself AND deletes the shared
-     * source, so every OTHER namespace of that fileName reads the default for keys it owned.
+     * The flat legacy `ksafe_<file>_` prefix has NO appNamespace segment — one SHARED source for
+     * every namespace of a fileName. The legacy→namespaced migration must therefore be
+     * non-destructive, or the first-constructed namespace copies the data to itself and deletes the
+     * shared source, so every OTHER namespace of that fileName reads the default for keys it owned.
      */
     @Test
     fun legacyPrefix_withAppNamespace_isNotDeleted_soAllNamespacesCanMigrate() = runTest {
         val base = WebKSafeTest.generateUniqueFileName()
-        // Shipped pre-namespace canonical data under the flat legacy prefix.
+        // Pre-namespace canonical data under the flat legacy prefix.
         localStorageSet("ksafe_${base}___ksafe_value_k", "legacy-value")
 
-        // First namespaced store constructs → migrates the legacy prefix forward. It must
-        // NOT delete the shared legacy source; a second namespace needs it too (H1).
+        // First namespaced store migrates the legacy prefix forward but must NOT delete the shared source.
         KSafe(fileName = base, config = KSafeConfig(appNamespace = "com.example.a"), testEngine = FakeEncryption())
             .awaitCacheReady()
 
         assertEquals(
             "legacy-value", localStorageGet("ksafe_${base}___ksafe_value_k"),
-            "the shared legacy source must survive a namespaced construction (H1)",
+            "the shared legacy source must survive a namespaced construction",
         )
         assertEquals(
             "legacy-value", localStorageGet("ksafe.com.example.a@${base}:__ksafe_value_k"),
             "namespace A must have migrated the legacy value forward",
         )
 
-        // A second same-fileName namespaced store must STILL find the legacy source and
-        // migrate it — proving the first namespace did not destroy it for the rest.
+        // A second same-fileName namespaced store must STILL find and migrate the legacy source.
         KSafe(fileName = base, config = KSafeConfig(appNamespace = "com.example.b"), testEngine = FakeEncryption())
             .awaitCacheReady()
         assertEquals(
             "legacy-value", localStorageGet("ksafe.com.example.b@${base}:__ksafe_value_k"),
-            "namespace B must ALSO migrate the still-present legacy value (H1: the first namespace must not have deleted the shared source)",
+            "namespace B must ALSO migrate the still-present legacy value (the first namespace must not have deleted the shared source)",
         )
 
         localStorageRemove("ksafe_${base}___ksafe_value_k")
@@ -261,18 +237,17 @@ class WebPrefixIsolationTest {
     }
 
     /**
-     * FEEDBACK_4 H9: pre-2.1.4, `KSafe()` (unnamed) and `KSafe(fileName = "default")` shared the
-     * on-disk prefix `ksafe_default_`. 2.1.4 gives them distinct new prefixes but the SAME legacy
-     * migration source, so a destructive migration lets whichever constructs first copy the
-     * shared legacy data to itself and delete the source, stranding it for the other. The legacy
-     * migration must be non-destructive for this reserved-name collision.
+     * `KSafe()` (unnamed) and `KSafe(fileName = "default")` share the same legacy migration source
+     * (`ksafe_default_`) but get distinct new prefixes, so the legacy migration must be
+     * non-destructive — otherwise whichever constructs first copies the shared data and deletes the
+     * source, stranding it for the other.
      */
     @Test
     fun legacyDefaultPrefix_sharedByUnnamedAndDefaultNamed_isNotDeleted_soBothMigrate() = runTest {
         val k = "token_${WebKSafeTest.generateUniqueFileName()}" // unique key under the shared prefix
         localStorageSet("ksafe_default___ksafe_value_$k", "shared-legacy")
 
-        // Unnamed instance constructs → migrates to `ksafe.:` WITHOUT deleting the shared source.
+        // Unnamed instance migrates to `ksafe.:` WITHOUT deleting the shared source.
         KSafe(testEngine = FakeEncryption()).awaitCacheReady()
         assertEquals(
             "shared-legacy", localStorageGet("ksafe.:__ksafe_value_$k"),
@@ -280,14 +255,14 @@ class WebPrefixIsolationTest {
         )
         assertEquals(
             "shared-legacy", localStorageGet("ksafe_default___ksafe_value_$k"),
-            "the shared legacy source must survive an unnamed construction (H9)",
+            "the shared legacy source must survive an unnamed construction",
         )
 
         // The 'default'-named instance still finds the source and migrates it too.
         KSafe(fileName = "default", testEngine = FakeEncryption()).awaitCacheReady()
         assertEquals(
             "shared-legacy", localStorageGet("ksafe.default:__ksafe_value_$k"),
-            "the 'default'-named store must ALSO migrate the still-present shared legacy value (H9)",
+            "the 'default'-named store must ALSO migrate the still-present shared legacy value",
         )
 
         localStorageRemove("ksafe_default___ksafe_value_$k")
@@ -319,11 +294,9 @@ class WebPrefixIsolationTest {
     }
 
     /**
-     * Round-3 audit R4 (findings 6/13): on web, `KSafeConfig.appNamespace` must
-     * isolate the localStorage DATA namespace, not just the IndexedDB key record.
-     * Two same-origin KSafe setups with the SAME fileName but DIFFERENT
-     * appNamespace (the exact case appNamespace exists to separate) must not
-     * collide on the same data slots and overwrite each other.
+     * On web, `KSafeConfig.appNamespace` must isolate the localStorage DATA namespace, not just the
+     * IndexedDB key record: two same-origin setups with the SAME fileName but DIFFERENT appNamespace
+     * must not collide on the same data slots and overwrite each other.
      */
     @Test
     fun appNamespace_isolatesTheDataStore_forSameFileName() = runTest {
@@ -336,8 +309,7 @@ class WebPrefixIsolationTest {
         appA.put("token", "value-A", KSafeWriteMode.Plain)
         appB.put("token", "value-B", KSafeWriteMode.Plain)
 
-        // Read through FRESH instances so the answer comes from localStorage, not
-        // the original instance's optimistic cache.
+        // Read via FRESH instances so the answer comes from localStorage, not the optimistic cache.
         val appAReopened = KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.a"), testEngine = FakeEncryption())
         val appBReopened = KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.b"), testEngine = FakeEncryption())
         appAReopened.awaitCacheReady()

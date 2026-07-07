@@ -38,51 +38,23 @@ import kotlin.native.OsFamily
 import kotlin.native.Platform
 
 /**
- * Whether the Keychain orphan sweep is safe to run on [osFamily].
- *
- * The sweep enumerates every Keychain item under the library's hardcoded service and
- * deletes those with no surviving DataStore counterpart. That is only safe where the
- * Keychain is **app-private** — the iOS/tvOS/watchOS sandbox. On **macOS** items land in
- * the shared per-user *login* keychain with no app identity in the namespace (KSafe sets
- * no access group / data-protection keychain), so one KSafe-using app's sweep would
- * enumerate and DELETE another KSafe-using app's keys, permanently corrupting its data
- * every launch. Disable the sweep there: stale macOS Keychain entries are harmless
- * clutter, reclaimed by `clearAll()`.
- *
- * Pure + parameterized so it's unit-testable without a live Keychain.
+ * The sweep is only safe where the Keychain is app-private (iOS/tvOS/watchOS sandbox). On
+ * macOS items share the per-user login keychain with no app identity in the namespace, so a
+ * sweep would delete other KSafe-using apps' keys. Pure so it's testable without a Keychain.
  */
 @OptIn(ExperimentalNativeApi::class)
 internal fun keychainOrphanSweepEnabled(osFamily: OsFamily): Boolean =
     osFamily != OsFamily.MACOSX
 
 /**
- * iOS-only Keychain orphan sweep. **Enforced** via [keychainOrphanSweepEnabled]: this is a
- * no-op on macOS, whose shared login keychain would otherwise let it delete other apps' keys.
+ * iOS-only Keychain orphan sweep (no-op on macOS via [keychainOrphanSweepEnabled]): the
+ * Keychain survives app uninstall, so this deletes items the library wrote whose DataStore
+ * counterpart no longer exists. Scans generic-password items AND SE-held `kSecClassKey` EC
+ * keys, so a crash between SE key creation and wrapped-key storage is still cleaned up.
  *
- * The Keychain is **not** wiped on app uninstall (unless the app opts out), so keys can
- * linger after DataStore has been cleared via Settings or `clearAll()`. This scans the
- * Keychain for items this library wrote, cross-references them against DataStore's
- * current key set, and deletes entries with no surviving DataStore counterpart. Two
- * item classes are covered:
- *
- *  1. **Generic-password items** — where both plain AES keys and
- *     Secure-Enclave-wrapped blobs live.
- *  2. **`kSecClassKey` EC private keys** — the SE-held ECIES keys used to
- *     wrap AES material for `HARDWARE_ISOLATED` writes. These are scanned
- *     independently so a crash between SE key creation and wrapped-key
- *     storage can still be cleaned up on the next run.
- *
- * Failures are swallowed by the caller — a locked device or a transient
- * Keychain error must never block `KSafe` initialization.
- *
- * [reservedKeyIds] lists key-id segments that are KSafe infrastructure rather than
- * per-value keys and must NEVER be swept — the shared master-key sentinels
- * (`__ksafe_master__` / `__ksafe_master_locked__`). A master key is referenced by every
- * `DEFAULT`-protected value collectively, not by any single user key, so it never appears
- * in [validKeys]; without this guard the sweep would classify it as an orphan and delete
- * it, rendering ALL `DEFAULT` ciphertext permanently undecryptable. A stale reserved key
- * is harmless clutter, reclaimed only by `clearAll()` (or reused by the next `DEFAULT`
- * write).
+ * [reservedKeyIds] holds the shared master-key sentinels: no single user key references
+ * them, so they never appear in the valid-key set — without this guard the sweep would
+ * delete the master and render ALL `DEFAULT` ciphertext permanently undecryptable.
  */
 @OptIn(ExperimentalForeignApi::class, ExperimentalNativeApi::class)
 internal suspend fun cleanupOrphanedKeychainEntries(
@@ -94,20 +66,14 @@ internal suspend fun cleanupOrphanedKeychainEntries(
     legacyEncryptedPrefix: String,
     seKeyTagPrefix: String,
     reservedKeyIds: Set<String>,
-    /** Live in-flight check (KSafeCore's dirty-key set): a key for a not-yet-committed write
-     *  must not be reaped as an orphan. Default false for callers/tests that don't run
-     *  concurrently with writes. */
+    /** A key for a not-yet-committed write must not be reaped as an orphan. */
     isInFlight: (String) -> Boolean = { false },
 ) {
-    // Never sweep on macOS: the shared login keychain has no app-identity scoping, so we'd
-    // delete other KSafe-using apps' keys. Bail before touching storage or the Keychain so
-    // nothing else in this function can run there.
+    // Bail before touching storage or the Keychain so nothing below can run on macOS.
     if (!keychainOrphanSweepEnabled(Platform.osFamily)) return
 
     val snapshot = storage.snapshot()
 
-    // Pass 1 — collect protection metadata from `__ksafe_meta_*__` and legacy
-    // `__ksafe_prot_*__` entries.
     val protectionByKey = mutableMapOf<String, KSafeProtection>()
     for ((rawKey, storedValue) in snapshot) {
         val text = (storedValue as? StoredValue.Text)?.value ?: continue
@@ -122,9 +88,7 @@ internal suspend fun cleanupOrphanedKeychainEntries(
         }
     }
 
-    // Pass 2 — derive the set of user-keys that still have a live DataStore
-    // entry (either legacy `{fileName}_key` or canonical `__ksafe_value_key`
-    // backed by protection metadata from pass 1).
+    // The user-keys that still have a live DataStore entry.
     val validKeys = mutableSetOf<String>()
     for ((rawKey, _) in snapshot) {
         when {
@@ -144,10 +108,10 @@ internal suspend fun cleanupOrphanedKeychainEntries(
 
     val orphanedKeyIds = mutableSetOf<String>()
 
-    // --- Scan 1: generic-password items (plain keys + SE-wrapped keys) ---
+    // Scan generic-password items (plain keys + SE-wrapped keys).
     memScoped {
-        // null value-callbacks → hold the bridged +1 across SecItemCopyMatching, then release,
-        // or every orphan-sweep probe leaks a CFString (FEEDBACK_4 H6).
+        // The dict's null value-callbacks mean it does not retain its values: hold the bridged
+        // +1 across SecItemCopyMatching, then CFRelease, or every probe leaks a CFString.
         val serviceRef = CFBridgingRetain(serviceName)
         val query = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, null, null).apply {
             CFDictionarySetValue(this, kSecClass, kSecClassGenericPassword)
@@ -166,12 +130,8 @@ internal suspend fun cleanupOrphanedKeychainEntries(
                     val dict = array.objectAtIndex(i.toULong()) as? NSDictionary ?: continue
                     val account = dict.objectForKey(kSecAttrAccount as Any) as? String ?: continue
 
-                    // Plain keys: "{prefix}.{keyId}"; SE-wrapped keys:
-                    // "se.{prefix}.{keyId}". The two prefixes are mutually
-                    // exclusive, so at most one classifier matches.
-                    // ownedKeyIds = validKeys: a named instance reaps only keys it can
-                    // prove are its own, so it never destroys a root instance's dotted key
-                    // that shares a byte-identical account (M-D). Root sweep is unaffected.
+                    // ownedKeyIds = validKeys: a named instance reaps only keys it can prove
+                    // are its own, never a root key with a byte-identical dotted account.
                     val orphan =
                         keychainOrphanKeyId(account, prefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight, ownedKeyIds = validKeys)
                             ?: keychainOrphanKeyId(account, sePrefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight, ownedKeyIds = validKeys)
@@ -181,9 +141,8 @@ internal suspend fun cleanupOrphanedKeychainEntries(
         }
     }
 
-    // --- Scan 2: kSecClassKey EC private keys (SE-held) ---
-    // Catches SE keys that exist without a matching generic-password item, e.g.
-    // when a crash happened between SE key creation and wrapped-AES-key storage.
+    // Scan SE-held kSecClassKey EC keys — catches keys left without a matching generic-password
+    // item by a crash between SE key creation and wrapped-key storage.
     memScoped {
         val query = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, null, null).apply {
             CFDictionarySetValue(this, kSecClass, kSecClassKey)
@@ -210,7 +169,7 @@ internal suspend fun cleanupOrphanedKeychainEntries(
                     }
                     val tag = tagBytes.decodeToString()
 
-                    // SE tags: "se.{prefix}.{keyId}". ownedKeyIds = validKeys (M-D, see above).
+                    // SE tags: "se.{prefix}.{keyId}". ownedKeyIds = validKeys (see above).
                     keychainOrphanKeyId(tag, sePrefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight, ownedKeyIds = validKeys)
                         ?.let { orphanedKeyIds.add(it) }
                 }
@@ -218,15 +177,11 @@ internal suspend fun cleanupOrphanedKeychainEntries(
         }
     }
 
-    // Guard: an EMPTY DataStore snapshot alongside Keychain entries scoped to *this*
-    // service + key prefix almost certainly means a partial view of storage — a failed
-    // 1.x → 2.0 path migration, a corrupt store reinitialised empty, or app data wiped
-    // while the per-device Keychain survived — not a legitimate post-clearAll state.
-    // Deleting here would destroy irrecoverable state: Secure Enclave EC private keys
-    // are gone for good once removed. KSafeCore.startBackgroundCollector waits for the
-    // first `snapshotFlow` emission before invoking this function, which covers the
-    // common path; this guard catches the cases where the snapshot is *legitimately*
-    // empty because the migration failed outright.
+    // An EMPTY DataStore snapshot alongside Keychain entries scoped to this service + prefix
+    // almost certainly means a partial view of storage (a failed 1.x → 2.0 migration, a store
+    // reinitialised empty, or app data wiped while the per-device Keychain survived), not a
+    // legitimate post-clearAll state. Deleting here would destroy irrecoverable Secure Enclave
+    // keys, so bail.
     if (snapshot.isEmpty() && orphanedKeyIds.isNotEmpty()) {
         println(
             "KSafe: Keychain orphan sweep skipped — DataStore is empty but " +
@@ -239,16 +194,11 @@ internal suspend fun cleanupOrphanedKeychainEntries(
         return
     }
 
-    // engine.deleteKey unconditionally removes the plain key, the SE-wrapped
-    // generic-password entry, and the SE EC private key for a given identifier.
-    //
-    // Re-check the live in-flight guard at DELETE time, not just at classify time
-    // (FEEDBACK_4 H-B): the sweep runs on `collectorScope` while writes run on
-    // `writeScope` (genuinely parallel on Native), so a `put` that committed
-    // ciphertext and re-used a key AFTER we classified it but BEFORE this loop
-    // would otherwise have its live key destroyed, orphaning the just-written
-    // value. A write marks its key in-flight before its commit lands, so filtering
-    // out now-in-flight ids here closes the window the classify-time check left open.
+    // Re-check the in-flight guard at DELETE time, not just at classify time: the sweep and
+    // writes run genuinely parallel on Native, so a `put` that committed ciphertext and
+    // re-used a key AFTER classify but BEFORE this loop would otherwise have its live key
+    // destroyed, orphaning the just-written value. A write marks its key in-flight before its
+    // commit lands, so filtering now-in-flight ids here closes that window.
     for (keyId in keychainOrphansToDelete(orphanedKeyIds, isInFlight)) {
         engine.deleteKeySuspend("$prefixWithDelimiter$keyId")
     }

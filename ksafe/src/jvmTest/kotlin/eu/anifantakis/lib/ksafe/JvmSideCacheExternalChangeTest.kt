@@ -10,22 +10,11 @@ import kotlin.test.assertFalse
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * FEEDBACK_4 H-F: `updateCache` is the only path that merges an EXTERNAL change
- * (another instance/process, or a direct DataStore edit). It updates the primary
- * `memoryCache` but historically never touched the secondary `plaintextCache`.
- * Under `LAZY_PLAIN_TEXT` (the DEFAULT policy) that side cache never expires, so
- * after an external write a reader kept returning the pre-change plaintext
- * forever — `getDirect`/`get` silently diverged from `getFlow`, and
- * read-your-neighbour's-write was broken.
- *
- * These tests drive `updateCache` directly (as the storage collector would) with
- * an identity engine, so the "ciphertext" carried in a snapshot deterministically
- * decrypts back to the value it encodes — letting an external write flip v1→v2.
+ * Locks in: an external change merged via updateCache (another instance/process, or a direct DataStore edit) invalidates the plaintext side cache — under the side-cache policies get/getDirect must see the external write or delete rather than keep serving the stale (or deleted) plaintext, staying consistent with getFlow.
  */
 class JvmSideCacheExternalChangeTest {
 
-    /** Identity engine: ciphertext bytes == JSON-plaintext bytes, so a snapshot's
-     *  StoredValue.Text decrypts back to exactly the value it encodes. */
+    /** Identity engine: ciphertext == plaintext bytes, so a snapshot's Text decrypts to exactly the value it encodes. */
     private class IdentityEngine : KSafeEncryption {
         override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray = data
         override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray = data
@@ -58,11 +47,10 @@ class JvmSideCacheExternalChangeTest {
         // Another instance/process overwrites k = "v2"; the collector merges it.
         runBlocking { ksafe.core.updateCache(snapshotFor("v2")) }
 
-        // The reader MUST now see the external write. Before the fix the never/slow-
-        // expiring side cache kept serving the stale "v1" indefinitely.
+        // The reader must now see the external write, not the stale side-cache "v1".
         assertEquals(
             "v2", ksafe.getDirect("k", "def"),
-            "an external write must invalidate the stale plaintext side cache (H-F, policy=$policy)",
+            "an external write must invalidate the stale plaintext side cache (policy=$policy)",
         )
 
         ksafe.close()
@@ -78,10 +66,9 @@ class JvmSideCacheExternalChangeTest {
 
     @Test
     fun externalDelete_evictsPlaintextSideCache_leavingNoLingeringSecret() {
-        // Hygiene twin of the update case: an external delete must not leave the
-        // deleted secret's plaintext lingering in the never-expiring side cache
-        // (the read itself is already safe — resolveFromCache gates on memoryCache —
-        // but a deleted secret must not survive in RAM under LAZY_PLAIN_TEXT).
+        // An external delete must also evict the deleted secret's plaintext from the never-expiring side
+        // cache — the read is already safe (resolveFromCache gates on memoryCache) but the secret must
+        // not linger in RAM under LAZY_PLAIN_TEXT.
         val ksafe = KSafe(
             fileName = JvmKSafeTest.generateUniqueFileName(),
             memoryPolicy = KSafeMemoryPolicy.LAZY_PLAIN_TEXT,
@@ -92,7 +79,6 @@ class JvmSideCacheExternalChangeTest {
         runBlocking { ksafe.core.updateCache(snapshotFor("secret")) }
         assertEquals("secret", ksafe.getDirect("k", "def")) // populate the side cache
         val sideCacheKey = KeySafeMetadataManager.legacyEncryptedRawKey("k")
-        // sanity: the side cache now holds the plaintext
         assert(ksafe.core.plaintextCache.containsKey(sideCacheKey)) { "precondition: side cache populated" }
 
         // Another instance/process deletes k → empty snapshot merged.
@@ -101,7 +87,7 @@ class JvmSideCacheExternalChangeTest {
         assertEquals("def", ksafe.getDirect("k", "def"), "a deleted key must read the default")
         assertFalse(
             ksafe.core.plaintextCache.containsKey(sideCacheKey),
-            "an external delete must evict the deleted secret's plaintext from the side cache (H-F)",
+            "an external delete must evict the deleted secret's plaintext from the side cache",
         )
 
         ksafe.close()

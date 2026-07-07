@@ -11,27 +11,22 @@ import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 /**
- * Software [JvmKeyVault] that stores AES keys Base64-encoded in a plain JSON
- * file — the fallback used (in place of [DataStoreKeyVault]) when KSafe runs on
- * the JSON-file storage backend because `sun.misc.Unsafe` is unavailable.
+ * Software [JvmKeyVault] storing AES keys Base64-encoded in a plain JSON file —
+ * the fallback used when KSafe runs on the JSON-file backend (no DataStore,
+ * whose protobuf needs `sun.misc.Unsafe`, absent on a jlink-trimmed runtime that
+ * omits `jdk.unsupported`).
  *
- * [DataStoreKeyVault] persists keys through Jetpack DataStore, whose protobuf
- * requires `sun.misc.Unsafe`; on a `jlink`-trimmed runtime that omits
- * `jdk.unsupported` it crashes. This vault avoids DataStore/protobuf entirely.
- *
- * Security is identical to [DataStoreKeyVault]: none beyond OS file permissions
- * (the key sits next to the ciphertext). It's the no-OS-store software tier, so
- * `isOsBacked = false`. The file lives in the same `0700` directory as the data.
- * Writes are atomic (temp file + `ATOMIC_MOVE`).
+ * Security: none beyond OS file permissions (the key sits next to the
+ * ciphertext), so `isOsBacked = false`. Writes are atomic (temp file +
+ * `ATOMIC_MOVE`) in the same `0700` directory as the data.
  */
 @OptIn(ExperimentalEncodingApi::class)
 internal class FileKeyVault(
     private val file: File,
     /**
-     * fsyncs the given directory so a preceding atomic rename INTO it is durable.
-     * Injectable so a test can observe that the parent-dir fsync happens after a write;
-     * production uses [fsyncDirectory]. Best-effort (a no-op on filesystems that can't
-     * open a directory as a channel, e.g. Windows).
+     * fsyncs the given directory so a preceding atomic rename into it is durable.
+     * Injectable for tests; best-effort (a no-op where a directory can't be opened
+     * as a channel, e.g. Windows).
      */
     private val syncDir: (File) -> Unit = ::fsyncDirectory,
 ) : JvmKeyVault {
@@ -44,11 +39,10 @@ internal class FileKeyVault(
 
     @Synchronized
     private fun read(): MutableMap<String, String> {
-        // A missing file genuinely means "no keys yet" — empty is correct.
+        // A missing file means "no keys yet" — empty is correct.
         if (!file.exists()) return mutableMapOf()
-        // A file that EXISTS but can't be read or parsed must surface as an error,
-        // not an empty vault: every key would look absent and the startup orphan
-        // sweep would delete still-recoverable ciphertext.
+        // But a file that EXISTS yet can't be read/parsed must throw, not read as empty:
+        // every key would look absent and the orphan sweep would delete recoverable ciphertext.
         val text = try {
             file.readText()
         } catch (e: Throwable) {
@@ -66,21 +60,15 @@ internal class FileKeyVault(
     private fun write(map: Map<String, String>) {
         val parent = file.parentFile
         if (parent != null && !parent.exists()) parent.mkdirs()
-        // Create the temp file owner-only (rw-------) ATOMICALLY where the
-        // filesystem supports POSIX permissions, so the plaintext AES key is
-        // never written into a momentarily group/world-readable file. On
-        // non-POSIX filesystems (Windows) there is no perm-on-create; the parent
-        // directory is already locked down (0700 / user ACL) — the same
-        // protection the key file itself relies on. ATOMIC_MOVE preserves the
-        // temp file's permissions onto the destination.
+        // Temp file created owner-only (rw-------) so the plaintext AES key is never briefly
+        // group/world-readable; ATOMIC_MOVE carries those perms onto the destination.
+        // Non-POSIX filesystems (Windows) rely on the 0700 parent dir instead.
         val tmp = createOwnerOnlyTempFile(parent)
         try {
-            // fsync BEFORE the atomic rename: a journaling filesystem can persist
-            // the rename metadata before the temp file's data blocks, so a crash
-            // right after the move could leave the destination zero-length. This
-            // file holds the ONLY copy of the master AES key, and a blank file is
-            // indistinguishable from "no keys yet" — the startup orphan sweep would
-            // then delete every encrypted entry.
+            // fsync the data BEFORE the rename: a journaling FS may persist the rename ahead
+            // of the temp file's blocks, leaving a zero-length destination on a crash. This
+            // holds the only copy of the master key, and a blank file reads as "no keys yet"
+            // — the orphan sweep would then delete every entry.
             java.io.FileOutputStream(tmp).use { out ->
                 out.write(json.encodeToString(ser, map).encodeToByteArray())
                 out.flush()
@@ -92,12 +80,10 @@ internal class FileKeyVault(
                 StandardCopyOption.ATOMIC_MOVE,
                 StandardCopyOption.REPLACE_EXISTING,
             )
-            // fsync the PARENT DIRECTORY so the rename (a directory-entry change) is
-            // itself durable. The data fsync above only durably persists the temp file's
-            // blocks; without also syncing the directory, a crash right after the move can
-            // lose the rename and leave the key file missing — indistinguishable from "no
-            // keys yet", which the startup orphan sweep treats as "delete every entry"
-            // (FEEDBACK_4 low: FileKeyVault no parent-dir fsync).
+            // fsync the PARENT DIRECTORY too, so the rename (a directory-entry change) is
+            // durable. The data fsync above persists only the temp file's blocks; without
+            // this, a crash after the move can lose the rename and leave the key file missing
+            // — which reads as "no keys yet" and the orphan sweep deletes every entry.
             val dir = file.absoluteFile.parentFile
             if (dir != null) syncDir(dir)
         } catch (e: Throwable) {
@@ -116,8 +102,7 @@ internal class FileKeyVault(
                 PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")),
             ).toFile()
         } catch (_: UnsupportedOperationException) {
-            // Non-POSIX filesystem (e.g. Windows): no atomic perm-on-create. The
-            // parent directory's 0700 / ACL is the protection here.
+            // Non-POSIX filesystem (Windows): no perm-on-create; the 0700 parent dir protects it.
             File.createTempFile(file.name, ".tmp", parent)
         }
     }
@@ -125,9 +110,8 @@ internal class FileKeyVault(
     private companion object {
         /**
          * Best-effort fsync of [dir] so a preceding atomic rename into it survives a crash.
-         * Opening a directory as a channel is a POSIX capability; on filesystems that don't
-         * allow it (Windows), it's swallowed — the data fsync + atomic move are the
-         * durability guarantee there.
+         * Opening a directory as a channel is POSIX-only; swallowed on Windows, where the
+         * data fsync + atomic move are the durability guarantee.
          */
         fun fsyncDirectory(dir: File) {
             runCatching {

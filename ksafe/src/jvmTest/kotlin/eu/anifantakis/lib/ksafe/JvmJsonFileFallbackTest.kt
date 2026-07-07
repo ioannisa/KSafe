@@ -23,12 +23,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Unit coverage for the JVM no-`Unsafe` fallback backends:
- * [DataStoreJsonStorage] (datastore-core + a custom JSON OkioSerializer — no
- * Preferences protobuf) and [FileKeyVault] (the software JvmKeyVault). These are
- * what KSafe selects when `sun.misc.Unsafe` (module `jdk.unsupported`) is absent.
- * The end-to-end "runs under a trimmed jlink runtime" gate is covered separately
- * (see JSONFILE_FALLBACK_PLAN.md).
+ * Locks in: the JVM no-`Unsafe` fallback backends ([DataStoreJsonStorage] and [FileKeyVault]) round-trip, persist across instances, and surface corruption instead of silently discarding data.
  */
 class JvmJsonFileFallbackTest {
 
@@ -64,8 +59,7 @@ class JvmJsonFileFallbackTest {
 
     @Test
     fun jsonStorage_flattensAllTypesToText() = runTest {
-        // Mirrors LocalStorageStorage: everything is stored/returned as Text;
-        // KSafeCore re-types primitives via the request serializer on read.
+        // Everything is stored/returned as Text; KSafeCore re-types primitives on read.
         val store = storage(File(tmp, "types.json"))
         store.applyBatch(
             listOf(
@@ -87,14 +81,12 @@ class JvmJsonFileFallbackTest {
     @Test
     fun jsonStorage_persistsAcrossInstances() = runTest {
         val file = File(tmp, "persist.json")
-        // First instance: write, then fully release the file (cancel + join its
-        // scope) so DataStore lets a second instance open the same file.
+        // Cancel + join the first scope so DataStore releases the file for a second instance.
         val scope1 = CoroutineScope(Dispatchers.IO + SupervisorJob())
         DataStoreJsonStorage(file, scope1)
             .applyBatch(listOf(StorageOp.Put("k", StoredValue.Text("v"))))
         scope1.coroutineContext[Job]!!.cancelAndJoin()
 
-        // Fresh instance on the same file must read the prior write.
         assertEquals(StoredValue.Text("v"), storage(file).snapshot()["k"])
         assertTrue(file.exists())
     }
@@ -116,10 +108,8 @@ class JvmJsonFileFallbackTest {
 
     @Test
     fun jsonStorage_corruptFile_isQuarantinedNotSilentlyDiscarded() = runTest {
-        // A non-blank but unparseable store must not read back as emptyMap() —
-        // the next write would silently overwrite recoverable bytes. It is
-        // quarantined (a .corrupt-* sibling) while the store continues empty:
-        // corruption surfaced, data preserved.
+        // Unparseable content must be quarantined to a .corrupt-* sibling, not read back
+        // as empty — an empty read would let the next write overwrite recoverable bytes.
         val file = File(tmp, "corrupt.json")
         file.writeText("{ this is not valid json")
         assertTrue(storage(file).snapshot().isEmpty())
@@ -131,7 +121,7 @@ class JvmJsonFileFallbackTest {
 
     @Test
     fun jsonStorage_blankFile_isFreshStore_notQuarantined() = runTest {
-        // A blank file is legitimately "no data yet" — empty, NOT corruption.
+        // A blank file is "no data yet" — empty, not corruption.
         val file = File(tmp, "blank.json")
         file.writeText("   ")
         assertTrue(storage(file).snapshot().isEmpty())
@@ -163,9 +153,8 @@ class JvmJsonFileFallbackTest {
 
     @Test
     fun fileKeyVault_unreadableFile_throwsRatherThanReportingEmpty() {
-        // A present-but-unparseable keys file must NOT read back as "no keys" —
-        // that would make every key look absent and let KSafe's orphan sweep
-        // delete recoverable ciphertext. Surface it instead of returning null.
+        // An unparseable keys file must not read back as "no keys" — that would let the
+        // orphan sweep delete recoverable ciphertext.
         val file = File(tmp, "corruptkeys.json")
         file.writeText("{ not valid json")
         assertFailsWith<IllegalStateException> { FileKeyVault(file).get("anything") }
@@ -173,15 +162,12 @@ class JvmJsonFileFallbackTest {
 
     @Test
     fun fileKeyVault_absentFile_isEmptyNotError() {
-        // A genuinely missing file is "no keys yet" — null, not an error.
         assertNull(FileKeyVault(File(tmp, "nope.json")).get("anything"))
     }
 
     @Test
     fun fileKeyVault_keyFileIsOwnerOnly_onPosix() {
-        // The plaintext key file must be created owner-only (rw-------) so the
-        // AES key is never written into a momentarily group/world-readable file.
-        // POSIX-only; skipped on filesystems without POSIX permissions (Windows).
+        // The key file must be created owner-only (rw-------); skipped on non-POSIX filesystems.
         val file = File(tmp, "perms.ksafe-keys.json")
         FileKeyVault(file).put("alias", ByteArray(32) { it.toByte() })
         val view = java.nio.file.Files.getFileAttributeView(

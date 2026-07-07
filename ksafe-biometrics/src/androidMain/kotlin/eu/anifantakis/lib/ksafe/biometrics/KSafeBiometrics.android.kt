@@ -10,33 +10,22 @@ import android.os.SystemClock
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
 
-/**
- * Android implementation of [KSafeBiometrics] platform helpers.
- *
- * Real `BiometricPrompt` (BIOMETRIC_STRONG + DEVICE_CREDENTIAL). Activity
- * tracking is bootstrapped automatically by [KSafeBiometricsInitProvider]
- * during process startup — no consumer init required.
- */
+// Android [KSafeBiometrics] platform helpers, backed by real `BiometricPrompt`
+// (BIOMETRIC_STRONG + DEVICE_CREDENTIAL). Activity tracking is bootstrapped by
+// [KSafeBiometricsInitProvider] at startup — no consumer init required.
 
-/**
- * Per-scope last-success timestamp. Lets verify-paths skip the platform
- * prompt when a caller-supplied [BiometricAuthorizationDuration] is still
- * valid for the given scope.
- */
+// Per-scope last-success timestamp; lets verify-paths skip the prompt while a caller-supplied
+// [BiometricAuthorizationDuration] is still valid for the scope.
 private val biometricAuthSessions = AtomicReference<Map<String, Long>>(emptyMap())
 
-// Clock for the authorization TTL. Must (a) never go backward — a wall-clock
-// jump must not extend a cached authorization — and (b) keep counting while the
-// device is asleep, or a "60s" window survives arbitrary deep sleep.
-// `System.nanoTime()` satisfies (a) but freezes during SoC suspend;
-// `SystemClock.elapsedRealtime()` (CLOCK_BOOTTIME) satisfies both.
+// TTL clock: must never go backward (a wall-clock jump mustn't extend an authorization) and
+// must keep counting during sleep (else a "60s" window survives deep sleep). nanoTime() freezes
+// on SoC suspend, so use elapsedRealtime() (CLOCK_BOOTTIME).
 private fun monotonicNowMs(): Long = SystemClock.elapsedRealtime()
 
-// Strict (biometrics-only) authorizations are cached under a separate slot so a
-// device-credential (PIN/password) success can NEVER satisfy a later
-// allowDeviceCredentialFallback = false call within the window (deep-review L3). The
-// injective strength discriminator lives in the shared BiometricAuthSession.sessionKey
-// (round-3 audit R3 — the old "$base|strict" suffix was NOT injective).
+// Strict (biometrics-only) authorizations cache under a separate slot so a device-credential
+// (PIN/password) success can never satisfy a later allowDeviceCredentialFallback = false call
+// within the window. The injective strength discriminator lives in BiometricAuthSession.sessionKey.
 private fun sessionKeyFor(rawScope: String?, allowDeviceCredentialFallback: Boolean): String =
     BiometricAuthSession.sessionKey(rawScope, requireStrict = !allowDeviceCredentialFallback)
 
@@ -64,11 +53,9 @@ internal actual suspend fun platformVerifyBiometric(
 
     return try {
         BiometricHelper.authenticate(reason, allowDeviceCredentialFallback)
-        // Only seed the cache when the caller opted into caching (duration > 0);
-        // recording an opt-out call would let a later, longer-window call reuse
-        // it without a prompt. And only if the caller's coroutine is still active — a
-        // success cached after the caller was cancelled would grant a LATER call a
-        // prompt-free pass off an authorization the caller never received (FEEDBACK_4 low).
+        // Seed the cache only when caching was opted into (duration > 0) and the caller's
+        // coroutine is still active — caching after cancellation would grant a later call a
+        // prompt-free pass off an authorization the caller never actually received.
         if (BiometricAuthSession.shouldCache(authorizationDuration)) {
             seedBiometricSessionIfActive {
                 updateBiometricSession(
@@ -85,10 +72,9 @@ internal actual suspend fun platformVerifyBiometric(
         println("KSafeBiometrics: Biometric Activity not found - ${e.message}")
         false
     } catch (e: CancellationException) {
-        // The caller's coroutine was cancelled while the prompt was in flight.
-        // Cancellation is NOT an auth failure — rethrow so structured concurrency
-        // works (otherwise a cancelled scope silently sees `false` = "denied").
-        // CancellationException is an Exception, so this MUST precede the generic catch.
+        // Cancellation is not an auth failure — rethrow so structured concurrency works
+        // (a cancelled scope must not silently see `false` = "denied"). Must precede the
+        // generic catch, since CancellationException is an Exception.
         throw e
     } catch (e: Exception) {
         println("KSafeBiometrics: Unexpected biometric error - ${e.message}")
@@ -104,9 +90,8 @@ internal actual fun platformVerifyBiometricDirect(
 ) {
     CoroutineScope(Dispatchers.Default + SupervisorJob()).launch {
         val ok = platformVerifyBiometric(reason, authorizationDuration, allowDeviceCredentialFallback)
-        // Deliver onResult on the main thread, matching the Apple implementation.
-        // The verify coroutine runs on Dispatchers.Default; a View-based consumer
-        // that touches the UI from the callback would crash otherwise.
+        // Deliver on the main thread (matching Apple): the verify coroutine runs on
+        // Dispatchers.Default, so a View-based consumer touching UI in the callback would crash.
         Handler(Looper.getMainLooper()).post { onResult(ok) }
     }
 }
@@ -116,7 +101,7 @@ internal actual fun platformClearBiometricAuth(scope: String?) {
         biometricAuthSessions.set(emptyMap())
         return
     }
-    // Clear BOTH the permissive and strict slots for this scope (see [sessionKeyFor]).
+    // Clear both the permissive and strict slots for this scope (see [sessionKeyFor]).
     val permissiveKey = sessionKeyFor(scope, allowDeviceCredentialFallback = true)
     val strictKey = sessionKeyFor(scope, allowDeviceCredentialFallback = false)
     while (true) {

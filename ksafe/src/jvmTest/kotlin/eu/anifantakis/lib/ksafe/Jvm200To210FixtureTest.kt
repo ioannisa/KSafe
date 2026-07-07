@@ -27,21 +27,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Gold-standard 2.0.0 → 2.1.0 data-survival test.
- *
- * Reads a **frozen, committed** DataStore preferences file produced in the
- * KSafe 2.0.0 on-disk layout — AES key at `ksafe_key_<alias>` (the 2.0.0 JVM
- * key location), value at `__ksafe_value_<alias>` (Base64 `IV‖ciphertext`) —
- * and proves 2.1.0 still decrypts it byte-for-byte, both when an OS secret
- * store is available (key migrates out of the file) and when it is not
- * (transparent fallback, key left in place).
- *
- * Unlike [JvmKeyVaultMigrationTest] (which synthesises the legacy state at
- * runtime), this binds against bytes checked into the repo, so a future change
- * to the key-storage format, AES-GCM framing, or migration logic that would
- * orphan real users' 2.0.0 data fails this test loudly.
- *
- * Fixture: `src/jvmTest/resources/fixtures/ksafe200.preferences_pb`.
+ * Locks in: a frozen, committed 2.0.0 on-disk DataStore still decrypts byte-for-byte under current code — both when an OS secret store is available (key migrates out of the file) and when it is not (transparent fallback, key left in place) — binding against bytes checked into the repo so a change to key storage, AES-GCM framing, or migration that would orphan real users' 2.0.0 data fails loudly.
  */
 class Jvm200To210FixtureTest {
 
@@ -105,7 +91,6 @@ class Jvm200To210FixtureTest {
             vaultProvider = JvmKeyVaultProvider(ds, forced = osVault),
         )
 
-        // The decisive assertion: frozen 2.0.0 ciphertext still decrypts.
         assertEquals(
             PLAINTEXT, String(engine.decrypt(ALIAS, ciphertext)),
             "2.0.0 ciphertext must decrypt unchanged under 2.1.0",
@@ -120,19 +105,11 @@ class Jvm200To210FixtureTest {
 
     @Test
     fun frozen2_0_0_decrypts_even_when_os_vault_holds_a_STALE_key() {
-        // 2.0.0 -> 2.1.0 data-loss guard.
-        //
-        // The OS secret store (Keychain / DPAPI / Secret Service) is global
-        // per-user and long-lived: it survives DataStore deletion, app-data
-        // clear, reinstall, and mixed 2.0/2.1 runs. So on upgrade it can
-        // already hold a DIFFERENT (stale, from a prior lifecycle) key under
-        // the same `<file>:<alias>` while the REAL legacy key still sits in
-        // the 2.0.0 DataStore. The legacy key is authoritative — it provably
-        // encrypted this ciphertext — and must NOT be shadowed by the stale
-        // OS key: trusting the OS vault first would silently reset every
-        // encrypted value to its default (plaintext values, needing no key,
-        // survive). This test binds the *frozen real 2.0.0* bytes against a
-        // pre-populated (stale) OS vault to pin the legacy-first order.
+        // The OS secret store is global per-user and long-lived, so on upgrade it can already hold a
+        // DIFFERENT (stale, from a prior lifecycle) key under the same `<file>:<alias>` while the REAL
+        // legacy key still sits in the 2.0.0 DataStore. The legacy key provably encrypted this ciphertext
+        // and must NOT be shadowed: trusting the OS vault first would silently reset every encrypted
+        // value to its default (plaintext values, needing no key, survive).
         val (ds, _) = freshDataStoreFromFixture()
         val ciphertext = storedCiphertext(ds)
 
@@ -168,8 +145,7 @@ class Jvm200To210FixtureTest {
         val (ds, _) = freshDataStoreFromFixture()
         val ciphertext = storedCiphertext(ds)
 
-        // No OS store available → provider falls back to the legacy DataStore
-        // vault; 2.0.0 data must still read and the key must stay put.
+        // No OS store → the provider falls back to the legacy DataStore vault; data must still read and the key stays put.
         System.setProperty("ksafe.jvm.keyVault", "software")
         try {
             val provider = JvmKeyVaultProvider(ds)

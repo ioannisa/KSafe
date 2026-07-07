@@ -8,31 +8,21 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 
 /**
  * Windows key vault using **DPAPI** (`CryptProtectData` / `CryptUnprotectData`)
- * via JNA's `jna-platform` [Crypt32Util].
+ * via JNA's `jna-platform` [Crypt32Util]. DPAPI only *wraps* data: the key is
+ * encrypted under the current user's login credentials, then the opaque blob is
+ * Base64-encoded and persisted in the DataStore file under `ksafe_dpapi_`.
  *
- * DPAPI only *wraps* data — it does not store it. The key is therefore:
- * 1. Encrypted with a key derived from the current user's Windows login
- *    credentials (current-user scope, the [Crypt32Util] default).
- * 2. The resulting opaque blob is Base64-encoded and persisted in the
- *    DataStore file under the `ksafe_dpapi_` prefix.
- *
- * Storing the wrapped blob in a file is safe: it is cryptographically useless
- * to anyone who is not logged in as this Windows user. This defeats offline
- * disk theft, backups and other-user access — the things the legacy
- * plaintext-in-file scheme did not.
- *
- * It does **not** defend against code running as the same user while logged in
- * (DPAPI will transparently unprotect for any such process) — that requires the
- * opt-in passphrase mode, out of scope here.
+ * Storing the wrapped blob is safe — it's useless to anyone not logged in as
+ * this Windows user, defeating offline disk theft and other-user access. It does
+ * NOT defend against code running as the same logged-in user (DPAPI unprotects
+ * transparently); that needs the opt-in passphrase mode, out of scope here.
  */
 internal class WindowsDpapiKeyVault(
     dataStore: DataStore<Preferences>,
     /**
      * App-isolation namespace folded into the wrapped-blob key prefix
-     * (`ksafe_dpapi_<ns>_`) so different apps sharing a DataStore directory
-     * don't collide. Blank = the historical un-namespaced prefix. This is the
-     * DPAPI *destination*, not the frozen legacy `ksafe_key_` migration
-     * source, so namespacing it is migration-safe.
+     * (`ksafe_dpapi_<ns>_`) so apps sharing a DataStore directory don't collide.
+     * Blank = the historical un-namespaced prefix.
      */
     appNamespace: String = "",
 ) : JvmKeyVault {
@@ -49,11 +39,10 @@ internal class WindowsDpapiKeyVault(
     override fun get(alias: String): ByteArray? {
         // No stored blob = genuine miss (null), safe for the orphan sweep / migration.
         val wrapped = store.getString(alias) ?: return null
-        // A blob that can no longer be unprotected (Windows password reset, profile
-        // copied to another machine) is NOT a miss — throw the "key vault unavailable"
-        // contract so encrypted reads fall back to defaults and the orphan sweep leaves
-        // the still-recoverable ciphertext intact, and writes fail closed rather than
-        // minting a divergent key.
+        // A blob that can no longer be unprotected (password reset, profile copied to
+        // another machine) is NOT a miss — throw the "key vault unavailable" contract so
+        // reads fall back to defaults, the orphan sweep leaves the recoverable ciphertext
+        // intact, and writes fail closed instead of minting a divergent key.
         return try {
             Crypt32Util.cryptUnprotectData(Base64.decode(wrapped))
         } catch (e: Throwable) {

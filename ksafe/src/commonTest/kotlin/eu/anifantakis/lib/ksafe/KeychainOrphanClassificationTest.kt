@@ -8,29 +8,26 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Unit tests for the Apple orphan sweep's classification step
- * ([keychainOrphanKeyId]). Misclassifying a reserved master entry as an orphan
- * destroys the key for all DEFAULT data, so the decision must be exact.
- *
- * The surrounding sweep is pure Keychain I/O that a sandboxed/simulator unit
- * test can't exercise (the iOS simulator returns `errSecNotAvailable` for a bare
- * test binary), so the decision is tested directly here, on every platform.
+ * Locks in: the Apple orphan sweep's classification step ([keychainOrphanKeyId] /
+ * [keychainOrphansToDelete]) — an exact decision tested directly on every platform because
+ * misclassifying a reserved master entry destroys the key for all DEFAULT data, and the
+ * surrounding sweep is Keychain I/O a sandboxed/simulator unit test can't exercise.
  */
 class KeychainOrphanClassificationTest {
 
     // fileName = "vault" → these are the per-instance account prefixes.
     private val prefix = "eu.anifantakis.ksafe.vault."
     private val sePrefix = "se.eu.anifantakis.ksafe.vault."
-    // fileName = null (the root/default instance) → these prefixes. A named instance
-    // reaps ONLY keys it provably owns (M-D), so the "an unknown key is reaped" semantics
-    // are exercised against the ROOT sweep, which the M-D guard leaves unchanged.
+    // fileName = null (the root/default instance) → these prefixes. A named instance reaps ONLY
+    // keys it provably owns, so the "an unknown key is reaped" semantics are exercised against the
+    // ROOT sweep, which the owned-key guard leaves unchanged.
     private val rootPrefix = "eu.anifantakis.ksafe."
     private val rootSePrefix = "se.eu.anifantakis.ksafe."
     private val masters = setOf("__ksafe_master__", "__ksafe_master_locked__")
 
     @Test
     fun reservedMasterSentinelIsNeverAnOrphan() {
-        // The v2 master rides every DEFAULT value, so it is never in validKeys;
+        // The master rides every DEFAULT value, so it is never in validKeys;
         // being reserved is what keeps it out of orphan classification.
         assertNull(
             keychainOrphanKeyId("${prefix}__ksafe_master__", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters),
@@ -46,7 +43,7 @@ class KeychainOrphanClassificationTest {
     fun masterSentinelWouldBeDeletedWithoutReservation() {
         // With no reservation the master (never a user key) classifies as an orphan
         // and would be deleted, losing all DEFAULT data — the reservation is required.
-        // Exercised on the ROOT sweep, where the M-D owned-key guard does not apply.
+        // Exercised on the ROOT sweep, where the owned-key guard does not apply.
         assertEquals(
             "__ksafe_master__",
             keychainOrphanKeyId("${rootPrefix}__ksafe_master__", rootPrefix, fileName = null, validKeys = setOf("token"), reservedKeyIds = emptySet()),
@@ -57,7 +54,7 @@ class KeychainOrphanClassificationTest {
     @Test
     fun liveUserKeyIsNotAnOrphan() {
         // A named instance's own live key is in ownedKeyIds (= validKeys), so it passes the
-        // M-D guard and is then preserved by the validKeys check.
+        // owned-key guard and is then preserved by the validKeys check.
         assertNull(
             keychainOrphanKeyId("${prefix}token", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters, ownedKeyIds = setOf("token")),
             "a key with a live DataStore counterpart must be preserved",
@@ -66,8 +63,8 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun unknownUserKeyIsAnOrphan_forTheRootSweep() {
-        // The ROOT sweep still reaps a per-entry key with no DataStore counterpart. (A
-        // NAMED instance no longer does — see namedInstanceDoesNotReapAnUnprovableKey.)
+        // The ROOT sweep reaps a per-entry key with no DataStore counterpart. (A NAMED
+        // instance does not — see namedInstanceDoesNotReapAnUnprovableKey.)
         assertEquals(
             "ghost",
             keychainOrphanKeyId("${rootPrefix}ghost", rootPrefix, fileName = null, validKeys = setOf("token"), reservedKeyIds = masters),
@@ -96,39 +93,39 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun namedInstanceSweepDoesNotReapRootInstanceDottedKey() {
-        // FEEDBACK_4 M-D: a root instance stored userKey "vault.token" → account
-        // "eu.anifantakis.ksafe.vault.token", byte-identical to named-instance "vault"'s
-        // userKey "token". The named "vault" sweep must NOT reap it (it can't prove
-        // ownership) — reaping would destroy the root instance's live HARDWARE key.
+        // A root instance stored userKey "vault.token" → account "eu.anifantakis.ksafe.vault.token",
+        // byte-identical to named-instance "vault"'s userKey "token". The named "vault" sweep must
+        // NOT reap it (it can't prove ownership) — reaping would destroy the root instance's live
+        // HARDWARE key.
         assertNull(
             keychainOrphanKeyId(
                 "eu.anifantakis.ksafe.vault.token", prefix, fileName = "vault",
                 validKeys = emptySet(), reservedKeyIds = masters, ownedKeyIds = emptySet(),
             ),
-            "a named sweep must NOT reap a root instance's dotted key that collides with its scope (M-D)",
+            "a named sweep must NOT reap a root instance's dotted key that collides with its scope",
         )
     }
 
     @Test
     fun namedInstanceDoesNotReapAnUnprovableKey() {
-        // The M-D contract: a named instance reaps ONLY keys it provably owns (ownedKeyIds).
+        // The contract: a named instance reaps ONLY keys it provably owns (ownedKeyIds).
         // A cross-session orphan it can't prove is its own is left as harmless clutter.
         assertNull(
             keychainOrphanKeyId("${prefix}ghost", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters, ownedKeyIds = setOf("token")),
-            "a named instance must not reap a key it can't prove it owns (M-D)",
+            "a named instance must not reap a key it can't prove it owns",
         )
     }
 
     @Test
     fun orphanClassifiedThenReusedByConcurrentWrite_isNotDeleted() {
-        // FEEDBACK_4 H-B: the sweep classifies on a frozen snapshot, then deletes on
-        // the same pass while writes run in parallel on Native. A key can be a genuine
-        // orphan at classify time (no valid entry, not in flight) yet be re-used by a
-        // concurrent put BEFORE the delete lands. The delete-time re-check must drop it.
+        // The sweep classifies on a frozen snapshot, then deletes on the same pass while writes
+        // run in parallel on Native. A key can be a genuine orphan at classify time (no valid
+        // entry, not in flight) yet be re-used by a concurrent put BEFORE the delete lands — the
+        // delete-time re-check must drop it.
         val classified = keychainOrphanKeyId(
             "${prefix}ghost", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters,
             isInFlight = { false }, // classify time: not yet in flight → orphan
-            ownedKeyIds = setOf("ghost"), // provably owned so the M-D guard passes (H-B is about the delete-time recheck)
+            ownedKeyIds = setOf("ghost"), // provably owned so the owned-key guard passes; this test targets the delete-time recheck
         )
         assertEquals("ghost", classified, "precondition: 'ghost' classifies as an orphan")
 
@@ -136,7 +133,7 @@ class KeychainOrphanClassificationTest {
         val toDelete = keychainOrphansToDelete(setOf(classified!!), isInFlight = { it == "ghost" })
         assertTrue(
             toDelete.isEmpty(),
-            "a key re-used by a concurrent write after classification must NOT be deleted (H-B)",
+            "a key re-used by a concurrent write after classification must NOT be deleted",
         )
     }
 

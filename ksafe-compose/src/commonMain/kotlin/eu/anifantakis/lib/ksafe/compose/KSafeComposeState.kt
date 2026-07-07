@@ -21,17 +21,10 @@ import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
 
 /**
- * A property delegate that manages a persisted mutable state for KSafe in Jetpack Compose.
+ * A KSafe-persisted Compose [MutableState]: writes go through [valueSaver].
  *
- * The initial value is loaded by the provider function. Subsequent changes
- * to the state are persisted back using a saver function provided by the delegate provider.
- *
- * @param T The type of the state value.
- * @param initialValue The value pre-loaded from KSafe by the delegate provider.
- * @param valueSaver A lambda function that takes the new value of type T and persists it.
- * @param policy The [SnapshotMutationPolicy] used by Compose to decide whether two values are equivalent.
- * KSafe uses the same policy gate before persisting:
- * persistence happens only when `!policy.equivalent(oldValue, newValue)`.
+ * @param policy Gates both recomposition and persistence — a value is persisted
+ * only when `!policy.equivalent(oldValue, newValue)`.
  */
 class KSafeComposeState<T>(
     initialValue: T,
@@ -41,37 +34,20 @@ class KSafeComposeState<T>(
 
     private var _internalState: MutableState<T> = mutableStateOf(initialValue, policy)
 
-    // Latched while the user's latest write through this state is still
-    // propagating to disk: stale flow emissions must not revert it. The
-    // live-observe path clears it once the flow has caught up with the
-    // written value, so external changes resume reflecting.
-    //
-    // @Volatile: the cold-start self-heal runs on a background coroutine while
-    // the setter runs on the caller's thread — without it the heal could miss
-    // the setter's write and overwrite the user's value with the persisted
-    // default. (JVM/Native volatile; a no-op on single-threaded JS/Wasm.)
+    // Write-echo guard: latched while the user's latest write propagates to disk so
+    // stale flow emissions cannot revert it; the live-observe path clears it once the
+    // flow catches up. @Volatile: the self-heal coroutine races the setter's thread.
     @Volatile
     private var awaitingWriteEcho = false
 
-    // The user's latest written value, compared against flow emissions to detect
-    // the echo. Written BEFORE the flag is raised so a concurrent observer that
-    // sees the flag also sees the fresh value.
+    // The user's latest write, matched against emissions to detect the echo. Written
+    // before the flag is raised so an observer that sees the flag also sees the value.
     @Volatile
     private var lastUserWrite: T? = null
 
-    // The value last known in sync with storage — what a stale/older emission carries.
-    // The echo guard must be held ONLY while the written value diverges from this; a
-    // write that nets back to it (an A→B→A toggle within one coalescing window) never
-    // produces a distinct echo, so an unconditional latch would suppress external
-    // observation forever (deep-review M2). Seeded from the initial value; updated
-    // whenever an external emission or the echo brings the state back in sync.
-    //
-    // KNOWN LIMITATION (round-3 audit R7, accepted): if an intermediate value in an
-    // A→B→A sequence reached disk in a SEPARATE batch, a stale snapshot of it can briefly
-    // revert the state after the net-zero write clears the guard, until the follow-up
-    // snapshot restores it — a self-correcting flicker, never data loss. Accepted because
-    // the alternative (permanent latch) is the worse M2 bug; a full fix needs an
-    // epoch-tagged observer. See KSafeMutableStateFlow in KSafeDelegate.kt for detail.
+    // Baseline last known in sync with storage. The guard is held only while the written
+    // value diverges from it: a write netting back to the baseline never produces a
+    // distinct echo, so latching on it would suppress external changes forever.
     @Volatile
     private var syncedValue: T? = initialValue
 
@@ -81,45 +57,33 @@ class KSafeComposeState<T>(
         }
         set(newValue) {
             val oldValueToCompare = _internalState.value
-            // Persist only if the value has changed according to the policy.
             if (!policy.equivalent(oldValueToCompare, newValue)) {
-                // Arm the write-echo guard BEFORE publishing to _internalState (FEEDBACK_4 H7):
-                // a concurrent cold-start self-heal (updateFromStorage) checks the guard then
-                // writes, so publishing our value first — while the flag is still clear — lets
-                // the heal clobber it with the stale persisted value, with no later emission to
-                // correct it (a one-shot path). Arming first means the heal either sees the flag
-                // and skips, or its post-write re-check catches the race.
+                // Arm the guard before publishing: a concurrent one-shot self-heal either
+                // sees the flag and skips, or catches it in its post-publish re-check.
                 lastUserWrite = newValue
+                // Latch only on genuine divergence from the synced baseline.
                 @Suppress("UNCHECKED_CAST")
-                // Guard only a genuine divergence from storage; a write that returns to
-                // the synced value will never echo, so don't hold the latch for it.
                 awaitingWriteEcho = !policy.equivalent(newValue, syncedValue as T)
                 _internalState.value = newValue
                 valueSaver(newValue)
             } else {
-                // Policy-equal: no divergence to guard, no persistence — still publish so Compose
-                // sees the assignment (it treats a policy-equal write as a no-op).
+                // Policy-equal: publish without persisting (Compose treats it as a no-op).
                 _internalState.value = newValue
             }
         }
 
     /**
-     * Updates the state from storage without triggering persistence — the
-     * one-shot cold-start self-heal path (e.g. WASM WebCrypto decryption
-     * completing after the initial synchronous read returned the default).
-     * Skipped if the user has already written a value; unlike the live-observe
-     * path this never clears the guard, so a user write keeps it up for good.
+     * One-shot cold-start self-heal: applies a value read from storage without
+     * persisting (e.g. async decryption finishing after the initial read returned
+     * the default). Skipped once a user write is pending; never clears the guard.
      */
     @PublishedApi internal fun updateFromStorage(newValue: T) {
         if (!awaitingWriteEcho) {
             betweenCheckAndPublishForTest?.invoke()
             _internalState.value = newValue
-            // Re-check for a user write that raced in and armed the guard between the outer
-            // check and this publish (FEEDBACK_4 H7): this one-shot cold-start path has no later
-            // emission to self-heal (unlike updateFromFlow), so a clobber would be PERMANENT.
-            // Re-apply the user's value; the setter arms the guard before publishing its value,
-            // so an armed flag here means a user write happened and lastUserWrite holds it. In the
-            // non-raced case the flag is still clear and this simply commits the synced baseline.
+            // Re-check after publishing: the setter arms the guard before it publishes, so
+            // an armed flag here means a user write raced into this window — re-apply it
+            // (this one-shot path has no later emission to correct a clobber).
             @Suppress("UNCHECKED_CAST")
             if (awaitingWriteEcho) {
                 _internalState.value = lastUserWrite as T
@@ -130,29 +94,17 @@ class KSafeComposeState<T>(
     }
 
     /**
-     * Test-only (FEEDBACK_4 H7): invoked inside [updateFromStorage] between the guard check and
-     * the publish, so a test can deterministically race a user write into that window and verify
-     * the one-shot self-heal re-applies it instead of clobbering it. Null in production.
+     * Test-only: runs between the guard check and the publish in [updateFromStorage],
+     * letting tests race a user write into that window. Null in production.
      */
     @PublishedApi internal var betweenCheckAndPublishForTest: (() -> Unit)? = null
 
     /**
-     * Updates the state from a live flow emission without triggering persistence.
-     * Used for continuous flow observation when a [CoroutineScope] is provided.
-     *
-     * Suppressed while the user's own write is propagating to disk: the observed
-     * flow is derived from disk snapshots and lags an optimistic write, so an
-     * emission from before the commit carries an older value — applying it would
-     * revert the visible state mid-gesture (in a `TextField`, dropping typed
-     * characters).
-     *
-     * The suppression is precise, not permanent: once an emission
-     * [policy]-equivalent to the user's last-written value arrives, the latch
-     * clears and genuinely newer external changes reflect again. Conservatively,
-     * the state keeps the user's value when no echo can ever match: a write
-     * whose batch fails never echoes, and a policy that never equates distinct
-     * instances (`neverEqualPolicy`, or `referentialEqualityPolicy` against a
-     * deserialized round-trip) never matches — both keep suppression in place.
+     * Applies a live flow emission without persisting. Suppressed while the user's own
+     * write propagates to disk: the disk-derived flow lags an optimistic write, so an
+     * older emission would revert the visible state. The latch clears once a
+     * [policy]-equivalent echo arrives, and stays latched if no echo can ever match
+     * (failed write, or a policy that never equates distinct instances).
      */
     @PublishedApi internal fun updateFromFlow(newValue: T) {
         if (!awaitingWriteEcho) {
@@ -162,15 +114,10 @@ class KSafeComposeState<T>(
         }
         @Suppress("UNCHECKED_CAST")
         if (policy.equivalent(newValue, lastUserWrite as T)) {
-            // The echo of the user's own write: consume it and resume external-change
-            // reflection. Re-apply the echoed value too (FEEDBACK_4 M-F): the guard
-            // check-then-apply in [updateFromFlow] is not atomic against the setter, so a
-            // stale emission that read `awaitingWriteEcho == false` before the setter armed
-            // it can clobber the visible state to the pre-write value AFTER the setter ran.
-            // The source flow is distinctUntilChanged, so the user's value is never
-            // re-emitted — without this the state would stay stuck on the stale value.
-            // In the non-raced case this writes a policy-equal value, which Compose treats
-            // as a no-op (no recomposition, no persistence) — so it only ever heals the race.
+            // Echo of the user's own write: consume it and resume external reflection.
+            // Re-apply the value — a stale emission that read the guard as clear may have
+            // clobbered it after the setter published, and nothing else re-emits this
+            // value (policy-equal in the non-raced case, so a Compose no-op).
             _internalState.value = newValue
             awaitingWriteEcho = false
             syncedValue = newValue
@@ -178,10 +125,8 @@ class KSafeComposeState<T>(
     }
 
     /**
-     * Test-only: simulates the M-F race where a stale observer emission clobbers the
-     * visible value AFTER the setter armed the echo guard (the check-then-apply in
-     * [updateFromFlow] is not atomic against the setter). Lets a deterministic test
-     * verify that the user-write echo self-heals the clobbered value.
+     * Test-only: simulates a stale observer emission clobbering the visible value after
+     * the setter armed the guard, so tests can verify the echo self-heals it.
      */
     @PublishedApi internal fun simulateStaleClobberForTest(staleValue: T) {
         _internalState.value = staleValue
@@ -200,37 +145,20 @@ class KSafeComposeState<T>(
 }
 
 /**
- * Default timeout for the cold-start self-heal one-shot observation.
- *
- * On platforms with async cache loading (WASM WebCrypto), `getDirect` may
- * return the default before decryption completes. The self-heal observer
- * waits up to this duration for `getFlow().first()` to deliver the persisted
- * value, then calls [KSafeComposeState.updateFromStorage].
+ * How long the cold-start self-heal waits for `getFlow().first()` to deliver the
+ * persisted value on platforms where the initial synchronous read can return the
+ * default (e.g. WASM WebCrypto decrypting asynchronously).
  */
 @PublishedApi
 internal const val SELF_HEAL_TIMEOUT_MS: Long = 5_000L
 
 /**
- * Single source of truth for the persistent-state observation lifecycle.
- *
- * Two modes — selected by [observeExternalChanges]:
- *  - `true` → indefinite [Flow.collect], each emission propagated via
- *    [KSafeComposeState.updateFromFlow] (which respects the user-write guard:
- *    stale echoes are suppressed while the user's own write propagates, and
- *    reflection of external changes resumes once the flow catches up).
- *  - `false` + [coldStart] → one-shot `flow.first()` with a [selfHealTimeoutMs]
- *    deadline, propagated via [KSafeComposeState.updateFromStorage] (respects
- *    the user-write guard so a pending self-heal cannot clobber a value the
- *    user has since set).
- *  - `false` + warm cache → returns immediately. No observation needed.
- *
- * Designed as a `suspend fun` so the caller picks the launching scope:
- *  - `mutableStateOf` (property-delegate path) launches it on the user-supplied
- *    `scope` when present, else on a detached fallback.
- *  - `rememberKSafeState` runs it inside a `LaunchedEffect`, where the implicit
- *    coroutine is owned by the composition. Leaving the composition cancels
- *    the observation; changing `key` or `observeExternalChanges` cancels and
- *    re-launches automatically.
+ * Observation lifecycle shared by [mutableStateOf] and [rememberKSafeState]: with
+ * [observeExternalChanges] it collects the flow indefinitely via
+ * [KSafeComposeState.updateFromFlow]; otherwise a [coldStart] takes the first
+ * emission within [selfHealTimeoutMs] via [KSafeComposeState.updateFromStorage];
+ * a warm start is a no-op. A `suspend fun` so the caller owns the scope
+ * (user-supplied scope or a composition's `LaunchedEffect`).
  */
 @PublishedApi
 internal suspend fun <T> KSafeComposeState<T>.observeFromStorage(
@@ -248,20 +176,11 @@ internal suspend fun <T> KSafeComposeState<T>.observeFromStorage(
 
 
 /**
- * Creates a Jetpack Compose [MutableState] persisted by KSafe using default Compose equality.
+ * Creates a KSafe-persisted Compose [MutableState] using [structuralEqualityPolicy].
  *
- * This is the simple overload. It uses [structuralEqualityPolicy], which is correct for most use
- * cases, and keeps call sites uncluttered.
- *
- * @param T The type of the state value.
- * @param defaultValue The default value if no value is found in KSafe.
- * @param key Optional explicit key for storing the value. If null, the property name is used.
- * @param mode Write mode. Defaults to encrypted/default.
- * @param scope Optional [CoroutineScope] for continuous flow observation. When provided,
- * the state automatically updates when the stored value changes externally (e.g., from
- * another screen or a background `put` call). While one of this state's own writes is
- * still propagating to disk, lagging emissions are suppressed (they would revert it);
- * external reflection resumes once the observed flow catches up with the written value.
+ * @param key Storage key; the property name when null.
+ * @param scope When provided, external changes to the stored value propagate into the
+ * state; stale emissions are suppressed while this state's own write is in flight.
  */
 inline fun <reified T> KSafe.mutableStateOf(
     defaultValue: T,
@@ -278,63 +197,18 @@ inline fun <reified T> KSafe.mutableStateOf(
     )
 
 /**
- * Creates a Jetpack Compose [MutableState] that is persisted using KSafe.
+ * Creates a KSafe-persisted Compose [MutableState] for class/ViewModel properties:
+ * initialized from storage when the delegate is created, changes persisted back.
  *
- * The state is initialized from KSafe when the delegate is created. Changes are
- * automatically persisted back. This function calls KSafe's `inline reified T`
- * [KSafe.getDirect] and [KSafe.putDirect] methods safely.
+ * Do not call in a `@Composable` body — it is not `remember`-wrapped; use
+ * [rememberKSafeState] there.
  *
- * **Usage — ViewModel / class properties only.** This delegate is created once
- * and lives for the owner's lifetime:
- * ```kotlin
- * class MyViewModel(ksafe: KSafe) : ViewModel() {
- *     var username by ksafe.mutableStateOf("Guest")
- *     var counter  by ksafe.mutableStateOf(0, key = "my_counter")
- *     var settings by ksafe.mutableStateOf(Settings(), mode = KSafeWriteMode.Plain)
- *     var secret   by ksafe.mutableStateOf(
- *         "",
- *         mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED),
- *     )
- * }
- * ```
- *
- * ⚠️ **Do not call this in a `@Composable` function body.** It is not
- * `remember`-wrapped, so each recomposition would re-create the state — re-reading
- * storage and discarding in-progress edits — and, on a cold-start key, launch a
- * background `CoroutineScope` not tied to the composition. For composable-body
- * state use [rememberKSafeState], which is `remember`-scoped and
- * `LaunchedEffect`-driven.
- *
- * **For biometric protection**, use [KSafe.verifyBiometric] or [KSafe.verifyBiometricDirect]
- * before modifying the value:
- * ```kotlin
- * ksafe.verifyBiometricDirect("Authenticate to save") { success ->
- *     if (success) {
- *         counter++
- *     }
- * }
- * ```
- *
- * @param T The type of the state value.
- * @param defaultValue The default value if no value is found in KSafe.
- * @param key Optional explicit key for storing the value. If null, the property name is used.
- * @param mode Write mode. Defaults to encrypted/default.
- * @param scope Optional [CoroutineScope] for continuous flow observation. When provided,
- * the state automatically updates when the stored value changes externally (e.g., from
- * another screen or a background `put` call). While one of this state's own writes is
- * still propagating to disk, lagging emissions are suppressed (they would revert it);
- * external reflection resumes once the observed flow catches up with the written value.
- * When null, only the WASM self-healing one-shot observation is used.
- * @param policy The [SnapshotMutationPolicy] for Compose state equality.
- * It affects both recomposition and persistence behavior.
- *
- * Common choices:
- * - [structuralEqualityPolicy] (default): treats values as unchanged when `old == new`.
- * - `referentialEqualityPolicy()`: treats values as unchanged only when `old === new`.
- * - `neverEqualPolicy()`: always treats assignment as a change.
- *
- * KSafe persists only when the policy says the value changed.
- * @return A [PropertyDelegateProvider] ensuring this is used with `by` delegation.
+ * @param key Storage key; the property name when null.
+ * @param scope When provided, external changes to the stored value propagate into the
+ * state; stale emissions are suppressed while this state's own write is in flight.
+ * When null, only the one-shot cold-start self-heal runs.
+ * @param policy Gates both recomposition and persistence: KSafe persists only when
+ * `!policy.equivalent(old, new)`.
  */
 inline fun <reified T> KSafe.mutableStateOf(
     defaultValue: T,
@@ -343,13 +217,11 @@ inline fun <reified T> KSafe.mutableStateOf(
     scope: CoroutineScope? = null,
     policy: SnapshotMutationPolicy<T>
 ): PropertyDelegateProvider<Any?, ReadWriteProperty<Any?, T>> {
-    // 'this' is the KSafe instance
     val ksafe = this
 
     return PropertyDelegateProvider { _, property ->
         val actualKey = key ?: property.name
 
-        // Load initial value from storage
         val initialValue = ksafe.getDirect<T>(actualKey, defaultValue)
 
         val saver: (newValue: T) -> Unit = { newValueToSave ->
@@ -368,9 +240,7 @@ inline fun <reified T> KSafe.mutableStateOf(
 
         val coldStart = (initialValue == defaultValue)
         if (scope != null || coldStart) {
-            // A caller-supplied scope is honored for both live observation and
-            // the cold-start self-heal; the detached fallback is used only when
-            // no scope was provided AND the cache started cold.
+            // Detached fallback scope only when no scope was supplied and the cache started cold.
             val healScope = scope ?: CoroutineScope(Dispatchers.Default)
             healScope.launch {
                 composeState.observeFromStorage(
@@ -414,65 +284,21 @@ inline fun <reified T> KSafe.mutableStateOf(
 ): PropertyDelegateProvider<Any?, ReadWriteProperty<Any?, T>> =
     mutableStateOf(defaultValue, key, mode = if (encrypted) KSafeWriteMode.Encrypted() else KSafeWriteMode.Plain, policy = policy)
 
-// ── Composable-scoped state ─────────────────────────────────────────────────
-
 /**
- * Composable-scoped persistent state — the [androidx.compose.runtime.saveable.rememberSaveable]
- * analogue for KSafe.
+ * Composable-scoped persistent state — the `rememberSaveable` analogue for KSafe,
+ * surviving app restarts on every supported target.
  *
- * Returns a property-delegate provider that, when used with `by` inside a
- * `@Composable` function body, materialises a [MutableState] backed by KSafe
- * storage. The state survives recomposition via [remember] and is tied to the
- * composition's lifecycle. Reads and writes complete synchronously through
- * KSafe's hot cache; the underlying disk write is coalesced and batched.
+ * Use with `by` inside a `@Composable` body: the state is `remember`ed and its
+ * storage observation runs in a [LaunchedEffect], so leaving the composition
+ * cancels it. Defaults to [KSafeWriteMode.Plain] since Compose state is
+ * typically UI ephemera.
  *
- * ## API shape
- * The factory itself is **not** `@Composable` — it just builds a provider.
- * The provider's `provideDelegate` IS `@Composable`, which is why this
- * function must be used with `by` inside a composable body, and why the
- * property name can be reflected as the storage key when [key] is omitted
- * (mirroring [mutableStateOf]).
- *
- * ## Differences from the [mutableStateOf] property delegate
- *  - **Composable-scoped lifetime.** Self-heal and (optional) live observation
- *    run on the [LaunchedEffect] coroutine, so leaving the composition cancels
- *    them automatically. No detached coroutines are spawned, which makes this
- *    helper safe to call at recomposition rate.
- *  - **Plain by default.** Compose state is typically UI ephemera (selected
- *    tab, scroll position) where encryption is overkill. Pass
- *    `mode = KSafeWriteMode.Encrypted(...)` to opt in.
- *
- * ## vs. `rememberSaveable`
- *  - `rememberSaveable` survives configuration changes and (via the saveable
- *    state registry) process death for [Bundle][android.os.Bundle]-friendly
- *    types on Android. State is cleared on cold app launch.
- *  - `rememberKSafeState` survives **app restarts**, on every supported target
- *    (Android, iOS, JVM, Web), with optional encryption.
- *
- * ## Example
- * ```kotlin
- * @Composable
- * fun TabbedScreen(ksafe: KSafe) {
- *     // Auto-key — storage key resolves to the property name "currentTab".
- *     var currentTab by ksafe.rememberKSafeState(Tab.Home)
- *
- *     // Explicit key — useful for namespaced or non-property-name keys.
- *     var draft by ksafe.rememberKSafeState("", key = "screen.draft")
- * }
- * ```
- *
- * @param defaultValue Returned when the key is absent at first composition.
- * @param key Storage key. Optional — when omitted the property name from the
- *   `by` declaration is used (matching [mutableStateOf]).
- * @param mode Write mode. Defaults to [KSafeWriteMode.Plain].
- * @param observeExternalChanges When `true`, external writes to the key (from
- *   another screen, ViewModel, or KSafe instance) propagate into this state.
- *   While one of this state's own writes is still propagating to disk, lagging
- *   emissions are suppressed (they would revert it); external reflection
- *   resumes once the observed flow catches up with the written value.
- *   When `false` (default), only a one-shot cold-start self-heal runs.
- * @param policy Snapshot mutation policy. Affects both recomposition and
- *   persistence — KSafe persists only when `!policy.equivalent(old, new)`.
+ * @param key Storage key; the property name when omitted.
+ * @param observeExternalChanges When `true`, external writes to the key propagate
+ *   into this state; stale emissions are suppressed while this state's own write
+ *   is in flight. When `false` (default), only a one-shot cold-start self-heal runs.
+ * @param policy Gates both recomposition and persistence: KSafe persists only
+ *   when `!policy.equivalent(old, new)`.
  */
 inline fun <reified T> KSafe.rememberKSafeState(
     defaultValue: T,

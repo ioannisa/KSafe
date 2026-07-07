@@ -10,17 +10,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * On JVM, an explicitly-set `appNamespace` must isolate the DATA FILE
- * (per-namespace subdirectory), not just the OS-vault keys — so two apps
- * sharing a `fileName` on one OS account can't clobber a single file, and one
- * app's `clearAll()` can't wipe another's data. Apps that don't set
- * `appNamespace` keep the historical un-namespaced path. Existing
- * un-namespaced data is migrated (copied) into the subdir on first run with a
- * namespace.
- *
- * Uses a temp `baseDir` + `FakeEncryption` so nothing touches the real
- * `~/.eu_anifantakis_ksafe` or the OS keychain; the tests exercise the
- * FILE-path isolation.
+ * Locks in: on JVM an explicit appNamespace isolates the DATA FILE into a per-namespace subdirectory (no cross-app clobber or cross-wipe), while no namespace keeps the historical un-namespaced path and existing un-namespaced data is COPIED forward on the first namespaced run.
  */
 class JvmAppNamespaceFileIsolationTest {
 
@@ -86,7 +76,7 @@ class JvmAppNamespaceFileIsolationTest {
             "existing un-namespaced data must be migrated into the namespace subdir",
         )
         assertTrue(File(tmp, "appx/$pbName").exists(), "migrated copy must exist in the subdir")
-        // COPY, not move: the original is left in place (so a second app can't lose it).
+        // COPY, not move: the original is left in place so a second app can't lose it.
         assertTrue(File(tmp, pbName).exists(), "migration must COPY, leaving the original")
         migrated.close()
     }

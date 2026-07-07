@@ -6,12 +6,11 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * FEEDBACK_4 FB3-M4: [AppleKeychainEncryption.updateKeyAccessibility] fired three
- * `SecItemUpdate` IPC round-trips on EVERY HARDWARE_ISOLATED write. Those are only
- * needed on an actual policy change; a same-policy rewrite (the common case) is pure
- * overhead. The guard skips the IPC when the target policy equals the last one applied
- * this process. The live SecItemUpdate can't run in a sandboxed test, so the pure guard
- * decision is verified here.
+ * Locks in: [AppleKeychainEncryption.updateKeyAccessibility] skips the `SecItemUpdate`
+ * IPC when the target accessibility policy equals the last one applied this process.
+ *
+ * The live SecItemUpdate can't run in a sandboxed test, so the pure guard decision is
+ * verified here.
  */
 class MacosAccessibilityUpdateGuardTest {
 
@@ -21,7 +20,7 @@ class MacosAccessibilityUpdateGuardTest {
         assertTrue(accessibilityUpdateNeeded(lastApplied = null, target = true))
         assertTrue(accessibilityUpdateNeeded(lastApplied = null, target = false))
 
-        // Same policy as last applied → skip the IPC (the FB3-M4 win).
+        // Same policy as last applied → skip the IPC.
         assertFalse(accessibilityUpdateNeeded(lastApplied = true, target = true))
         assertFalse(accessibilityUpdateNeeded(lastApplied = false, target = false))
 

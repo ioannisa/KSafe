@@ -11,22 +11,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
-/**
- * Proof-test for encryption on both web targets (Kotlin/WASM + Kotlin/JS).
- *
- * Lives in `webTest`, so the same test class is discovered and executed by
- * both `wasmJsBrowserTest` and `jsBrowserTest`. It exercises KSafe's write
- * plumbing with [FakeEncryption] (consistent with [WebKSafeTest] — the real
- * WebCrypto path is async and best exercised by real-app integration), then
- * walks the browser's `localStorage` directly and asserts:
- *
- *  1. For an encrypted write, no `localStorage` value belonging to this
- *     KSafe instance contains the plaintext sentinel.
- *  2. Round-trip through KSafe still returns the original plaintext.
- *  3. Baseline counter-test: a [KSafeWriteMode.Plain] write stores the
- *     plaintext verbatim under `ksafe_<fileName>___ksafe_value_<key>`,
- *     proving the negative assertion above is meaningful.
- */
+/** Locks in: on both web targets an encrypted write leaks no plaintext into `localStorage`, while a [KSafeWriteMode.Plain] write stores it verbatim (the counter-test that keeps the negative assertion meaningful). */
 class WebEncryptionProofTest {
 
     @Test
@@ -36,8 +21,7 @@ class WebEncryptionProofTest {
         ksafe.awaitCacheReady()
 
         ksafe.put(KEY, SENTINEL) // encrypted
-        // putEncryptedRaw writes to localStorage synchronously, but yield
-        // once in case a future implementation moves it to the background.
+        // Currently a synchronous write; the delay guards against a future async move.
         delay(100)
 
         assertEquals(SENTINEL, ksafe.get(KEY, "DEFAULT"), "encryption must round-trip")
@@ -56,8 +40,7 @@ class WebEncryptionProofTest {
                 if (v.contains(SENTINEL)) offending.add("$k = $v")
             }
         } finally {
-            // Leave localStorage clean between tests — webTest does NOT
-            // reset it automatically.
+            // webTest does not reset localStorage automatically; clean up manually.
             ksafe.clearAll()
         }
 
@@ -101,9 +84,7 @@ class WebEncryptionProofTest {
 
     @Test
     fun negativeAssertionIsNotVacuous() = runTest {
-        // Defensive: assert that `containsUtf8` actually finds a sentinel it
-        // is given. If `encodeToByteArray()` ever regressed on a specific
-        // target, the encrypted-write proof would be silently vacuous.
+        // Guards the encrypted-write proof against a vacuous pass if containsUtf8 or encodeToByteArray regressed on a target.
         val bytes = "prefix-$SENTINEL-suffix".encodeToByteArray()
         assertTrue(bytes.containsUtf8(SENTINEL))
         assertFalse(bytes.containsUtf8("NOT_PRESENT_MARKER_123"))

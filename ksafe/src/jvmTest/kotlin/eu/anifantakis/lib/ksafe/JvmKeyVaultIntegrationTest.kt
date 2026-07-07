@@ -20,15 +20,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Integration test that exercises the **real** OS secret store
- * (Windows DPAPI / macOS Keychain / Linux Secret Service).
- *
- * It is opt-in: it only runs when the `KSAFE_KEYVAULT_IT` environment variable
- * is set (the keyvault CI jobs set it). Locally and in the normal `jvmTest`
- * run it is a no-op, so it never prompts for Keychain access or pollutes the
- * developer keyring. The CI jobs are responsible for providing a working
- * keyring (Linux: gnome-keyring under a dbus session; macOS: a dedicated
- * unlocked keychain).
+ * Locks in: the real OS secret store (DPAPI / Keychain / Secret Service) is selected, round-trips keys, and wins over stale or legacy entries — opt-in via the KSAFE_KEYVAULT_IT env var so local runs never touch the developer keyring.
  */
 class JvmKeyVaultIntegrationTest {
 
@@ -92,7 +84,7 @@ class JvmKeyVaultIntegrationTest {
         if (!enabled) return
 
         val provider = JvmKeyVaultProvider(dataStore)
-        if (!provider.active.isOsBacked) return // covered by the assertion above
+        if (!provider.active.isOsBacked) return
 
         val alias = "ksafe_it_mig_${System.nanoTime()}"
         val legacyKey = ByteArray(32) { (it * 7).toByte() }
@@ -112,13 +104,8 @@ class JvmKeyVaultIntegrationTest {
     }
 
     /**
-     * The 2.0.0 → 2.1.0 upgrade against the **real** OS store with the
-     * **realistic dirty precondition**: the per-user secret store already
-     * holds a STALE/mismatched key for this alias (prior install / data-clear
-     * / reinstall / mixed-version run). The legacy DataStore key provably
-     * encrypted the ciphertext and must win; the stale OS entry must be
-     * overwritten — not trusted. A fresh alias (pristine store) would not
-     * exercise this case, which is why the dirty seed matters.
+     * Dirty precondition: the OS store already holds a stale key for the alias;
+     * the legacy DataStore key that encrypted the data must win and overwrite it.
      */
     @Test
     fun legacyData_survivesUpgrade_evenWhenRealOsStoreHoldsAStaleKey() {
@@ -130,7 +117,6 @@ class JvmKeyVaultIntegrationTest {
         val alias = "ksafe_it_stale_${System.nanoTime()}"
         val payload = "iban=GR1601;balance=4242".toByteArray()
         try {
-            // 2.0.0: key + ciphertext written with the legacy DataStore vault.
             val v200 = JvmSoftwareEncryption(
                 dataStore = dataStore,
                 vaultProvider = JvmKeyVaultProvider(dataStore, forced = DataStoreKeyVault(dataStore)),
@@ -139,10 +125,9 @@ class JvmKeyVaultIntegrationTest {
             val legacyKey = DataStoreKeyVault(dataStore).get(alias)
             assertNotNull(legacyKey, "2.0.0 must persist the AES key in the DataStore file")
 
-            // DIRTY: the REAL OS store already holds a different key here.
+            // Seed the real OS store with a mismatched key before the upgrade.
             provider.active.put(alias, ByteArray(32) { 0x5A })
 
-            // 2.1.0 upgrade: fresh engine must still decrypt the 2.0.0 bytes.
             val v210 = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
             assertContentEquals(
                 payload, v210.decrypt(alias, ciphertextAtRest),

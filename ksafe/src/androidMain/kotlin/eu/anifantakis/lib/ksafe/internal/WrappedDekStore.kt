@@ -4,11 +4,9 @@ import android.util.Base64
 import kotlinx.coroutines.runBlocking
 
 /**
- * Engine-private persistence for the single KEK-wrapped DEK of one KSafe instance.
- *
- * The wrapped DEK lives as a reserved entry in the **same DataStore** the safe already
- * uses for its values — never in `SharedPreferences`. Because there is exactly one
- * relaxed master KEK per safe, a single fixed reserved key holds that safe's DEK.
+ * Persistence for one KSafe instance's single KEK-wrapped DEK. It lives as a reserved entry
+ * in the safe's own DataStore (never SharedPreferences); one relaxed master KEK per safe means
+ * one fixed reserved key holds the DEK.
  */
 internal interface WrappedDekStore {
     /** The KEK-wrapped DEK bytes, or `null` if none has been persisted yet. */
@@ -22,14 +20,11 @@ internal interface WrappedDekStore {
 }
 
 /**
- * [WrappedDekStore] backed by the safe's own [KSafePlatformStorage] (its DataStore).
- *
- * Stores the wrapped DEK as Base64 [StoredValue.Text] under the fixed reserved key
- * [DEK_KEY]. The engine's encrypt/decrypt entry points are synchronous, so the suspend
- * storage API is bridged with a one-time [runBlocking] — the unwrapped DEK is then cached
- * in the engine, so this blocks at most once per process (the same "block once on first
- * use" pattern as [KSafeCore]'s cold-start preload). The DataStore reads/edits here run on
- * the store's own scope, so blocking the calling thread cannot deadlock the actor.
+ * [WrappedDekStore] backed by the safe's own DataStore, storing the wrapped DEK as Base64
+ * [StoredValue.Text] under [DEK_KEY]. The engine's encrypt/decrypt are synchronous, so the
+ * suspend storage API is bridged with [runBlocking]; the engine then caches the unwrapped DEK,
+ * so this blocks at most once per process. DataStore runs on its own scope, so blocking the
+ * calling thread cannot deadlock the actor.
  */
 internal class DataStoreDekStore(
     private val storage: KSafePlatformStorage,
@@ -51,13 +46,8 @@ internal class DataStoreDekStore(
     }
 
     companion object {
-        /**
-         * Fixed reserved key for the wrapped DEK. It lives in KSafe's internal `__ksafe_`
-         * namespace, so [KSafeCore]'s `isInternalStorageKey` filter never surfaces it as a
-         * user value, the orphan sweep (which only probes `__ksafe_value_`) never touches
-         * it, and `clearAll()` (`storage.clear()`) still wipes it. One per DataStore = one
-         * DEK per safe.
-         */
+        // Reserved key for the wrapped DEK, in the internal `__ksafe_` namespace so it's never
+        // surfaced as a user value nor touched by the orphan sweep, yet `clearAll()` still wipes it.
         const val DEK_KEY: String = "__ksafe____DEK____"
     }
 }

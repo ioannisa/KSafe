@@ -9,11 +9,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 
 /**
- * Android-specific instrumented test implementation for KSafe.mutableStateOf tests.
- * Runs on an actual Android device or emulator with real EncryptedSharedPreferences.
- *
- * IMPORTANT: DataStore doesn't allow multiple instances to access the same file.
- * Each test must use a unique file name to avoid IllegalStateException.
+ * Android instrumented [KSafeMutableStateOfTest] impl (real device/emulator). DataStore forbids
+ * multiple instances on one file, so each test uses a unique fileName.
  */
 @RunWith(AndroidJUnit4::class)
 class AndroidKSafeMutableStateOfTest : KSafeMutableStateOfTest() {
@@ -39,13 +36,9 @@ class AndroidKSafeMutableStateOfTest : KSafeMutableStateOfTest() {
         }
     }
 
-    /**
-     * Skip this test on Android - DataStore doesn't support multiple instances
-     * accessing the same file simultaneously within the same process.
-     */
+    /** Skipped on Android: DataStore doesn't allow multiple instances on the same file in one process. */
     @Test
     override fun mutableStateOf_persistsAcrossInstances() {
-        // Skipped on Android due to DataStore limitation (same as JVM)
         println("Skipped: mutableStateOf_persistsAcrossInstances (Android DataStore limitation)")
     }
 

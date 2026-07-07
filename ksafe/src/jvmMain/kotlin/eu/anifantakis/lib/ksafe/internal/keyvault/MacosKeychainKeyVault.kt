@@ -7,42 +7,33 @@ import com.sun.jna.ptr.IntByReference
 import com.sun.jna.ptr.PointerByReference
 
 /**
- * Whether a `SecKeychainAddGenericPassword` OSStatus means the key write FAILED and must
- * throw (fail closed). `errSecDuplicateItem` (-25299) IS a failure here (FEEDBACK_4 low):
- * [MacosKeychainKeyVault.put] is a delete-then-add upsert, so a duplicate error means the
- * preceding delete did NOT remove the existing item — the NEW key was never stored and the
- * stale one remains. Swallowing it would report success while silently losing the write,
- * making everything re-encrypted under the intended key undecryptable. Only `errSecSuccess`
- * (0) is a success. Pure so it's unit-testable without a live Keychain.
+ * Whether a `SecKeychainAddGenericPassword` OSStatus means the write FAILED and must throw
+ * (fail closed); only `errSecSuccess` (0) is a success. `errSecDuplicateItem` (-25299) counts
+ * as failure: [MacosKeychainKeyVault.put] is a delete-then-add upsert, so a duplicate means
+ * the delete didn't remove the old item and the new key was never stored — swallowing it
+ * would report success while silently losing the write. Pure, so unit-testable without a
+ * live Keychain.
  */
 internal fun macosKeychainAddIsFailure(status: Int): Boolean = status != 0 // errSecSuccess
 
 /**
  * macOS key vault backed by the **login Keychain** via JNA bindings to
- * `Security.framework`.
+ * `Security.framework`, using the classic `SecKeychainAddGenericPassword` /
+ * `…Find…` / `…ItemDelete` generic-password API — deprecated in favour of the
+ * `SecItem*` API but far simpler to bind (C strings vs. CoreFoundation dicts)
+ * and fully functional. Scope is the standard login Keychain, not Secure Enclave
+ * (a JVM process can't reuse KSafe's Kotlin/Native SE path).
  *
- * It uses the classic `SecKeychainAddGenericPassword` / `…Find…` /
- * `SecKeychainItemDelete` generic-password API. That API is deprecated by
- * Apple in favour of the `SecItem*` data-protection API but remains fully
- * functional on current macOS and is dramatically simpler to bind from the JVM
- * (plain C strings + byte buffers vs. constructing CoreFoundation
- * dictionaries). This matches the chosen scope: *standard login/data-protection
- * Keychain, not Secure Enclave* — a JVM process cannot reuse KSafe's
- * Kotlin/Native Secure Enclave path anyway.
- *
- * The Keychain itself stores the secret (no separate file persistence). On
- * Macs with a Secure Enclave (Apple Silicon / T2) the login keychain's key
- * hierarchy is SEP-gated; on older Intel Macs it is login-password-derived.
- * Either way this is a large improvement over a plaintext key file: the blob
- * is not readable from disk without the user's login session.
+ * The Keychain stores the secret (no separate file). The blob is not readable
+ * from disk without the user's login session — a large improvement over a
+ * plaintext key file.
  */
 internal class MacosKeychainKeyVault(
     /**
-     * App-isolation namespace. The login Keychain is per-OS-user and shared
-     * by every process, so the generic-password **service** is namespaced
-     * (`eu.anifantakis.ksafe.<ns>`) to keep different desktop apps' keys
-     * apart. Blank = the historical un-namespaced service. The account stays
-     * the bare alias, so the legacy DataStore migration source is unaffected.
+     * App-isolation namespace. The login Keychain is per-OS-user, so the
+     * generic-password **service** is namespaced (`eu.anifantakis.ksafe.<ns>`)
+     * to keep different apps' keys apart. Blank = the historical un-namespaced
+     * service. The account stays the bare alias.
      */
     appNamespace: String = "",
 ) : JvmKeyVault {
@@ -67,12 +58,10 @@ internal class MacosKeychainKeyVault(
         )
         // Genuinely absent → null (a true miss the orphan sweep / migration may act on).
         if (status == ERR_SEC_ITEM_NOT_FOUND) return null
-        // Any other non-success status means the lookup itself failed, NOT that the
-        // key is absent — e.g. errSecInteractionNotAllowed when the login keychain is
-        // locked (SSH session, FileVault edge cases). Throw the "key vault unavailable"
-        // contract so encrypted reads fall back to defaults, the orphan sweep leaves
-        // the still-recoverable ciphertext intact, and writes fail closed rather than
-        // minting a divergent key.
+        // Any other non-success means the lookup FAILED, not that the key is absent (e.g.
+        // errSecInteractionNotAllowed on a locked keychain). Throw the "key vault unavailable"
+        // contract so reads fall back to defaults, the orphan sweep leaves the recoverable
+        // ciphertext intact, and writes fail closed instead of minting a divergent key.
         if (status != ERR_SEC_SUCCESS) {
             throw IllegalStateException(
                 "KSafe: key vault unavailable — macOS Keychain lookup failed for alias " +
@@ -90,8 +79,7 @@ internal class MacosKeychainKeyVault(
     }
 
     override fun put(alias: String, keyBytes: ByteArray) {
-        // Delete-then-add: simplest correct upsert (avoids building a
-        // SecKeychainAttributeList for SecKeychainItemModifyContent).
+        // Delete-then-add: simplest correct upsert.
         delete(alias)
         val account = alias.toByteArray(Charsets.UTF_8)
         val status = SEC.SecKeychainAddGenericPassword(
@@ -101,9 +89,8 @@ internal class MacosKeychainKeyVault(
             keyBytes.size, keyBytes,
             null,
         )
-        // errSecDuplicateItem is NOT tolerated (FEEDBACK_4 low): it means the delete above
-        // failed to remove the existing item, so this add did NOT replace the key — the
-        // stale one is still there. Fail closed so the write isn't silently lost.
+        // Fail closed (see macosKeychainAddIsFailure): an errSecDuplicateItem here means the
+        // delete didn't remove the old item, so the write was silently lost.
         if (macosKeychainAddIsFailure(status)) {
             throw KeychainException("SecKeychainAddGenericPassword", status)
         }

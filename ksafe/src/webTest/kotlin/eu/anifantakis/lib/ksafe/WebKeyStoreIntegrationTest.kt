@@ -13,12 +13,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /**
- * Integration test for the real web key path — non-extractable WebCrypto
- * `CryptoKey` persisted in IndexedDB, and the legacy-`localStorage` migration.
- *
- * Lives in `webTest`, so it runs under both `jsBrowserTest` and
- * `wasmJsBrowserTest` (real browser → real WebCrypto + IndexedDB). It uses the
- * real [WebSoftwareEncryption] (not `FakeEncryption`).
+ * Locks in: the real web key path — a non-extractable WebCrypto `CryptoKey` in
+ * IndexedDB plus the legacy-`localStorage` key migration — under real
+ * `jsBrowserTest`/`wasmJsBrowserTest`, using the real [WebSoftwareEncryption].
  */
 @OptIn(ExperimentalEncodingApi::class)
 class WebKeyStoreIntegrationTest {
@@ -36,15 +33,13 @@ class WebKeyStoreIntegrationTest {
         val ct = engineA.encryptSuspend(alias, plaintext.encodeToByteArray())
         assertEquals(plaintext, engineA.decryptSuspend(alias, ct).decodeToString())
 
-        // The raw key must never appear in localStorage — it lives only as a
-        // non-extractable CryptoKey in IndexedDB.
+        // The raw key must never hit localStorage; it lives only as a non-extractable CryptoKey in IndexedDB.
         assertNull(
             localStorageGet(legacyLsKey(prefix, alias)),
             "raw key must not be written to localStorage",
         )
 
-        // A fresh engine (new process simulation) must decrypt by reloading the
-        // non-extractable key from IndexedDB.
+        // Fresh engine (new-process sim) must decrypt by reloading the key from IndexedDB.
         val engineB = WebSoftwareEncryption(storagePrefix = prefix)
         assertEquals(
             plaintext,
@@ -61,8 +56,7 @@ class WebKeyStoreIntegrationTest {
         val alias = "legacy"
         val plaintext = "migrate-me-web"
 
-        // Simulate a key written by KSafe <= 2.0: raw AES-256 bytes, Base64,
-        // in localStorage under the historical key name.
+        // Legacy on-disk format: raw AES-256 bytes, Base64, in localStorage under the historical key name.
         val legacyRaw = ByteArray(32) { (it * 5 + 1).toByte() }
         localStorageSet(legacyLsKey(prefix, alias), Base64.encode(legacyRaw))
 
@@ -70,14 +64,13 @@ class WebKeyStoreIntegrationTest {
         val ct = engineA.encryptSuspend(alias, plaintext.encodeToByteArray())
         assertEquals(plaintext, engineA.decryptSuspend(alias, ct).decodeToString())
 
-        // Legacy raw key must be scrubbed from localStorage post-migration.
+        // Legacy raw key must be scrubbed from localStorage after migration.
         assertNull(
             localStorageGet(legacyLsKey(prefix, alias)),
             "legacy localStorage raw key must be deleted after migration",
         )
 
-        // The migrated (now non-extractable) key persisted in IndexedDB must
-        // still decrypt from a fresh instance.
+        // Migrated non-extractable key in IndexedDB must still decrypt from a fresh instance.
         val engineB = WebSoftwareEncryption(storagePrefix = prefix)
         assertEquals(
             plaintext,
@@ -90,16 +83,10 @@ class WebKeyStoreIntegrationTest {
     }
 
     /**
-     * The 2.0.0 → 2.1.0 upgrade, web edition, with the realistic
-     * **dirty** precondition: IndexedDB already holds a STALE non-extractable
-     * key under this name (from a prior KSafe lifecycle in this origin) while
-     * the genuine legacy raw key is still in localStorage. The legacy key
-     * provably encrypted the ciphertext and must win; the stale IDB key must
-     * be overwritten and the legacy key must NOT be destroyed.
-     *
-     * Every other web keyvault test uses a unique prefix ⇒ pristine IndexedDB
-     * ⇒ the stale-shadow branch is unreachable; the dirty seed here is what
-     * makes this test discriminate.
+     * A legacy raw key in localStorage must win over a STALE same-named non-extractable key
+     * already in IndexedDB: it provably encrypted the ciphertext, so it overwrites the stale
+     * key and is not destroyed. The dirty IDB seed is what makes this branch reachable — every
+     * other web keyvault test uses a unique prefix and hits pristine IndexedDB.
      */
     @Test
     fun legacyKey_survivesUpgrade_evenWhenIndexedDbHoldsAStaleKey() = runTest {
@@ -108,26 +95,22 @@ class WebKeyStoreIntegrationTest {
         val payload = "web-stale-precondition-secret"
         val realKey = ByteArray(32) { (it * 5 + 1).toByte() }
 
-        // (1) Ciphertext genuinely encrypted with the REAL legacy key (throw-
-        //     away prefix, pristine IDB ⇒ it imports realKey and encrypts).
+        // (1) Ciphertext encrypted with the REAL legacy key (throwaway prefix, pristine IDB).
         val ctPrefix = uniquePrefix()
         localStorageSet(legacyLsKey(ctPrefix, alias), Base64.encode(realKey))
         val ctMaker = WebSoftwareEncryption(storagePrefix = ctPrefix)
         val ct = ctMaker.encryptSuspend(alias, payload.encodeToByteArray())
         ctMaker.deleteKeySuspend(alias)
 
-        // (2) Pollute the TARGET prefix's IndexedDB with a STALE key under the
-        //     same record name (import a different "legacy" then scrub LS).
+        // (2) Pollute the target prefix's IndexedDB with a STALE key under the same record name.
         localStorageSet(legacyLsKey(prefix, alias), Base64.encode(ByteArray(32) { 0x5A }))
         WebSoftwareEncryption(storagePrefix = prefix)
             .encryptSuspend(alias, "x".encodeToByteArray()) // IDB[name] = STALE
 
-        // (3) Recreate the genuine 2.0.0 state: real legacy key in localStorage
-        //     alongside the now-stale IndexedDB key.
+        // (3) Recreate the legacy state: real legacy key in localStorage beside the stale IDB key.
         localStorageSet(legacyLsKey(prefix, alias), Base64.encode(realKey))
 
-        // (4) Fresh engine must decrypt the 2.0.0 ciphertext: legacy is
-        //     authoritative and overwrites the stale IDB key.
+        // (4) Fresh engine must decrypt: the legacy key is authoritative and overwrites the stale IDB key.
         val engine = WebSoftwareEncryption(storagePrefix = prefix)
         assertEquals(
             payload,
@@ -135,8 +118,7 @@ class WebKeyStoreIntegrationTest {
             "legacy localStorage key must override a stale IndexedDB key",
         )
 
-        // Legacy scrubbed only AFTER the real key was persisted to IDB; and a
-        // brand-new instance still decrypts (real key truly in IndexedDB now).
+        // Legacy scrubbed only AFTER the real key persisted to IDB; a brand-new instance still decrypts.
         assertNull(
             localStorageGet(legacyLsKey(prefix, alias)),
             "legacy raw key scrubbed after authoritative migration",
@@ -147,14 +129,11 @@ class WebKeyStoreIntegrationTest {
     }
 
     /**
-     * FEEDBACK_4 H-A: a **decrypt** must NEVER mint a fresh key when the IndexedDB
-     * key is absent. Web stores ciphertext (localStorage) and the key (IndexedDB)
-     * in separate backends with independent eviction; if the IDB key goes missing
-     * while the ciphertext survives, minting a fresh key on decrypt makes the old
-     * ciphertext permanently undecryptable AND poisons it (a fresh key persisted).
-     * Absence must instead surface recoverably as "web key missing" so the data
-     * stays decryptable once the key backend is restored (matching Android/Apple/JVM,
-     * which never create a key on the read path).
+     * A decrypt must NEVER mint a fresh key when the IndexedDB key is absent. Web keeps
+     * ciphertext (localStorage) and key (IndexedDB) in separate backends with independent
+     * eviction, so minting on decrypt would permanently poison surviving ciphertext. Absence
+     * must instead surface recoverably as "web key missing" so the data stays decryptable once
+     * the key backend is restored (matching Android/Apple/JVM, which never create a key on read).
      */
     @Test
     fun decrypt_doesNotMintKey_whenIndexedDbKeyEvicted() = runTest {
@@ -163,19 +142,15 @@ class WebKeyStoreIntegrationTest {
         val ct = WebSoftwareEncryption(storagePrefix = prefix)
             .encryptSuspend(alias, "recoverable-secret".encodeToByteArray())
 
-        // Simulate the IndexedDB key backend being evicted (browser storage
-        // pressure / "clear cached site data") while the localStorage ciphertext
-        // (held in `ct`) survives.
+        // Evict the IndexedDB key (storage pressure / "clear site data") while the ciphertext survives.
         WebSoftwareEncryption(storagePrefix = prefix).deleteKeySuspend(alias)
 
-        // A fresh engine (new session, empty in-memory `ensured`) decrypting the
-        // surviving ciphertext must FAIL RECOVERABLY, not mint a poisoning key.
+        // Fresh engine decrypting the surviving ciphertext must fail recoverably, not mint a poisoning key.
         val fresh = WebSoftwareEncryption(storagePrefix = prefix)
         val error = kotlin.test.assertFails("decrypt of an evicted-key entry must fail, not silently mint") {
             fresh.decryptSuspend(alias, ct)
         }
-        // "web key missing" ⇔ keyOf returned null ⇔ decrypt did NOT mint a key.
-        // (A minted key would instead produce a GCM OperationError.)
+        // "web key missing" ⇔ no key minted; a minted key would instead give a GCM OperationError.
         kotlin.test.assertTrue(
             error.message?.contains("web key missing", ignoreCase = true) == true,
             "decrypt must surface recoverable 'web key missing' (no mint), got: ${error.message}",
@@ -183,13 +158,9 @@ class WebKeyStoreIntegrationTest {
     }
 
     /**
-     * FEEDBACK_4 H-E: a value written with `requireUnlockedDevice = true` must be
-     * READABLE on web. Web has no device-lock to enforce the flag and forces the
-     * `PLAIN_TEXT` memory policy; but `resolveFromCache` routes strict entries to the
-     * blocking `engine.decrypt`, which the web engine throws `UnsupportedOperationException`
-     * from (WebCrypto is async-only) — so strict values were write-only. The web factory
-     * now strips `requireUnlockedDevice` (it cannot be honored in a browser), so the value
-     * reads back normally. Uses the REAL web engine (a synchronous test engine would hide it).
+     * A value written with `requireUnlockedDevice = true` must be READABLE on web: a browser has
+     * no device-lock to enforce the flag, so the web factory strips it. Uses the REAL web engine
+     * (a synchronous test engine would hide the async-only WebCrypto decrypt path).
      */
     @Test
     fun strictEncryptedValue_isReadableOnWeb() = runTest {
@@ -205,27 +176,24 @@ class WebKeyStoreIntegrationTest {
     }
 
     /**
-     * FEEDBACK_4 FB3-H1: adding `appNamespace` on upgrade must keep existing encrypted
-     * data readable. The R4 data migration moves the ciphertext to the namespaced prefix,
-     * but the CryptoKey's IndexedDB record name is derived independently (it already
-     * incorporated appNamespace pre-2.1.4), so without a key migration the engine looks
-     * under the new namespaced name, finds nothing, and the data is unreadable. The engine
-     * now migrates the pre-appNamespace key forward on first access.
+     * Adding `appNamespace` on upgrade must keep existing encrypted data readable. The data
+     * migration moves the ciphertext to the namespaced prefix, but the CryptoKey's IndexedDB
+     * record name is derived independently, so the engine migrates the pre-appNamespace key
+     * forward on first access — otherwise it looks under the new name, finds nothing, and the
+     * data is unreadable.
      */
     @Test
     fun addingAppNamespace_keepsExistingEncryptedDataReadable() = runTest {
         val file = WebKSafeTest.generateUniqueFileName()
 
-        // Session 1: no appNamespace — writes an encrypted value (key at the
-        // un-namespaced IndexedDB record name, ciphertext at ksafe.<file>:).
+        // Session 1: no appNamespace — key at the un-namespaced IndexedDB record, ciphertext at ksafe.<file>:.
         val before = KSafe(fileName = file)
         before.awaitCacheReady()
         before.put("tok", "pre-namespace-secret", KSafeWriteMode.Encrypted())
         assertEquals("pre-namespace-secret", before.get("tok", "DEFAULT"))
         before.close()
 
-        // Session 2: the developer adds an appNamespace (the docs encourage it).
-        // Construction migrates the data (R4) AND the key (FB3-H1) forward.
+        // Session 2: the developer adds an appNamespace. Construction migrates both the data and the key forward.
         val after = KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.app"))
         after.awaitCacheReady()
         try {
@@ -248,16 +216,16 @@ class WebKeyStoreIntegrationTest {
             "cfgC" to "secret-C",
         )
 
-        // Seed several KSafe <= 2.0 raw localStorage keys (extractable Base64).
+        // Seed several legacy raw localStorage keys (extractable Base64).
         payloads.keys.forEachIndexed { i, alias ->
             localStorageSet(legacyLsKey(prefix, alias), Base64.encode(ByteArray(32) { (it + i).toByte() }))
         }
 
         val engineA = WebSoftwareEncryption(storagePrefix = prefix)
-        // Eager sweep — WITHOUT touching any individual key first.
+        // Eager sweep without touching any individual key first.
         engineA.migrateLegacyKeysSuspend()
 
-        // Every legacy raw key must be gone from localStorage…
+        // Every legacy raw key must be gone from localStorage.
         payloads.keys.forEach { alias ->
             assertNull(
                 localStorageGet(legacyLsKey(prefix, alias)),
@@ -265,8 +233,7 @@ class WebKeyStoreIntegrationTest {
             )
         }
 
-        // …and each key now usable from a FRESH instance (i.e. it was imported
-        // as a non-extractable CryptoKey into IndexedDB), round-tripping data.
+        // Each key now usable from a fresh instance (imported as a non-extractable CryptoKey), round-tripping data.
         val engineB = WebSoftwareEncryption(storagePrefix = prefix)
         payloads.forEach { (alias, msg) ->
             val ct = engineB.encryptSuspend(alias, msg.encodeToByteArray())

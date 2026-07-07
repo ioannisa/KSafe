@@ -14,17 +14,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
-/**
- * [KSafePlatformStorage] backed by a Jetpack `DataStore<Preferences>`.
- *
- * This adapter is the only place in the library that knows about DataStore's
- * typed [Preferences.Key] machinery. It translates between [StoredValue] and
- * the matching typed key on write, and does the reverse on read so the core
- * orchestrator can work entirely in terms of the sealed [StoredValue] type.
- *
- * DataStore already gives us atomic `edit {}` blocks and a change-notifying
- * `data: Flow<Preferences>`, so both batching and observation map directly.
- */
+/** [KSafePlatformStorage] backed by a Jetpack `DataStore<Preferences>`. */
 @PublishedApi
 internal class DataStoreStorage(
     @PublishedApi internal val dataStore: DataStore<Preferences>,
@@ -51,15 +41,9 @@ internal class DataStoreStorage(
     }
 
     private fun writeOne(prefs: MutablePreferences, rawKey: String, value: StoredValue) {
-        // A DataStore Preferences.Key is identified by (name, type), so writing a
-        // value of one type does NOT overwrite an existing value of a DIFFERENT
-        // type under the same name. Without purging first, a key written once
-        // plain (e.g. IntVal → intPreferencesKey) and once encrypted (Text →
-        // stringPreferencesKey) would leave BOTH on disk: nondeterministic reads
-        // (snapshot() collapses entries by name, last-iterated wins) and —
-        // switching plain→encrypted — the plaintext lingering in the file. Purge
-        // every same-name entry first so a Put fully replaces, whatever the
-        // previous type was.
+        // A Preferences.Key is identified by (name, type), so purge every same-name
+        // entry first — otherwise a value written under a different type survives
+        // (e.g. plaintext lingering on disk after a plain→encrypted switch).
         removeByName(prefs, rawKey)
         when (value) {
             is StoredValue.BoolVal -> prefs[booleanPreferencesKey(rawKey)] = value.value
@@ -71,12 +55,7 @@ internal class DataStoreStorage(
         }
     }
 
-    /**
-     * Removes EVERY typed [Preferences.Key] with this name. There can be more
-     * than one (same name, different type) for a key that was ever written under
-     * two [StoredValue] types; the previous `firstOrNull` left the other behind,
-     * so a delete could remove only one representation.
-     */
+    /** Removes every typed [Preferences.Key] with this name (one can exist per type). */
     @Suppress("UNCHECKED_CAST")
     private fun removeByName(prefs: MutablePreferences, rawKey: String) {
         val matches = prefs.asMap().keys.filter { it.name == rawKey }

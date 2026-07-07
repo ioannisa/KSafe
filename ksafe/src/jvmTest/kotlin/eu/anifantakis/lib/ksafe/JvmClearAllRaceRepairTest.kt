@@ -6,15 +6,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * A put ordered AFTER an in-flight clearAll (the canonical
- * logout-then-write-fresh-state pattern) must be readable once committed: the
- * wipe clears the write's optimistic in-memory state, so the owner-gated
- * post-commit repair must restore it — an op that is still its key's latest
- * writer re-asserts its cache/metadata state via atomic putIfAbsent.
- *
- * The race is driven deterministically: `performClearAll` deletes per-entry
- * engine keys BEFORE wiping the caches, so an engine `deleteKey` hook fires
- * the racing put exactly in that window.
+ * Locks in: a put ordered AFTER an in-flight clearAll (logout-then-write-fresh-state) is readable once committed — the wipe clears the write's optimistic in-memory state, so the owner-gated post-commit repair restores it via atomic putIfAbsent.
  */
 class JvmClearAllRaceRepairTest {
 
@@ -39,22 +31,20 @@ class JvmClearAllRaceRepairTest {
             testEngine = engine,
         )
 
-        // Seed one encrypted entry so performClearAll has a per-entry engine
-        // key to delete — the pre-wipe step our racing put hooks into.
+        // Seed one encrypted entry so performClearAll has a per-entry engine key to delete —
+        // the pre-wipe step our racing put hooks into.
         ksafe.put("seed", "seed-value", KSafeWriteMode.Encrypted())
 
-        // The racing put: issued while performClearAll is running, BEFORE the
-        // cache wipe — its optimistic state is set and then wiped, and the op
-        // itself is ordered after the ClearAll (it must survive).
+        // The racing put: issued while performClearAll runs, BEFORE the cache wipe. Its optimistic
+        // state is set and then wiped, and the op is ordered after the clearAll (it must survive).
         engine.onDeleteKey = {
             ksafe.putDirect("fresh", "fresh-value", mode)
         }
 
         ksafe.clearAll()
 
-        // Drain the racing put's batch: the channel is FIFO with a single
-        // consumer, so by the time this awaited write returns, "fresh" has
-        // committed (and run its post-commit repair).
+        // Drain the racing put's batch: the channel is FIFO with a single consumer, so by the time this
+        // awaited write returns, "fresh" has committed (and run its post-commit repair).
         ksafe.put("sync", "x", KSafeWriteMode.Plain)
 
         assertEquals(

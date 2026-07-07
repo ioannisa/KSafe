@@ -10,12 +10,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 /**
- * Tests for [KSafe.mutableStateOf] extension function.
- *
- * Subclasses implement [newKSafe]; tests call [createKSafe], which forwards
- * and registers the instance for teardown. [tearDown] closes every tracked
- * KSafe so abandoned instances do not pin their background coroutines (and
- * the DataStore + caches they reference) in heap across tests.
+ * Locks in: KSafe.mutableStateOf delegate — default value, key derivation, persistence, encryption tier, supported types, and equality policy.
  */
 abstract class KSafeMutableStateOfTest {
 
@@ -28,18 +23,15 @@ abstract class KSafeMutableStateOfTest {
 
     @AfterTest
     fun tearDown() {
+        // Close tracked instances so abandoned coroutines/DataStores don't pin heap across tests.
         tracked.forEach { runCatching { it.close() } }
         tracked.clear()
     }
 
-    // ============ BASIC MUTABLE STATE OF TESTS ============
-
-    /** Verifies mutableStateOf returns default value when key doesn't exist */
     @Test
     fun mutableStateOf_returnsDefaultValue_whenKeyNotExists() {
         val ksafe = createKSafe()
 
-        // Use provideDelegate manually to get the state
         val provider = ksafe.mutableStateOf("DefaultValue")
         val delegate = provider.provideDelegate(null, ::testProperty)
 
@@ -47,7 +39,6 @@ abstract class KSafeMutableStateOfTest {
         assertEquals("DefaultValue", value)
     }
 
-    /** Verifies mutableStateOf persists value changes to KSafe */
     @Test
     fun mutableStateOf_persistsValueChanges() {
         val ksafe = createKSafe()
@@ -55,15 +46,12 @@ abstract class KSafeMutableStateOfTest {
         val provider = ksafe.mutableStateOf("Initial", key = "persist_test")
         val delegate = provider.provideDelegate(null, ::testProperty)
 
-        // Change the value
         delegate.setValue(null, ::testProperty, "Changed")
 
-        // Verify using getDirect
         val persisted = ksafe.getDirect("persist_test", "fallback", encrypted = true)
         assertEquals("Changed", persisted)
     }
 
-    /** Verifies mutableStateOf uses property name as key when no key specified */
     @Test
     fun mutableStateOf_usesPropertyNameAsKey() {
         val ksafe = createKSafe()
@@ -73,12 +61,10 @@ abstract class KSafeMutableStateOfTest {
 
         delegate.setValue(null, ::myCustomProperty, "UpdatedValue")
 
-        // Should be stored under "myCustomProperty" key
         val persisted = ksafe.getDirect("myCustomProperty", "fallback", encrypted = true)
         assertEquals("UpdatedValue", persisted)
     }
 
-    /** Verifies mutableStateOf uses explicit key when specified */
     @Test
     fun mutableStateOf_usesExplicitKey() {
         val ksafe = createKSafe()
@@ -88,14 +74,10 @@ abstract class KSafeMutableStateOfTest {
 
         delegate.setValue(null, ::testProperty, "NewValue")
 
-        // Should be stored under "explicit_key", not property name
         val persisted = ksafe.getDirect("explicit_key", "fallback", encrypted = true)
         assertEquals("NewValue", persisted)
     }
 
-    // ============ ENCRYPTION TESTS ============
-
-    /** Verifies mutableStateOf encrypts by default. */
     @Test
     fun mutableStateOf_encryptsByDefault() {
         val ksafe = createKSafe()
@@ -105,12 +87,9 @@ abstract class KSafeMutableStateOfTest {
 
         delegate.setValue(null, ::testProperty, "SecretData")
 
-        // Roundtrip — auto-detection on read decrypts and returns the original value.
         assertEquals("SecretData", ksafe.getDirect("encrypted_key", "fallback"))
 
-        // Encryption-by-default is observable via metadata: the deprecated
-        // `encrypted` read parameter is ignored and protection is auto-detected,
-        // so check that `getKeyInfo` reports a non-null protection tier.
+        // Encryption-by-default is observable via metadata: getKeyInfo must report a non-null protection tier.
         val keyInfo = ksafe.getKeyInfo("encrypted_key")
         assertNotNull(keyInfo, "Key info should exist for stored value")
         assertNotNull(
@@ -119,7 +98,6 @@ abstract class KSafeMutableStateOfTest {
         )
     }
 
-    /** Verifies mutableStateOf can store unencrypted when specified. */
     @Test
     fun mutableStateOf_canStoreUnencrypted() {
         val ksafe = createKSafe()
@@ -129,12 +107,9 @@ abstract class KSafeMutableStateOfTest {
 
         delegate.setValue(null, ::testProperty, "PlainData")
 
-        // Roundtrip works whether we ask via the auto-detected or the legacy path.
         assertEquals("PlainData", ksafe.getDirect("plain_key", "fallback"))
 
-        // Plain writes record `protection = null` in metadata — `getKeyInfo`
-        // makes the difference observable since the deprecated `encrypted`
-        // read parameter no longer affects behaviour.
+        // Plain writes record protection = null, observable via getKeyInfo.
         val keyInfo = ksafe.getKeyInfo("plain_key")
         assertNotNull(keyInfo, "Key info should exist for stored value")
         assertNull(
@@ -143,9 +118,6 @@ abstract class KSafeMutableStateOfTest {
         )
     }
 
-    // ============ TYPE TESTS ============
-
-    /** Verifies mutableStateOf works with Int type */
     @Test
     fun mutableStateOf_intType() {
         val ksafe = createKSafe()
@@ -159,7 +131,6 @@ abstract class KSafeMutableStateOfTest {
         assertEquals(42, persisted)
     }
 
-    /** Verifies mutableStateOf works with Boolean type */
     @Test
     open fun mutableStateOf_booleanType() {
         val ksafe = createKSafe()
@@ -173,7 +144,6 @@ abstract class KSafeMutableStateOfTest {
         assertEquals(true, persisted)
     }
 
-    /** Verifies mutableStateOf works with Double type */
     @Test
     fun mutableStateOf_doubleType() {
         val ksafe = createKSafe()
@@ -187,7 +157,6 @@ abstract class KSafeMutableStateOfTest {
         assertEquals(3.14159, persisted)
     }
 
-    /** Verifies mutableStateOf works with Long type */
     @Test
     fun mutableStateOf_longType() {
         val ksafe = createKSafe()
@@ -201,15 +170,7 @@ abstract class KSafeMutableStateOfTest {
         assertEquals(9876543210L, persisted)
     }
 
-    // ============ PERSISTENCE ACROSS INSTANCES ============
-
-    /**
-     * Verifies value persists when creating new KSafe with same fileName.
-     *
-     * Note: This test is open because JVM DataStore doesn't support multiple
-     * instances accessing the same file. JVM implementation overrides this
-     * to skip the test.
-     */
+    // open: JVM DataStore forbids multiple instances on one file, so the JVM subclass skips this.
     @Test
     open fun mutableStateOf_persistsAcrossInstances() {
         val ksafe1 = createKSafe("shared")
@@ -218,7 +179,6 @@ abstract class KSafeMutableStateOfTest {
         val delegate1 = provider1.provideDelegate(null, ::testProperty)
         delegate1.setValue(null, ::testProperty, "Persisted")
 
-        // Create new KSafe instance with same file
         val ksafe2 = createKSafe("shared")
 
         val provider2 = ksafe2.mutableStateOf("Default", key = "shared_key")
@@ -228,9 +188,6 @@ abstract class KSafeMutableStateOfTest {
         assertEquals("Persisted", value)
     }
 
-    // ============ POLICY TESTS ============
-
-    /** Verifies structuralEqualityPolicy prevents save for equal values */
     @Test
     fun mutableStateOf_structuralEquality_skipsEqualValues() {
         val ksafe = createKSafe()
@@ -242,19 +199,15 @@ abstract class KSafeMutableStateOfTest {
         )
         val delegate = provider.provideDelegate(null, ::listProperty)
 
-        // Set initial value
         delegate.setValue(null, ::listProperty, listOf(1, 2, 3))
 
-        // Set same content (different instance) - should not trigger save due to structural equality
+        // Same content, different instance: structural equality skips the save.
         delegate.setValue(null, ::listProperty, listOf(1, 2, 3))
 
         val value = delegate.getValue(null, ::listProperty)
         assertEquals(listOf(1, 2, 3), value)
     }
 
-    // ============ STATE BEHAVIOR TESTS ============
-
-    /** Verifies getValue returns current state value */
     @Test
     fun mutableStateOf_getValue_returnsCurrentValue() {
         val ksafe = createKSafe()
@@ -271,7 +224,6 @@ abstract class KSafeMutableStateOfTest {
         assertEquals("End", delegate.getValue(null, ::testProperty))
     }
 
-    /** Verifies multiple setValue calls update state correctly */
     @Test
     fun mutableStateOf_multipleSetValue_updatesState() {
         val ksafe = createKSafe()
@@ -287,7 +239,6 @@ abstract class KSafeMutableStateOfTest {
         assertEquals(3, ksafe.getDirect("counter", 0, encrypted = true))
     }
 
-    // Dummy properties for delegation tests
     private val testProperty: String = ""
     private val myCustomProperty: String = ""
     private val intProperty: Int = 0

@@ -9,33 +9,24 @@ import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 /**
- * Linux key vault backed by the **Secret Service** (the freedesktop.org
- * D-Bus secrets API — GNOME Keyring, KWallet's secrets bridge, KeePassXC, …)
- * via JNA bindings to `libsecret`.
+ * Linux key vault backed by the **Secret Service** (the freedesktop.org D-Bus
+ * secrets API — GNOME Keyring, KWallet, KeePassXC, …) via JNA bindings to
+ * `libsecret`. Keys live in the default login keyring under schema
+ * `eu.anifantakis.ksafe`, keyed by an `alias` attribute. On disk the keyring is
+ * encrypted under the user's login password, so disk theft without the live
+ * session can't recover keys.
  *
- * Keys are stored in the user's default login keyring under schema
- * `eu.anifantakis.ksafe`, keyed by an `alias` attribute. The keyring daemon
- * holds the secret; on disk it is encrypted with a key derived from the user's
- * login password (and unlocked at session login). This is a large improvement
- * over a plaintext key file: an attacker with the disk but not the live
- * session / login password cannot recover keys.
- *
- * Availability is not guaranteed on Linux — headless servers frequently have
- * no `libsecret` and no running keyring. [JvmKeyVaultProvider] self-tests this
- * vault and falls back to the plaintext store (with a warning) when libsecret
- * is missing or no Secret Service is reachable, so construction here only fails
- * loudly if the library cannot even be loaded.
- *
- * Binary key bytes are Base64-encoded before storage because the libsecret
- * password APIs take NUL-terminated C strings.
+ * Availability isn't guaranteed (headless servers often have no keyring):
+ * [JvmKeyVaultProvider] self-tests and falls back to the plaintext store, so
+ * construction here only fails if `libsecret` can't be loaded at all. Key bytes
+ * are Base64-encoded because the libsecret password APIs take C strings.
  */
 internal class LinuxSecretServiceKeyVault(
     /**
-     * App-isolation namespace folded into the libsecret lookup attribute
-     * value (`<ns>/<alias>`). The Secret Service collection is per-OS-user
-     * and shared by every process, so different desktop apps must not collide
-     * on the same alias. Blank = the historical un-namespaced value. This is
-     * the destination identity, not the frozen legacy migration source.
+     * App-isolation namespace folded into the lookup attribute value
+     * (`<ns>/<alias>`). The Secret Service collection is per-OS-user, so
+     * different apps must not collide on the same alias. Blank = the historical
+     * un-namespaced value.
      */
     private val appNamespace: String = "",
 ) : JvmKeyVault {
@@ -48,24 +39,20 @@ internal class LinuxSecretServiceKeyVault(
 
     @OptIn(ExperimentalEncodingApi::class)
     override fun get(alias: String): ByteArray? {
-        // libsecret returns NULL both when the key is genuinely absent AND when
-        // the lookup fails (login keyring locked, keyring daemon / D-Bus
-        // unreachable). The GError** out-param disambiguates: error set ⇒ vault
-        // unavailable, error unset + NULL ⇒ genuinely absent. Conflating the two
-        // would let the orphan sweep delete still-recoverable ciphertext during a
-        // transient keyring outage.
+        // libsecret returns NULL both for a genuine miss AND for a failed lookup (keyring
+        // locked, daemon / D-Bus unreachable). The GError** out-param disambiguates: error
+        // set ⇒ vault unavailable, unset + NULL ⇒ absent. Conflating them lets the orphan
+        // sweep delete recoverable ciphertext during a transient outage.
         val errorRef = PointerByReference()
         val ptr: Pointer? = SECRET.secret_password_lookup_sync(
             schema(), null, errorRef,
             ATTR_ALIAS, nsAlias(alias), null,
         )
         errorRef.value?.let { gerror ->
-            // Free the GError best-effort (GLib may be unmappable on a stripped
-            // host — never let that turn a clean error into a crash), then
-            // report "vault unavailable", NOT "key absent". KSafeCore treats the
-            // "vault unavailable" wording as non-deletable (orphan sweep skips
-            // it) and returns the caller's default rather than reaping the
-            // ciphertext, leaving it recoverable once the keyring is back.
+            // Free the GError best-effort (GLib may be unmappable on a stripped host), then
+            // report "vault unavailable", NOT "key absent": KSafeCore treats that wording as
+            // non-deletable (orphan sweep skips it) and returns the default, keeping the
+            // ciphertext recoverable once the keyring is back.
             runCatching { GLIB?.g_error_free(gerror) }
             throw IllegalStateException(
                 "KSafe: key vault unavailable — Linux Secret Service lookup failed for " +
@@ -103,8 +90,8 @@ internal class LinuxSecretServiceKeyVault(
         }
     }
 
-    // A fresh SecretSchema per call: cheap, avoids any shared-mutable-native
-    // state, and keeps the (rare) key operations trivially thread-safe.
+    // Fresh SecretSchema per call: avoids shared mutable native state, keeping the
+    // rare key operations trivially thread-safe.
     private fun schema(): SecretSchema {
         val s = SecretSchema()
         s.name = SCHEMA_NAME
@@ -155,9 +142,8 @@ internal class LinuxSecretServiceKeyVault(
         fun secret_password_lookup_sync(
             schema: SecretSchema,
             cancellable: Pointer?,
-            // GError** out-param: JNA writes the GError* libsecret allocates on
-            // failure here (left NULL on success / not-found) so the caller can
-            // tell a keyring error apart from a genuinely-absent key.
+            // GError** out-param: set on failure, NULL on success/not-found, so the caller
+            // can tell a keyring error from a genuinely-absent key.
             error: PointerByReference?,
             vararg attributes: Any?,
         ): Pointer?
@@ -198,11 +184,9 @@ internal class LinuxSecretServiceKeyVault(
         val SECRET: SecretLibrary = Native.load("secret-1", SecretLibrary::class.java)
 
         /**
-         * Best-effort GError free. libsecret links GLib, so whenever `secret-1`
-         * loaded GLib is already in-process; we still load it defensively
-         * (nullable) so a missing/odd soname can never break the critical
-         * "throw on keyring error instead of reporting absent" path — worst case
-         * we skip freeing a tiny GError on the (rare) error path.
+         * Best-effort GError free. Loaded defensively (nullable) so a missing/odd soname
+         * can't break the "throw on keyring error instead of reporting absent" path —
+         * worst case a tiny GError leaks on the rare error path.
          */
         val GLIB: GLibLibrary? =
             runCatching { Native.load("glib-2.0", GLibLibrary::class.java) }.getOrNull()

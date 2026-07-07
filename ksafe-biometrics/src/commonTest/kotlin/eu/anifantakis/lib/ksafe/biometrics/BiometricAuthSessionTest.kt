@@ -7,14 +7,9 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
- * Pins the shared biometric-cache decisions: [BiometricAuthSession.shouldCache]
- * must treat `duration <= 0` (the documented opt-out) as non-caching, and
- * [BiometricAuthSession.sessionKey] must keep the global (null) scope distinct
- * from every caller-supplied scope, including the empty string.
+ * Locks in: shouldCache treats `duration <= 0` as non-caching, and sessionKey keeps the global (null) scope, every caller scope, and the strict/permissive strengths in distinct, non-forgeable slots.
  */
 class BiometricAuthSessionTest {
-
-    // ---- shouldCache ----
 
     @Test
     fun shouldCache_isFalse_forNullDuration() {
@@ -37,9 +32,7 @@ class BiometricAuthSessionTest {
         assertTrue(BiometricAuthSession.shouldCache(BiometricAuthorizationDuration(60_000L, null)))
     }
 
-    // ---- sessionKey ----
-
-    // Helper: permissive slot (device-credential allowed) for a scope.
+    // Permissive slot allows device-credential; strict is biometrics-only.
     private fun permissive(scope: String?) = BiometricAuthSession.sessionKey(scope, requireStrict = false)
     private fun strict(scope: String?) = BiometricAuthSession.sessionKey(scope, requireStrict = true)
 
@@ -63,28 +56,22 @@ class BiometricAuthSessionTest {
 
     @Test
     fun sessionKey_callerCannotForgeGlobalSlot() {
-        // No caller-supplied string — even one mimicking the sentinel — may land
-        // in the global slot, because caller scopes are always namespaced.
+        // Caller scopes are always namespaced, so no caller string can land in the global slot.
         val global = permissive(null)
         assertNotEquals(global, permissive(global))
         assertNotEquals(global, permissive(" ksafe-global-scope"))
     }
 
-    // ---- R3: strength separation + injectivity ----
-
     @Test
     fun sessionKey_strictAndPermissive_areDistinct_forSameScope() {
-        // A biometrics-only (strict) call must not be served from a cached
-        // device-credential (permissive) success — separate slots (deep-review L3).
+        // A biometrics-only (strict) call must not be served from a cached device-credential (permissive) success.
         assertNotEquals(strict("vault"), permissive("vault"))
         assertNotEquals(strict(null), permissive(null))
     }
 
     @Test
     fun sessionKey_isInjective_noScopeCanForgeAnotherStrengthSlot() {
-        // Regression for the old non-injective "$base|strict" suffix scheme (R3 /
-        // findings 9,15,16): a caller scope literally ending in a strictness marker
-        // must NOT collide with another scope's strict/permissive slot.
+        // A caller scope ending in a strictness marker must not collide with another scope's strict/permissive slot.
         assertNotEquals(permissive("a|strict"), strict("a"))
         assertNotEquals(permissive("aS"), strict("a"))
         // The strength discriminator is a prefix, so a scope string that looks like a

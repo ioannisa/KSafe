@@ -7,13 +7,8 @@ import platform.Security.SecRandomCopyBytes
 import platform.Security.kSecRandomDefault
 
 /**
- * Apple (iOS + macOS) actual for [secureRandomBytes].
- *
- * Reads from `SecRandomCopyBytes` — the Apple Security framework
- * CSPRNG, the same source that backs `SecKey*` key generation and
- * CryptoKit. Used by [AppleKeychainEncryption] for AES-256 master-key
- * generation on Apple platforms, providing the strongest cryptographic
- * guarantee the OS exposes for KSafe key material.
+ * Apple (iOS + macOS) actual for [secureRandomBytes], reading from `SecRandomCopyBytes` —
+ * the Security-framework CSPRNG that also backs `SecKey*` key generation and CryptoKit.
  */
 @OptIn(ExperimentalForeignApi::class)
 actual fun secureRandomBytes(size: Int): ByteArray {

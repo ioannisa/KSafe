@@ -11,176 +11,84 @@ import kotlinx.serialization.KSerializer
 import kotlinx.serialization.serializer
 
 /**
- * An API for secure key–value storage.
+ * Secure, type-safe key–value storage for Kotlin Multiplatform.
  *
- * KSafe provides a simple, type-safe, and encrypted persistence layer for Kotlin Multiplatform.
+ * All data is encrypted by default with AES-256-GCM; key custody is
+ * platform-specific (Android Keystore, Apple Keychain, OS secret store on JVM,
+ * non-extractable WebCrypto key on Web). Reads ([getDirect]) are served from an
+ * in-memory hot cache; writes ([putDirect]) update the cache immediately and
+ * persist asynchronously. Use [KSafeWriteMode] per write to opt out of
+ * encryption or request hardware isolation.
  *
- * **Security:**
- * - **Android:** Uses AES-256-GCM with keys stored in the hardware-backed Android Keystore.
- * - **iOS / macOS (native):** Uses AES-256-GCM with symmetric keys stored as Keychain generic-password items (protected by device passcode).
- * - **JVM:** Uses AES-256-GCM with the key protected by the host OS secret store —
- *   Windows DPAPI, macOS Keychain, or Linux Secret Service (libsecret). When no
- *   secret store is available it falls back to a key Base64-encoded in the
- *   DataStore file (legacy behaviour) and logs a one-time warning.
- * - **Web (Kotlin/JS + Kotlin/WASM):** Uses AES-256-GCM via WebCrypto with a
- *   **non-extractable** `CryptoKey` persisted in IndexedDB — the raw key bytes
- *   are never exposed to JS.
- *
- * **Architecture:**
- * KSafe uses a "Hot Cache" architecture.
- * - Reads (`getDirect`) are instant and non-blocking, serving data from an in-memory atomic cache.
- * - Writes (`putDirect`) are optimistic, updating the memory cache immediately while persisting to disk asynchronously.
- *
- * **The default behavior is to encrypt all data.**
- *
- * **Per-Property Write Mode:**
- * Use [KSafeWriteMode] to control plain/encrypted behavior per property:
- * ```kotlin
- * var counter by ksafe(0) // encrypted (default)
- * var secret by ksafe(
- *     0,
- *     mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED)
- * ) // StrongBox / Secure Enclave
- * var setting by ksafe("default", mode = KSafeWriteMode.Plain) // no encryption
- * ```
- *
- * **Biometric Authentication:**
- * Biometric verification lives in the standalone `:ksafe-biometrics` module
- * (`KSafeBiometrics`) and is fully independent of storage operations. Add the
- * dependency only if you need it.
- */
-/**
- * `@Stable` tells the Compose compiler that a `KSafe` instance's behavior is
- * predictable based on instance identity — equal references mean equivalent
- * observable behavior, and the instance does not mutate in ways that would
- * invalidate cached recompositions. This lets composables that accept a
- * `KSafe` parameter (or store one in their environment) skip recomposition
- * when the same instance is passed again. The annotation has BINARY retention
- * and zero runtime cost; non-Compose consumers (Ktor servers, CLI tools)
- * never load it.
+ * `@Stable` for Compose: instance identity implies equivalent observable
+ * behavior, so composables taking a `KSafe` parameter can skip recomposition.
  */
 @Stable
 @Suppress("unused")
 class KSafe @PublishedApi internal constructor(
     /**
-     * Shared orchestrator. Holds the hot cache, write coalescer, protection
-     * metadata, and the non-inline `getXxxRaw`/`putXxxRaw` storage entry points
-     * that the public inline reified API and the property delegates forward to.
-     *
-     * Exposed as `@PublishedApi internal` so inline reified members and inline
-     * delegate factories can reach it from consumer bytecode without a
-     * synthetic accessor on the hot path.
+     * Shared orchestrator (hot cache, write coalescer, protection metadata).
+     * `@PublishedApi internal` so inline reified members and delegate factories
+     * can reach it from consumer bytecode without a synthetic accessor.
      */
     @PublishedApi internal val core: KSafeCore,
 
     /**
-     * The set of key storage levels supported by the current device.
-     *
-     * Always contains at least one element. Use `deviceKeyStorages.max()` to get the
-     * highest available protection level.
-     *
-     * | Platform | Possible values |
-     * |----------|----------------|
-     * | Android  | `{HARDWARE_BACKED}` or `{HARDWARE_BACKED, HARDWARE_ISOLATED}` |
-     * | iOS      | `{HARDWARE_BACKED}` or `{HARDWARE_BACKED, HARDWARE_ISOLATED}` |
-     * | JVM      | `{SOFTWARE}` |
-     * | WASM     | `{SOFTWARE}` |
-     *
-     * This is a *device-capability* probe. For "what protection is this
-     * instance actually running at right now (post-fallback)?", use
-     * [protectionInfo] instead.
+     * The key storage levels supported by the current device (never empty);
+     * `deviceKeyStorages.max()` is the highest available. A device-capability
+     * probe only — for the protection this instance is actually running at
+     * (post-fallback), use [protectionInfo].
      */
     val deviceKeyStorages: Set<KSafeKeyStorage>,
 
     /**
-     * Live producer of the per-access [KSafeProtectionInfo]. Each platform
-     * factory wires a closure that captures the engine and rebuilds the
-     * info on demand. Marked `@PublishedApi internal` to keep it off the
-     * public surface — consumers should read [protectionInfo] instead.
-     *
-     * For Android / Apple / Web the closure is effectively a constant
-     * (their protection custody can't change after construction). The JVM
-     * closure recomputes from `engine.keyVaultIsOsBacked`, so a runtime
-     * `degradeToLegacy` (e.g. Compose Desktop release distributable
-     * lacking `jdk.unsupported`) is reflected on the very next read.
+     * Builds the per-access [KSafeProtectionInfo]. The JVM closure recomputes
+     * from the engine so a runtime degrade to the software vault shows on the
+     * next read; on other platforms it is effectively constant. Consumers
+     * should read [protectionInfo] instead.
      */
     @PublishedApi internal val protectionInfoProvider: () -> KSafeProtectionInfo,
 
     /**
-     * Optional callback run after [clearAll] flushes the core cache. JVM uses
-     * this to delete the physical DataStore protobuf file (DataStore's own
-     * `clear()` leaves an empty file behind). Other platforms pass identity.
+     * Runs after [clearAll] flushes the core cache; JVM uses it to delete the
+     * physical DataStore file. Other platforms pass identity.
      */
     @PublishedApi internal val onClearAllCleanup: suspend () -> Unit = {},
 ) {
     /**
-     * Instance-level diagnostic describing the encryption-key custody this
-     * [KSafe] is currently running with — including any runtime fallback
-     * (e.g. JVM dropping from `SANDBOX_PROTECTED` to `SOFTWARE` when no
-     * OS secret store is reachable, or a Compose Desktop release
-     * distributable hitting `LinkageError: sun/misc/Unsafe` and degrading
-     * to the software vault mid-process).
-     *
-     * **Recomputed on every access**, so a runtime degrade is visible
-     * immediately — safe to bind to UI / metrics that update.
-     *
-     * See [KSafeProtectionInfo] for usage patterns.
+     * The encryption-key custody this instance is currently running with,
+     * including any runtime fallback. Recomputed on every access, so a runtime
+     * degrade is visible immediately.
      */
     val protectionInfo: KSafeProtectionInfo
         get() = protectionInfoProvider()
+
     /**
-     * Returns the protection tier and actual storage location of a specific key.
+     * Returns the protection tier and actual key custody of a specific key.
+     * Prefer [KSafeKeyInfo.level] over the legacy [KSafeKeyInfo.storage].
+     * Same cold-start behavior as [getDirect] — blocks once if the cache
+     * hasn't initialized.
      *
-     * `KSafeKeyInfo` carries both the legacy [KSafeKeyInfo.storage]
-     * ([KSafeKeyStorage]) and the new [KSafeKeyInfo.level]
-     * ([KSafeProtectionLevel]). Prefer `level` — it's the same scale as
-     * [protectionInfo] and additionally distinguishes JVM OS-vault keys
-     * (`SANDBOX_PROTECTED`) from the plaintext-in-file fallback (`SOFTWARE`),
-     * and Web browser-origin keys (`SANDBOX_PROTECTED`) from raw software
-     * (`SOFTWARE`).
-     *
-     * | Scenario | `protection` | `storage` | `level` |
-     * |----------|--------------|-----------|---------|
-     * | Key not found | (returns `null`) | | |
-     * | Unencrypted key (Plain mode) | `null` | `SOFTWARE` | `SOFTWARE` |
-     * | Encrypted DEFAULT (Android / Apple) | `DEFAULT` | `HARDWARE_BACKED` | `HARDWARE_BACKED` |
-     * | Encrypted HARDWARE_ISOLATED with StrongBox / SE | `HARDWARE_ISOLATED` | `HARDWARE_ISOLATED` | `HARDWARE_ISOLATED` |
-     * | Encrypted HARDWARE_ISOLATED, no hardware (demoted) | `HARDWARE_ISOLATED` | `HARDWARE_BACKED` | `HARDWARE_BACKED` |
-     * | Encrypted (JVM, OS vault healthy) | detected | `SOFTWARE` | `SANDBOX_PROTECTED` |
-     * | Encrypted (JVM, fallback / opt-out) | detected | `SOFTWARE` | `SOFTWARE` |
-     * | Encrypted (Web) | detected | `SOFTWARE` | `SANDBOX_PROTECTED` |
-     *
-     * Same cold-start behavior as [getDirect] — blocks once if cache hasn't initialized.
-     *
-     * @param key The key name to look up.
      * @return The [KSafeKeyInfo] details, or `null` if the key doesn't exist.
      */
     fun getKeyInfo(key: String): KSafeKeyInfo? = core.getKeyInfo(key)
 
     /**
-     * Deletes a value and its associated encryption key asynchronously.
-     *
-     * This method returns immediately and performs the deletion in the background.
-     * The memory cache is updated immediately to reflect the deletion.
-     *
-     * @param key The key to delete.
+     * Deletes a value and its associated encryption key asynchronously: the
+     * memory cache is updated immediately, the deletion completes in the
+     * background.
      */
     fun deleteDirect(key: String) = core.deleteDirect(key)
 
     /**
-     * Deletes a value and its associated encryption key (if any) from storage.
-     *
-     * This method suspends until the deletion is complete.
-     *
-     * @param key The key to delete.
+     * Deletes a value and its associated encryption key (if any), suspending
+     * until the deletion is complete.
      */
     suspend fun delete(key: String) = core.delete(key)
 
     /**
-     * Clears **ALL** data in this KSafe instance.
-     *
-     * This removes all preferences and deletes all associated encryption keys from the Keystore/Keychain.
-     * This operation is destructive and cannot be undone.
+     * Clears all data in this instance, removing every preference and deleting
+     * every associated encryption key. Destructive and irreversible.
      */
     suspend fun clearAll() {
         core.clearAll()
@@ -188,19 +96,11 @@ class KSafe @PublishedApi internal constructor(
     }
 
     /**
-     * Releases the long-running background infrastructure this instance owns
-     * (write consumer, snapshot collector, write channel) so the JVM can
-     * garbage-collect it.
-     *
-     * Optional in production: a `KSafe` that lives for the process lifetime
-     * (the typical singleton pattern) doesn't need this — the OS reclaims
-     * everything on exit. Call it when you re-create `KSafe` mid-process
-     * (test suites, hot-reload during dev, modular feature load/unload),
-     * because each abandoned instance is otherwise pinned in heap by its
-     * suspended coroutines held as GC roots on `Dispatchers.Default`.
-     *
-     * Idempotent. After `close()` the instance can no longer process
-     * puts or reads.
+     * Releases this instance's background infrastructure so it can be
+     * garbage-collected. Needed only when re-creating `KSafe` mid-process
+     * (tests, hot reload, feature unload) — an abandoned instance is otherwise
+     * pinned in heap by its suspended coroutines. Idempotent; the instance can
+     * no longer process puts or reads afterwards.
      */
     fun close() {
         core.cancel()
@@ -209,28 +109,15 @@ class KSafe @PublishedApi internal constructor(
     // --- NON-BLOCKING API (UI Safe) ---
 
     /**
-     * Retrieves a value from the in-memory cache immediately.
+     * Retrieves a value from the in-memory cache without blocking; safe on the
+     * Main/UI thread. Protection is auto-detected from stored metadata. On the
+     * very first access, if the cache has not finished initializing, this
+     * blocks once; subsequent calls are instant.
      *
-     * This method is **non-blocking** and safe to call on the Main/UI thread.
-     * It reads directly from an atomic memory reference, ensuring zero UI freeze.
-     * Protection is auto-detected from stored metadata — no need to specify
-     * whether the value was encrypted or not.
-     *
-     * **Cold Start Behavior:** On the very first app launch, if the cache has not
-     * finished initializing, this will block once to ensure data consistency.
-     * Subsequent calls are always instant.
-     *
-     * ## Example
-     * ```kotlin
-     * val username = ksafe.getDirect("username", "Guest")
-     * val token = ksafe.getDirect("auth_token", "")
-     * ```
-     *
-     * @param T The type of value to retrieve. Supported: [Boolean], [Int], [Long],
-     *          [Float], [Double], [String], and `@Serializable` objects.
-     * @param key The unique key for the value.
-     * @param defaultValue The value to return if the key doesn't exist or decryption fails.
-     * @return The stored value or [defaultValue].
+     * @param T Supported: [Boolean], [Int], [Long], [Float], [Double],
+     *          [String], and `@Serializable` objects.
+     * @return The stored value, or [defaultValue] if the key doesn't exist or
+     *         decryption fails (see [get] for the suspend-variant contract).
      */
     inline fun <reified T> getDirect(key: String, defaultValue: T): T {
         @Suppress("UNCHECKED_CAST")
@@ -260,19 +147,14 @@ class KSafe @PublishedApi internal constructor(
     // --- SUSPEND API (Coroutine Safe) ---
 
     /**
-     * Retrieves a value suspending-ly.
+     * Retrieves a value, suspending (instead of blocking) if the cache is not
+     * ready. Protection is auto-detected from stored metadata.
      *
-     * Like [getDirect], this checks the memory cache first for performance.
-     * If the cache is not ready, it suspends (instead of blocking) until data is loaded.
-     * Protection is auto-detected from stored metadata.
-     *
-     * **Transient-failure contract (differs from [getDirect]/[getFlow]).** On a *transient*
-     * decrypt failure — a locked device or a momentarily busy Keystore/Keychain for an
-     * encrypted key — this suspend variant **rethrows** rather than collapsing to
-     * [defaultValue], so a coroutine caller can await device unlock and retry. [getDirect]
-     * (which has no retry seam) returns [defaultValue] and [getFlow] skips the emission for
-     * the same state. A *non-transient* failure (genuinely absent / corrupt ciphertext) still
-     * returns [defaultValue] here too.
+     * Failure contract: on a *transient* decrypt failure (locked device,
+     * momentarily busy Keystore/Keychain) this rethrows so callers can await
+     * unlock and retry — unlike [getDirect], which returns [defaultValue], and
+     * [getFlow], which skips the emission. A non-transient failure (absent or
+     * corrupt ciphertext) still returns [defaultValue].
      */
     suspend inline fun <reified T> get(key: String, defaultValue: T): T {
         @Suppress("UNCHECKED_CAST")
@@ -280,10 +162,9 @@ class KSafe @PublishedApi internal constructor(
     }
 
     /**
-     * Returns a [kotlinx.coroutines.flow.Flow] that emits the value whenever it changes.
-     *
-     * The Flow emits the current value immediately and then emits any subsequent updates.
-     * It is distinct-until-changed. Protection is auto-detected from stored metadata per emission.
+     * Returns a [Flow] that emits the current value immediately and then every
+     * subsequent update; distinct-until-changed. Protection is auto-detected
+     * per emission.
      */
     inline fun <reified T> getFlow(key: String, defaultValue: T): Flow<T> {
         @Suppress("UNCHECKED_CAST")
@@ -350,20 +231,9 @@ class KSafe @PublishedApi internal constructor(
 
     companion object {
         /**
-         * The published version of this KSafe artifact (e.g. `"2.1.1"`).
-         *
-         * Sourced from `gradle.properties` → `ksafe.version` via the generated
-         * `KSafeBuildConfig.kt`, so this string is guaranteed to match the
-         * Maven coordinates produced by the same build. Useful for:
-         *
-         * - **Demo / sample apps** that load multiple KSafe versions and need
-         *   to confirm which one is linked at runtime.
-         * - **Diagnostic UIs** that surface the running version alongside
-         *   other [protectionInfo] fields.
-         * - **Telemetry** for crash reports / analytics.
-         *
-         * Also exposed as [KSafeProtectionInfo.kSafeVersion] on every instance,
-         * so audit code can read both fields off the same diagnostic object.
+         * The published version of this KSafe artifact (e.g. `"2.1.1"`),
+         * guaranteed to match the Maven coordinates of the same build. Also
+         * exposed as [KSafeProtectionInfo.kSafeVersion].
          */
         val VERSION: String = KSAFE_VERSION
     }
@@ -374,72 +244,34 @@ class KSafe @PublishedApi internal constructor(
  */
 enum class KSafeMemoryPolicy {
     /**
-     * **Discouraged — worst cold-start performance.**
-     * Every encrypted entry is decrypted at cold-start load time and stored as plain text in RAM.
-     * Reads in steady state are instant ($O(1)$ memory lookup), but cold start pays for every
-     * encrypted entry up front: $O(n)$ Keystore round-trips (parallelised in batches of 8 but
-     * still serial-IPC bound). On large encrypted stores under poor Keystore conditions this
-     * can push first-read latency into ANR territory on Android.
-     *
-     * [LAZY_PLAIN_TEXT] gives identical steady-state read performance with cheap
-     * cold-start — decryption is deferred until each key is actually read, then cached
-     * permanently. Apps that touch every key still pay the same total cost; apps that
-     * read a subset pay only for what they use.
-     *
-     * Plaintext also sits in RAM for the full process lifetime (same as [LAZY_PLAIN_TEXT]
-     * after first read), so the security profile is unchanged.
-     *
-     * Prefer [LAZY_PLAIN_TEXT] (the default) unless you have a specific reason to force
-     * eager decryption — e.g. you want to surface decrypt failures synchronously at startup
-     * rather than at first read.
+     * Discouraged: every encrypted entry is decrypted eagerly at cold start,
+     * which can make the first read very slow on large stores.
+     * [LAZY_PLAIN_TEXT] gives identical steady-state reads with a cheap cold
+     * start; prefer it unless you specifically want decrypt failures surfaced
+     * synchronously at startup.
      */
     PLAIN_TEXT,
 
     /**
-     * **High Security.**
-     * Data remains encrypted (Base64 ciphertext) in RAM.
-     * Data is decrypted on-demand every time [getDirect] is called.
-     *
-     * **Trade-off:** Increases CPU usage and latency per read.
-     * Use this for sensitive tokens, passwords, or financial data.
+     * High security: data stays encrypted (Base64 ciphertext) in RAM and is
+     * decrypted on every [getDirect] call. Higher CPU/latency per read; use
+     * for sensitive tokens, passwords, or financial data.
      */
     ENCRYPTED,
 
     /**
-     * **Balanced Security & Performance.**
-     * Data remains encrypted (Base64 ciphertext) in the primary RAM cache, just like [ENCRYPTED].
-     * A secondary plaintext cache stores recently-decrypted values for a configurable TTL.
-     *
-     * Repeated reads within the TTL window skip decryption entirely (pure memory lookup).
-     * After the TTL expires, the plaintext is evicted and the next read decrypts again.
-     *
-     * **Use case:** Compose/SwiftUI screens that read the same encrypted property multiple
-     * times during recomposition/re-render. Only the first read decrypts; subsequent reads
-     * within the TTL are instant.
-     *
-     * Configure the TTL via the `plaintextCacheTtl` constructor parameter (default: 5 seconds).
+     * Like [ENCRYPTED], but recently-decrypted values are kept in a secondary
+     * plaintext cache for a TTL (`plaintextCacheTtl` constructor parameter,
+     * default 5 seconds), so repeated reads within the window skip decryption.
+     * Suited to UI that re-reads the same encrypted property on recomposition.
      */
     ENCRYPTED_WITH_TIMED_CACHE,
 
     /**
-     * **Lazy High Performance (Default).**
-     * Cold start is cheap — encrypted entries stay as Base64 ciphertext in the primary cache,
-     * exactly like [ENCRYPTED]. The first read of each key decrypts on demand and stores the
-     * plaintext in a secondary cache permanently. Every subsequent read for that key is an
-     * $O(1)$ memory lookup — same performance as [PLAIN_TEXT].
-     *
-     * **Trade-offs:**
-     *  - Cold start: as fast as [ENCRYPTED] (no bulk decryption).
-     *  - First read of each key: pays a single decrypt round-trip (~1–3 ms).
-     *  - Subsequent reads: as fast as [PLAIN_TEXT].
-     *  - Memory: each key, once read, holds both ciphertext and plaintext (~2× the cost of
-     *    pure [PLAIN_TEXT] in steady state).
-     *
-     * Spreads the decryption cost across actual read access instead of paying it up front,
-     * so apps that only read a handful of keys never pay for the rest.
-     *
-     * **Use case:** general-purpose default. Best balance of cold-start latency and
-     * steady-state read performance for the common case.
+     * Default: entries stay encrypted until first read, which decrypts on
+     * demand and caches the plaintext permanently. Cold start is as cheap as
+     * [ENCRYPTED] and steady-state reads match [PLAIN_TEXT], at the cost of
+     * holding both ciphertext and plaintext for keys that have been read.
      */
     LAZY_PLAIN_TEXT
 }
@@ -462,28 +294,10 @@ internal fun <T> KSafe.getStateFlowRaw(
 }
 
 /**
- * Returns a [StateFlow] that holds the current value and emits updates whenever it changes.
- *
- * This is a convenience wrapper around [KSafe.getFlow] that converts the cold [Flow] into
- * a hot [StateFlow] using [stateIn] with [SharingStarted.Eagerly]. The [defaultValue] is
- * used as the fallback for missing keys. The initial [StateFlow] value is resolved
- * synchronously via [KSafe.getDirect], so if a value already exists it is emitted
- * immediately — preventing a brief incorrect emission of the default value.
- * Protection is auto-detected from stored metadata.
- *
- * ## Example
- * ```kotlin
- * val username: StateFlow<String> = ksafe.getStateFlow(
- *     key = "username",
- *     defaultValue = "Guest",
- *     scope = viewModelScope
- * )
- * ```
- *
- * @param T The type of value.
- * @param key The unique key.
- * @param defaultValue The fallback value when no stored value exists.
- * @param scope The [CoroutineScope] used to share the flow (e.g., `viewModelScope`).
+ * Returns a hot [StateFlow] of the stored value, shared via [stateIn] with
+ * [SharingStarted.Eagerly] in [scope]. The initial value is resolved
+ * synchronously via [KSafe.getDirect], so an existing value is emitted
+ * immediately rather than a brief incorrect default.
  */
 inline fun <reified T> KSafe.getStateFlow(
     key: String,
@@ -491,7 +305,6 @@ inline fun <reified T> KSafe.getStateFlow(
     scope: CoroutineScope,
 ): StateFlow<T> = getStateFlowRaw(key, defaultValue, serializer<T>(), scope)
 
-/** @deprecated Remove \"encrypted\" parameter. Protection is now auto-detected during reads.  Your \"encrypted\" param is ignored. */
 @Deprecated(
     "Remove \"encrypted\" parameter. Protection is now auto-detected during reads.  Your \"encrypted\" param is ignored. Use getStateFlow(key, defaultValue, scope) instead.",
     ReplaceWith("getStateFlow(key, defaultValue, scope)"),
@@ -504,7 +317,6 @@ inline fun <reified T> KSafe.getStateFlow(
     protection: KSafeProtection = KSafeProtection.DEFAULT
 ): StateFlow<T> = getStateFlowRaw(key, defaultValue, serializer<T>(), scope)
 
-/** @deprecated Use [getStateFlow] without encrypted parameter. */
 @Deprecated(
     "Use getStateFlow(key, defaultValue, scope) instead. Protection is auto-detected on reads.",
     ReplaceWith("getStateFlow(key, defaultValue, scope)"),

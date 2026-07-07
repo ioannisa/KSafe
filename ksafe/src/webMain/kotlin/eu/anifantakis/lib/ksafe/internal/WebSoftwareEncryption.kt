@@ -8,24 +8,14 @@ import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 /**
- * Web (wasmJs + js) implementation of [KSafeEncryption].
+ * Web (wasmJs + js) [KSafeEncryption]: an AES-256-GCM key held as a non-extractable WebCrypto
+ * `CryptoKey` in IndexedDB, so raw key bytes are never exposed to JS. A legacy raw key still in
+ * `localStorage` is imported as a non-extractable key on first touch and the `localStorage` entry
+ * scrubbed, so existing data keeps decrypting while the raw key stops being recoverable.
  *
- * The AES-256-GCM key is a non-extractable WebCrypto `CryptoKey` persisted in
- * IndexedDB ([webKeyEnsure] / [webKeyEncrypt] / [webKeyDecrypt]); the raw key
- * bytes are never exposed to JS or written to a readable location.
+ * WebCrypto is async-only, so the blocking [encrypt]/[decrypt] throw; all work goes through the
+ * suspend variants.
  *
- * **Migration:** a key written by an older KSafe still lives in `localStorage`
- * under `"<storagePrefix>ksafe_key_<alias>"`. On first access for that alias the
- * legacy raw bytes are imported as a *non-extractable* key into IndexedDB and
- * the `localStorage` entry is deleted, so previously encrypted data keeps
- * decrypting while the raw key stops being recoverable going forward.
- *
- * WebCrypto is async-only, so the blocking [encrypt]/[decrypt] throw; all work
- * goes through the suspend variants (KSafe's web path is fully coroutine-based,
- * see [KSafeEncryption]).
- *
- * @property config Key-generation configuration (unused for generation now —
- *   WebCrypto fixes AES-GCM at 256-bit — kept for API symmetry).
  * @property storagePrefix Prefix scoping keys to this KSafe instance.
  */
 @PublishedApi
@@ -38,32 +28,19 @@ internal class WebSoftwareEncryption(
         private const val KEY_PREFIX = "ksafe_key_"
     }
 
-    /**
-     * Optional app-isolation prefix for the IndexedDB **destination** record.
-     * The browser already isolates IndexedDB/localStorage by origin, so this
-     * is defense-in-depth for multiple independent KSafe setups in one origin
-     * and parity with the JVM namespace. Derived from
-     * `KSafeConfig.appNamespace`; blank ⇒ no prefix (unchanged behaviour).
-     */
+    /** App-isolation prefix for the IndexedDB destination record; blank when no appNamespace is set. */
     private val appNsPrefix: String =
         config.appNamespace?.trim()?.takeIf { it.isNotEmpty() }
             ?.replace(Regex("[^A-Za-z0-9._-]"), "_")?.take(120)
             ?.let { "$it:" } ?: ""
 
-    /**
-     * Frozen KSafe ≤ 2.0 `localStorage` key — the migration source. Must NOT
-     * be namespaced or legacy data stops migrating.
-     */
+    /** Frozen legacy `localStorage` key (migration source); never namespaced or legacy data stops migrating. */
     private fun legacyKey(alias: String): String = "$storagePrefix$KEY_PREFIX$alias"
 
     /** IndexedDB record key (the namespaced destination). */
     private fun idbName(alias: String): String = "$appNsPrefix$storagePrefix$KEY_PREFIX$alias"
 
-    /**
-     * The pre-`appNamespace` IndexedDB record name — where the key lived before an
-     * `appNamespace` was configured (`appNsPrefix` was empty). Equals [idbName] when no
-     * namespace is set. Used to migrate the key forward on upgrade (FEEDBACK_4 FB3-H1).
-     */
+    /** Pre-`appNamespace` IndexedDB record name; the migrate-forward source when a namespace is added. */
     private fun unNamespacedIdbName(alias: String): String = "$storagePrefix$KEY_PREFIX$alias"
 
     /** Aliases whose key+migration has been resolved this session. */
@@ -74,13 +51,11 @@ internal class WebSoftwareEncryption(
     private val nsMigrated = HashSet<String>()
 
     /**
-     * One-shot per alias: when an `appNamespace` is set, migrate a key written before the
-     * namespace existed (at [unNamespacedIdbName]) to the namespaced record name ([idbName]),
-     * so adding `appNamespace` on upgrade keeps existing encrypted data readable — the R4
-     * data migration moved the ciphertext but the key's IndexedDB name is derived
-     * independently (FEEDBACK_4 FB3-H1). Non-destructive: copies only if the destination is
-     * absent and the source exists; the source key is left in place. No-op without a namespace.
-     * Callers hold [ensureMutex].
+     * When an `appNamespace` is set, copy a key written before the namespace existed
+     * ([unNamespacedIdbName]) to the namespaced record name ([idbName]), so existing encrypted
+     * data stays readable on upgrade — the data namespace and the key's IndexedDB name isolate
+     * independently. Non-destructive (copy only if the destination is absent); no-op without a
+     * namespace. Callers hold [ensureMutex].
      */
     private suspend fun migrateNamespacedKeyOnce(alias: String) {
         if (appNsPrefix.isEmpty() || alias in nsMigrated) return
@@ -96,14 +71,11 @@ internal class WebSoftwareEncryption(
         if (alias in ensured) return
         ensureMutex.withLock {
             if (alias in ensured) return
-            // Migrate a pre-appNamespace IndexedDB key forward before resolving (FB3-H1).
             migrateNamespacedKeyOnce(alias)
-            // Read the legacy key from the FROZEN (un-namespaced) localStorage
-            // location; import it into the namespaced IndexedDB destination.
-            val legacy = localStorageGet(legacyKey(alias)) // Base64 or null
+            val legacy = localStorageGet(legacyKey(alias))
             webKeyEnsure(idbName(alias), legacy, mintIfAbsent = true)
             if (legacy != null) {
-                // Raw key now lives only as a non-extractable CryptoKey in IDB.
+                // Raw key now lives only as a non-extractable CryptoKey in IndexedDB.
                 localStorageRemove(legacyKey(alias))
             }
             ensured.add(alias)
@@ -111,40 +83,33 @@ internal class WebSoftwareEncryption(
     }
 
     /**
-     * Read-path key resolution (FEEDBACK_4 H-A): migrates a legacy `localStorage`
-     * key if present, but NEVER mints a fresh key when the key is absent — so a
-     * `decrypt` of ciphertext whose IndexedDB key was evicted fails recoverably
-     * ("web key missing") instead of minting a key that can never decrypt it and
-     * permanently poisoning the ciphertext. Does not add to [ensured] on a mint-free
-     * miss, so a later `encrypt` can still create the key if genuinely absent.
+     * Read-path key resolution: migrates a legacy `localStorage` key if present, but NEVER mints
+     * one when the key is absent — a `decrypt` of ciphertext whose IndexedDB key was evicted must
+     * fail recoverably ("web key missing") rather than mint a key that can never decrypt it. A
+     * mint-free miss is not marked [ensured], so a later `encrypt` can still create the key.
      */
     private suspend fun ensureKeyForRead(alias: String) {
         if (alias in ensured) return
         ensureMutex.withLock {
             if (alias in ensured) return
-            // Migrate a pre-appNamespace IndexedDB key forward so a read after adding
-            // appNamespace on upgrade finds it at the namespaced name (FB3-H1).
             migrateNamespacedKeyOnce(alias)
-            val legacy = localStorageGet(legacyKey(alias)) // Base64 or null
+            val legacy = localStorageGet(legacyKey(alias))
             webKeyEnsure(idbName(alias), legacy, mintIfAbsent = false)
             if (legacy != null) {
-                // A legacy key provably decrypts existing data — importing it is safe on
-                // the read path; scrub the raw copy and treat the alias as resolved.
+                // A legacy key provably decrypts existing data, so importing it on the read path
+                // is safe; scrub the raw copy and treat the alias as resolved.
                 localStorageRemove(legacyKey(alias))
                 ensured.add(alias)
             }
-            // No legacy key: whether or not an IndexedDB key exists, do NOT mark
-            // `ensured` — an absent key must stay mintable by a future encrypt.
+            // Absent key stays mintable: don't mark `ensured` so a future encrypt can create it.
         }
     }
 
     /**
-     * Drops [alias] from the per-instance [ensured] short-circuit and ensures it
-     * again — regenerating the IndexedDB key if it is gone. Used to self-heal
-     * after another tab deleted the key (clearAll / logout): the cross-tab
-     * `BroadcastChannel` eviction only clears the JS `mem` cache, not this Kotlin
-     * set, so without this a surviving tab would short-circuit [ensureKey] forever
-     * and every encrypted write would fail "web key missing" (deep-review H5).
+     * Drops [alias] from [ensured] and re-ensures it, regenerating the IndexedDB key if gone.
+     * Self-heals after another tab deleted the key (clearAll / logout): the cross-tab
+     * `BroadcastChannel` eviction clears only the JS `mem` cache, not this Kotlin set, so without
+     * this a surviving tab short-circuits [ensureKey] forever and every write fails.
      */
     private suspend fun reEnsureKey(alias: String) {
         ensureMutex.withLock { ensured.remove(alias) }
@@ -177,9 +142,8 @@ internal class WebSoftwareEncryption(
             Base64.decode(webKeyEncrypt(idbName(identifier), Base64.encode(data)))
         } catch (e: Throwable) {
             if (e is CancellationException) throw e
-            // Another tab deleted this key (clearAll / logout) after we cached it in
-            // `ensured`; regenerate a fresh IndexedDB key and retry once so this tab's
-            // write succeeds instead of silently failing forever (deep-review H5).
+            // Another tab deleted this key after we cached it in `ensured`; regenerate a fresh
+            // IndexedDB key and retry once so this tab's write succeeds instead of failing forever.
             if (isWebKeyMissing(e)) {
                 reEnsureKey(identifier)
                 Base64.decode(webKeyEncrypt(idbName(identifier), Base64.encode(data)))
@@ -189,46 +153,34 @@ internal class WebSoftwareEncryption(
 
     @OptIn(ExperimentalEncodingApi::class)
     override suspend fun decryptSuspend(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
-        // Read path must never mint a key (FEEDBACK_4 H-A): if the IndexedDB key was
-        // evicted while the ciphertext survives, this surfaces "web key missing"
-        // (recoverable) rather than minting a key that permanently poisons the data.
+        // Read path never mints a key: an evicted key surfaces "web key missing" (recoverable)
+        // rather than minting one that can't decrypt the surviving ciphertext.
         ensureKeyForRead(identifier)
         val plainB64 = webKeyDecrypt(idbName(identifier), Base64.encode(data))
         return Base64.decode(plainB64)
     }
 
     override fun deleteKey(identifier: String) {
-        // Remove any leftover legacy localStorage entry (frozen key)…
         localStorageRemove(legacyKey(identifier))
-        // …and fire-and-forget the IndexedDB removal (namespaced destination).
         webKeyDeleteNoWait(idbName(identifier))
-        // Deliberately NOT deleting unNamespacedIdbName(identifier) (FEEDBACK_4 L9): once an
-        // appNamespace is set that record is the LIVE key of any co-existing no-appNamespace
-        // KSafe on the same fileName (its idbName == our unNamespacedIdbName), so deleting it
-        // here would be an H2-class cross-instance data loss — the same sibling FB3-M2/FB3-H1's
-        // non-destructive migration exists to protect. The pre-namespace copy that migration
-        // leaves is a non-extractable key (no plaintext), so the orphan is a harmless accepted
-        // cost, never worth risking a live sibling's data. See WebEngineKeyNamespaceTest.
+        // Deliberately never delete unNamespacedIdbName: once an appNamespace is set that record
+        // is the live key of any co-existing no-namespace KSafe on the same fileName (its idbName
+        // equals our unNamespacedIdbName), so deleting it would be cross-instance data loss. The
+        // orphan it leaves is a non-extractable key (no plaintext), a harmless cost.
         ensured.remove(identifier)
     }
 
     override suspend fun deleteKeySuspend(identifier: String) {
         localStorageRemove(legacyKey(identifier))
         webKeyDelete(idbName(identifier))
-        // See deleteKey: unNamespacedIdbName is a co-existing no-namespace sibling's live key and
-        // is deliberately never deleted here — deleting it would reintroduce the H2 steal (L9).
+        // See deleteKey: unNamespacedIdbName is a co-existing sibling's live key, never deleted here.
         ensured.remove(identifier)
     }
 
     /**
-     * Eager sweep: imports every legacy raw key still sitting in `localStorage`
-     * under `"<storagePrefix>ksafe_key_<alias>"` into IndexedDB and deletes the
-     * `localStorage` entry — a key that is never read again must not keep its
-     * extractable plaintext exposed indefinitely.
-     *
-     * Reuses [ensureKey] per alias: the `localStorage` entry is removed only
-     * after the IndexedDB persist succeeds, and it's idempotent via the
-     * `ensured` set + mutex. Best-effort and per-alias isolated.
+     * Eager sweep: imports every legacy raw key still in `localStorage` into IndexedDB and deletes
+     * the `localStorage` entry, so a key never read again doesn't keep its plaintext exposed.
+     * Best-effort, per-alias isolated, idempotent via [ensureKey]'s `ensured` set + mutex.
      */
     override suspend fun migrateLegacyKeysSuspend() {
         val legacyPrefix = "$storagePrefix$KEY_PREFIX"
@@ -240,9 +192,7 @@ internal class WebSoftwareEncryption(
         }
         for (alias in aliases) {
             runCatching { ensureKey(alias) }
-                // Cancellation must propagate — `ensureKey` suspends on a mutex,
-                // and swallowing CancellationException would keep the loop
-                // running on a cancelled coroutine.
+                // Cancellation must propagate; swallowing it would keep looping on a cancelled coroutine.
                 .onFailure { if (it is CancellationException) throw it }
         }
     }

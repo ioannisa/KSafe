@@ -8,15 +8,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * macOS coverage for KSafe with `fileName = null` — the default-named
- * DataStore code path.
- *
- * Unlike [IosNullFilenameTest], this test never touches the default
- * `NSApplicationSupportDirectory` location: every instance is pinned to a
- * temp directory via `directory = ...`. The point is to verify that the
- * "no fileName" branch (which uses the bare `eu_anifantakis_ksafe_datastore`
- * basename without the `_<name>` suffix) still produces a working KSafe
- * on macOS.
+ * Locks in: with `fileName = null` KSafe uses the bare `eu_anifantakis_ksafe_datastore`
+ * basename (no `_<name>` suffix) and still works on macOS. Pinned to a temp directory so
+ * it never touches the shared `NSApplicationSupportDirectory` location.
  */
 @OptIn(ExperimentalForeignApi::class)
 class MacosNullFilenameTest {
@@ -29,7 +23,6 @@ class MacosNullFilenameTest {
         createdDirs.clear()
     }
 
-    /** Verifies KSafe works with null filename (uses default basename). */
     @Test
     fun testWithNullFilename() = runTest {
         val tempDir = MacosTestPaths.uniqueTempDir("macos-nullname")
@@ -47,7 +40,6 @@ class MacosNullFilenameTest {
         ksafe.put(key, value, KSafeWriteMode.Plain)
         assertEquals(value, ksafe.get(key, "default"))
 
-        // The default basename has no `_<name>` suffix.
         val expectedPath = "$tempDir/eu_anifantakis_ksafe_datastore.preferences_pb"
         assertTrue(
             MacosTestPaths.fileExists(expectedPath),

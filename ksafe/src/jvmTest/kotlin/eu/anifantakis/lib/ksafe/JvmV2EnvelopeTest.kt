@@ -13,16 +13,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * Tests the v2 envelope: per-datastore master key for [KSafeProtection.DEFAULT]
- * writes, with v1 on-disk entries continuing to read through the legacy
- * per-entry-key path.
- *
- * Verifies the contract end-to-end against the real
- * [eu.anifantakis.lib.ksafe.internal.JvmSoftwareEncryption] engine and the
- * underlying DataStore — no fakes — so a regression in routing or metadata
- * format would surface here.
- */
+/** Locks in: DEFAULT writes share a per-datastore master key and are marked v2, while v1 on-disk entries still read via the legacy per-entry-key path. */
 class JvmV2EnvelopeTest {
 
     private fun masterAliasFor(fileName: String): String = "$fileName:__ksafe_master__"
@@ -31,7 +22,6 @@ class JvmV2EnvelopeTest {
 
     private fun keyStorageRawKey(alias: String): String = "ksafe_key_$alias"
 
-    /** Convenience: read the entire DataStore prefs map. */
     private suspend fun snapshot(ksafe: KSafe): Preferences = ksafe.dataStore.data.first()
 
     private fun Preferences.getString(rawKey: String): String? =
@@ -50,7 +40,6 @@ class JvmV2EnvelopeTest {
         assertTrue(meta.contains("\"v\":2"), "v2 envelope marker missing — got: $meta")
         assertTrue(meta.contains("\"p\":\"DEFAULT\""), "protection literal must be DEFAULT — got: $meta")
 
-        // Round-trip still works.
         assertEquals("bar", ksafe.get("foo", "DEFAULT"))
     }
 
@@ -66,18 +55,15 @@ class JvmV2EnvelopeTest {
 
         val prefs = snapshot(ksafe)
 
-        // Master key must exist exactly once for the relaxed (non-locked) variant.
+        // One shared master (relaxed/non-locked variant); no per-entry key — all keys share it.
         val masterRaw = prefs.getString(keyStorageRawKey(masterAliasFor(fileName)))
         assertNotNull(masterRaw, "master key not persisted for v2 default writes")
 
-        // No per-entry key should exist for any of the user keys — they all
-        // share the master.
         for (userKey in listOf("alpha", "beta", "gamma")) {
             val perEntry = prefs.getString(keyStorageRawKey(keyAliasFor(fileName, userKey)))
             assertNull(perEntry, "per-entry key for $userKey must not exist when v2 routes to master")
         }
 
-        // Reads round-trip.
         assertEquals("1", ksafe.get("alpha", "?"))
         assertEquals("2", ksafe.get("beta", "?"))
         assertEquals("3", ksafe.get("gamma", "?"))
@@ -85,23 +71,17 @@ class JvmV2EnvelopeTest {
 
     @Test
     fun legacyV1EntryOnDiskRemainsReadable() = runTest {
-        // Fabricate a v1 entry: write encrypted, then overwrite the meta to
-        // the legacy literal "DEFAULT" form (no `v` field). KSafeCore must
-        // still decrypt via the per-entry alias path because parseEnvelopeVersion
-        // returns v1 for the literal form.
+        // A v1 entry carries the legacy literal "DEFAULT" meta (no `v` field) and must
+        // still decrypt via the per-entry alias path.
         val fileName = JvmKSafeTest.generateUniqueFileName()
         val seedKsafe = KSafe(fileName)
         seedKsafe.put("legacyKey", "legacyValue")
         delay(300)
 
-        // Pre-condition: the seed wrote v2.
         val ds = seedKsafe.dataStore
         assertTrue(snapshot(seedKsafe).getString("__ksafe_meta_legacyKey__")!!.contains("\"v\":2"))
 
-        // Now mutate ON-DISK shape to look like a v1 entry: encrypt the value
-        // under the per-entry alias and replace metadata with the legacy literal.
-        // We do this by re-encrypting the value through the engine and patching
-        // the prefs file directly.
+        // Rewrite on-disk to the v1 shape: encrypt under the per-entry alias, replace meta with the legacy literal.
         val ciphertextB64 = seedKsafe.engine.encrypt(
             identifier = keyAliasFor(fileName, "legacyKey"),
             data = "\"legacyValue\"".encodeToByteArray(),
@@ -111,10 +91,8 @@ class JvmV2EnvelopeTest {
             prefs[stringPreferencesKey("__ksafe_meta_legacyKey__")] = "DEFAULT" // legacy literal
         }
         seedKsafe.close()
-        // Allow DataStore time to flush before reopening.
-        delay(200)
+        delay(200) // let DataStore flush before reopening
 
-        // Reopen — fresh KSafeCore reads the legacy entry via v1 path.
         val reopened = KSafe(fileName)
         delay(400) // let cache populate
         assertEquals("legacyValue", reopened.get("legacyKey", "?"))
@@ -125,7 +103,7 @@ class JvmV2EnvelopeTest {
         val fileName = JvmKSafeTest.generateUniqueFileName()
         val seedKsafe = KSafe(fileName)
 
-        // Same as above: fabricate a v1 entry on disk.
+        // Fabricate a v1 entry on disk.
         val ciphertextB64 = seedKsafe.engine.encrypt(
             identifier = keyAliasFor(fileName, "k"),
             data = "\"v1value\"".encodeToByteArray(),
@@ -140,10 +118,8 @@ class JvmV2EnvelopeTest {
         val reopened = KSafe(fileName)
         delay(300)
 
-        // Read v1 first (proves v1 path).
         assertEquals("v1value", reopened.get("k", "?"))
 
-        // Overwrite with v2.
         reopened.put("k", "v2value")
         delay(400)
 
@@ -161,10 +137,9 @@ class JvmV2EnvelopeTest {
         ksafe.put("b", "2")
         delay(400)
 
-        // Master is created.
         assertNotNull(snapshot(ksafe).getString(keyStorageRawKey(masterAliasFor(fileName))))
 
-        // Delete one entry — master stays.
+        // Deleting one entry must leave the master — other entries still depend on it.
         ksafe.delete("a")
         delay(300)
 
@@ -172,7 +147,6 @@ class JvmV2EnvelopeTest {
             snapshot(ksafe).getString(keyStorageRawKey(masterAliasFor(fileName))),
             "master key must survive single-entry delete (other entries still depend on it)"
         )
-        // The other entry must still decrypt.
         assertEquals("2", ksafe.get("b", "?"))
     }
 
@@ -184,15 +158,12 @@ class JvmV2EnvelopeTest {
         ksafe.put("x", "y")
         delay(300)
 
-        // Sanity: master exists.
         assertNotNull(snapshot(ksafe).getString(keyStorageRawKey(masterAliasFor(fileName))))
 
         ksafe.clearAll()
         delay(300)
 
-        // The DataStore file is also wiped by JVM shell's onClearAllCleanup,
-        // so a follow-up snapshot would see the empty preferences. The master
-        // key entry, which lived in the same file, must be gone.
+        // The JVM shell wipes the DataStore file on clearAll, so the master key that lived in it is gone.
         val prefs = snapshot(ksafe)
         assertNull(
             prefs.getString(keyStorageRawKey(masterAliasFor(fileName))),
@@ -206,16 +177,10 @@ class JvmV2EnvelopeTest {
 
     @Test
     fun clearAllDeletesPerEntryHardwareIsolatedKeyNotJustMaster() = runTest {
-        // clearAll must explicitly delete per-entry HARDWARE_ISOLATED keys (and
-        // legacy v1 keys), not just the master alias: they live OUTSIDE the
-        // DataStore on the real OS-vault (Keychain/DPAPI/Secret Service) and web
-        // (IndexedDB) backends, so wiping storage doesn't reclaim them — and
-        // those platforms have no startup orphan sweep for engine keys, so they
-        // would leak across clearAll() cycles.
-        //
-        // FakeEncryption records every deleteKey identifier, so we can assert the
-        // engine was asked to drop the per-entry alias regardless of where a real
-        // engine would physically store it.
+        // Per-entry HARDWARE_ISOLATED (and legacy v1) keys live OUTSIDE the DataStore on real
+        // OS-vault/web backends with no startup orphan sweep, so clearAll must delete them
+        // explicitly or they leak across cycles. FakeEncryption records every deleteKey
+        // identifier, so we can assert the engine was asked to drop them.
         val fileName = JvmKSafeTest.generateUniqueFileName()
         val fake = FakeEncryption()
         val ksafe = KSafe(fileName = fileName, testEngine = fake)
@@ -227,7 +192,7 @@ class JvmV2EnvelopeTest {
         )                               // HARDWARE_ISOLATED → per-entry alias
         delay(300)
 
-        fake.deletedKeys.clear()        // ignore any deletes from the writes themselves
+        fake.deletedKeys.clear()        // ignore deletes from the writes themselves
         ksafe.clearAll()
         delay(300)
 
@@ -243,12 +208,9 @@ class JvmV2EnvelopeTest {
 
     @Test
     fun clearAll_onFreshLazyInstance_stillDeletesPerEntryKeys() = runTest {
-        // clearAll reads protectionMap to find per-entry engine keys. If the
-        // cache isn't preloaded (lazyLoad, or before the first snapshot), that
-        // map is empty and the keys would leak — clearAll must load the cache
-        // first (ensureCacheReadySuspend). Here we seed a HARDWARE_ISOLATED
-        // entry on disk, reopen LAZILY, and call clearAll() as the very first
-        // operation — it must still delete the per-entry key.
+        // clearAll reads protectionMap for per-entry engine keys; on a fresh lazyLoad instance
+        // that map is empty until loaded, so clearAll must load the cache first
+        // (ensureCacheReadySuspend) or the on-disk HARDWARE_ISOLATED key leaks.
         val fileName = JvmKSafeTest.generateUniqueFileName()
 
         val seed = KSafe(fileName = fileName, testEngine = FakeEncryption())
@@ -260,7 +222,6 @@ class JvmV2EnvelopeTest {
         seed.close()
         delay(200)
 
-        // Fresh, lazy instance: protectionMap stays empty until something loads it.
         val fake = FakeEncryption()
         val reopened = KSafe(fileName = fileName, lazyLoad = true, testEngine = fake)
         reopened.clearAll() // FIRST op — must still see the on-disk HW-isolated entry

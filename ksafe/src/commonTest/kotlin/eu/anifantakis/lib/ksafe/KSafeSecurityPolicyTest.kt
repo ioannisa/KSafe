@@ -8,13 +8,10 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Tests for [KSafeSecurityPolicy], [SecurityAction], [SecurityViolation], and [SecurityViolationException].
+ * Locks in: SecurityAction/SecurityViolation enums, SecurityViolationException, and KSafeSecurityPolicy presets and data-class behavior.
  */
 class KSafeSecurityPolicyTest {
 
-    // ============ SECURITY ACTION TESTS ============
-
-    /** Verifies SecurityAction enum contains exactly 3 values: IGNORE, WARN, BLOCK */
     @Test
     fun securityAction_hasCorrectValues() {
         val actions = SecurityAction.entries
@@ -24,18 +21,13 @@ class KSafeSecurityPolicyTest {
         assertTrue(actions.contains(SecurityAction.BLOCK))
     }
 
-    /** Verifies SecurityAction ordinal values maintain expected order for severity */
     @Test
     fun securityAction_ordinalOrder() {
-        // Verify order is IGNORE, WARN, BLOCK
         assertEquals(0, SecurityAction.IGNORE.ordinal)
         assertEquals(1, SecurityAction.WARN.ordinal)
         assertEquals(2, SecurityAction.BLOCK.ordinal)
     }
 
-    // ============ SECURITY VIOLATION TESTS ============
-
-    /** Verifies SecurityViolation enum has correct number of entries */
     @Test
     fun securityViolation_hasCorrectValues() {
         val violations = SecurityViolation.entries
@@ -46,9 +38,6 @@ class KSafeSecurityPolicyTest {
         assertTrue(violations.contains(SecurityViolation.Emulator))
     }
 
-    // ============ SECURITY VIOLATION EXCEPTION TESTS ============
-
-    /** Verifies SecurityViolationException stores the violation and includes enum name in message */
     @Test
     fun securityViolationException_containsViolation() {
         val violation = SecurityViolation.RootedDevice
@@ -58,14 +47,12 @@ class KSafeSecurityPolicyTest {
         assertTrue(exception.message!!.contains("RootedDevice"))
     }
 
-    /** Verifies exception message follows expected format pattern */
     @Test
     fun securityViolationException_messageFormat() {
         val exception = SecurityViolationException(SecurityViolation.DebuggerAttached)
         assertEquals("Security violation: DebuggerAttached", exception.message)
     }
 
-    /** Verifies exception extends RuntimeException for try-catch compatibility */
     @Test
     fun securityViolationException_canBeCaughtAsRuntimeException() {
         var caught = false
@@ -77,9 +64,6 @@ class KSafeSecurityPolicyTest {
         assertTrue(caught, "SecurityViolationException should be catchable as RuntimeException")
     }
 
-    // ============ KSAFE SECURITY POLICY - DEFAULT VALUES ============
-
-    /** Verifies default constructor sets all actions to IGNORE with no callback */
     @Test
     fun securityPolicy_defaultValues() {
         val policy = KSafeSecurityPolicy()
@@ -91,7 +75,6 @@ class KSafeSecurityPolicyTest {
         assertNull(policy.onViolation)
     }
 
-    /** Verifies Default preset matches default constructor behavior */
     @Test
     fun securityPolicy_defaultPreset_matchesDefaultConstructor() {
         val default = KSafeSecurityPolicy.Default
@@ -103,9 +86,6 @@ class KSafeSecurityPolicyTest {
         assertEquals(constructor.emulator, default.emulator)
     }
 
-    // ============ KSAFE SECURITY POLICY - PRESET POLICIES ============
-
-    /** Verifies Strict preset blocks root/debugger and warns on debug/emulator */
     @Test
     fun securityPolicy_strictPreset_hasCorrectValues() {
         val strict = KSafeSecurityPolicy.Strict
@@ -116,7 +96,6 @@ class KSafeSecurityPolicyTest {
         assertEquals(SecurityAction.WARN, strict.emulator)
     }
 
-    /** Verifies WarnOnly preset warns on all security violations */
     @Test
     fun securityPolicy_warnOnlyPreset_hasCorrectValues() {
         val warnOnly = KSafeSecurityPolicy.WarnOnly
@@ -127,9 +106,6 @@ class KSafeSecurityPolicyTest {
         assertEquals(SecurityAction.WARN, warnOnly.emulator)
     }
 
-    // ============ KSAFE SECURITY POLICY - CUSTOM CONFIGURATION ============
-
-    /** Verifies custom policy allows mixing different actions per violation type */
     @Test
     fun securityPolicy_customConfiguration() {
         val policy = KSafeSecurityPolicy(
@@ -145,7 +121,6 @@ class KSafeSecurityPolicyTest {
         assertEquals(SecurityAction.BLOCK, policy.emulator)
     }
 
-    /** Verifies onViolation callback is stored and invocable */
     @Test
     fun securityPolicy_withCallback() {
         var callbackInvoked = false
@@ -160,14 +135,12 @@ class KSafeSecurityPolicyTest {
 
         assertNotNull(policy.onViolation)
 
-        // Invoke the callback manually to test it works
         policy.onViolation.invoke(SecurityViolation.RootedDevice)
 
         assertTrue(callbackInvoked)
         assertEquals(SecurityViolation.RootedDevice, receivedViolation)
     }
 
-    /** Verifies callback can receive all violation types */
     @Test
     fun securityPolicy_callbackReceivesAllViolationTypes() {
         val receivedViolations = mutableListOf<SecurityViolation>()
@@ -178,7 +151,6 @@ class KSafeSecurityPolicyTest {
             }
         )
 
-        // Simulate receiving all violation types
         policy.onViolation?.invoke(SecurityViolation.RootedDevice)
         policy.onViolation?.invoke(SecurityViolation.DebuggerAttached)
         policy.onViolation?.invoke(SecurityViolation.DebugBuild)
@@ -191,9 +163,6 @@ class KSafeSecurityPolicyTest {
         assertTrue(receivedViolations.contains(SecurityViolation.Emulator))
     }
 
-    // ============ DATA CLASS BEHAVIOR ============
-
-    /** Verifies data class equality based on field values */
     @Test
     fun securityPolicy_equality() {
         val policy1 = KSafeSecurityPolicy(
@@ -213,7 +182,6 @@ class KSafeSecurityPolicyTest {
         assertFalse(policy1 == policy3)
     }
 
-    /** Verifies copy() creates modified instance without mutating original */
     @Test
     fun securityPolicy_copy() {
         val original = KSafeSecurityPolicy(
@@ -229,7 +197,6 @@ class KSafeSecurityPolicyTest {
         assertEquals(SecurityAction.BLOCK, copied.debuggerAttached)
     }
 
-    /** Verifies hashCode consistency for equal objects */
     @Test
     fun securityPolicy_hashCode() {
         val policy1 = KSafeSecurityPolicy(rootedDevice = SecurityAction.WARN)
@@ -238,20 +205,13 @@ class KSafeSecurityPolicyTest {
         assertEquals(policy1.hashCode(), policy2.hashCode())
     }
 
-    // ============ PRESET POLICIES ARE SINGLETONS ============
-
-    /** Verifies preset policies return same instance (singleton pattern) */
     @Test
     fun securityPolicy_presetsAreSingletons() {
-        // Same reference should be returned each time
         assertTrue(KSafeSecurityPolicy.Default === KSafeSecurityPolicy.Default)
         assertTrue(KSafeSecurityPolicy.Strict === KSafeSecurityPolicy.Strict)
         assertTrue(KSafeSecurityPolicy.WarnOnly === KSafeSecurityPolicy.WarnOnly)
     }
 
-    // ============ PARTIAL CONFIGURATION ============
-
-    /** Verifies unspecified fields default to IGNORE when partially configuring */
     @Test
     fun securityPolicy_partialConfiguration_otherFieldsRemainDefault() {
         val policy = KSafeSecurityPolicy(
@@ -259,8 +219,8 @@ class KSafeSecurityPolicyTest {
         )
 
         assertEquals(SecurityAction.BLOCK, policy.rootedDevice)
-        assertEquals(SecurityAction.IGNORE, policy.debuggerAttached) // Default
-        assertEquals(SecurityAction.IGNORE, policy.debugBuild) // Default
-        assertEquals(SecurityAction.IGNORE, policy.emulator) // Default
+        assertEquals(SecurityAction.IGNORE, policy.debuggerAttached)
+        assertEquals(SecurityAction.IGNORE, policy.debugBuild)
+        assertEquals(SecurityAction.IGNORE, policy.emulator)
     }
 }

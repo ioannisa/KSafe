@@ -9,23 +9,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Proof-test for encryption on the JVM target.
- *
- * Exercises the production encryption path (no test engine injected — real
- * [JvmSoftwareEncryption] + AES-256-GCM runs) and then reads the raw bytes
- * of the underlying DataStore `.preferences_pb` file from disk. Asserts:
- *
- *  1. Encrypted writes: the plaintext sentinel does **not** appear anywhere
- *     in the file. The stored value is ciphertext, not the original string.
- *  2. Round-trip through KSafe still returns the original plaintext, i.e.
- *     encryption is sound and reversible.
- *  3. Baseline counter-test: a [KSafeWriteMode.Plain] write **does** leak
- *     the sentinel verbatim, which proves the negative assertion in (1) is
- *     meaningful (it is not just "the file is empty").
- *
- * These tests are also the regression guard against any future change that
- * might accidentally bypass encryption or write plaintext where ciphertext
- * is expected.
+ * Locks in: on the JVM production path (real AES-256-GCM), an encrypted write never leaves its plaintext sentinel in the raw `.preferences_pb` file yet still round-trips, while a KSafeWriteMode.Plain write does leak it verbatim — proving the negative check is meaningful.
  */
 class JvmEncryptionProofTest {
 
@@ -36,12 +20,8 @@ class JvmEncryptionProofTest {
     }
 
     /**
-     * Waits (REAL time) until [file] exists and its size is stable. The write
-     * path flushes to disk on a background coroutine, and `delay(...)` is
-     * *virtual* under `runTest` (skipped instantly) — so on a slow CI runner
-     * the on-disk file may not exist yet when the test reads it
-     * (`FileNotFoundException`). `Thread.sleep` is real even under runTest's
-     * virtual clock, so this is a deterministic settle barrier.
+     * Waits in REAL time until [file] exists with a stable size. runTest's `delay` is virtual, but the
+     * write flushes on a background coroutine, so `Thread.sleep` is the real settle barrier.
      */
     private fun awaitFileReady(file: File, timeoutMs: Long = 15_000) {
         val deadline = System.currentTimeMillis() + timeoutMs
@@ -61,11 +41,9 @@ class JvmEncryptionProofTest {
         val fileName = JvmKSafeTest.generateUniqueFileName()
         val ksafe = KSafe(fileName = fileName)
 
-        // Encrypted write (the default mode).
         ksafe.put(KEY, SENTINEL)
         awaitFileReady(dataStoreFile(fileName))
 
-        // Sanity — encryption must be reversible.
         assertEquals(SENTINEL, ksafe.get(KEY, "DEFAULT"), "encryption must round-trip")
 
         val dataFile = dataStoreFile(fileName)
@@ -81,11 +59,8 @@ class JvmEncryptionProofTest {
 
     @Test
     fun plainModeWriteDoesLeakPlaintextToDataStoreFile() = runTest {
-        // The positive baseline: a KSafeWriteMode.Plain write is expected to
-        // store the sentinel verbatim. If this assertion ever fails, the raw
-        // file-bytes search in `encryptedWriteDoesNotLeakPlaintextToDataStoreFile`
-        // has become meaningless (both tests would pass even if writes never
-        // happened), so we check it explicitly.
+        // Positive baseline: a Plain write must store the sentinel verbatim, else the raw-bytes search
+        // in the encrypted test would be meaningless (both would pass even if writes never happened).
         val fileName = JvmKSafeTest.generateUniqueFileName()
         val ksafe = KSafe(fileName = fileName)
 
@@ -103,9 +78,7 @@ class JvmEncryptionProofTest {
     }
 
     companion object {
-        // A distinctive, high-entropy plaintext — picked so that the odds of
-        // it appearing as a random substring of arbitrary ciphertext or
-        // protobuf framing bytes are negligible.
+        // High-entropy sentinel: negligible odds of appearing as a random substring of ciphertext or protobuf framing.
         private const val SENTINEL = "KSAFE_PLAINTEXT_PROOF_SENTINEL_XYZABC_1234567890"
         private const val KEY = "proof_token"
     }

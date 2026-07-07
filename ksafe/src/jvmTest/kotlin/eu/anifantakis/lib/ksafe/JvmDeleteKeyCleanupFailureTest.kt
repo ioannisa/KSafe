@@ -6,10 +6,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Per-entry key deletion runs AFTER the batch is already committed to disk, so
- * a failure in `engine.deleteKey` must not be reported as a failed batch: the
- * value is already gone from storage and the awaiting `delete()` must complete
- * normally. The cleanup is best-effort.
+ * Locks in: a failure in the post-commit, best-effort engine.deleteKey does not fail the batch — the value is already gone from storage and the awaiting delete() completes normally.
  */
 class JvmDeleteKeyCleanupFailureTest {
 
@@ -34,12 +31,10 @@ class JvmDeleteKeyCleanupFailureTest {
         ksafe.put("token", "secret", KSafeWriteMode.Encrypted())
         assertEquals("secret", ksafe.get("token", "none"))
 
-        // delete() routes through the coalescer and runs engine.deleteKey AFTER the
-        // storage delete commits. The cleanup is best-effort, so delete() completes
-        // normally despite the throwing deleteKey...
+        // engine.deleteKey runs AFTER the storage delete commits, best-effort, so
+        // delete() completes normally despite the throwing deleteKey.
         ksafe.delete("token")
 
-        // ...and the value really is gone from storage (the commit happened before the cleanup).
         assertEquals("none", ksafe.get("token", "none"), "the delete must have persisted despite the key-delete failure")
 
         ksafe.close()

@@ -10,15 +10,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Tests for [KSafeComposeState] class.
- *
- * These tests verify the behavior of the Compose state wrapper.
+ * Locks in: KSafeComposeState value get/set, saver invocation gated by the SnapshotMutationPolicy, delegation, and destructuring.
  */
 class KSafeComposeStateTest {
 
-    // ============ INITIAL VALUE TESTS ============
-
-    /** Verifies initial String value is correctly stored and accessible */
     @Test
     fun composeState_initialValue_isCorrect() {
         var savedValue: String? = null
@@ -31,7 +26,6 @@ class KSafeComposeStateTest {
         assertEquals("Hello", state.value)
     }
 
-    /** Verifies initial Int value works correctly */
     @Test
     fun composeState_initialValue_intType() {
         val state = KSafeComposeState(
@@ -43,7 +37,6 @@ class KSafeComposeStateTest {
         assertEquals(42, state.value)
     }
 
-    /** Verifies initial Boolean value works correctly */
     @Test
     fun composeState_initialValue_booleanType() {
         val state = KSafeComposeState(
@@ -55,7 +48,6 @@ class KSafeComposeStateTest {
         assertTrue(state.value)
     }
 
-    /** Verifies nullable types can be initialized with null */
     @Test
     fun composeState_initialValue_nullableType() {
         val state = KSafeComposeState<String?>(
@@ -67,9 +59,6 @@ class KSafeComposeStateTest {
         assertEquals(null, state.value)
     }
 
-    // ============ VALUE CHANGE TESTS ============
-
-    /** Verifies value property setter updates state correctly */
     @Test
     fun composeState_valueChange_updatesState() {
         val state = KSafeComposeState(
@@ -83,7 +72,6 @@ class KSafeComposeStateTest {
         assertEquals("Changed", state.value)
     }
 
-    /** Verifies valueSaver callback is invoked when value changes */
     @Test
     fun composeState_valueChange_triggersSaver() {
         var savedValue: String? = null
@@ -98,7 +86,6 @@ class KSafeComposeStateTest {
         assertEquals("NewValue", savedValue)
     }
 
-    /** Verifies saver is not called when setting structurally equal value */
     @Test
     fun composeState_sameValue_doesNotTriggerSaver() {
         var saveCount = 0
@@ -108,12 +95,11 @@ class KSafeComposeStateTest {
             policy = structuralEqualityPolicy()
         )
 
-        state.value = "Same" // Same value
+        state.value = "Same"
 
         assertEquals(0, saveCount, "Saver should not be called for equivalent values")
     }
 
-    /** Verifies multiple sequential changes all trigger saver in order */
     @Test
     fun composeState_multipleChanges_allSaved() {
         val savedValues = mutableListOf<Int>()
@@ -130,9 +116,6 @@ class KSafeComposeStateTest {
         assertEquals(listOf(1, 2, 3), savedValues)
     }
 
-    // ============ SNAPSHOT MUTATION POLICY TESTS ============
-
-    /** Verifies structuralEqualityPolicy skips save for equivalent data class instances */
     @Test
     fun composeState_structuralEquality_equivalentObjectsNotSaved() {
         var saveCount = 0
@@ -144,13 +127,11 @@ class KSafeComposeStateTest {
             policy = structuralEqualityPolicy()
         )
 
-        // Different instance but structurally equal
         state.value = User("Alice")
 
         assertEquals(0, saveCount, "Structurally equal objects should not trigger save")
     }
 
-    /** Verifies structuralEqualityPolicy triggers save for different values */
     @Test
     fun composeState_structuralEquality_differentObjectsSaved() {
         var saveCount = 0
@@ -167,7 +148,6 @@ class KSafeComposeStateTest {
         assertEquals(1, saveCount, "Different objects should trigger save")
     }
 
-    /** Verifies referentialEqualityPolicy triggers save for different instances */
     @Test
     fun composeState_referentialEquality_differentInstancesTriggerSave() {
         var saveCount = 0
@@ -179,13 +159,11 @@ class KSafeComposeStateTest {
             policy = referentialEqualityPolicy()
         )
 
-        // Different instance (even if structurally equal)
         state.value = User("Alice")
 
         assertEquals(1, saveCount, "Referentially different objects should trigger save")
     }
 
-    /** Verifies neverEqualPolicy always triggers save even for same value */
     @Test
     fun composeState_neverEqualPolicy_alwaysTriggersSave() {
         var saveCount = 0
@@ -195,14 +173,11 @@ class KSafeComposeStateTest {
             policy = neverEqualPolicy()
         )
 
-        state.value = "Value" // Same value but policy says never equal
+        state.value = "Value"
 
         assertEquals(1, saveCount, "Never equal policy should always trigger save")
     }
 
-    // ============ PROPERTY DELEGATION TESTS ============
-
-    /** Verifies getValue operator returns current state value */
     @Test
     fun composeState_getValue_returnsCurrentValue() {
         val state = KSafeComposeState(
@@ -216,7 +191,6 @@ class KSafeComposeStateTest {
         assertEquals(100, value)
     }
 
-    /** Verifies setValue operator updates state and triggers saver */
     @Test
     fun composeState_setValue_updatesAndSaves() {
         var savedValue: Int? = null
@@ -232,12 +206,8 @@ class KSafeComposeStateTest {
         assertEquals(50, savedValue)
     }
 
-    // Dummy property for delegation tests
     private val dummyProperty: Int = 0
 
-    // ============ DESTRUCTURING TESTS ============
-
-    /** Verifies component1 destructuring returns current value */
     @Test
     fun composeState_component1_returnsValue() {
         val state = KSafeComposeState(
@@ -251,7 +221,6 @@ class KSafeComposeStateTest {
         assertEquals("Test", value)
     }
 
-    /** Verifies component2 destructuring returns functional setter */
     @Test
     fun composeState_component2_returnsSetter() {
         var savedValue: String? = null
@@ -268,7 +237,6 @@ class KSafeComposeStateTest {
         assertEquals("Updated", savedValue)
     }
 
-    /** Verifies full destructuring pattern: val (value, setValue) = state */
     @Test
     fun composeState_destructuring_fullUsage() {
         val savedValues = mutableListOf<Int>()
@@ -286,9 +254,6 @@ class KSafeComposeStateTest {
         assertEquals(listOf(10), savedValues)
     }
 
-    // ============ EDGE CASES ============
-
-    /** Verifies transition from null to non-null triggers save */
     @Test
     fun composeState_nullToNonNull_triggersSave() {
         var savedValue: String? = "not_called"
@@ -303,7 +268,6 @@ class KSafeComposeStateTest {
         assertEquals("Now has value", savedValue)
     }
 
-    /** Verifies transition from non-null to null triggers save */
     @Test
     fun composeState_nonNullToNull_triggersSave() {
         var savedValue: String? = "not_called"
@@ -323,7 +287,6 @@ class KSafeComposeStateTest {
         assertEquals(null, savedValue)
     }
 
-    /** Verifies empty string is handled as valid distinct value */
     @Test
     fun composeState_emptyString_handledCorrectly() {
         var savedValue: String? = null
@@ -339,7 +302,6 @@ class KSafeComposeStateTest {
         assertEquals("", savedValue)
     }
 
-    /** Verifies list content changes are detected and trigger save */
     @Test
     fun composeState_listType_changesDetected() {
         var saveCount = 0
@@ -349,13 +311,12 @@ class KSafeComposeStateTest {
             policy = structuralEqualityPolicy()
         )
 
-        state.value = listOf(1, 2, 3, 4) // Different list
+        state.value = listOf(1, 2, 3, 4)
 
         assertEquals(1, saveCount)
         assertEquals(listOf(1, 2, 3, 4), state.value)
     }
 
-    /** Verifies identical list content (different instance) doesn't trigger save */
     @Test
     fun composeState_listType_sameContentNotSaved() {
         var saveCount = 0
@@ -365,14 +326,11 @@ class KSafeComposeStateTest {
             policy = structuralEqualityPolicy()
         )
 
-        state.value = listOf(1, 2, 3) // Same content, different instance
+        state.value = listOf(1, 2, 3)
 
         assertEquals(0, saveCount, "Same list content should not trigger save")
     }
 
-    // ============ SAVER EXCEPTION HANDLING ============
-
-    /** Verifies state updates even when saver throws exception */
     @Test
     fun composeState_saverException_stateStillUpdates() {
         val state = KSafeComposeState(
@@ -381,14 +339,12 @@ class KSafeComposeStateTest {
             policy = structuralEqualityPolicy()
         )
 
-        // Should not throw, state should still update
         try {
             state.value = "New"
         } catch (e: Exception) {
-            // Expected - saver throws
+            // Saver is expected to throw here.
         }
 
-        // Even if saver fails, state should be updated
         assertEquals("New", state.value)
     }
 }

@@ -9,13 +9,7 @@ import kotlin.test.assertTrue
 import kotlin.test.assertContentEquals
 
 /**
- * FEEDBACK_4 low: [FileKeyVault] holds the ONLY copy of the software master AES key.
- * It fsyncs the temp file's data before an atomic rename, but a crash right after the
- * rename could still lose the rename (a directory-entry change) — leaving the key file
- * missing, indistinguishable from "no keys yet", which the startup orphan sweep treats
- * as "delete every encrypted entry". The write must therefore also fsync the PARENT
- * DIRECTORY after the move. Crash durability can't be simulated in a unit test, so this
- * verifies the parent-dir fsync is actually performed on every mutating write.
+ * Locks in: every mutating FileKeyVault write (put/delete) fsyncs the parent directory after the atomic rename, so a crash can't lose the rename and leave the sole master-key file missing.
  */
 class JvmFileKeyVaultFsyncTest {
 
@@ -34,7 +28,6 @@ class JvmFileKeyVaultFsyncTest {
         assertTrue(syncedDirs.isNotEmpty(), "put must fsync the parent directory after the atomic rename")
         assertEquals(tmp.absoluteFile, syncedDirs.last(), "the fsynced directory must be the key file's parent")
 
-        // The write still works end-to-end.
         assertContentEquals(byteArrayOf(1, 2, 3), vault.get("alias"))
 
         val countAfterPut = syncedDirs.size

@@ -8,12 +8,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * `clearAll()` must also wipe the residual JVM-fallback files that hold
- * recoverable secrets — the `*.migrated` archives left by a JSON→OS-backed
- * migration (`*.ksafe-keys.json.migrated` is **plaintext** AES bytes;
- * `*.ksafe.json.migrated` the ciphertext) and the `*.corrupt-<ts>` quarantine
- * copies. Deleting only the live store file would leave a wiped secret
- * recoverable offline.
+ * Locks in: clearAll() also wipes residual JVM-fallback files holding recoverable secrets — the *.migrated archives (plaintext keys / ciphertext) and *.corrupt-<ts> copies — while sparing a different safe's residue in the same directory.
  */
 class JvmClearAllResidualFilesTest {
 

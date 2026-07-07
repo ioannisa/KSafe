@@ -5,37 +5,17 @@ import eu.anifantakis.lib.ksafe.SecurityAction
 import eu.anifantakis.lib.ksafe.SecurityViolation
 import eu.anifantakis.lib.ksafe.SecurityViolationException
 
-/**
- * Platform-specific security checker.
- * Detects rooted/jailbroken devices, debuggers, emulators, and debug builds.
- */
+/** Platform detection of rooted/jailbroken devices, debuggers, emulators, and debug builds. */
 internal expect object SecurityChecker {
-    /**
-     * Check if the device is rooted (Android) or jailbroken (iOS).
-     */
     fun isDeviceRooted(): Boolean
-
-    /**
-     * Check if a debugger is attached to the process.
-     */
     fun isDebuggerAttached(): Boolean
-
-    /**
-     * Check if this is a debug build.
-     */
     fun isDebugBuild(): Boolean
-
-    /**
-     * Check if running on an emulator/simulator.
-     */
     fun isEmulator(): Boolean
 }
 
 /**
- * Validates the security policy and handles violations.
- * Called during KSafe initialization.
- *
- * @throws SecurityViolationException if any check fails with BLOCK action.
+ * Validates [policy] at KSafe initialization; throws [SecurityViolationException]
+ * for the first violation whose action is BLOCK.
  */
 internal fun validateSecurityPolicy(policy: KSafeSecurityPolicy) {
     val violations = mutableListOf<Pair<SecurityViolation, SecurityAction>>()

@@ -66,9 +66,8 @@ internal class KSafeFlowDelegate<T>(
     private val defaultValue: T,
     private val key: String?,
 ) : ReadOnlyProperty<Any?, Flow<T>> {
-    // @Volatile + double-checked init (FEEDBACK_4 M-G): two threads on concurrent
-    // FIRST access would otherwise both build the flow and one caller would hold a
-    // non-canonical instance. Fast-path read stays lock-free; only first-init locks.
+    // Double-checked init: concurrent first accesses must not each build a flow,
+    // or one caller would hold a non-canonical instance. Fast path stays lock-free.
     @Volatile private var flow: Flow<T>? = null
     private val initLock = KSafeInitLock()
 
@@ -97,10 +96,9 @@ internal class KSafeStateFlowDelegate<T>(
     private val key: String?,
     private val scope: CoroutineScope,
 ) : ReadOnlyProperty<Any?, StateFlow<T>> {
-    // @Volatile + double-checked init (FEEDBACK_4 M-G): getStateFlowRaw calls
-    // stateIn(..., SharingStarted.Eagerly), which eagerly launches a sharing
-    // coroutine — so a concurrent double-init would ALSO leak an observer coroutine,
-    // not just hand out a non-canonical StateFlow. The build must run inside the lock.
+    // Double-checked init. getStateFlowRaw calls stateIn(..., Eagerly), which
+    // launches a sharing coroutine — a concurrent double-init would leak one —
+    // so the build must run inside the lock.
     @Volatile private var stateFlow: StateFlow<T>? = null
     private val initLock = KSafeInitLock()
 
@@ -117,17 +115,8 @@ internal class KSafeStateFlowDelegate<T>(
 }
 
 /**
- * Returns a read-only property delegate backed by [KSafe.getFlow].
- *
- * The property name is used as the storage key unless [key] is provided.
- * Protection is auto-detected from stored metadata.
- *
- * ## Example
- * ```kotlin
- * class UserRepository(kSafe: KSafe) {
- *     val username: Flow<String> by kSafe.asFlow(defaultValue = "Guest")
- * }
- * ```
+ * Returns a read-only property delegate backed by [KSafe.getFlow]. The
+ * property name is used as the storage key unless [key] is provided.
  */
 inline fun <reified T> KSafe.asFlow(
     defaultValue: T,
@@ -137,43 +126,20 @@ inline fun <reified T> KSafe.asFlow(
 // ── WritableKSafeFlow (Flow + set()) ─────────────────────────────────────────────
 
 /**
- * A cold [Flow] you can also write to.
- *
- * Returned by [KSafe.asWritableFlow]. The flow side delegates to the underlying
- * [KSafe.getFlow], so collectors observe persisted changes (including external
- * writes from other parts of the app) exactly as with [KSafe.asFlow]. The
- * write side calls [KSafe.putDirect] via [set] — the new value lands in the
- * memory cache immediately and is persisted asynchronously, and any active
- * collector emits it on the next snapshot.
- *
- * Asymmetric on purpose: there is no synchronous getter. Reads happen only
- * through flow collection, which keeps the contract identical on every
- * platform (including web, where a synchronous read against a cold cache
- * would return the default rather than the persisted value).
- *
- * Use this when you want one declaration to express "observe this stored
- * value AND let me change it" without managing a [CoroutineScope] (the
- * scope-bound alternative is [KSafe.asMutableStateFlow]).
- *
- * ## Example
- * ```kotlin
- * class SettingsRepository(ksafe: KSafe) {
- *     val themeMode: WritableKSafeFlow<ThemeMode> by ksafe.asWritableFlow(ThemeMode.DEVICE)
- *
- *     fun setThemeMode(mode: ThemeMode) {
- *         themeMode.set(mode)  // persists; collectors see it on next emission
- *     }
- * }
- * ```
+ * A cold [Flow] you can also write to, returned by [KSafe.asWritableFlow].
+ * Collection observes persisted changes as with [KSafe.asFlow]; [set] persists
+ * via [KSafe.putDirect]. There is deliberately no synchronous getter — reads
+ * happen only through collection, keeping the contract identical on every
+ * platform (a synchronous read against a cold web cache would return the
+ * default instead of the persisted value).
  */
 class WritableKSafeFlow<T> @PublishedApi internal constructor(
     private val source: Flow<T>,
     private val writer: (T) -> Unit,
 ) : Flow<T> by source {
     /**
-     * Persists [value] via [KSafe.putDirect] using the [KSafeWriteMode]
-     * configured on the originating [KSafe.asWritableFlow] call. Active
-     * collectors of this flow see the new value on the next emission.
+     * Persists [value] using the [KSafeWriteMode] configured on the originating
+     * [KSafe.asWritableFlow] call; collectors see it on the next emission.
      */
     fun set(value: T) {
         writer(value)
@@ -192,7 +158,7 @@ internal class KSafeWritableFlowDelegate<T>(
     private val key: String?,
     private val mode: KSafeWriteMode,
 ) : ReadOnlyProperty<Any?, WritableKSafeFlow<T>> {
-    // @Volatile + double-checked init (FEEDBACK_4 M-G).
+    // Double-checked init so all callers share one canonical instance.
     @Volatile private var writable: WritableKSafeFlow<T>? = null
     private val initLock = KSafeInitLock()
 
@@ -217,35 +183,11 @@ internal class KSafeWritableFlowDelegate<T>(
 }
 
 /**
- * Returns a read/write property delegate backed by a [WritableKSafeFlow] — a [Flow]
- * you can call [WritableKSafeFlow.set] on.
- *
- * Folds the common pair of declarations
- *
- * ```kotlin
- * val mode: Flow<ThemeMode>     by ksafe.asFlow(ThemeMode.DEVICE)
- * private var modeValue: ThemeMode by ksafe(ThemeMode.DEVICE, key = "mode")
- * ```
- *
- * into a single binding that exposes both halves. The property name is used
- * as the storage key unless [key] is provided. Default [mode] is encrypted —
- * matching the property delegate (`ksafe(...)`) and [asMutableStateFlow], so
- * the new API does not silently change persistence semantics.
- *
- * No [CoroutineScope] is required: the flow is cold (collected on demand by
- * the consumer's own scope), and the writer is synchronous fire-and-forget
- * via [KSafe.putDirect].
- *
- * ## Example
- * ```kotlin
- * class SettingsRepository(ksafe: KSafe) {
- *     val themeMode: WritableKSafeFlow<ThemeMode> by ksafe.asWritableFlow(ThemeMode.DEVICE)
- *
- *     fun setThemeMode(mode: ThemeMode) {
- *         themeMode.set(mode)
- *     }
- * }
- * ```
+ * Returns a property delegate backed by a [WritableKSafeFlow] — a [Flow] you
+ * can also call [WritableKSafeFlow.set] on. The property name is used as the
+ * storage key unless [key] is provided. No [CoroutineScope] is required: the
+ * flow is cold and the writer is fire-and-forget via [KSafe.putDirect].
+ * Default [mode] is encrypted, matching the other delegates.
  */
 inline fun <reified T> KSafe.asWritableFlow(
     defaultValue: T,
@@ -255,19 +197,10 @@ inline fun <reified T> KSafe.asWritableFlow(
     KSafeWritableFlowDelegate(this, serializer(), defaultValue, key, mode)
 
 /**
- * Returns a read-only property delegate backed by [KSafe.getStateFlow].
- *
- * The property name is used as the storage key unless [key] is provided.
- * The initial value is resolved synchronously via [KSafe.getDirect], preventing
- * a brief incorrect emission of the default.
- * Protection is auto-detected from stored metadata.
- *
- * ## Example
- * ```kotlin
- * class SettingsViewModel(kSafe: KSafe) : ViewModel() {
- *     val darkMode: StateFlow<Boolean> by kSafe.asStateFlow(false, viewModelScope)
- * }
- * ```
+ * Returns a read-only property delegate backed by [KSafe.getStateFlow]. The
+ * property name is used as the storage key unless [key] is provided. The
+ * initial value is resolved synchronously via [KSafe.getDirect], preventing a
+ * brief incorrect emission of the default.
  */
 inline fun <reified T> KSafe.asStateFlow(
     defaultValue: T,
@@ -300,21 +233,15 @@ internal class KSafeMutableStateFlow<T>(
 
     private val delegate = MutableStateFlow(initialValue)
 
-    // Serializes the write-side echo bookkeeping (FEEDBACK_4 M12). markUserWrite mutates the
-    // (lastUserWrite, syncedValue, hasSynced, awaitingWriteEcho) tuple across separate @Volatile
-    // fields; MutableStateFlow permits concurrent writers, so without a lock two setters could
-    // interleave and leave the guard's armed/disarmed decision paired with the wrong
-    // lastUserWrite — clearing on the wrong echo or suppressing external changes. Every mutation
-    // of the tuple (the setter, compareAndSet, and updateFromFlow) runs under this lock so a
-    // concurrent writer never observes a half-updated tuple. persist() runs OUTSIDE the lock
-    // (never hold a lock across I/O — FEEDBACK_4 M11).
+    // Serializes the echo bookkeeping: every mutation of the (lastUserWrite,
+    // syncedValue, hasSynced, awaitingWriteEcho) tuple runs under this lock so
+    // concurrent writers never observe a half-updated tuple. persist() runs
+    // outside the lock (never hold a lock across I/O).
     private val writeLock = KSafeInitLock()
 
-    // Latched while the user's latest write through this StateFlow
-    // (value/emit/tryEmit/compareAndSet) is still propagating to disk: stale
-    // disk echoes from the observer flow must not revert it. Cleared by
-    // [updateFromFlow] once the flow has caught up with [lastUserWrite], so
-    // genuinely newer external changes reflect again.
+    // Latched while the user's latest write is still propagating to disk, so
+    // stale disk echoes from the observer flow can't revert it. Cleared by
+    // [updateFromFlow] once the flow catches up with [lastUserWrite].
     private val awaitingWriteEcho = KSafeAtomicFlag(false)
 
     // The user's latest written value, compared against observer emissions to
@@ -323,22 +250,14 @@ internal class KSafeMutableStateFlow<T>(
     @kotlin.concurrent.Volatile
     private var lastUserWrite: T? = null
 
-    // The value last known to be in sync with storage — what a stale/older observer
-    // emission would carry. A divergence to protect exists ONLY while the written
-    // value differs from this. If a write nets back to the synced value (an idempotent
-    // `value = X` from a synced state, or an A→B→A toggle within one coalescing window),
-    // no distinct echo can ever arrive, so the guard must NOT be raised/held — otherwise
-    // external observation is suppressed permanently (deep-review M2).
-    //
-    // KNOWN LIMITATION (round-3 audit R7, accepted): if an intermediate value B in an
-    // A→B→A sequence actually reached disk in a SEPARATE batch (not coalesced away), a
-    // stale "B" snapshot can still arrive after the net-zero "A" write cleared the guard
-    // and transiently revert the value — until B's follow-up "A" snapshot arrives and
-    // restores it. This is a brief, self-correcting flicker, never data loss. It is the
-    // accepted cost of clearing the guard on net-zero: a value-only observer cannot tell a
-    // stale intermediate echo from a genuine external change, and permanently latching the
-    // guard (the alternative) is the strictly worse M2 bug (external observation dies for
-    // the StateFlow's lifetime). Fixing it fully needs a versioned/epoch-tagged observer.
+    // The value last known to be in sync with storage. The guard is raised only
+    // while the written value differs from this: a write that nets back to the
+    // synced value (idempotent set, or A→B→A within one coalescing window)
+    // produces no distinct echo, so holding the guard would suppress external
+    // observation permanently. Accepted trade-off: if an intermediate B reached
+    // disk in a separate batch, its stale snapshot can transiently revert a
+    // net-zero write until the follow-up snapshot restores it — a brief,
+    // self-correcting flicker, never data loss.
     @kotlin.concurrent.Volatile
     private var syncedValue: T? = null
     @kotlin.concurrent.Volatile
@@ -401,56 +320,43 @@ internal class KSafeMutableStateFlow<T>(
     override fun resetReplayCache() = delegate.resetReplayCache()
 
     /**
-     * Updates the value from an observer-flow emission without triggering persistence.
-     *
-     * Suppressed while the user's own write is propagating to disk: the observer
-     * flow is disk-derived and lags optimistic writes by the coalescing window +
-     * commit, so a snapshot emitted before the write commits carries an OLDER
-     * value and applying it would revert the StateFlow under collectors.
-     *
-     * The suppression is precise, not permanent: once an emission equal to the
-     * user's last-written value arrives, the latch clears and genuinely newer
-     * external changes reflect again. Conservative residual cases (the StateFlow
-     * keeps the user's value rather than reverting): a write whose batch fails
-     * never echoes, and a type whose deserialized round-trip is not `==` to the
-     * written instance never matches — both keep suppression in place.
-     */
-    /**
-     * Test-only: simulates the M-F race where a stale observer emission clobbers the
-     * visible value AFTER the setter armed the echo guard (the check-then-apply in
-     * [updateFromFlow] is not atomic). Lets a deterministic test verify the self-heal.
+     * Test-only: simulates a stale observer emission clobbering the visible
+     * value after the setter armed the echo guard, so a deterministic test can
+     * verify the self-heal in [updateFromFlow].
      */
     @PublishedApi internal fun simulateStaleClobberForTest(staleValue: T) {
         delegate.value = staleValue
     }
 
     /**
-     * Test-only (FEEDBACK_4 M12): invoked inside the write lock, AFTER markUserWrite and BEFORE
-     * the delegate.value publish. Lets a test start a concurrent writer at that exact point and
-     * verify it is SERIALIZED (blocks on the lock) rather than interleaving and leaving
-     * lastUserWrite paired with a different visible value. Null in production.
+     * Test-only: invoked inside the write lock, after markUserWrite and before
+     * the delegate.value publish, so a test can verify a concurrent writer is
+     * serialized rather than interleaving. Null in production.
      */
     @PublishedApi internal var betweenMarkAndPublishForTest: (() -> Unit)? = null
 
+    /**
+     * Applies an observer-flow emission without triggering persistence.
+     * While the user's own write is propagating to disk, lagging disk snapshots
+     * are suppressed so they can't revert it; once the emission equal to
+     * [lastUserWrite] arrives the latch clears and external changes reflect
+     * again. Runs under [writeLock] to stay consistent with concurrent setters.
+     */
     internal fun updateFromFlow(newValue: T) {
-        // Runs under writeLock so it reads/writes a consistent (guard, lastUserWrite,
-        // syncedValue) tuple against a concurrent setter (FEEDBACK_4 M12).
         writeLock.withLock {
             if (!awaitingWriteEcho.get()) {
                 delegate.value = newValue
-                // This emission is now the in-sync baseline for future divergence checks.
+                // This emission is now the in-sync baseline for divergence checks.
                 syncedValue = newValue
                 hasSynced = true
             } else if (newValue == lastUserWrite) {
                 // The echo of the user's own write: consume it and resume external-change
-                // reflection. Re-apply the echoed value too (FEEDBACK_4 M-F, twin of the
-                // Compose KSafeComposeState fix): the guard check-then-apply is not atomic
-                // against the setter, so a stale emission that read the latch as false before
-                // the setter armed it can clobber the visible value AFTER the setter ran. The
-                // source flow is distinctUntilChanged, so the user's value is never re-emitted
-                // — without this the StateFlow would stay stuck on the stale value. In the
-                // non-raced case delegate.value already equals newValue, so a StateFlow's own
-                // distinct-until-changed makes this a no-op.
+                // reflection. Re-apply the value too: the guard check-then-apply is not
+                // atomic against the setter, so a stale emission that read the latch as
+                // false can clobber the visible value after the setter ran — and the
+                // distinctUntilChanged source never re-emits the user's value, so without
+                // this the StateFlow would stay stuck on the stale value. In the non-raced
+                // case delegate.value already equals newValue and this is a no-op.
                 delegate.value = newValue
                 awaitingWriteEcho.compareAndSet(true, false)
                 syncedValue = newValue
@@ -473,12 +379,9 @@ internal class KSafeMutableStateFlowDelegate<T>(
     private val scope: CoroutineScope,
     private val mode: KSafeWriteMode,
 ) : ReadOnlyProperty<Any?, MutableStateFlow<T>> {
-    // @Volatile + double-checked init (FEEDBACK_4 M-G): the init launches an observer
-    // coroutine (scope.launch below), so a concurrent double-init would start TWO
-    // observers — a leaked coroutine that re-decrypts on every external change — and
-    // hand a losing caller a StateFlow with its own optimistic/echo state that can
-    // transiently diverge. The build AND the launch run inside the lock so exactly one
-    // canonical instance + observer is created.
+    // Double-checked init. Initialization launches an observer coroutine, so a
+    // concurrent double-init would leak a second observer and hand one caller a
+    // divergent StateFlow; the build AND the launch run inside the lock.
     @Volatile private var mutableStateFlow: KSafeMutableStateFlow<T>? = null
     private val initLock = KSafeInitLock()
 
@@ -512,23 +415,10 @@ internal class KSafeMutableStateFlowDelegate<T>(
 }
 
 /**
- * Returns a read/write property delegate backed by a [MutableStateFlow] that
- * persists values to KSafe on every write.
- *
- * The property name is used as the storage key unless [key] is provided.
- * External changes are automatically reflected via flow observation in [scope].
- * Protection is auto-detected for reads; writes use the specified [mode].
- *
- * ## Example
- * ```kotlin
- * class SettingsViewModel(kSafe: KSafe) : ViewModel() {
- *     val username: MutableStateFlow<String> by kSafe.asMutableStateFlow("Guest", viewModelScope)
- *
- *     fun updateName(name: String) {
- *         username.value = name  // persists + emits to all collectors
- *     }
- * }
- * ```
+ * Returns a property delegate backed by a [MutableStateFlow] that persists
+ * values to KSafe on every write. The property name is used as the storage key
+ * unless [key] is provided; external changes are reflected via flow
+ * observation in [scope]. Writes use the specified [mode].
  */
 inline fun <reified T> KSafe.asMutableStateFlow(
     defaultValue: T,
@@ -538,7 +428,6 @@ inline fun <reified T> KSafe.asMutableStateFlow(
 ): ReadOnlyProperty<Any?, MutableStateFlow<T>> =
     KSafeMutableStateFlowDelegate(this, serializer(), defaultValue, key, scope, mode)
 
-/** @deprecated Use [invoke] with [KSafeWriteMode] parameter instead. */
 @Deprecated(
     "Replace \"encrypted\" parameter with \"mode\" parameter.\n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeWriteMode.Encrypted()\nencrypted=false -> KSafeWriteMode.Plain",
     ReplaceWith("invoke(defaultValue, key, if (encrypted) KSafeWriteMode.Encrypted() else KSafeWriteMode.Plain)")

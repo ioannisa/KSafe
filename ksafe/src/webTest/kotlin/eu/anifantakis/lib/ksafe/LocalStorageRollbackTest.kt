@@ -6,12 +6,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 
-/**
- * Deterministic tests for [rollbackPriors]. They run on both
- * `jsBrowserTest` and `wasmJsBrowserTest`, but use a fake in-memory store with
- * a simulated character quota instead of the real `localStorage`, so the
- * mid-rollback quota condition is reproducible (it isn't with a real browser).
- */
+/** Locks in: [rollbackPriors] behavior, via a fake quota store so the mid-rollback quota condition is reproducible (it isn't with a real browser). */
 class LocalStorageRollbackTest {
 
     /** In-memory store that throws (like `QuotaExceededError`) past a char cap. */
@@ -31,13 +26,7 @@ class LocalStorageRollbackTest {
         }
     }
 
-    /**
-     * Rollback order: a batch that deleted A (large) and put C (large) fails
-     * on a third op. At rollback time the partial state holds C but not A, and A
-     * + C together exceed the quota. Removing touched keys FIRST frees C's space,
-     * so A's prior is restored. (Arbitrary-order restore would try to re-add A
-     * while C still occupies the space, hit quota, and lose A.)
-     */
+    /** Removing touched keys FIRST frees space so a deleted prior can be restored without hitting quota; arbitrary-order restore would lose it. */
     @Test
     fun rollback_removesTouchedKeysFirst_soNoDeletedValueIsLost() {
         val big = "x".repeat(100)
@@ -56,11 +45,7 @@ class LocalStorageRollbackTest {
         assertFalse(store.map.containsKey("C"), "C (created by the failed batch) must be removed")
     }
 
-    /**
-     * Surfacing: if a prior genuinely cannot be restored even after
-     * freeing the touched keys (here A's prior is larger than the whole quota),
-     * the failure must propagate — not be silently swallowed.
-     */
+    /** A prior that cannot be restored even after freeing the touched keys (larger than the whole quota) must propagate, not be silently swallowed. */
     @Test
     fun rollback_surfacesUnrestorableValue_insteadOfSwallowing() {
         val store = FakeQuotaStore(capacityChars = 50)

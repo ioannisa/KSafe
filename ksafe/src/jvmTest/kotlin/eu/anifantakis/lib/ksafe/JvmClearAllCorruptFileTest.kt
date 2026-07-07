@@ -9,12 +9,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * FEEDBACK_4 M-E: DataStore's corruption handler quarantines an unreadable
- * `<base>.preferences_pb` as `<base>.preferences_pb.corrupt-<ts>` — a copy that
- * still holds decryptable ciphertext. `clearAll()` promises a full, key-deleting
- * wipe, but `deleteResidualFallbackFiles` only matched the `<base>.ksafe` prefix,
- * so the protobuf quarantine copies survived the wipe. `clearAll()` must remove
- * them too — while leaving a sibling safe's files in the same directory untouched.
+ * Locks in: clearAll() sweeps this safe's .preferences_pb.corrupt-* quarantine copies (and live .ksafe fallback files), while leaving a sibling safe's files in the same directory untouched.
  */
 class JvmClearAllCorruptFileTest {
 
@@ -45,8 +40,8 @@ class JvmClearAllCorruptFileTest {
         val ksafe = KSafe(fileName = "wipe", baseDir = tmp, testEngine = IdentityEngine())
         try {
             runBlocking {
-                ksafe.put("k", "v")            // materialise the store
-                ksafe.clearAll()               // full wipe → must sweep our corrupt copies
+                ksafe.put("k", "v")
+                ksafe.clearAll()
             }
         } finally {
             ksafe.close()
@@ -54,7 +49,7 @@ class JvmClearAllCorruptFileTest {
 
         assertFalse(
             ourCorrupt.exists(),
-            "clearAll() must delete this safe's <base>.preferences_pb.corrupt-* quarantine copy (M-E)",
+            "clearAll() must delete this safe's <base>.preferences_pb.corrupt-* quarantine copy",
         )
         assertTrue(
             siblingCorrupt.exists(),
@@ -64,10 +59,9 @@ class JvmClearAllCorruptFileTest {
 
     @Test
     fun clearAll_deletesLiveResidualFallbackFiles_butNotSiblingSafes() {
-        // FEEDBACK_4 low: a prior no-Unsafe fallback period (or a copy-fallback archive
-        // whose rename failed) can leave LIVE <base>.ksafe.json (ciphertext) and
-        // <base>.ksafe-keys.json (plaintext AES key) in the OS-backed store's directory.
-        // clearAll() must wipe those too — while sparing a different safe's files.
+        // A LIVE <base>.ksafe.json (ciphertext) and <base>.ksafe-keys.json (plaintext
+        // AES key) can linger in the OS-backed store's directory; clearAll() must wipe
+        // those too, while sparing a different safe's files.
         val base = "eu_anifantakis_ksafe_datastore_wipe"
         val liveJson = File(tmp, "$base.ksafe.json").apply { writeText("residual-ciphertext") }
         val liveKeys = File(tmp, "$base.ksafe-keys.json").apply { writeText("residual-plaintext-key") }

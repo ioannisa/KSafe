@@ -51,11 +51,7 @@ private const val SERVICE_NAME = "eu.anifantakis.ksafe"
 @PublishedApi
 internal const val KEY_PREFIX = "eu.anifantakis.ksafe"
 
-/**
- * Sentinel user-key segments for the per-datastore master keys created by the
- * v2 envelope. Reserved by the leading-`__` / trailing-`__` convention used
- * everywhere else in KSafe — collisions with real user keys are impossible.
- */
+// Master-key sentinels; the `__…__` convention cannot collide with real user keys.
 private const val MASTER_KEY_DEFAULT: String = "__ksafe_master__"
 private const val MASTER_KEY_LOCKED: String = "__ksafe_master_locked__"
 
@@ -64,73 +60,9 @@ private fun isSimulator(): Boolean =
     NSProcessInfo.processInfo.environment["SIMULATOR_UDID"] != null
 
 /**
- * Apple-platform factory for [KSafe]. Used by iOS, iPadOS and macOS targets;
- * resolves to the same call syntax as the pre-2.0 `KSafe(...)` constructor.
- *
- * Owns the Apple-platform concerns:
- * - **CryptoKit registration.** Kotlin/Native's dead-code elimination can
- *   strip `AES.GCM` if nothing references it statically, so the factory body
- *   forces the symbol to be retained.
- * - **Secure Enclave detection.** Heuristic: assume present on real devices,
- *   absent on iOS Simulator. Apple Silicon and T2-equipped Intel Macs have an
- *   SE; older Intel Macs without T2 do not. On those older Intel Macs the
- *   factory still advertises [KSafeKeyStorage.HARDWARE_ISOLATED], but the
- *   encryption layer ([eu.anifantakis.lib.ksafe.internal.AppleKeychainEncryption])
- *   transparently falls back to plain Keychain storage when SE key creation
- *   fails — same fallback that already covers old iPhone 5/5C devices.
- * - **Legacy encrypted-key format.** Pre-1.8 iOS builds wrote encrypted
- *   entries under `"{fileName}_{key}"` rather than the common
- *   `"encrypted_{key}"`, so we override [KSafeCore]'s legacy key resolver.
- * - **Keychain orphan cleanup.** Runs once, inside the migration hook —
- *   removes Keychain entries whose DataStore counterpart no longer exists.
- *
- * @param fileName Optional logical file name (lowercase letters / digits /
- *   underscores). If null, the default datastore name is used.
- * @param lazyLoad Defer cache preload until first access.
- * @param memoryPolicy How decrypted values live in RAM (default
- *   [KSafeMemoryPolicy.LAZY_PLAIN_TEXT]).
- * @param config Cryptographic + JSON configuration.
- * @param securityPolicy Runtime security checks (jailbreak / debugger / etc.).
- *   On macOS the jailbreak check short-circuits to `false` — the iOS path
- *   probes (`/bin/sh`, `/etc/apt`, …) all fire on every Mac.
- * @param plaintextCacheTtl TTL for the
- *   [KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE] policy.
- * @param useSecureEnclave Deprecated — use `KSafeProtection.HARDWARE_ISOLATED`
- *   per property instead.
- * @param directory Optional override for the directory in which the DataStore
- *   `.preferences_pb` file is stored. Pass an absolute path string. If null
- *   (default) KSafe uses `NSApplicationSupportDirectory` — the OS-correct
- *   location for invisible app data (the app sandbox on iOS,
- *   `~/Library/Application Support/<bundle-id>/` on sandboxed macOS apps,
- *   `~/Library/Application Support/` on unsandboxed macOS binaries). If you
- *   supply a custom path, KSafe creates the directory if it doesn't exist.
- *
- * **KSafe data is effectively device-local.** Encryption keys live in the
- * Keychain with `…ThisDeviceOnly` accessibility (and Secure Enclave keys never
- * leave the device for `HARDWARE_ISOLATED` writes), so even if the DataStore
- * file is included in an iCloud Backup or a Time Machine snapshot, its
- * encrypted bytes are undecryptable on a restored device — the keys are not
- * there. The library does **not** set `NSURLIsExcludedFromBackupKey` on the
- * file because DataStore's atomic-write strategy (write-to-temp then rename)
- * replaces the file's inode and would clobber the extended attribute on every
- * flush. Reliable file-level exclusion is therefore impossible without
- * architectural gymnastics, and the security guarantee already comes from key
- * locality. If you need device-portable preferences, use `UserDefaults`.
- *
- * **Behavior change (2.0):** Pre-2.0 KSafe stored data in
- * `NSDocumentDirectory`, which is iCloud-syncable on iOS and exposed via
- * iTunes File Sharing if `UIFileSharingEnabled` is on. The 2.0 default is
- * `NSApplicationSupportDirectory`. **1.x → 2.0 upgrade is automatic:** when
- * the new location is empty AND a legacy file exists at the old
- * `NSDocumentDirectory` path, KSafe moves it on first launch (only when
- * `directory` is null — explicit overrides skip the migration). No app code
- * changes needed.
- *
- * **macOS Keychain note:** On unsandboxed macOS apps, accessing the Keychain
- * for the first time triggers a system password prompt ("…wants to use the
- * 'login' Keychain"). To suppress that, sign your app with a Keychain access
- * group entitlement. KSafe currently uses the default access group; pinning
- * to a specific group is on the roadmap.
+ * Creates a [KSafe] for Apple targets (iOS, iPadOS, macOS): DataStore-backed storage under
+ * `NSApplicationSupportDirectory` (or [directory]), with encryption keys held device-only in
+ * the Keychain and Secure Enclave wrapping available per write.
  */
 fun KSafe(
     fileName: String? = null,
@@ -176,14 +108,8 @@ internal fun KSafe(
     testEngine = testEngine,
 )
 
-/**
- * Per-file shared backend for the Apple factory. Native DataStore refuses two active
- * instances on the same file ("There are multiple DataStores active for the same file") and
- * frees a file only once the owning scope's [Job] completes, so this registry shares ONE
- * DataStore + engine per resolved path, ref-counted (only the last close tears the scope
- * down) with a bounded prior-scope await on recreate — mirroring the Android and JVM
- * factories.
- */
+/** Ref-counted per-file DataStore + engine: native DataStore refuses two active instances on
+ *  one file and frees it only once the owning scope's [Job] completes. */
 private class AppleBackend(
     val dataStore: DataStore<Preferences>,
     val scope: CoroutineScope,
@@ -202,17 +128,13 @@ private class AppleBackend(
     }
 }
 
-/** Guards the backend registry + each backend's refCount/engine. Native DataStore registry
- *  ops are rare (construction/close), so a single non-reentrant lock is sufficient. */
+/** Guards the backend registry + each backend's refCount/engine. */
 private val appleRegistryLock = NSLock()
 private val appleBackends = mutableMapOf<String, AppleBackend>()
 private val appleTerminatingScopes = mutableMapOf<String, CoroutineScope>()
 
-/**
- * Returns the shared backend for [path], creating it (atomically) on first use and
- * incrementing its ref-count. A recreate after the previous owner closed awaits that owner's
- * teardown first (bounded), since DataStore frees the file only once its scope completes.
- */
+/** Returns the shared backend for [path], ref-counted; a recreate first awaits (bounded) the
+ *  prior owner's teardown, since DataStore frees the file only once its scope completes. */
 private fun acquireAppleBackend(
     path: String,
     createDataStore: (CoroutineScope) -> DataStore<Preferences>,
@@ -266,8 +188,7 @@ private fun buildAppleKSafe(
     }
     validateSecurityPolicy(securityPolicy)
 
-    // Force-register CryptoKit + retain AES.GCM so Kotlin/Native DCE can't
-    // strip the providers out of the final binary.
+    // Reference CryptoKit + AES.GCM statically so Kotlin/Native DCE can't strip them.
     CryptographyProvider.CryptoKit
     @Suppress("UNUSED_VARIABLE") val retainAesGcm = AES.GCM
 
@@ -280,8 +201,6 @@ private fun buildAppleKSafe(
 
     val fm = NSFileManager.defaultManager
 
-    // Resolve the DataStore directory once: caller-supplied path, or the
-    // platform-recommended NSApplicationSupportDirectory.
     val resolvedDirPath: String = directory
         ?: requireNotNull(
             fm.URLForDirectory(
@@ -294,9 +213,7 @@ private fun buildAppleKSafe(
         ) { "Unable to resolve NSApplicationSupportDirectory" }.path
             ?: error("NSApplicationSupportDirectory has no path")
 
-    // Ensure the directory exists. NSFileManager's URLForDirectory(create=true)
-    // creates the system directory; for a caller-supplied path we may also
-    // need to mkdir it.
+    // A caller-supplied directory may not exist yet.
     fm.createDirectoryAtPath(
         resolvedDirPath,
         withIntermediateDirectories = true,
@@ -308,12 +225,8 @@ private fun buildAppleKSafe(
         ?: "eu_anifantakis_ksafe_datastore"
     val datastoreFilePath = "$resolvedDirPath/$baseFileName.preferences_pb"
 
-    // 1.x → 2.0 auto-migration: pre-2.0 iOS stored the DataStore in
-    // NSDocumentDirectory. If the consumer didn't pass an explicit `directory`
-    // and the new location is empty BUT a legacy file exists at the old
-    // Documents path, move it. Idempotent — runs only when the new path is
-    // empty. Best-effort — failure leaves both files in place; the caller can
-    // recover by passing `directory = "<old Documents path>"` if needed.
+    // Moves a legacy DataStore file from NSDocumentDirectory (written by old builds) when the
+    // new location is empty and no explicit directory was given. Best-effort and idempotent.
     if (directory == null && !fm.fileExistsAtPath(datastoreFilePath)) {
         val docsDirPath: String? = fm.URLForDirectory(
             directory = NSDocumentDirectory,
@@ -336,17 +249,12 @@ private fun buildAppleKSafe(
         }
     }
 
-    // Acquire the per-file shared backend (DataStore + scope + engine), ref-counted so that
-    // co-existing instances on the same file share one DataStore and only the last close tears
-    // the scope down, with a bounded prior-scope await on recreate. The scope uses
-    // Dispatchers.Default — Kotlin/Native has no Dispatchers.IO, and DataStore's iOS I/O
-    // path (NSFileManager / okio) is non-blocking.
+    // The scope uses Dispatchers.Default: Kotlin/Native has no Dispatchers.IO, and DataStore's
+    // Apple I/O path is non-blocking.
     val backend = acquireAppleBackend(datastoreFilePath) { scope ->
         PreferenceDataStoreFactory.createWithPath(
-            // Quarantine a corrupt .preferences_pb and continue from an empty store instead of
-            // throwing CorruptionException on every read forever — which would crash the
-            // background collector and make getDirect silently return defaults. The corrupt
-            // bytes are copied aside (best-effort) for recovery.
+            // Quarantine a corrupt .preferences_pb and continue from empty instead of throwing
+            // CorruptionException on every read; the corrupt bytes are copied aside for recovery.
             corruptionHandler = ReplaceFileCorruptionHandler {
                 runCatching {
                     val dest = "$datastoreFilePath.corrupt"
@@ -364,8 +272,7 @@ private fun buildAppleKSafe(
     val dataStore: DataStore<Preferences> = backend.dataStore
     val storage = DataStoreStorage(dataStore)
 
-    // Share the production engine per file too (created lazily on the backend, never for
-    // tests), so co-existing same-file instances don't race master-key creation in the Keychain.
+    // One engine per file so co-existing same-file instances don't race master-key creation.
     val engine: KSafeEncryption =
         testEngine ?: backend.engineOrCreate { AppleKeychainEncryption(config = config, serviceName = SERVICE_NAME) }
 
@@ -380,6 +287,7 @@ private fun buildAppleKSafe(
         return listOfNotNull(KEY_PREFIX, fileName, sentinel).joinToString(".")
     }
 
+    // Handles the legacy "{fileName}_{key}" entry format written by old iOS builds.
     fun iosLegacyEncryptedKey(userKey: String): String =
         fileName?.let { "${it}_$userKey" } ?: KeySafeMetadataManager.legacyEncryptedRawKey(userKey)
 
@@ -411,11 +319,8 @@ private fun buildAppleKSafe(
         )
     }
 
-    /**
-     * Runs once per process — removes Keychain entries whose DataStore
-     * counterpart is gone. Safe to call eagerly: failures are swallowed so a
-     * locked device or transient Keychain error can't block startup.
-     */
+    /** Orphan sweep with failures swallowed — a locked device or transient Keychain error
+     *  must never block startup. */
     suspend fun cleanupOrphanedKeychainEntriesSafe(isUserKeyDirty: (String) -> Boolean) {
         runCatching {
             cleanupOrphanedKeychainEntries(
@@ -426,13 +331,10 @@ private fun buildAppleKSafe(
                 fileName = fileName,
                 legacyEncryptedPrefix = iosLegacyEncryptedPrefix(),
                 seKeyTagPrefix = AppleKeychainEncryption.SE_KEY_TAG_PREFIX,
-                // The v2 envelope's shared master keys are referenced by every
-                // DEFAULT value collectively, never by a single user key, so they
-                // never appear in the sweep's valid-key set. Reserve them so the
-                // sweep can't delete the master and orphan all DEFAULT ciphertext.
+                // Shared master keys never appear in the sweep's valid-key set (no single user
+                // key references them); reserve them or the sweep orphans all DEFAULT ciphertext.
                 reservedKeyIds = setOf(MASTER_KEY_DEFAULT, MASTER_KEY_LOCKED),
-                // Don't reap a key for a write that's in flight concurrently with the
-                // sweep — its DataStore commit lands after our snapshot.
+                // A write in flight during the sweep commits after our snapshot — don't reap it.
                 isInFlight = isUserKeyDirty,
             )
         }.onFailure { t ->
@@ -456,14 +358,12 @@ private fun buildAppleKSafe(
         legacyEncryptedPrefix = iosLegacyEncryptedPrefix(),
         legacyEncryptedKeyFor = ::iosLegacyEncryptedKey,
         modeTransformer = ::promoteMode,
-        // Ref-counted release: only the last live instance on this file cancels the shared
-        // scope, so closing one instance can't cancel the DataStore out from under another.
-        // KSafeCore.cancel() is idempotent → guard to one release.
+        // Only the last live instance on this file cancels the shared scope; guarded to one
+        // release because KSafeCore.cancel() is idempotent.
         onCancel = { if (released.compareAndSet(false, true)) releaseAppleBackend(datastoreFilePath) },
     )
 
-    // Apple custody can't change after construction, so the provider
-    // returns a captured snapshot.
+    // Apple custody can't change after construction, so the provider returns a snapshot.
     val protectionInfoSnapshot = KSafeProtectionInfo(
         intendedLevel = KSafeProtectionLevel.HARDWARE_BACKED,
         effectiveLevel = KSafeProtectionLevel.HARDWARE_BACKED,

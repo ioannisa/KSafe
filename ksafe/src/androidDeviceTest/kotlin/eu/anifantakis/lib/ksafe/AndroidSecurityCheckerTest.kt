@@ -9,21 +9,9 @@ import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * Verifies the Android root-detection build-signal logic.
- *
- * Guards two opposite mistakes:
- *  - the false negative: a rooted `userdebug` Google-APIs emulator (su present, `adb
- *    root` works) reporting "not rooted" because detection only matched `test-keys`
- *    and relied on sandbox-blocked file/`getprop` probes; and
- *  - the false positive: a `user`-build emulator (Google Play / "Pixel 10 Pro Fold"
- *    images — no su, `ro.debuggable=0`) reporting "rooted" just because it is signed
- *    `dev-keys`. The build *type*, not the signing tag, is the real signal.
- */
+/** Locks in: the root-detection build signal — build type (userdebug/eng), not signing tag, marks a root-capable image, so rooted userdebug emulators aren't missed and user-build dev-keys emulators aren't false-flagged. */
 @RunWith(AndroidJUnit4::class)
 class AndroidSecurityCheckerTest {
-
-    // --- deterministic logic (independent of the host image) ---
 
     @Test
     fun userdebugAndEngBuildsAreRootIndicating() {
@@ -40,9 +28,8 @@ class AndroidSecurityCheckerTest {
 
     @Test
     fun userBuildEmulatorWithDevKeysIsNotRootIndicating() {
-        // Google Play / "Pixel 10 Pro Fold" images are `user` + `dev-keys` but ship no
-        // su and refuse `adb root`. dev-keys must NOT be treated as root, or every such
-        // emulator false-positives.
+        // Google Play / foldable images are user + dev-keys but ship no su — dev-keys must
+        // NOT count as root, or they false-positive.
         assertFalse(isRootIndicatingBuild("user", "dev-keys"))
     }
 
@@ -52,13 +39,10 @@ class AndroidSecurityCheckerTest {
         assertFalse(isRootIndicatingBuild(null, null))
     }
 
-    // --- assertions against the actual device/emulator this runs on ---
-
     @Test
     fun rootCapableImageIsReportedAsRooted() {
-        // If we're on a root-capable image (a userdebug/eng Google-APIs emulator or
-        // engineering build), isDeviceRooted() must say so. On a user-build image the
-        // precondition is false and the assertion is skipped.
+        // On a root-capable image (userdebug/eng), isDeviceRooted() must agree; on a user
+        // build the precondition is false and this is skipped.
         if (isRootIndicatingBuild(Build.TYPE, Build.TAGS)) {
             assertTrue(
                 SecurityChecker.isDeviceRooted(),
@@ -70,9 +54,8 @@ class AndroidSecurityCheckerTest {
 
     @Test
     fun nonRootedUserBuildEmulatorIsNotReportedAsRooted() {
-        // Counterpart: a `user`-build emulator (Google Play / foldable images — no su,
-        // ro.debuggable=0) must NOT be flagged. Guarded to emulators only so it never
-        // runs against a genuinely rooted retail device, and excludes test-keys.
+        // A user-build emulator must not be flagged. Guarded to emulators (never a real
+        // rooted retail device) and excludes test-keys.
         val tags = Build.TAGS ?: ""
         if (SecurityChecker.isEmulator() && Build.TYPE == "user" && !tags.contains("test-keys")) {
             assertFalse(

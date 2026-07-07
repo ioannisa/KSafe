@@ -7,20 +7,10 @@ import android.database.Cursor
 import android.net.Uri
 
 /**
- * Auto-initializer for [KSafeBiometrics] on Android.
- *
- * Declared in the library's `AndroidManifest.xml`; the consumer's manifest
- * merger picks it up automatically. Android instantiates the provider during
- * application startup with the application Context, which we use to
- * bootstrap [BiometricHelper] for activity-lifecycle tracking.
- *
- * This is the same pattern used by WorkManager, Firebase, AppCompat, and
- * other libraries that need a Context once at startup. The consumer doesn't
- * need to touch their `Application` class — the library is zero-config.
- *
- * If the consumer specifically wants to disable this auto-init (rare), they
- * can override the provider in their app's manifest with
- * `tools:node="remove"` on the matching `<provider>` entry.
+ * Zero-config auto-initializer for [KSafeBiometrics]. Declared in the library manifest and
+ * merged into the consumer's; Android instantiates it at startup with the application Context,
+ * which bootstraps [BiometricHelper]'s activity-lifecycle tracking (the WorkManager/Firebase
+ * pattern). To disable, remove the `<provider>` via `tools:node="remove"`.
  */
 internal class KSafeBiometricsInitProvider : ContentProvider() {
 

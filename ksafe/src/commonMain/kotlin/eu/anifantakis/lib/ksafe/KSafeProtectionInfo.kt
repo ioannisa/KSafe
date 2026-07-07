@@ -1,106 +1,41 @@
 package eu.anifantakis.lib.ksafe
 
 /**
- * Instance-level diagnostic describing the encryption-key custody this
- * [KSafe] is actually running with — including any runtime fallback that
- * happened during construction.
+ * Instance-level diagnostic describing the encryption-key custody this [KSafe]
+ * is actually running with, including any runtime fallback during construction.
  *
- * Complements the two pre-existing surfaces:
- *  - [KSafe.deviceKeyStorages] — *what the device could do* (capability probe).
- *  - [KSafe.getKeyInfo] — *what one specific key got stored with* (per-key).
- *
- * `protectionInfo` is the missing third surface: *what the engine is running
- * at right now, for this process*. Read it once at startup to gate, log, or
- * surface a UI badge:
- *
- * ```
- * val info = ksafe.protectionInfo
- *
- * // Refuse the software-only key custody fallback
- * check(info.effectiveLevel > KSafeProtectionLevel.SOFTWARE)
- *
- * // Require at least sandbox-mediated protection (Web origin or OS user account)
- * check(info.effectiveLevel >= KSafeProtectionLevel.SANDBOX_PROTECTED)
- *
- * // Require on-chip hardware custody
- * check(info.effectiveLevel >= KSafeProtectionLevel.HARDWARE_BACKED)
- *
- * // "Did we get less than we aimed for?"
- * check(info.effectiveLevel >= info.intendedLevel)
- *
- * // Telemetry — every field is a stable, low-cardinality identifier
- * analytics.log(
- *     "ksafe_protection",
- *     "level"    to info.effectiveLevel.name,
- *     "custody"  to info.custody,
- *     "notes"    to info.notes.joinToString(","),
- * )
- * ```
+ * Complements [KSafe.deviceKeyStorages] (device capability probe) and
+ * [KSafe.getKeyInfo] (per-key storage); this is the third surface — what the
+ * engine is running at right now, for this process.
  */
 data class KSafeProtectionInfo(
     /**
-     * Strongest level this platform's engine targets as its **baseline** at
-     * construction time. Equal to [effectiveLevel] on the happy path; higher
-     * than [effectiveLevel] when runtime negotiation fell back (today: JVM
-     * only, when the OS vault is unavailable or the user opted out).
-     *
-     * `HARDWARE_ISOLATED` is never an `intendedLevel` value — it's reached
-     * only via per-write opt-in, not as a baseline.
+     * Strongest level this platform's engine targets as its baseline at
+     * construction time. Equals [effectiveLevel] unless runtime negotiation
+     * fell back (JVM only today). Never `HARDWARE_ISOLATED` — that is reached
+     * via per-write opt-in, not as a baseline.
      */
     val intendedLevel: KSafeProtectionLevel,
 
-    /**
-     * Level KSafe actually negotiated for this instance. The value to gate
-     * on for "is my protection good enough?".
-     */
+    /** Level KSafe actually negotiated for this instance; the value to gate on. */
     val effectiveLevel: KSafeProtectionLevel,
 
     /**
-     * Human-readable description of where keys actually live. Stable enough
-     * to log/display, but **never parse it** — the wording is part of the
-     * diagnostic, not the contract.
-     *
-     * Examples:
-     *  - `"Android Keystore (TEE)"`
-     *  - `"Apple Keychain (Secure Enclave available per-write)"`
-     *  - `"Windows DPAPI (current-user)"`
-     *  - `"macOS Keychain (login)"`
-     *  - `"Linux Secret Service (libsecret)"`
-     *  - `"DataStore file (plaintext fallback — no OS protection)"`
-     *  - `"WebCrypto non-extractable key in IndexedDB"`
+     * Human-readable description of where keys actually live. Safe to
+     * log/display, but never parse it — the wording is diagnostic, not contract.
      */
     val custody: String,
 
     /**
-     * Stable lowercase_snake notes on the negotiation outcome. Empty when
-     * nothing noteworthy happened.
-     *
-     * Defined codes:
-     *  - `"jvm_os_vault_unavailable"` — JVM: OS-vault self-test failed
-     *    (no libsecret daemon, locked Keychain, JNA link error, …).
-     *  - `"jvm_user_opted_out"` — JVM: `-Dksafe.jvm.keyVault=software`
-     *    or env `KSAFE_JVM_KEY_VAULT=software` set.
-     *  - `"android_strongbox_absent"` — Android: device lacks StrongBox.
-     *    Informational at instance level; only meaningful for per-write
-     *    `HARDWARE_ISOLATED`.
-     *  - `"apple_secure_enclave_absent"` — Apple: device lacks SE
-     *    (simulator, pre-T2 Intel Mac). Informational at instance level.
-     *
-     * Codes are stable across minor versions; new codes may be added.
-     * Consumers should ignore unknown codes rather than reject them.
+     * Stable lowercase_snake notes on the negotiation outcome; empty when
+     * nothing noteworthy happened. New codes may be added, so ignore unknown
+     * ones rather than rejecting them.
      */
     val notes: List<String>,
 
     /**
-     * Published version of the linked KSafe artifact (e.g. `"2.1.1"`). Mirrors
-     * [KSafe.VERSION]; included on every diagnostic so audit code can capture
-     * version + custody + notes in one snapshot. Especially useful in demo /
-     * sample apps that load multiple KSafe versions side-by-side and need to
-     * confirm at runtime which one is actually linked.
-     *
-     * Sourced from `gradle.properties` → `ksafe.version` via the generated
-     * `KSafeBuildConfig.kt`, so this field is guaranteed to match the Maven
-     * coordinates produced by the same build.
+     * Published version of the linked KSafe artifact (mirrors [KSafe.VERSION]),
+     * so a diagnostic snapshot records which build is actually linked.
      */
     val kSafeVersion: String = KSAFE_VERSION,
 )

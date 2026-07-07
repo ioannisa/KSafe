@@ -12,24 +12,12 @@ import kotlin.uuid.Uuid
 /**
  * iOS-specific tests for AppleKeychainEncryption error handling.
  *
- * ## Test Environment Limitations
- *
- * Direct Keychain operations require proper entitlements that are NOT available
- * in the Kotlin/Native test runner. This means:
- * - Direct AppleKeychainEncryption tests will throw `errSecMissingEntitlement` (-25291)
- * - This is EXPECTED behavior - it proves our error handling works correctly
- * - Full encryption tests run through IosKSafeTest which uses KSafe's abstraction
- *
- * ## What These Tests Verify
- *
- * 1. **Error handling is correct** - Unknown errors throw exceptions (don't silently create keys)
- * 2. **errSecInteractionNotAllowed** - Device-locked scenario is documented (manual test required)
- * 3. **errSecMissingEntitlement** - Throws exception (verified by these tests)
- *
- * ## Manual Testing Required For
- *
- * - Device-locked scenario (cannot be automated)
- * - Full encryption round-trip (use iOS app or XCTest with entitlements)
+ * The Kotlin/Native test runner has no Keychain entitlements, so direct
+ * AppleKeychainEncryption calls throw `errSecMissingEntitlement` (-25291).
+ * These tests verify exactly that: unknown Keychain errors throw instead of
+ * silently creating a new key (which would cause data loss). The device-locked
+ * scenario and the full encryption round-trip require manual testing on a
+ * device / entitled app.
  *
  * @see IosKSafeTest for tests that run through KSafe's abstraction (which handles entitlements)
  */
@@ -38,16 +26,9 @@ class IosKeychainEncryptionTest {
     @OptIn(ExperimentalUuidApi::class)
     private fun uniqueKeyId(): String = "test_${Uuid.random().toString().take(8)}"
 
-    // ============ ERROR HANDLING TESTS ============
-
     /**
-     * Verifies that the encryption throws an exception in environments without
-     * Keychain entitlements (like the unit test runner).
-     *
-     * This proves our error handling is correct: we throw instead of silently
-     * creating a new key (which would cause data loss).
-     *
-     * Expected error: errSecMissingEntitlement (-25291) in test environment
+     * Without Keychain entitlements, encrypt must throw rather than silently
+     * create a new key. Expected error: errSecMissingEntitlement (-25291).
      */
     @Test
     fun testThrowsOnKeychainErrorInTestEnvironment() {
@@ -59,7 +40,6 @@ class IosKeychainEncryptionTest {
             encryption.encrypt(keyId, plaintext)
         }
 
-        // The exception message should contain the status code
         assertTrue(
             exception.message?.contains("Keychain error") == true ||
             exception.message?.contains("Cannot access Keychain") == true,
@@ -67,14 +47,12 @@ class IosKeychainEncryptionTest {
         )
     }
 
-    /**
-     * Verifies that decrypt also throws on Keychain errors (not silently fails).
-     */
+    /** Decrypt also throws on Keychain errors (does not silently fail). */
     @Test
     fun testDecryptThrowsOnKeychainError() {
         val encryption = AppleKeychainEncryption()
         val keyId = uniqueKeyId()
-        // Fake ciphertext - doesn't matter since we'll fail before decryption
+        // Fake ciphertext — the call fails before decryption anyway.
         val fakeCiphertext = ByteArray(48) { it.toByte() }
 
         val exception = assertFailsWith<IllegalStateException> {
@@ -89,33 +67,31 @@ class IosKeychainEncryptionTest {
     }
 
     /**
-     * Verifies that deleteKey doesn't throw even in test environment.
-     * (Delete is more permissive - no data loss risk from failing silently)
+     * deleteKey must not throw even in the test environment — delete is
+     * permissive (no data-loss risk from failing silently).
      */
     @Test
     fun testDeleteKeyDoesNotThrow() {
         val encryption = AppleKeychainEncryption()
         val keyId = uniqueKeyId()
 
-        // Should not throw - delete failures are generally harmless
         encryption.deleteKey(keyId)
         encryption.deleteKey(keyId) // Multiple deletes should be safe
     }
 
     /**
-     * Verifies that custom configuration is accepted.
-     * (Actual encryption test requires entitlements)
+     * Custom configurations are accepted at construction time.
+     * (Actual encryption with them requires entitlements.)
      */
     @Test
     fun testCustomConfigIsAccepted() {
         val config128 = KSafeConfig(keySize = 128)
         val config256 = KSafeConfig(keySize = 256)
 
-        // These should not throw - just verifying configuration is accepted
         val encryption128 = AppleKeychainEncryption(config = config128)
         val encryption256 = AppleKeychainEncryption(config = config256)
 
-        // Both should throw on encrypt (no entitlements), but with different configs
+        // Both still throw on encrypt (no entitlements), regardless of config.
         val keyId = uniqueKeyId()
         assertFailsWith<IllegalStateException> {
             encryption128.encrypt(keyId, "test".encodeToByteArray())
@@ -124,8 +100,6 @@ class IosKeychainEncryptionTest {
             encryption256.encrypt(keyId, "test".encodeToByteArray())
         }
     }
-
-    // ============ SECURE ENCLAVE TESTS ============
 
     @Test
     fun testKeychainLookupOrder_checksWrappedThenPlain() {
@@ -148,11 +122,8 @@ class IosKeychainEncryptionTest {
     }
 
     /**
-     * Verifies that encrypt with useSecureEnclave=true throws in the test environment.
-     *
-     * In the unit test runner (no entitlements, no SE hardware), the SE path will fail
-     * and fall back to plain Keychain — which also fails with errSecMissingEntitlement.
-     * This proves the fallback path works and error handling is correct.
+     * With no entitlements and no SE hardware, the SE path falls back to plain
+     * Keychain — which also fails with errSecMissingEntitlement and must throw.
      */
     @Test
     fun testSecureEnclaveThrowsInTestEnvironment() {
@@ -164,7 +135,7 @@ class IosKeychainEncryptionTest {
             encryption.encrypt(keyId, plaintext, hardwareIsolated = true)
         }
 
-        // After SE fallback, should get a Keychain error (same as non-SE in test env)
+        // After SE fallback, a Keychain error is expected (same as non-SE in test env).
         assertTrue(
             exception.message?.contains("Keychain error") == true ||
             exception.message?.contains("Cannot access Keychain") == true ||
@@ -175,16 +146,14 @@ class IosKeychainEncryptionTest {
     }
 
     /**
-     * Verifies that deleteKey doesn't throw — deleteKey always attempts to
-     * clean up SE artifacts regardless of whether they exist.
-     * Delete operations are permissive — no data loss risk from silent failure.
+     * deleteKey always attempts to clean up SE artifacts regardless of whether
+     * they exist, and never throws — delete is permissive.
      */
     @Test
     fun testSecureEnclaveDeleteDoesNotThrow() {
         val encryption = AppleKeychainEncryption()
         val keyId = uniqueKeyId()
 
-        // Should not throw - delete is always permissive
         encryption.deleteKey(keyId)
         encryption.deleteKey(keyId) // Multiple deletes should be safe
     }
@@ -220,13 +189,11 @@ class IosKeychainEncryptionTest {
         assertTrue(true, "See test documentation for Secure Enclave manual testing instructions")
     }
 
-    // ============ DOCUMENTATION TESTS ============
-
     /**
      * Documents the expected behavior for errSecInteractionNotAllowed.
      *
-     * This test cannot be run automatically because we cannot lock the device
-     * programmatically. It serves as documentation for manual testing.
+     * This cannot be tested automatically (the device cannot be locked
+     * programmatically); it serves as documentation for manual testing.
      *
      * Expected behavior when device is locked:
      * - getOrCreateKeychainKey() should throw IllegalStateException
@@ -243,8 +210,6 @@ class IosKeychainEncryptionTest {
      */
     @Test
     fun documentDeviceLockedBehavior() {
-        // This test documents expected behavior but cannot test it automatically
-        // See docstring above for manual testing instructions
         assertTrue(true, "See test documentation for manual testing of device-locked scenario")
     }
 
@@ -262,7 +227,6 @@ class IosKeychainEncryptionTest {
      */
     @Test
     fun documentErrorCodes() {
-        // Error code documentation
         val expectedCodes = mapOf(
             0 to "errSecSuccess - operation succeeded",
             -25300 to "errSecItemNotFound - key doesn't exist, safe to create",

@@ -11,32 +11,20 @@ import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 /**
- * Abstraction over *where the raw AES key bytes live* on the JVM (which has no
- * standard hardware keystore). Implementations put the key in an OS-managed
- * secret store:
+ * Abstraction over *where the raw AES key bytes live* on the JVM (no standard
+ * hardware keystore). Implementations put the key in an OS secret store —
+ * Windows DPAPI, macOS Keychain, Linux Secret Service — or, when none is
+ * reachable, fall back to [DataStoreKeyVault] (plaintext in the DataStore file)
+ * with a one-time warning.
  *
- * - Windows: DPAPI (key wrapped with the user's login credentials)
- * - macOS: Keychain (login/data-protection keychain, SE-gated on modern Macs)
- * - Linux: Secret Service / libsecret (login keyring)
- *
- * When no OS store is reachable (headless Linux with no keyring, JNA link
- * failure) selection falls back to [DataStoreKeyVault] — plaintext key in the
- * DataStore file — and emits a one-time warning.
- *
- * Implementations must be safe to call from multiple threads; callers
- * ([eu.anifantakis.lib.ksafe.internal.JvmSoftwareEncryption]) additionally
- * serialise per-alias.
+ * Implementations must be thread-safe; callers additionally serialise per-alias.
  */
 internal interface JvmKeyVault {
 
     /** Human-readable identifier for diagnostics and the fallback warning. */
     val name: String
 
-    /**
-     * True when keys are protected by an OS secret store. False for the
-     * plaintext [DataStoreKeyVault] fallback. Surfaced for tests/diagnostics;
-     * not part of KSafe's public API.
-     */
+    /** True when keys are protected by an OS secret store; false for the plaintext fallback. */
     val isOsBacked: Boolean
 
     /** Raw key bytes previously stored for [alias], or null if none. */
@@ -50,14 +38,9 @@ internal interface JvmKeyVault {
 }
 
 /**
- * Minimal string key/value store backed by DataStore Preferences.
- *
- * Used by [DataStoreKeyVault] (legacy raw-key persistence and migration source)
- * and by [WindowsDpapiKeyVault] (to persist the DPAPI-wrapped blob — which is
- * useless without the user's Windows login, so storing it in a file is safe).
- *
- * Blocking [runBlocking] bridges are acceptable here: key access is rare
- * (cached after first read) and never on a hot path.
+ * Minimal string key/value store over DataStore Preferences, used by
+ * [DataStoreKeyVault] and [WindowsDpapiKeyVault]. The [runBlocking] bridges are
+ * fine here: key access is rare (cached after first read), never on a hot path.
  */
 internal class DataStorePrefStore(
     private val dataStore: DataStore<Preferences>,
@@ -90,14 +73,10 @@ internal class DataStorePrefStore(
 
 /**
  * Legacy / fallback vault: raw AES key Base64-encoded in DataStore under the
- * historical `ksafe_key_` prefix.
- *
- * This is intentionally identical to KSafe ≤ 2.0 on-disk format so it doubles
- * as the **migration source**: when an OS-backed vault is selected, an existing
- * key is read from here, copied into the OS store, then removed from here.
- *
- * Security: none beyond OS file permissions. Selected only when no OS secret
- * store is available.
+ * historical `ksafe_key_` prefix. Intentionally the frozen KSafe ≤ 2.0 on-disk
+ * format, so it doubles as the migration source — when an OS vault is selected a
+ * key here is copied into it, then removed. Security: none beyond OS file
+ * permissions; selected only when no OS store is available.
  */
 internal class DataStoreKeyVault(
     dataStore: DataStore<Preferences>,
@@ -128,30 +107,25 @@ internal class DataStoreKeyVault(
 }
 
 /**
- * Resolves and holds the active [JvmKeyVault] plus the legacy
- * [DataStoreKeyVault] (always available for migration / fallback).
- *
- * Selection is performed once per engine instance. Each OS vault runs a
- * self-test (store → read-back → delete of a throwaway canary) before being
- * accepted, so a present-but-broken keyring degrades gracefully to the
+ * Resolves and holds the active [JvmKeyVault] plus the legacy [DataStoreKeyVault]
+ * (always available for migration / fallback). Selection runs once per engine
+ * instance; each OS vault must pass a self-test (store → read-back → delete of a
+ * canary) before being accepted, so a present-but-broken keyring degrades to the
  * fallback rather than failing every encrypt/decrypt.
  */
 internal class JvmKeyVaultProvider(
     /**
-     * DataStore backing the legacy [DataStoreKeyVault] and the OS-vault
-     * detection ([pick]). Nullable for the no-DataStore JSON-file fallback
-     * path (when `sun.misc.Unsafe` is unavailable): there a [legacyOverride]
-     * ([FileKeyVault]) is supplied and no DataStore exists.
+     * DataStore backing the legacy [DataStoreKeyVault] and OS-vault detection.
+     * Null on the JSON-file fallback path (no `sun.misc.Unsafe`), where a
+     * [legacyOverride] [FileKeyVault] is supplied instead.
      */
     dataStore: DataStore<Preferences>? = null,
     /**
      * App-isolation namespace applied to the OS-vault **destination** only
-     * (Keychain service / DPAPI blob prefix / Secret Service attribute) so
-     * different desktop apps sharing the per-user secret store don't collide.
-     * Blank = no namespace (legacy behaviour / tests). The legacy
+     * (Keychain service / DPAPI prefix / Secret Service attribute) so apps
+     * sharing the per-user store don't collide. Blank = no namespace. The legacy
      * [DataStoreKeyVault] is intentionally NOT namespaced — its `ksafe_key_`
-     * layout is the frozen KSafe ≤ 2.0 on-disk format and the migration
-     * source.
+     * layout is the frozen migration source.
      */
     private val appNamespace: String = "",
     /** Test seam: force a specific vault and skip OS detection. */
@@ -162,48 +136,41 @@ internal class JvmKeyVaultProvider(
      */
     legacyOverride: JvmKeyVault? = null,
     /**
-     * Test seam: candidate OS vault for [pick] to self-test, in place of the
-     * real `os.name`-based detection. Lets tests drive both the self-test-pass
-     * and (the data-loss-critical) self-test-fail paths deterministically
-     * without touching a real Keychain / keyring. Unlike [forced], selection
-     * still runs through [pick] (and therefore [selfTest]).
+     * Test seam: candidate OS vault for [pick] to self-test, replacing real
+     * `os.name` detection. Unlike [forced], selection still runs through [pick]
+     * (and [selfTest]), so tests can drive both the self-test-pass and the
+     * data-loss-critical self-test-fail paths without a real keyring.
      */
     private val osCandidateForTest: JvmKeyVault? = null,
     /**
-     * Test seam: stands in for the lazily-built legacy-derived-namespace twin
-     * (see [legacyProbes]) so the 2.1.0/2.1.1 namespace-upgrade
-     * recovery can be tested without a real OS secret store.
+     * Test seam: stands in for the lazily-built legacy-namespace twin (see
+     * [legacyProbes]) so namespace-upgrade recovery can be tested without a real
+     * OS secret store.
      */
     private val legacyNamespaceCandidateForTest: JvmKeyVault? = null,
     /**
-     * Test seam: the namespace the injected [legacyNamespaceCandidateForTest]
-     * stands for. `null` (the default) models a genuine 2.1.0/2.1.1 **derived**
-     * legacy namespace — safe to delete after a verified migration. Set to
-     * [DEFAULT_JVM_NAMESPACE] to model the stable-default `"shared"` source,
-     * which must NEVER be deleted: a co-existing no-namespace instance may own
-     * that key, and deleting it would orphan the sibling's ciphertext
-     * (FEEDBACK_4 H2).
+     * Test seam: the namespace [legacyNamespaceCandidateForTest] stands for.
+     * `null` models a genuine derived legacy namespace (safe to delete after a
+     * verified migration); [DEFAULT_JVM_NAMESPACE] models the stable-default
+     * `"shared"` source, which must NEVER be deleted — a co-existing no-namespace
+     * instance may own that key, and deleting it would orphan its ciphertext.
      */
     private val legacyNamespaceNameForTest: String? = null,
     /**
-     * Test seam: multiple legacy-namespace candidate twins, each paired with the
-     * namespace it stands for, in probe order. Models the FEEDBACK_4 H3 case where
-     * an explicit `appNamespace` must probe BOTH `"shared"` and the 2.1.0/2.1.1
-     * launcher-derived namespace. Takes precedence over the single-candidate seams.
+     * Test seam: multiple legacy-namespace twins, each paired with the namespace
+     * it stands for, in probe order — models an explicit `appNamespace` probing
+     * BOTH `"shared"` and the launcher-derived namespace. Takes precedence over
+     * the single-candidate seams.
      */
     private val legacyNamespaceCandidatesForTest: List<Pair<JvmKeyVault, String?>>? = null,
 ) {
-    /**
-     * Retained for [legacyProbes]: the Windows DPAPI twin needs the
-     * same DataStore (it stores the wrapped blob there).
-     */
+    /** Retained for [legacyProbes]: the Windows DPAPI twin needs the same DataStore. */
     private val dataStoreForTwin: DataStore<Preferences>? = dataStore
 
     /**
-     * True when a test injected the active vault or the OS candidate. Guards
-     * [legacyProbes] from lazily constructing a REAL OS vault (and
-     * probing the developer's actual Keychain/keyring) inside unit tests that
-     * only stubbed the primary path.
+     * True when a test injected the active vault or OS candidate. Guards
+     * [legacyProbes] from lazily building a REAL OS vault (probing the developer's
+     * actual keyring) in tests that only stubbed the primary path.
      */
     private val usingTestSeams: Boolean = forced != null || osCandidateForTest != null
     /** Legacy / software store — migration source and last-resort fallback. */
@@ -214,65 +181,47 @@ internal class JvmKeyVaultProvider(
     )
 
     /**
-     * Set when the OS vault [picked] at construction (after OS detection +
-     * self-test) later fails at *runtime* — the canonical case is a Compose
-     * Desktop release distributable whose `jlink`-built JRE is missing
-     * `jdk.unsupported`, so JNA's first real call throws
-     * `NoClassDefFoundError: sun/misc/Unsafe` even though the host clearly has
-     * Keychain/DPAPI/Secret-Service. Runtime failures flip this flag (see
-     * [degradeToLegacy]), after which [active] returns [legacy] for the rest of
-     * this engine's life — losing OS-level key protection but keeping data
-     * persistence working instead of silently dropping every write. Unlike
-     * [osVaultSelfTestFailed], the OS vault is dead *in-process* here, so there
-     * is no reachable OS key to overwrite later and persisting into the
-     * legacy/software store is safe.
+     * Set when the OS vault [picked] at construction later fails at *runtime* —
+     * typically a jlink-trimmed JRE missing `jdk.unsupported`, so JNA's first call
+     * throws `NoClassDefFoundError: sun/misc/Unsafe`. [degradeToLegacy] flips this,
+     * after which [active] returns [legacy] for the engine's life. Unlike
+     * [osVaultSelfTestFailed] the OS vault is dead *in-process*, so there is no
+     * reachable OS key to overwrite and persisting to legacy is safe.
      */
     private val degraded = AtomicBoolean(false)
 
     /**
-     * Set when an OS vault *was constructible for this platform* but failed its
-     * construction-time [selfTest] — a locked Keychain, a login keyring not yet
-     * on D-Bus (headless / SSH / session autostart before unlock), etc. This is
-     * fundamentally different from "no OS store exists here" (genuinely headless
-     * Linux without a keyring, an unsupported OS, or the explicit
-     * `-Dksafe.jvm.keyVault=software` opt-out): the real keys almost certainly
-     * live in the OS store and it will be reachable again on a healthy launch.
-     *
-     * Silently treating the legacy software store as a healthy choice in this
-     * state destroys data two ways, so we flag it instead:
-     *  - a null key lookup becomes ambiguous, so reads must report
-     *    "unavailable" not "absent" ([hasDegraded]) — otherwise KSafeCore's
-     *    orphan sweep deletes still-recoverable OS-vault-only ciphertext;
-     *  - key *creation* must not mint into the legacy DataStore migration
-     *    source ([osVaultUnavailable]) — a junk key written there is trusted as
-     *    authoritative by the next healthy launch's legacy-first migration and
-     *    overwrites the real OS-vault key, destroying everything under it.
+     * Set when an OS vault was constructible for this platform but failed its
+     * construction-time [selfTest] — a locked Keychain, a login keyring not yet on
+     * D-Bus, etc. Distinct from "no OS store exists here": the real keys almost
+     * certainly live in the OS store and it'll be reachable on a healthy launch, so
+     * treating the software store as healthy would destroy data two ways:
+     *  - a null lookup is ambiguous, so reads must report "unavailable" not "absent"
+     *    ([hasDegraded]), else the orphan sweep deletes recoverable OS-only ciphertext;
+     *  - key creation must not mint into the legacy migration source
+     *    ([osVaultUnavailable]) — the next healthy launch's legacy-first migration
+     *    would trust that junk key and overwrite the real OS key.
      */
     private val osVaultSelfTestFailed = AtomicBoolean(false)
 
     /**
-     * Set when the explicit software opt-out (`-Dksafe.jvm.keyVault=software`) selected
-     * the legacy store. Like [osVaultSelfTestFailed] it makes a null key lookup ambiguous
-     * — a store that previously used the OS vault still has ciphertext whose key lives
-     * only there — so reads must report "unavailable" (preserve) rather than "absent"
-     * (which the orphan sweep would delete). Unlike [osVaultSelfTestFailed] it does NOT
-     * refuse key creation: opting out deliberately mints new keys into the software store.
+     * Set when the explicit software opt-out (`-Dksafe.jvm.keyVault=software`)
+     * selected the legacy store. Like [osVaultSelfTestFailed] a null lookup is
+     * ambiguous (a previously OS-backed store still holds OS-only ciphertext), so
+     * reads report "unavailable" (preserve) not "absent"; unlike it, key creation
+     * is allowed — opting out deliberately mints into the software store.
      *
-     * TRADEOFF (round-3 audit R8, accepted): because we cannot tell — under opt-out,
-     * without probing the very OS vault the user opted out of — whether a store was ever
-     * OS-backed, we treat ALL opt-out stores as "possibly OS-migrated" and preserve. For a
-     * genuinely software-only store this disables orphan-ciphertext reclamation (a key
-     * that was deleted leaves its ciphertext on disk unread), which is harmless clutter,
-     * not data loss or leakage. Erring toward preserve is the correct bias for a security
-     * library: never risk deleting data that a re-enabled OS vault could still recover.
+     * Since we can't tell whether an opt-out store was ever OS-backed without
+     * probing the vault the user opted out of, we preserve ALL of them. For a
+     * genuinely software-only store this only forgoes orphan-ciphertext reclamation
+     * (harmless clutter), which is the right bias for a security library.
      */
     private val softwareOptOut = AtomicBoolean(false)
 
     /**
-     * Picked at construction (after OS detection + self-test). Declared *after*
-     * [degraded] / [osVaultSelfTestFailed] because [pick] writes the latter on a
-     * self-test failure — initialising it earlier would dereference a not-yet-
-     * constructed flag and NPE.
+     * Picked at construction. Declared *after* [degraded] / [osVaultSelfTestFailed]
+     * because [pick] writes the latter on a self-test failure — ordering it earlier
+     * would touch a not-yet-constructed flag and NPE.
      */
     private val picked: JvmKeyVault =
         forced ?: if (dataStore != null) pick(dataStore) else legacy
@@ -282,40 +231,31 @@ internal class JvmKeyVaultProvider(
         get() = if (degraded.get()) legacy else picked
 
     /**
-     * True when the OS vault is known/expected to exist but is currently
-     * unreachable — either a runtime failure has forced the software fallback
-     * ([degradeToLegacy]) or the construction-time [selfTest] failed
-     * ([osVaultSelfTestFailed]). In both states a null key lookup is ambiguous
-     * (the key may live only in the now-unreachable OS vault), so callers must
-     * report "vault unavailable" rather than "key absent", to keep the orphan
-     * sweep from deleting still-recoverable ciphertext.
+     * True when the OS vault is expected to exist but is currently unreachable —
+     * a runtime degrade ([degradeToLegacy]), a failed construction-time [selfTest]
+     * ([osVaultSelfTestFailed]), or the software opt-out. A null lookup is then
+     * ambiguous, so callers report "vault unavailable" not "key absent", keeping the
+     * orphan sweep from deleting recoverable ciphertext.
      */
     val hasDegraded: Boolean
         get() = degraded.get() || osVaultSelfTestFailed.get() || softwareOptOut.get()
 
     /**
-     * True when an OS vault exists for this platform but was unavailable at
-     * construction (see [osVaultSelfTestFailed]). Callers must NOT mint new key
-     * material into the legacy DataStore migration source while this holds:
-     * doing so lets the next healthy launch's legacy-first migration overwrite
-     * the real OS-vault key. Distinct from [hasDegraded] because the runtime
-     * `LinkageError` degrade path (OS vault permanently dead in-process) *does*
-     * legitimately persist into the legacy/software store.
+     * True when an OS vault exists but was unavailable at construction (see
+     * [osVaultSelfTestFailed]). Callers must NOT mint new keys into the legacy
+     * migration source while this holds — the next healthy launch's legacy-first
+     * migration would overwrite the real OS key. Distinct from [hasDegraded]: the
+     * runtime degrade path (OS vault dead in-process) *may* persist to legacy.
      */
     val osVaultUnavailable: Boolean
         get() = osVaultSelfTestFailed.get()
 
     /**
-     * Flips the provider into degraded mode after a runtime JNA failure on
-     * [picked]: subsequent reads of [active] return [legacy]. Emits a
-     * one-time loud warning naming the cause so the operator can install
-     * the missing JDK module (typically `jdk.unsupported`) rather than
-     * silently running on the software fallback forever.
-     *
-     * Called by [eu.anifantakis.lib.ksafe.internal.JvmSoftwareEncryption]
-     * when a `LinkageError` (NoClassDefFoundError, UnsatisfiedLinkError, …)
-     * or `ExceptionInInitializerError` escapes a `get`/`put`/`delete` on
-     * the active vault.
+     * Flips the provider into degraded mode after a runtime JNA failure on [picked],
+     * so [active] returns [legacy] thereafter. Emits a one-time warning naming the
+     * cause (usually a missing `jdk.unsupported`). Called by JvmSoftwareEncryption
+     * when a `LinkageError` / `ExceptionInInitializerError` escapes a get/put/delete
+     * on the active vault.
      */
     internal fun degradeToLegacy(cause: Throwable) {
         if (degraded.compareAndSet(false, true)) {
@@ -324,49 +264,36 @@ internal class JvmKeyVaultProvider(
     }
 
     private fun pick(dataStore: DataStore<Preferences>): JvmKeyVault {
-        // Explicit opt-out: forces the legacy software store without a warning.
-        // Useful for CI/tests (no Keychain access prompt, no keyring pollution)
-        // and for consumers who deliberately don't want OS-store integration.
-        // System property takes precedence over the environment variable.
+        // Explicit opt-out: force the legacy software store, no warning. The system
+        // property beats the env var.
         val override = System.getProperty(PROP_KEY_VAULT)
             ?: System.getenv(ENV_KEY_VAULT)
         if (override != null && override.lowercase() in OPT_OUT_VALUES) {
             // Preserve, don't delete: a store that used the OS vault before the opt-out
-            // still holds ciphertext whose key lives only there. Flag it so a missing
-            // legacy key reads as "unavailable" (orphan sweep skips it) instead of
-            // "absent" (which would permanently delete recoverable data). New keys still
-            // mint into the software store — that's the point of the opt-out (deep-review
-            // M3). A from-start opt-out store keeps its software keys in [legacy], so this
-            // never fires for keys that are genuinely present.
+            // still holds OS-only ciphertext, so flag it (a missing legacy key then reads
+            // as "unavailable", not "absent"). New keys still mint into the software store
+            // — the point of the opt-out.
             softwareOptOut.set(true)
             return legacy
         }
 
         val os = System.getProperty("os.name").orEmpty().lowercase()
-        // A construction failure (JNA class-load / native-link failure, missing
-        // platform jar, …) yields null: the OS vault never came up in-process
-        // (like the runtime LinkageError case), so there is no reachable OS key
-        // to overwrite later and the legacy/software store is a safe home.
+        // A construction failure yields null: the OS vault never came up in-process, so
+        // there is no reachable OS key to overwrite and the software store is a safe home.
         val candidate: JvmKeyVault? = osCandidateForTest ?: buildOsVault(os, appNamespace, dataStore)
 
         if (candidate != null) {
             if (selfTest(candidate)) return candidate
-            // The OS vault exists but its self-test failed: present-but-
-            // unreachable right now (locked Keychain, login keyring not yet
-            // unlocked / no D-Bus session, SSH/headless launch). Do NOT silently
-            // treat the legacy software store as healthy — that lets the orphan
-            // sweep delete OS-vault-only ciphertext and mints junk keys into the
-            // migration source that overwrite the real OS key on the next
-            // healthy launch. Flag it so the engine fails safe (reads report
-            // "unavailable"; key creation is refused) and the data survives
-            // until the OS store is reachable again.
+            // OS vault exists but self-test failed: present-but-unreachable (locked
+            // Keychain, keyring not yet unlocked, headless launch). Flag it rather than
+            // trusting the software store — otherwise the orphan sweep deletes OS-only
+            // ciphertext and junk keys minted here overwrite the real OS key next launch.
             osVaultSelfTestFailed.set(true)
             warnOsVaultUnavailableOnce(os)
             return legacy
         }
 
-        // No OS vault for this platform at all — the legacy software store is the
-        // legitimate, permanent home (no reachable OS key to protect).
+        // No OS vault for this platform — the software store is the legitimate home.
         warnFallbackOnce(os)
         return legacy
     }
@@ -390,37 +317,27 @@ internal class JvmKeyVaultProvider(
 
     /**
      * The legacy-namespace read-fallback: the OS-vault twin used as a migration
-     * source (see [recoverFromLegacyNamespace]), paired with the **namespace it
-     * lives under**. Two upgrade paths feed it (see [legacyFallbackNamespaces]):
-     * the 2.1.0/2.1.1 launcher-**derived** namespace when on the stable default
-     * (those releases derived it from `sun.java.command`; the default is now the
-     * constant [DEFAULT_JVM_NAMESPACE]), OR the stable default `"shared"` itself
-     * when an explicit `appNamespace` was newly set (FEEDBACK_4 H-D). Without
-     * this probe pre-upgrade keys become invisible, every decrypt throws
-     * "No encryption key found", and the startup orphan sweep permanently
-     * deletes the user's ciphertext.
+     * source (see [recoverFromLegacyNamespace]), paired with the namespace it lives
+     * under. Feeds from [legacyFallbackNamespaces] — the launcher-derived namespace
+     * and/or the stable default `"shared"`. Without this, pre-upgrade keys become
+     * invisible, every decrypt fails, and the orphan sweep deletes the ciphertext.
      *
-     * The paired namespace gates destructive cleanup: a genuine derived legacy
-     * namespace has no live owner and may be deleted after a verified migration,
-     * but the stable default [DEFAULT_JVM_NAMESPACE] must NEVER be deleted — a
-     * co-existing no-namespace KSafe instance may own that key, and deleting it
-     * would orphan the sibling's ciphertext (FEEDBACK_4 H2).
+     * The paired namespace gates destructive cleanup: a derived legacy namespace has
+     * no live owner and may be deleted after a verified migration, but
+     * [DEFAULT_JVM_NAMESPACE] must NEVER be deleted — a co-existing no-namespace
+     * instance may own that key, and deleting it would orphan its ciphertext.
      *
-     * Built lazily and only when it can actually matter: production wiring
-     * (no test seams), an OS-backed pick, and a fallback namespace that differs
-     * from the active one.
+     * Built lazily and only when it can matter: production wiring, an OS-backed pick,
+     * and a fallback namespace that differs from the active one.
      */
     private val legacyProbes: List<Pair<JvmKeyVault, String?>> by lazy {
         legacyNamespaceCandidatesForTest?.let { return@lazy it }
         legacyNamespaceCandidateForTest?.let { return@lazy listOf(it to legacyNamespaceNameForTest) }
         if (usingTestSeams) return@lazy emptyList()
         if (!picked.isOsBacked) return@lazy emptyList()
-        // Probe every namespace that could hold pre-upgrade keys, in order (FEEDBACK_4 H3):
-        // the 2.1.0/2.1.1 launcher-derived namespace AND the stable default "shared", minus
-        // whichever equals the active namespace. On the default the set is just the derived
-        // namespace (the H-D single-hop); with an explicit appNamespace it is BOTH, since a
-        // 2.1.0/2.1.1 stable-launcher app that later adds an appNamespace holds its key under
-        // the derived namespace, not "shared".
+        // Probe every namespace that could hold pre-upgrade keys, in order: the
+        // launcher-derived namespace and the stable default "shared", minus whichever
+        // equals the active namespace.
         val os = System.getProperty("os.name").orEmpty().lowercase()
         legacyFallbackNamespaces(appNamespace, legacyDerivedJvmNamespace()).mapNotNull { ns ->
             buildOsVault(os, ns, dataStoreForTwin)?.let { it to ns }
@@ -428,18 +345,15 @@ internal class JvmKeyVaultProvider(
     }
 
     /**
-     * Read-fallback for a key that misses under the current namespace: probes
-     * the legacy-namespace twin and, on a hit, migrates the key to the active
-     * vault — write, read-back-verify, then delete the old entry ONLY when the
-     * source is a genuine derived legacy namespace. On any migration hiccup the
-     * bytes are still returned so this session decrypts normally and the
-     * migration retries on a later launch; the old entry is never deleted
-     * unverified — and never at all when the source is the stable default
-     * `"shared"` (FEEDBACK_4 H2).
+     * Read-fallback for a key that misses under the current namespace: probes the
+     * legacy-namespace twin and, on a hit, migrates it to the active vault — write,
+     * read-back-verify, then delete the old entry ONLY when the source is a genuine
+     * derived legacy namespace (never for the stable default `"shared"`). On any
+     * hiccup the bytes are still returned so this session decrypts and the migration
+     * retries later; the old entry is never deleted unverified.
      *
-     * Callers reach this only after a successful-but-null [active] lookup, so
-     * the vault is healthy here — no degraded/self-test gating needed (those
-     * states never route to the OS vault in the first place).
+     * Reached only after a successful-but-null [active] lookup, so the vault is
+     * healthy here — no degraded/self-test gating needed.
      */
     internal fun recoverFromLegacyNamespace(alias: String): ByteArray? {
         for ((source, sourceNamespace) in legacyProbes) {
@@ -448,26 +362,21 @@ internal class JvmKeyVaultProvider(
             } catch (e: LinkageError) {
                 throw e
             } catch (e: Throwable) {
-                // The OS vaults deliberately THROW a "vault unavailable" error (never null) when
-                // the store is unreachable — a locked login keychain, a keyring not yet on D-Bus,
-                // a spurious OSStatus — precisely so a transient outage isn't misread as a genuine
-                // miss. Propagate it so the caller reports "vault unavailable" (which KSafeCore's
-                // orphan sweep treats as non-deletable) instead of collapsing to null, which would
-                // let the sweep delete recoverable ciphertext or mint a shadowing key under the
-                // active namespace (FEEDBACK_4 H4). All probes here read the SAME underlying store,
-                // so an outage on one means the rest are unreachable too — surface it now.
+                // OS vaults THROW "vault unavailable" (never null) when unreachable, so a
+                // transient outage isn't misread as a miss. Propagate it — the caller then
+                // reports "unavailable" (non-deletable to the orphan sweep) instead of
+                // collapsing to null and letting the sweep delete recoverable ciphertext.
+                // All probes read the same store, so one outage means all are unreachable.
                 if (e.message?.contains("vault unavailable", ignoreCase = true) == true) throw e
                 null
             } ?: continue // this namespace has no such key — try the next candidate
             try {
                 picked.put(alias, bytes)
-                // Reclaim the old entry only for a genuine derived legacy namespace
-                // (no live owner). NEVER delete from the stable default "shared": a
-                // co-existing no-namespace KSafe instance may be actively using that
-                // key, and a MOVE would orphan the sibling's ciphertext (FEEDBACK_4
-                // H2). Leaving it is harmless — the key now lives under the active
-                // namespace, so active.get() hits next launch and this fallback
-                // won't re-run.
+                // Reclaim the old entry only for a genuine derived legacy namespace (no
+                // live owner). NEVER delete from the stable default "shared": a co-existing
+                // no-namespace instance may still use that key, and a move would orphan its
+                // ciphertext. Leaving it is harmless — the key now lives under the active
+                // namespace, so this fallback won't re-run.
                 if (sourceNamespace != DEFAULT_JVM_NAMESPACE &&
                     picked.get(alias)?.contentEquals(bytes) == true
                 ) {
@@ -476,8 +385,7 @@ internal class JvmKeyVaultProvider(
             } catch (e: LinkageError) {
                 throw e
             } catch (_: Throwable) {
-                // Keep serving the recovered bytes; the un-deleted old entry makes
-                // the migration retry next launch.
+                // Keep serving the recovered bytes; the un-deleted entry retries the migration.
             }
             return bytes
         }
@@ -485,30 +393,26 @@ internal class JvmKeyVaultProvider(
     }
 
     /**
-     * Best-effort delete from the legacy-namespace twin, so a delete-then-
-     * recreate of the same alias cannot resurrect the pre-upgrade key via
-     * [recoverFromLegacyNamespace] (the same guarantee deleteKey already
-     * gives for the legacy DataStore vault). Skipped when the twin is the
-     * stable default `"shared"`: a co-existing no-namespace instance may own
-     * that key, so a namespaced instance must never scrub it (FEEDBACK_4 H2).
+     * Best-effort delete from the legacy-namespace twin, so a delete-then-recreate of
+     * the same alias can't resurrect the pre-upgrade key via
+     * [recoverFromLegacyNamespace]. Skipped for the stable default `"shared"`: a
+     * co-existing no-namespace instance may own that key, so a namespaced instance
+     * must never scrub it.
      */
     internal fun deleteFromLegacyNamespace(alias: String) {
         for ((twin, twinNamespace) in legacyProbes) {
             // Never scrub the stable default "shared" — a co-existing no-namespace instance
-            // may own that key (FEEDBACK_4 H2). Genuine derived legacy namespaces are scrubbed.
+            // may own that key. Genuine derived legacy namespaces are scrubbed.
             if (twinNamespace == DEFAULT_JVM_NAMESPACE) continue
             runCatching { twin.delete(alias) }
         }
     }
 
     /**
-     * Round-trips a canary value to confirm the native store actually works.
-     *
-     * The alias must be unique per attempt: the OS stores are per-user and
-     * shared across every process and KSafe instance on the machine, so a
-     * FIXED alias lets two concurrent self-tests interleave (A.put, B.put,
-     * A.get, A.delete, B.get → null), flipping a healthy engine into
-     * session-long fail-closed mode.
+     * Round-trips a canary to confirm the native store works. The alias must be
+     * unique per attempt: the OS stores are shared across every process/instance on
+     * the machine, so a FIXED alias lets two concurrent self-tests interleave (A.put,
+     * B.put, A.get, A.delete, B.get → null) and flip a healthy engine into fail-closed.
      */
     private fun selfTest(vault: JvmKeyVault): Boolean = try {
         val alias = "__ksafe_selftest__" + java.util.UUID.randomUUID()
@@ -568,14 +472,10 @@ internal class JvmKeyVaultProvider(
         fun warnRuntimeDegrade(vaultName: String, cause: Throwable) {
             if (runtimeDegradeWarned.compareAndSet(false, true)) {
                 val typed = "${cause::class.java.simpleName}: ${cause.message}"
-                // NOTE: we deliberately do NOT promise "writes are not lost" here.
-                // A runtime LinkageError almost always means a missing JDK module
-                // (jdk.unsupported / sun.misc.Unsafe) in a jlink-trimmed runtime —
-                // and Jetpack DataStore's protobuf layer ALSO requires
-                // sun.misc.Unsafe, so it will crash independently of this key-vault
-                // degrade. The key-vault fallback keeps key custody working; it
-                // cannot rescue DataStore. The module is therefore required, not
-                // optional, for KSafe on Compose Desktop release distributables.
+                // Deliberately no "writes are not lost" promise: a LinkageError here means a
+                // missing jdk.unsupported / sun.misc.Unsafe, which DataStore's protobuf ALSO
+                // needs, so DataStore crashes independently. The fallback keeps key custody;
+                // it can't rescue DataStore. The module is required, not optional.
                 System.err.println(
                     "KSafe SECURITY WARNING: the OS keyvault ($vaultName) failed at " +
                         "runtime ($typed); key custody has degraded to the software " +
@@ -594,41 +494,22 @@ internal class JvmKeyVaultProvider(
 }
 
 /**
- * Resolves the effective app-isolation namespace for the JVM OS vaults.
- *
- * Priority: explicit [override] (`KSafeConfig.appNamespace`) →
- * `-Dksafe.appNamespace` → env `KSAFE_APP_NAMESPACE` → the stable constant
- * `"shared"`. Sanitised to `[A-Za-z0-9._-]` so it is safe as a Keychain
- * service / DataStore key / Secret Service attribute. A blank result is
- * impossible.
- *
- * **The default MUST be stable across launches.** A launcher-derived default
- * (jar name / main-class token) moves while the un-namespaced data file does
- * not, making every existing key invisible — and the startup orphan sweep
- * would then delete the user's encrypted data on upgrade.
- *
- * Apps that genuinely need per-app OS-vault isolation set
- * `KSafeConfig.appNamespace` explicitly — which also namespaces the data file,
- * so file and keys move together.
- */
-/**
- * The stable default OS-vault namespace. Never derived from the launcher, so
- * it cannot silently move between runs/releases.
+ * The stable default OS-vault namespace. Never derived from the launcher, so it
+ * cannot silently move between runs/releases — a moving default would leave the
+ * un-namespaced data file behind, hide every key, and let the orphan sweep delete
+ * the user's data on upgrade.
  */
 internal const val DEFAULT_JVM_NAMESPACE = "shared"
 
 /**
- * The OS-vault namespaces to probe, in order, as read-fallback migration sources for a key
- * that misses under [currentNamespace] — the 2.1.0/2.1.1 launcher-**derived** namespace
- * [derivedNamespace] and the stable default [DEFAULT_JVM_NAMESPACE], minus whichever equals
- * [currentNamespace] (nothing to migrate from the active namespace). Empty when neither
- * differs. Two upgrade paths, and the case that needs BOTH (FEEDBACK_4 H3):
- *  - [currentNamespace] is the stable default (`"shared"`): the set is just [derivedNamespace]
- *    — keys written before the default became stable (the H-D single hop).
- *  - [currentNamespace] is an **explicit** `appNamespace`: the set is `[derived, "shared"]`.
- *    An app that ran without a namespace and then set one holds keys under `"shared"`; an app
- *    that shipped on 2.1.0/2.1.1 with a stable launcher and then set one holds them under the
- *    derived namespace. A single app can need EITHER, so both are probed (derived first).
+ * The OS-vault namespaces to probe, in order, as migration sources for a key that misses
+ * under [currentNamespace]: the launcher-**derived** namespace [derivedNamespace] and the
+ * stable default [DEFAULT_JVM_NAMESPACE], minus whichever equals [currentNamespace]. Empty
+ * when neither differs.
+ *  - [currentNamespace] is the default `"shared"`: probe just [derivedNamespace].
+ *  - [currentNamespace] is an explicit `appNamespace`: probe `[derived, "shared"]`, since an
+ *    app that ran un-namespaced holds keys under `"shared"` while a stable-launcher app that
+ *    later set a namespace holds them under the derived one — either is possible.
  */
 internal fun legacyFallbackNamespaces(currentNamespace: String, derivedNamespace: String?): List<String> =
     listOfNotNull(derivedNamespace, DEFAULT_JVM_NAMESPACE)
@@ -646,20 +527,18 @@ internal fun resolveJvmAppNamespace(override: String?): String {
     System.getProperty("ksafe.appNamespace").cleanNamespaceToken()?.let { return it }
     System.getenv("KSAFE_APP_NAMESPACE").cleanNamespaceToken()?.let { return it }
 
-    // Deliberately NO `sun.java.command` derivation — it changes with the
-    // launcher and would silently orphan the user's data on upgrade. Keys
-    // written by released 2.1.0/2.1.1 under the old derived namespace are
-    // recovered on read by [JvmKeyVaultProvider.recoverFromLegacyNamespace].
+    // Deliberately NO `sun.java.command` derivation — it changes with the launcher and
+    // would silently orphan data on upgrade. Keys written under an old derived namespace
+    // are recovered on read by [JvmKeyVaultProvider.recoverFromLegacyNamespace].
     return DEFAULT_JVM_NAMESPACE
 }
 
 /**
- * Reproduces — byte for byte — the default-namespace derivation that released
- * 2.1.0/2.1.1 used (`sun.java.command` first token; jar path → bare jar name;
- * same sanitization), so [JvmKeyVaultProvider.recoverFromLegacyNamespace] can
- * probe exactly where those releases stored a stable-launcher app's keys.
- * Returns null when no launcher token is available or when the derivation
- * lands on [DEFAULT_JVM_NAMESPACE] itself (nothing distinct to probe).
+ * Reproduces — byte for byte — the legacy default-namespace derivation
+ * (`sun.java.command` first token; jar path → bare jar name; same sanitization),
+ * so [JvmKeyVaultProvider.recoverFromLegacyNamespace] can probe where an older
+ * release stored a stable-launcher app's keys. Null when no launcher token exists
+ * or the derivation lands on [DEFAULT_JVM_NAMESPACE] (nothing distinct to probe).
  */
 internal fun legacyDerivedJvmNamespace(): String? {
     val cmd = System.getProperty("sun.java.command").orEmpty().trim().substringBefore(' ')

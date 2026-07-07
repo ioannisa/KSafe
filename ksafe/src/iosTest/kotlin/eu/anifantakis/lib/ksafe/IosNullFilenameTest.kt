@@ -12,7 +12,7 @@ class IosNullFilenameTest {
     /** Verifies KSafe works with null filename (uses default) */
     @Test
     fun testWithNullFilename() = runTest {
-        val ksafe = KSafe(null)  // Explicitly passing null
+        val ksafe = KSafe(null)
         
         val key = "test_key"
         val value = "test_value"

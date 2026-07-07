@@ -6,12 +6,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * FEEDBACK_4 low: [MacosKeychainKeyVault.put] is a delete-then-add upsert. If the add
- * returns `errSecDuplicateItem`, the preceding delete failed to remove the existing item —
- * the NEW key was never stored and the stale one remains. Swallowing it (the old behavior)
- * reported success while silently losing the write, making data re-encrypted under the
- * intended key undecryptable. `put` must fail closed. The keychain I/O can't run in a unit
- * test, so the pure status decision is verified here.
+ * Locks in: only `errSecSuccess` counts as a successful keychain add — `errSecDuplicateItem` means the delete-then-add upsert never replaced the key, so `put` must fail closed.
  */
 class JvmMacosKeychainAddStatusTest {
 

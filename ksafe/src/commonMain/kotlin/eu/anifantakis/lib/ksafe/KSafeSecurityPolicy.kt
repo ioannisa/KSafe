@@ -1,102 +1,45 @@
 package eu.anifantakis.lib.ksafe
 
-/**
- * Action to take when a security violation is detected.
- */
+/** Action to take when a security violation is detected. */
 enum class SecurityAction {
-    /**
-     * Ignore the violation and continue normally.
-     * Use this for development or non-sensitive apps.
-     */
+    /** Ignore the violation and continue normally. */
     IGNORE,
 
-    /**
-     * Allow operation but invoke the [KSafeSecurityPolicy.onViolation] callback.
-     * Use this to show warnings to users or log security events.
-     */
+    /** Allow the operation but invoke the [KSafeSecurityPolicy.onViolation] callback. */
     WARN,
 
-    /**
-     * Block the operation and throw [SecurityViolationException].
-     * Use this for high-security apps (banking, enterprise).
-     */
+    /** Block the operation and throw [SecurityViolationException]. */
     BLOCK
 }
 
-/**
- * Types of security violations that can be detected.
- */
+/** Types of security violations that can be detected. */
 enum class SecurityViolation {
-    /**
-     * Device is rooted (Android) or jailbroken (iOS).
-     * This allows apps to bypass sandboxing and access other apps' data.
-     */
+    /** Device is rooted (Android) or jailbroken (iOS). */
     RootedDevice,
 
-    /**
-     * A debugger is attached to the process.
-     * This allows inspection of memory and runtime values.
-     */
+    /** A debugger is attached to the process. */
     DebuggerAttached,
 
-    /**
-     * App is running in debug mode (debug build).
-     * Debug builds may have weaker security settings.
-     */
+    /** App is running a debug build. */
     DebugBuild,
 
-    /**
-     * App is running on an emulator/simulator.
-     * Emulators have weaker security guarantees.
-     */
+    /** App is running on an emulator/simulator. */
     Emulator
 }
 
-/**
- * Exception thrown when a security violation is detected and action is [SecurityAction.BLOCK].
- */
+/** Thrown when a violation is detected and its action is [SecurityAction.BLOCK]. */
 class SecurityViolationException(
     val violation: SecurityViolation
 ) : RuntimeException("Security violation: ${violation.name}")
 
 /**
- * Security policy configuration for KSafe.
- *
- * Allows detection and handling of potential security threats such as
+ * Security policy for KSafe — detection and handling of threats such as
  * rooted/jailbroken devices, debugger attachment, and emulator usage.
  *
- * ## Example
- * ```kotlin
- * val ksafe = KSafe(
- *     context = context,
- *     securityPolicy = KSafeSecurityPolicy(
- *         rootedDevice = SecurityAction.WARN,
- *         debuggerAttached = SecurityAction.BLOCK,
- *         onViolation = { violation ->
- *             analytics.logSecurityEvent(violation.name)
- *         }
- *     )
- * )
- * ```
+ * All actions default to [SecurityAction.IGNORE] for backwards compatibility.
  *
- * ## Default Behavior
- * By default, all actions are set to [SecurityAction.IGNORE] for backwards
- * compatibility and to avoid breaking existing apps.
- *
- * ## Platform Support
- * | Check | Android | iOS | JVM |
- * |-------|---------|-----|-----|
- * | Rooted/Jailbroken | ✅ | ✅ | ❌ N/A |
- * | Debugger Attached | ✅ | ✅ | ✅ |
- * | Debug Build | ✅ | ✅ | ✅ |
- * | Emulator | ✅ | ✅ | ❌ N/A |
- *
- * @property rootedDevice Action for rooted (Android) or jailbroken (iOS) devices.
- * @property debuggerAttached Action when a debugger is attached to the process.
- * @property debugBuild Action when running a debug build.
- * @property emulator Action when running on emulator/simulator.
- * @property onViolation Callback invoked when a violation is detected and action is WARN or BLOCK.
- *                       Called before throwing exception (for BLOCK) or continuing (for WARN).
+ * @property onViolation Invoked when a violation is detected under WARN or
+ *   BLOCK — before throwing (BLOCK) or continuing (WARN).
  */
 data class KSafeSecurityPolicy(
     val rootedDevice: SecurityAction = SecurityAction.IGNORE,
@@ -106,16 +49,10 @@ data class KSafeSecurityPolicy(
     val onViolation: ((SecurityViolation) -> Unit)? = null
 ) {
     companion object {
-        /**
-         * Default policy - all checks ignored.
-         * Safe for development and non-sensitive apps.
-         */
+        /** All checks ignored. */
         val Default = KSafeSecurityPolicy()
 
-        /**
-         * Strict policy - blocks on rooted devices and debuggers.
-         * Recommended for banking, enterprise, and high-security apps.
-         */
+        /** Blocks on rooted devices and debuggers; warns on debug build / emulator. */
         val Strict = KSafeSecurityPolicy(
             rootedDevice = SecurityAction.BLOCK,
             debuggerAttached = SecurityAction.BLOCK,
@@ -123,10 +60,7 @@ data class KSafeSecurityPolicy(
             emulator = SecurityAction.WARN
         )
 
-        /**
-         * Warn-only policy - warns but doesn't block.
-         * Good for logging security events without breaking UX.
-         */
+        /** Warns on every check but never blocks. */
         val WarnOnly = KSafeSecurityPolicy(
             rootedDevice = SecurityAction.WARN,
             debuggerAttached = SecurityAction.WARN,

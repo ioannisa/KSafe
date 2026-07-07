@@ -4,20 +4,10 @@ import kotlin.test.AfterTest
 import kotlin.uuid.ExperimentalUuidApi
 
 /**
- * Runs the full common [KSafeTest] suite against the macOS implementation.
- *
- * Each test gets a freshly created [KSafe] backed by [FakeEncryption] (no
- * real Keychain access — see class doc) and a unique temporary storage
- * directory (no real `~/Library/Application Support/` writes). All temp
- * directories created during a test are cleaned up at teardown.
- *
- * **Why FakeEncryption?** The Kotlin/Native test runner on macOS is an
- * unsigned CLI binary. `SecItemAdd`/`SecItemCopyMatching` against the
- * user's login Keychain on such a binary either fails opaquely or
- * triggers an interactive system password prompt — neither is acceptable
- * for automated tests. Real-Keychain coverage on macOS belongs in an
- * integration test inside a properly signed/entitled application bundle,
- * not in the unit-test runner.
+ * Locks in: the common [KSafeTest] suite against the macOS implementation, each test
+ * on a fresh [KSafe] over a unique temp directory. Uses [FakeEncryption] because the
+ * unsigned Kotlin/Native test runner can't touch the login Keychain without failing
+ * opaquely or triggering an interactive password prompt.
  */
 @OptIn(ExperimentalUuidApi::class)
 class MacosKSafeTest : KSafeTest() {
@@ -35,11 +25,8 @@ class MacosKSafeTest : KSafeTest() {
         )
     }
 
-    /**
-     * Runs after [KSafeTest.tearDown] (alphabetical order — `zCleanupTempDirs`
-     * comes after `tearDown`), so all KSafe instances have been closed and
-     * their DataStore writers flushed before we yank the directories.
-     */
+    // Named to sort after tearDown (alphabetical), so every KSafe is closed and its
+    // DataStore writer flushed before the directories are deleted.
     @AfterTest
     fun zCleanupTempDirs() {
         tempDirs.forEach { runCatching { MacosTestPaths.deleteRecursively(it) } }

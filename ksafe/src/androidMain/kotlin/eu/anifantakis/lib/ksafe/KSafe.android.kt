@@ -42,37 +42,25 @@ private val fileNameRegex = Regex("[a-z][a-z0-9_]*")
 
 const val KEY_ALIAS_PREFIX: String = "eu.anifantakis.ksafe"
 
-/**
- * Sentinel user-key segments for the per-datastore master keys created by the
- * v2 envelope. Reserved by the leading-`__` / trailing-`__` convention used
- * everywhere else in KSafe — collisions with real user keys are impossible.
- */
+// Reserved master-key segments; the `__`-fenced convention can't collide with a user key.
 private const val MASTER_KEY_DEFAULT: String = "__ksafe_master__"
 private const val MASTER_KEY_LOCKED: String = "__ksafe_master_locked__"
 
 /**
- * Per-datastore-path shared backend. Co-existing [KSafe] instances on the same file share
- * ONE backend, so they share one [DataStore] **and** one [AndroidKeystoreEncryption] engine
- * — i.e. one in-memory DEK cache and one per-alias lock map over the single persisted
- * wrapped-DEK slot. A fresh engine per instance would let those DEK caches diverge from the
- * one on-disk slot, silently and permanently losing data after a `clearAll()` on one
- * instance or a concurrent first-write race across two.
- *
- * The backend is **ref-counted**: its scope is cancelled and the entry evicted only when
- * the *last* instance on the path closes, so closing one instance can't cancel the
- * DataStore out from under another live one. All creation / acquisition / release for a
- * given path is serialized by [pathLock], which also makes creation atomic — a non-atomic
- * `getOrPut` could open two DataStores for one file (DataStore then throws "multiple
- * DataStores active for the same file").
+ * Per-datastore-path shared backend: every [KSafe] on one file shares a single [DataStore]
+ * and [AndroidKeystoreEncryption] engine, so their in-memory DEK caches can't diverge from
+ * the one on-disk wrapped-DEK slot (which would silently lose data). Ref-counted — only the
+ * last instance to close tears down the scope; [pathLock] serializes acquire/release and
+ * keeps creation atomic (two DataStores on one file throw "multiple DataStores active").
  */
 private class AndroidBackend(
     val dataStore: DataStore<Preferences>,
     val scope: CoroutineScope,
 ) {
-    /** Live [KSafe] instances sharing this backend. Evicted when it hits 0. */
+    /** Live [KSafe] instances sharing this backend; evicted at 0. */
     val refCount = java.util.concurrent.atomic.AtomicInteger(0)
 
-    /** The single shared engine, created lazily on first production use (never for tests). */
+    /** Shared engine, created lazily on first production use (never for tests). */
     @Volatile
     var engine: AndroidKeystoreEncryption? = null
 
@@ -82,28 +70,19 @@ private class AndroidBackend(
     }
 }
 
-/** Live backends keyed by absolute datastore path. Structurally safe across paths
- *  (ConcurrentHashMap); the check-then-act for a single path is serialized by [pathLock]. */
+// Live backends by absolute path; per-path check-then-act is serialized by [pathLock].
 private val backends = ConcurrentHashMap<String, AndroidBackend>()
 
-/**
- * Scope of the most-recently-evicted backend per path, awaited (bounded) before a recreate
- * opens a new DataStore on the same file: DataStore frees a file only once its scope's [Job]
- * completes, so awaiting it avoids the "multiple DataStores active for the same file" guard.
- */
+// Evicted backend's scope, awaited before a recreate: DataStore frees a file only once its
+// scope's Job completes, else the new DataStore hits "multiple DataStores active".
 private val terminatingScopes = ConcurrentHashMap<String, CoroutineScope>()
 
-/** One monitor per datastore path — serializes acquire/release (and the prior-scope await)
- *  so a single file never has two DataStores constructed concurrently. */
+// One monitor per path so a file never has two DataStores constructed concurrently.
 private val pathLocks = ConcurrentHashMap<String, Any>()
 private fun pathLock(path: String): Any = pathLocks.computeIfAbsent(path) { Any() }
 
-/**
- * Returns the shared backend for [path], creating it (atomically, per path) on first use
- * and incrementing its ref-count. A recreate after the previous owner closed awaits that
- * owner's teardown first (bounded), since DataStore releases the file only once its scope
- * completes.
- */
+// Shared backend for [path], created atomically on first use and ref-counted. A recreate
+// awaits the prior owner's teardown, since DataStore frees the file only when its scope ends.
 private fun acquireBackend(
     path: String,
     createDataStore: (CoroutineScope) -> DataStore<Preferences>,
@@ -121,11 +100,8 @@ private fun acquireBackend(
     backend
 }
 
-/**
- * Drops one ref to the backend for [path]; when the last instance releases, evicts the
- * entry, parks the scope for the next recreate to await, and cancels it. Idempotency is the
- * caller's responsibility (each [KSafe] releases exactly once via an [java.util.concurrent.atomic.AtomicBoolean]).
- */
+// Drops one ref; the last release evicts the entry, parks the scope for the next recreate
+// to await, and cancels it. Each [KSafe] must release exactly once.
 private fun releaseBackend(path: String) = synchronized(pathLock(path)) {
     val backend = backends[path] ?: return
     if (backend.refCount.decrementAndGet() <= 0) {
@@ -136,36 +112,15 @@ private fun releaseBackend(path: String) = synchronized(pathLock(path)) {
 }
 
 /**
- * Android factory for [KSafe]. Resolves to the same call syntax as the pre-2.0
- * `KSafe(context, ...)` constructor.
+ * Android factory for [KSafe]; same call syntax as the pre-2.0 `KSafe(context, ...)` constructor.
  *
- * Owns the Android-specific concerns: Context-backed DataStore creation
- * (cached per filename so repeated DI re-inits don't crash with
- * "multiple active instances"), StrongBox capability detection, and the
- * per-key [KSafeKeyStorage] tier reported by [getKeyInfo].
- *
- * @param context Android Context (typically the Application).
- * @param fileName Optional logical file name (lowercase letters / digits /
- *   underscores). Used to differentiate multiple [KSafe] instances in the same
- *   process. If null, the default datastore name is used.
- * @param lazyLoad Defer cache preload until first access.
- * @param memoryPolicy How decrypted values live in RAM (default
- *   [KSafeMemoryPolicy.LAZY_PLAIN_TEXT]).
- * @param config Cryptographic + JSON configuration.
- * @param securityPolicy Runtime security checks (root / debugger / etc.).
- * @param plaintextCacheTtl TTL for the
- *   [KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE] policy.
- * @param useStrongBox Deprecated — use `KSafeProtection.HARDWARE_ISOLATED`
- *   per property instead.
- * @param baseDir Optional override for the directory in which the DataStore
- *   `.preferences_pb` file is stored. If null (default) KSafe uses the
- *   Context-managed app-private path
- *   (`/data/data/<package>/files/datastore/...`), which is the recommended
- *   choice — Android's app sandbox already enforces correct permissions there.
- *   If you supply a custom directory, KSafe will create it if missing but
- *   cannot enforce sandbox isolation; do **not** point it at external storage
- *   (SD card / `getExternalFilesDir()`) for sensitive data, where world-
- *   readable semantics may apply.
+ * @param fileName Optional logical name (lowercase letters / digits / underscores) that
+ *   differentiates instances in one process; null uses the default datastore name.
+ * @param useStrongBox Deprecated — use `KSafeProtection.HARDWARE_ISOLATED` per property.
+ * @param baseDir Optional override for the `.preferences_pb` directory. Null (recommended)
+ *   uses the app-private path, where the sandbox enforces permissions. A custom dir is
+ *   created if missing but not sandbox-isolated — never point it at external storage
+ *   (SD card / `getExternalFilesDir()`) for sensitive data.
  */
 fun KSafe(
     context: Context,
@@ -247,11 +202,8 @@ private fun buildAndroidKSafe(
     val baseFileName = fileName?.let { "eu_anifantakis_ksafe_datastore_$it" }
         ?: "eu_anifantakis_ksafe_datastore"
 
-    // Resolve the actual DataStore file path. Cache by absolute path so that
-    // (fileName, baseDir) pairs uniquely identify a DataStore — two callers
-    // pointing at the same file share the same DataStore (avoiding DataStore's
-    // "multiple active instances" error); two callers pointing at different
-    // dirs get separate DataStores.
+    // Absolute path uniquely identifies a DataStore: same file → shared DataStore (avoids
+    // DataStore's "multiple active instances" error), different dir → separate DataStores.
     val datastoreFile: File = if (baseDir != null) {
         if (!baseDir.exists()) baseDir.mkdirs()
         File(baseDir, "$baseFileName.preferences_pb")
@@ -259,17 +211,12 @@ private fun buildAndroidKSafe(
         context.preferencesDataStoreFile(baseFileName)
     }
 
-    // Acquire the per-path shared backend (DataStore + scope + engine), ref-counted so
-    // that co-existing instances on the same file share one DataStore AND one engine, and
-    // only the last to close tears the scope down. Creation is atomic per path. See
-    // [AndroidBackend] / [acquireBackend].
+    // Per-path shared backend (DataStore + scope + engine); see [AndroidBackend].
     val datastorePath = datastoreFile.absolutePath
     val backend = acquireBackend(datastorePath) { scope ->
         PreferenceDataStoreFactory.create(
-            // Quarantine a corrupt .preferences_pb and continue from an empty store instead of
-            // throwing CorruptionException on every read forever — which would crash the
-            // background collector and make getDirect silently return defaults. The corrupt
-            // bytes are copied aside for recovery.
+            // Quarantine a corrupt .preferences_pb and continue from empty, rather than throwing
+            // on every read forever (which crashes the collector); corrupt bytes are copied aside.
             corruptionHandler = ReplaceFileCorruptionHandler {
                 runCatching {
                     datastoreFile.copyTo(
@@ -284,10 +231,9 @@ private fun buildAndroidKSafe(
         )
     }
 
-    // One storage instance shared by the engine (for its wrapped DEK) and the core, so
-    // each safe's DEK lives in that safe's own DataStore — not in SharedPreferences. The
-    // shared production engine is created lazily on the backend (never for tests), so all
-    // instances on this file share one DEK cache / lock map over the single wrapped-DEK slot.
+    // One storage shared by engine and core, so each safe's DEK lives in its own DataStore.
+    // The production engine is created lazily and shared, so instances on this file share one
+    // DEK cache over the single wrapped-DEK slot.
     val storage = DataStoreStorage(backend.dataStore)
     val engine: KSafeEncryption = testEngine
         ?: backend.engineOrCreate {
@@ -308,11 +254,8 @@ private fun buildAndroidKSafe(
         else KSafeProtectionLevel.HARDWARE_BACKED
     }
 
-    /**
-     * Honors the deprecated `useStrongBox` constructor flag by promoting every
-     * default-protection encrypted write to [KSafeEncryptedProtection.HARDWARE_ISOLATED].
-     * Writes that explicitly request a protection level pass through unchanged.
-     */
+    // Honors the deprecated useStrongBox flag: promotes default-protection encrypted writes to
+    // HARDWARE_ISOLATED; explicit protection levels pass through unchanged.
     @Suppress("DEPRECATION")
     fun promoteMode(mode: KSafeWriteMode): KSafeWriteMode {
         if (!useStrongBox) return mode
@@ -345,17 +288,13 @@ private fun buildAndroidKSafe(
         },
         modeTransformer = ::promoteMode,
         onCancel = {
-            // Drop this instance's ref to the shared backend. Only the last instance on
-            // the path actually cancels the scope + evicts the entry (ref-counted), so
-            // closing one instance can't cancel the DataStore out from under another live
-            // one. KSafeCore.cancel() is idempotent and may call this more than once, so
-            // guard the release to exactly one decrement per instance.
+            // Drop this instance's backend ref (only the last release cancels the scope).
+            // cancel() is idempotent, so guard to exactly one decrement per instance.
             if (released.compareAndSet(false, true)) releaseBackend(datastorePath)
         },
     )
 
-    // Android custody can't change after construction (no runtime fallback
-    // path on this platform), so the provider returns a captured snapshot.
+    // Android custody is fixed at construction (no runtime fallback), so snapshot it.
     val protectionInfoSnapshot = KSafeProtectionInfo(
         intendedLevel = KSafeProtectionLevel.HARDWARE_BACKED,
         effectiveLevel = KSafeProtectionLevel.HARDWARE_BACKED,
@@ -366,11 +305,9 @@ private fun buildAndroidKSafe(
         },
         notes = buildList {
             if (!hasStrongBox) add("android_strongbox_absent")
-            // Relaxed DEFAULT entries are decrypted in userspace via a data-encryption
-            // key wrapped by the (non-exportable) TEE master key. The wrapped DEK is at
-            // rest; the unwrapped DEK lives in process memory after first use — the same
-            // posture as the Apple/JVM engines. HARDWARE_ISOLATED and the strict
-            // requireUnlockedDevice master keep keys inside the TEE on every op.
+            // Relaxed DEFAULT values use a DEK wrapped by the non-exportable TEE master key;
+            // the unwrapped DEK lives in process memory after first use. HARDWARE_ISOLATED and
+            // the strict requireUnlockedDevice master keep keys inside the TEE on every op.
             add("relaxed_default_uses_software_dek")
         },
     )

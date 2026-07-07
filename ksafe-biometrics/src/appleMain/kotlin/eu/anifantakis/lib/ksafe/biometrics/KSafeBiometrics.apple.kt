@@ -13,21 +13,16 @@ import kotlin.native.OsFamily
 import kotlin.native.Platform
 
 /**
- * Apple-platform implementation of [KSafeBiometrics] platform helpers.
+ * Apple-platform [KSafeBiometrics] helpers.
  *
- * iOS: Face ID / Touch ID via `LAPolicyDeviceOwnerAuthenticationWithBiometrics`.
- * Returns `true` on the iOS Simulator (no biometric hardware available).
- *
- * macOS: `LAPolicyDeviceOwnerAuthentication` — Touch ID, password, or Apple Watch
- * unlock. Always produces a prompt; no hardware pre-detection needed.
+ * iOS: Face ID / Touch ID via `LAPolicyDeviceOwnerAuthenticationWithBiometrics`; returns `true` on the Simulator.
+ * macOS: `LAPolicyDeviceOwnerAuthentication` — Touch ID, password, or Apple Watch unlock.
  */
 
 private val biometricAuthSessions = AtomicReference<Map<String, Long>>(emptyMap())
 
-// Monotonic clock for the authorization TTL: a backward wall-clock jump (NTP
-// correction or manual change) must NOT extend a cached biometric
-// authorization. TimeSource.Monotonic never goes backward, so stored
-// "timestamps" are monotonic elapsed-millis from this origin.
+// Monotonic TTL clock: a backward wall-clock jump (NTP or manual change) must NOT extend a
+// cached authorization. TimeSource.Monotonic never goes backward.
 private val biometricClockOrigin = TimeSource.Monotonic.markNow()
 private fun monotonicNowMs(): Long = biometricClockOrigin.elapsedNow().inWholeMilliseconds
 
@@ -67,18 +62,15 @@ internal actual suspend fun platformVerifyBiometric(
     }
 
     return suspendCancellableCoroutine { continuation ->
-        // Own the LAContext here so a cancelled coroutine can abort the pending
-        // system prompt (invalidate), and guard the resume so a late or repeated
-        // callback can never resume an already-resumed/cancelled continuation
-        // (which would crash with "already resumed").
+        // Own the LAContext so a cancelled coroutine can invalidate() the pending prompt, and guard
+        // resume so a late or repeated callback can't resume an already-resumed continuation.
         val context = platform.LocalAuthentication.LAContext()
         continuation.invokeOnCancellation { runCatching { context.invalidate() } }
         CoroutineScope(Dispatchers.Main).launch {
             runLAContextEvaluate(context, reason, allowDeviceCredentialFallback) { success ->
-                // Seed only if the continuation is still active — a success arriving after the
-                // caller cancelled must NOT seed the cache, or a later call gets a prompt-free
-                // pass off an authorization the caller never received (FEEDBACK_4 low, the
-                // Apple twin of the Android biometric-gate bypass). Mirrors the resume gate.
+                // Seed only if the continuation is still active: a success arriving after the caller
+                // cancelled must NOT seed the cache, or a later call gets a prompt-free pass off an
+                // authorization never received.
                 if (success && BiometricAuthSession.shouldCache(authorizationDuration) && continuation.isActive) {
                     updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope, requireStrict = !allowDeviceCredentialFallback), monotonicNowMs())
                 }
@@ -142,10 +134,8 @@ private fun runLAContextEvaluate(
     allowDeviceCredentialFallback: Boolean,
     onResult: (Boolean) -> Unit,
 ) {
-    // Choose policy based on platform defaults and the caller's credential-fallback preference.
-    // macOS default is DeviceOwnerAuthentication (Touch ID + password + Apple Watch) because
-    // many Macs have no Touch ID; biometrics-only is still available when the caller opts in.
-    // iOS default is biometrics-only; password fallback is opt-in.
+    // macOS defaults to DeviceOwnerAuthentication (Touch ID + password + Apple Watch) since many
+    // Macs lack Touch ID; iOS defaults to biometrics-only. Credential fallback is opt-in on both.
     val policy = if (allowDeviceCredentialFallback) {
         platform.LocalAuthentication.LAPolicyDeviceOwnerAuthentication
     } else {

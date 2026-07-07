@@ -5,16 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Tests for **co-existing / recreated [KSafe] instances on the same file** on
- * JVM. DataStore (and the JSON-fallback `DataStoreFactory`) refuse two active
- * instances on one file and release a file only once the owning scope
- * completes, so the factory must share one ref-counted backend per path:
- * otherwise a second live instance on the same `fileName` silently returns
- * defaults and drops its writes, and close()-then-recreate races the teardown
- * nondeterministically.
- *
- * A [FakeEncryption] keeps these off the real OS key vault — the behavior under
- * test lives in the storage layer.
+ * Locks in: co-existing and close-then-recreated [KSafe] instances on the same file share one ref-counted backend, so no instance trips DataStore's single-instance guard or drops writes.
  */
 class JvmMultiInstanceTest {
 
@@ -24,7 +15,7 @@ class JvmMultiInstanceTest {
         val a = KSafe(fileName = file, testEngine = FakeEncryption())
         val b = KSafe(fileName = file, testEngine = FakeEncryption())
         a.put("ka", "va")
-        b.put("kb", "vb") // a second same-file instance must not trip DataStore's single-instance guard
+        b.put("kb", "vb")
 
         a.close(); b.close()
 
@@ -38,9 +29,7 @@ class JvmMultiInstanceTest {
     @Test
     fun closeThenRecreate_sameFile_dataPersists() = runTest {
         val file = JvmKSafeTest.generateUniqueFileName()
-        // Rapid close→recreate on the same file races DataStore's teardown
-        // ("multiple DataStores active for the same file"); the bounded
-        // prior-scope await makes it deterministic.
+        // Rapid close→recreate races DataStore's teardown of the prior instance.
         repeat(20) { i ->
             val ks = KSafe(fileName = file, testEngine = FakeEncryption())
             ks.put("counter", "v$i")

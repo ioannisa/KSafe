@@ -13,9 +13,8 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 @JsFun(
     """(size) => {
     const arr = new Uint8Array(size);
-    // WebCrypto's getRandomValues rejects a view longer than 65536 bytes
-    // (QuotaExceededError), so fill in chunks so a large secret can be generated
-    // (FEEDBACK_4 low: JS/Wasm getOrCreateSecret > 65536).
+    // WebCrypto's getRandomValues rejects a view longer than 65536 bytes (QuotaExceededError),
+    // so fill in 64KB chunks to allow generating a large secret.
     const CHUNK = 65536;
     for (let off = 0; off < size; off += CHUNK) {
         crypto.getRandomValues(arr.subarray(off, Math.min(off + CHUNK, size)));

@@ -41,9 +41,8 @@ class MacosSecureRandomTest {
 
     @Test
     fun doesNotReturnAllZeros() {
-        // A broken actual that no-ops the buffer (or a missing/failed CSPRNG
-        // call) would hand back all-zero bytes. 32 zero bytes from a working
-        // CSPRNG has probability 2^-256 — effectively never.
+        // A no-op'd buffer or failed CSPRNG call yields all zeros; a real
+        // CSPRNG does so with probability 2^-256.
         val bytes = secureRandomBytes(32)
         assertFalse(bytes.all { it == 0.toByte() }, "secureRandomBytes returned an all-zero buffer")
     }
@@ -51,9 +50,6 @@ class MacosSecureRandomTest {
     @Test
     fun successiveCallsDiffer() {
         // Two 32-byte draws colliding from a real CSPRNG is a 2^-256 event.
-        // A non-cryptographic PRNG would still pass this, so it's not a CSPRNG
-        // proof on its own — but combined with the others it pins "produces
-        // fresh, non-constant output".
         val a = secureRandomBytes(32)
         val b = secureRandomBytes(32)
         assertFalse(a.contentEquals(b), "two secureRandomBytes(32) draws were identical")
@@ -61,11 +57,8 @@ class MacosSecureRandomTest {
 
     @Test
     fun outputSpansAWideByteRange() {
-        // Over 4 KiB of CSPRNG output we expect to see the vast majority of the
-        // 256 possible byte values. A constant or low-entropy source (the kind a
-        // regression could reintroduce) would cover very few. Threshold 200/256
-        // is comfortably below the expected ~256 while far above any degenerate
-        // source, so it discriminates without flaking.
+        // 4 KiB of CSPRNG output covers nearly all 256 byte values; 200/256 is
+        // far above any degenerate source yet low enough not to flake.
         val bytes = secureRandomBytes(4096)
         val distinct = bytes.toSet().size
         assertTrue(distinct > 200, "only $distinct distinct byte values in 4 KiB — suspiciously low entropy")

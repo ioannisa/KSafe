@@ -6,24 +6,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Contract tests for [KSafeInitLock], the per-delegate init lock behind the flow
- * delegates' double-checked lazy init (FEEDBACK_4 M-G / M11).
- *
- * These pin the two properties the previous Apple implementation violated (M11):
- * it serialized EVERY delegate init on one process-wide, **non-reentrant**
- * busy-spin lock held across the cold-start read. This test encodes the two
- * behaviours that fix requires — and that the old lock failed:
- *
- *  - **Per-instance**: two distinct locks are independent, so a thread already
- *    holding one can acquire another (nesting different locks on one thread must
- *    NOT self-deadlock — under a single global lock it would).
- *  - **Reentrant**: a thread already holding a lock can re-acquire it (nesting
- *    the SAME lock on one thread must NOT self-deadlock — a non-reentrant lock
- *    would hang here, exactly what the old global spin lock did).
- *
- * Single-threaded on purpose: both properties are observable without concurrency,
- * so the test compiles and runs on every target (including single-threaded web).
- * On the old Apple lock these would spin forever; a hang is the "red".
+ * Locks in: KSafeInitLock is per-instance and reentrant — distinct locks nest, and a thread can re-acquire its own lock without self-deadlock.
  */
 class KSafeInitLockTest {
 
@@ -36,8 +19,7 @@ class KSafeInitLockTest {
     @Test
     fun reentrantAcquire_onSameThread_doesNotSelfDeadlock() {
         val lock = KSafeInitLock()
-        // A non-reentrant lock (the old global spin lock) would hang on the inner
-        // acquire. NSRecursiveLock / ReentrantLock re-enter and return.
+        // A non-reentrant lock would hang on the inner acquire; a reentrant one re-enters and returns.
         val result = lock.withLock {
             lock.withLock {
                 lock.withLock { "reentered" }
@@ -51,9 +33,7 @@ class KSafeInitLockTest {
         val a = KSafeInitLock()
         val b = KSafeInitLock()
         val c = KSafeInitLock()
-        // Holding one lock must not block acquiring another — the property a single
-        // process-wide lock (old Apple impl) violates: b/c would be the SAME lock as
-        // a and the inner acquire would deadlock.
+        // Holding one lock must not block acquiring another; a single process-wide lock would deadlock here.
         val order = ArrayList<String>()
         a.withLock {
             order.add("a")
@@ -67,8 +47,7 @@ class KSafeInitLockTest {
 
     @Test
     fun distinctInstances_areNotShared() {
-        // Two locks are genuinely separate objects (not one global singleton): a
-        // reentrant re-acquire of the SAME lock succeeds, and the two locks nest.
+        // Distinct locks are separate objects: re-acquiring the same lock succeeds while another is held.
         val a = KSafeInitLock()
         val b = KSafeInitLock()
         var reached = false

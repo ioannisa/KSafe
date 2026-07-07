@@ -7,78 +7,56 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 
 /**
- * JVM-specific tests for SecurityChecker.
+ * Locks in: SecurityChecker's JVM behavior — never rooted or an emulator, and every probe and policy validation is exception-safe.
  */
 class JvmSecurityCheckerTest {
 
-    // ============ SECURITY CHECKER JVM BEHAVIOR ============
-
-    /** Verifies JVM always returns false for root detection */
     @Test
     fun securityChecker_isDeviceRooted_returnsFalseOnJvm() {
-        // JVM is never "rooted" in the mobile sense
         val result = SecurityChecker.isDeviceRooted()
         assertFalse(result, "JVM should never report as rooted")
     }
 
-    /** Verifies JVM always returns false for emulator detection */
     @Test
     fun securityChecker_isEmulator_returnsFalseOnJvm() {
-        // JVM is not an emulator
         val result = SecurityChecker.isEmulator()
         assertFalse(result, "JVM should not report as emulator")
     }
 
-    /** Verifies debugger detection returns valid boolean on JVM */
     @Test
     fun securityChecker_isDebuggerAttached_returnsBoolean() {
-        // This may return true or false depending on test environment
-        // Just verify it doesn't throw
+        // May be true or false depending on the environment; must not throw.
         val result = SecurityChecker.isDebuggerAttached()
-        // Result is either true or false, both are valid
         assertIs<Boolean>(result)
     }
 
-    /** Verifies debug build detection returns valid boolean on JVM */
     @Test
     fun securityChecker_isDebugBuild_returnsBoolean() {
-        // This may return true or false depending on test environment
         val result = SecurityChecker.isDebugBuild()
         assertIs<Boolean>(result)
     }
 
-    // ============ VALIDATE SECURITY POLICY (JVM-SPECIFIC) ============
-
-    /** Verifies default policy (IGNORE all) doesn't throw exception */
     @Test
     fun validateSecurityPolicy_defaultPolicy_noException() {
-        // Default policy ignores everything, should not throw
         val policy = KSafeSecurityPolicy.Default
         validateSecurityPolicy(policy)
-        // If we reach here, no exception was thrown
     }
 
-    /** Verifies WARN action invokes callback without throwing */
     @Test
     fun validateSecurityPolicy_warnOnly_callsCallback() {
         val violations = mutableListOf<SecurityViolation>()
 
         val policy = KSafeSecurityPolicy(
-            // On JVM, debugBuild might be true in test environment
             debugBuild = SecurityAction.WARN,
             onViolation = { violation ->
                 violations.add(violation)
             }
         )
 
-        // This should not throw (WARN doesn't block)
+        // WARN must not throw; whether the callback fires depends on the environment.
         validateSecurityPolicy(policy)
-
-        // Violations list may or may not have items depending on test environment
-        // The important thing is that it didn't throw
     }
 
-    /** Verifies IGNORE action never invokes callback */
     @Test
     fun validateSecurityPolicy_ignoreAll_noCallbacks() {
         var callbackInvoked = false

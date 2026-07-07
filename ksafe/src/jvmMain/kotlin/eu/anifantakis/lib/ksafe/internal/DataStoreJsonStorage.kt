@@ -18,30 +18,20 @@ import java.io.InputStream
 import java.io.OutputStream
 
 /**
- * [KSafePlatformStorage] for the JVM **no-`sun.misc.Unsafe` fallback** — backed by
- * Jetpack **`datastore-core`** with a custom JSON [Serializer] instead of the
- * DataStore *Preferences* serializer.
+ * [KSafePlatformStorage] for the JVM no-`sun.misc.Unsafe` fallback — `datastore-core`
+ * with a custom JSON [Serializer] instead of the DataStore Preferences serializer.
  *
- * The normal JVM backend ([DataStoreStorage]) uses DataStore Preferences, whose
- * embedded protobuf (`androidx.datastore.preferences.protobuf.*`) hard-requires
- * `sun.misc.Unsafe`; on a `jlink`-trimmed runtime that omits `jdk.unsupported`
- * it crashes the app. This adapter keeps DataStore's proven file machinery —
- * atomic writes, the single-process coordinator, corruption handling, fsync —
- * but swaps the serializer for a plain JSON one (kotlinx-serialization, already
- * on the classpath). It never references the Preferences protobuf, so those
- * classes are never loaded and `Unsafe` is never touched.
+ * DataStore Preferences' embedded protobuf hard-requires `sun.misc.Unsafe`, which a
+ * `jlink`-trimmed runtime (omitting `jdk.unsupported`) crashes on. This keeps DataStore's
+ * file machinery (atomic writes, single-process coordinator, corruption handling, fsync)
+ * but swaps in a plain JSON serializer, so the Preferences protobuf is never loaded.
  *
- * It deliberately uses `datastore-core`'s **`java.io`** [Serializer] +
- * `produceFile` path (the same `FileStorage` the Preferences backend rides on),
- * **not** the okio variant: okio 3.x ships a multi-release jar whose internal
- * `JvmSystemFileSystem` fails bytecode verification (`VerifyError: Bad return
- * type`) on Compose's jlink-trimmed runtime. The `java.io` path has no such
- * issue and is already exercised on this runtime by the normal backend.
+ * Uses `datastore-core`'s `java.io` [Serializer] + `produceFile` path, not the okio
+ * variant: okio 3.x's multi-release jar fails bytecode verification (`VerifyError: Bad
+ * return type`) on Compose's jlink-trimmed runtime.
  *
- * As with [LocalStorageStorage] on web, every [StoredValue] flattens to its
- * string form on disk; [KSafeCore] re-types primitives via the request's
- * serializer on read. Encryption happens above this layer — bytes here are
- * already ciphertext (or plaintext for `KSafeWriteMode.Plain`).
+ * Every [StoredValue] flattens to its string form on disk; [KSafeCore] re-types primitives
+ * via the request's serializer on read. Encryption happens above this layer.
  */
 @PublishedApi
 internal class DataStoreJsonStorage(
@@ -51,9 +41,8 @@ internal class DataStoreJsonStorage(
 
     private val dataStore: DataStore<Map<String, String>> = DataStoreFactory.create(
         serializer = JsonMapSerializer,
-        // On genuine corruption (non-blank but unparseable JSON), the serializer
-        // throws CorruptionException; copy the unparseable bytes aside for
-        // recovery before letting the store continue empty.
+        // On genuine corruption the serializer throws CorruptionException; copy the
+        // unparseable bytes aside for recovery before continuing from an empty store.
         corruptionHandler = ReplaceFileCorruptionHandler {
             runCatching {
                 file.copyTo(
@@ -89,11 +78,6 @@ internal class DataStoreJsonStorage(
         dataStore.updateData { emptyMap() }
     }
 
-    /**
-     * Every [StoredValue] collapses to its string form on disk; [KSafeCore]
-     * re-types primitives through the request's serializer on read (same
-     * contract as [LocalStorageStorage]).
-     */
     private fun StoredValue.asString(): String = when (this) {
         is StoredValue.BoolVal -> value.toString()
         is StoredValue.IntVal -> value.toString()
@@ -111,19 +95,17 @@ internal class DataStoreJsonStorage(
         override val defaultValue: Map<String, String> = emptyMap()
 
         override suspend fun readFrom(input: InputStream): Map<String, String> {
-            // A mid-read IOException on an EXISTING file MUST propagate — never
-            // swallow it as an empty store. datastore-core caches readFrom's return
-            // as current state, so emptyMap() here would let the next write
-            // atomically wipe every entry over a transient hiccup; a propagated
-            // exception leaves the file untouched. A missing file never reaches
-            // here — datastore-core yields defaultValue for FileNotFoundException.
+            // A mid-read IOException on an existing file must propagate, not become an
+            // empty store: datastore-core caches readFrom's return as current state, so
+            // emptyMap() here lets the next write atomically wipe every entry over a
+            // transient hiccup. (A missing file never reaches here — datastore-core
+            // yields defaultValue for FileNotFoundException.)
             val text = input.readBytes().decodeToString()
             return try {
                 if (text.isBlank()) emptyMap() else json.decodeFromString(mapSer, text)
             } catch (e: SerializationException) {
-                // Non-blank but unparseable = real corruption. Signal it so DataStore
-                // routes to the corruptionHandler (which quarantines the file) rather
-                // than treating still-recoverable bytes as an empty store.
+                // Non-blank but unparseable = real corruption. Route to the
+                // corruptionHandler rather than treating recoverable bytes as empty.
                 throw CorruptionException("KSafe JSON store is corrupt: unparseable content", e)
             }
         }

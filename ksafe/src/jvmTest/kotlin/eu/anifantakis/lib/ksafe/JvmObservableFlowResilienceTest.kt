@@ -13,11 +13,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * A **transient** decrypt failure (locked device / busy Keystore) on a
- * snapshot must not be rethrown out of `getFlowRaw`'s flow — it would
- * propagate uncaught out of long-lived observers' `viewModelScope` /
- * Recomposer, crash the app, and permanently kill observation. The flow must
- * **skip** that emission and stay alive.
+ * Locks in: a transient decrypt failure (locked device / busy Keystore) on a snapshot is skipped by `getFlow` — never rethrown into long-lived collectors — and the flow stays alive for the next good value.
  */
 class JvmObservableFlowResilienceTest {
 
@@ -46,11 +42,9 @@ class JvmObservableFlowResilienceTest {
         )
         ksafe.put("k", "v1", KSafeWriteMode.Encrypted())
 
-        // Sanity: decrypts fine when not armed.
         assertEquals("v1", withTimeoutOrNull(2_000) { ksafe.getFlow<String>("k", "def").first() })
 
-        // Armed: the emission's decrypt fails transiently. It must be skipped →
-        // no emission → timeout (null), NOT an exception out of first().
+        // A skipped emission means no value at all: first() times out (null) rather than throwing.
         engine.failTransient = true
         val result = withTimeoutOrNull(500) { ksafe.getFlow<String>("k", "def").first() }
         assertNull(result, "a transient decrypt failure must be skipped, not crash the flow")
@@ -74,9 +68,6 @@ class JvmObservableFlowResilienceTest {
 
     @Test
     fun keychainTransientError_isClassifiedTransient_andSkipped() = runBlocking {
-        // A transient Apple Keychain error ("Keychain error …", no "device is locked"/
-        // "Keystore") must be classified as transient — skipped on the flow path, not
-        // emitted as the default.
         val engine = KeychainErrorEngine()
         val ksafe = KSafe(
             fileName = JvmKSafeTest.generateUniqueFileName(),
@@ -112,7 +103,6 @@ class JvmObservableFlowResilienceTest {
         }
         delay(200) // first snapshot's decrypt is skipped; the flow (and job) must stay alive
 
-        // Recover and write a new value → a fresh snapshot the flow can decrypt.
         engine.failTransient = false
         ksafe.put("k", "v2", KSafeWriteMode.Encrypted())
         delay(400)

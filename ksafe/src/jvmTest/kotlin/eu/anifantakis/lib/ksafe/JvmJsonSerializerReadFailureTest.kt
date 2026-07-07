@@ -10,18 +10,13 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 /**
- * A transient read failure on an existing JSON-fallback file must **propagate**
- * out of the serializer, not be swallowed as an empty store. If it returned
- * `emptyMap()`, datastore-core would cache that as the current state and the
- * next write would atomically overwrite the real file with empty — silently
- * wiping every entry. Letting it propagate leaves the file untouched
- * (DataStore never writes on a failed read).
+ * Locks in: a transient read failure on the JSON-fallback file propagates out of the serializer instead of reading as an empty store, which would wipe every entry on the next write.
  */
 class JvmJsonSerializerReadFailureTest {
 
     private val serializer = DataStoreJsonStorage.JsonMapSerializer
 
-    /** An InputStream whose read fails partway, like a disk/network-FS error mid-read. */
+    /** An InputStream whose read fails partway, like a disk error mid-read. */
     private class FailingInputStream : InputStream() {
         override fun read(): Int = throw IOException("simulated transient read failure")
         override fun read(b: ByteArray, off: Int, len: Int): Int =
@@ -30,7 +25,6 @@ class JvmJsonSerializerReadFailureTest {
 
     @Test
     fun transientReadFailure_propagates_insteadOfReturningEmptyStore() {
-        // Swallowing this as emptyMap() would mean a data wipe on the next write.
         assertFailsWith<IOException> {
             runBlocking { serializer.readFrom(FailingInputStream()) }
         }
@@ -51,8 +45,7 @@ class JvmJsonSerializerReadFailureTest {
 
     @Test
     fun unparseableContent_signalsCorruption_notEmpty() {
-        // Genuine corruption (non-blank, unparseable) must route to the corruption
-        // handler via CorruptionException — never be discarded as empty.
+        // Non-blank unparseable content must route to the corruption handler, not read as empty.
         assertFailsWith<CorruptionException> {
             runBlocking { serializer.readFrom("}{ not json".encodeToByteArray().inputStream()) }
         }

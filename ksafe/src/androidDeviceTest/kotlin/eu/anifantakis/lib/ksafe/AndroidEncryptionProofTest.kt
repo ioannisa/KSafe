@@ -14,21 +14,7 @@ import kotlin.test.assertTrue
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
-/**
- * Proof-test for encryption on the Android target.
- *
- * Runs on a real device/emulator (instrumented), through the production
- * [KSafe] path — no test engine injected, so AES-256-GCM via the real
- * Android Keystore actually runs. After each write we read the raw bytes
- * of the underlying DataStore `.preferences_pb` file from the app's
- * private `files/datastore/` directory and assert:
- *
- *  1. Encrypted writes: the plaintext sentinel does **not** appear in the
- *     file — only the Base64 ciphertext does.
- *  2. Round-trip still returns the original plaintext.
- *  3. Baseline counter-test: a [KSafeWriteMode.Plain] write **does** leak
- *     the sentinel, confirming the negative assertion is meaningful.
- */
+/** Locks in: encrypted writes never leak plaintext to the raw DataStore file (and round-trip), while a Plain write does leak it — proving the negative assertion is meaningful. */
 @RunWith(AndroidJUnit4::class)
 class AndroidEncryptionProofTest {
 
@@ -89,10 +75,7 @@ class AndroidEncryptionProofTest {
     }
 }
 
-/**
- * Inlined copy of the [containsUtf8] helper (the commonTest version isn't
- * visible from `androidInstrumentedTest`, which is a sibling source set).
- */
+/** Inlined [containsUtf8] — the commonTest version isn't visible from this sibling source set. */
 private fun ByteArray.containsUtf8(needle: String): Boolean {
     val needleBytes = needle.encodeToByteArray()
     if (needleBytes.isEmpty()) return true

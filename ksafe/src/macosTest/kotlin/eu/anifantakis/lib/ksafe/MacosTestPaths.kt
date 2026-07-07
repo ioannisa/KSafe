@@ -8,28 +8,16 @@ import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
 /**
- * Helpers for macOS unit tests.
- *
- * macOS tests must NEVER write to `NSApplicationSupportDirectory`
- * (`~/Library/Application Support/`) — on a developer's machine that
- * directory is real, persistent and shared with every other app, so test
- * residue would accumulate. iOS Simulator tests get away with using it
- * because each simulator boots into its own per-instance sandbox.
- *
- * Everything here routes through [NSTemporaryDirectory], which on macOS
- * resolves to a per-user, per-session location under `/var/folders/...`
- * that the OS cleans up periodically and is gitignore-safe.
+ * Path helpers for macOS unit tests. Everything routes through [NSTemporaryDirectory],
+ * never `NSApplicationSupportDirectory` (`~/Library/Application Support/`), which on a real
+ * Mac is persistent and shared across apps so test residue would accumulate.
  */
 @OptIn(ExperimentalForeignApi::class, ExperimentalUuidApi::class)
 internal object MacosTestPaths {
 
     private val counter = AtomicInt(0)
 
-    /**
-     * Allocate (and create on disk) a unique temporary directory for a single
-     * test. Returns the absolute path. Safe to call repeatedly — every
-     * invocation gets its own directory.
-     */
+    /** Creates and returns a unique temp directory; safe to call repeatedly. */
     fun uniqueTempDir(prefix: String = "ksafe-macostest"): String {
         val salt = counter.incrementAndGet().toString(36)
         val uuid = Uuid.random().toString().lowercase().filter { it in 'a'..'z' || it in '0'..'9' }.take(8)
@@ -43,17 +31,14 @@ internal object MacosTestPaths {
         return dir
     }
 
-    /**
-     * Lowercase, alphanumeric, KSafe-regex-safe filename. The library requires
-     * names match `[a-z][a-z0-9_]*`, so we strip everything else.
-     */
+    /** Unique filename matching KSafe's required `[a-z][a-z0-9_]*` pattern. */
     fun uniqueFileName(prefix: String = "macos"): String {
         val salt = counter.incrementAndGet().toString(36).filter { it in 'a'..'z' || it in '0'..'9' }.ifEmpty { "x" }
         val uuid = Uuid.random().toString().lowercase().filter { it in 'a'..'z' }.take(8).ifEmpty { "ksafe" }
         return "${prefix}_${salt}_$uuid"
     }
 
-    /** Best-effort recursive delete. Used for teardown. */
+    /** Best-effort recursive delete. */
     fun deleteRecursively(path: String) {
         NSFileManager.defaultManager.removeItemAtPath(path, error = null)
     }

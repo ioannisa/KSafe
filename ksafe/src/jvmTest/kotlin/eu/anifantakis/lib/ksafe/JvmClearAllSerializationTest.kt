@@ -5,10 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * `clearAll()` is serialized with concurrent writes by routing through the
- * single-consumer write channel (FIFO). A write enqueued BEFORE `clearAll()`
- * is therefore ordered before the wipe and must not be applied after it and
- * resurrect data; a write issued AFTER it survives.
+ * Locks in: clearAll() is serialized with writes on the single-consumer FIFO channel — a write enqueued before it is ordered before the wipe (and cannot resurrect data), while a write issued after it survives.
  */
 class JvmClearAllSerializationTest {
 
@@ -17,9 +14,8 @@ class JvmClearAllSerializationTest {
         val fileName = JvmKSafeTest.generateUniqueFileName()
         val ksafe = KSafe(fileName = fileName, testEngine = FakeEncryption())
 
-        // Fire-and-forget write, then clearAll(). clearAll() enqueues its wipe on
-        // the SAME FIFO channel, after this put — so the put is ordered before the
-        // wipe and must not survive it.
+        // clearAll() enqueues its wipe on the SAME FIFO channel, after this put — so
+        // the put is ordered before the wipe and must not survive it.
         ksafe.putDirect("token", "secret")
         ksafe.clearAll()
 

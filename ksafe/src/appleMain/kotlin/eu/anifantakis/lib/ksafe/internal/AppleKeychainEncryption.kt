@@ -77,11 +77,9 @@ import platform.Security.kSecValueData
 import platform.posix.memcpy
 
 /**
- * The low-level generic-password Keychain operations the engine depends on, behind a seam
- * so tests can inject an in-memory fake. Real Keychain round-trips can't run in the
- * Kotlin/Native test runner (no entitlements → `errSecMissingEntitlement`), so this is the
- * only way to unit-test the engine's concurrency invariants. Production uses
- * [AppleKeychainEncryption.RealKeychainStore], which calls `SecItem*`.
+ * Low-level generic-password Keychain operations behind a seam so tests can inject an
+ * in-memory fake — real round-trips can't run in the Kotlin/Native test runner (no
+ * entitlements). Production uses [AppleKeychainEncryption.RealKeychainStore].
  */
 internal interface AppleKeychainStore {
     /** Bytes stored at [account], or null if absent. Throws on locked/other Keychain errors. */
@@ -95,41 +93,28 @@ internal interface AppleKeychainStore {
 }
 
 /**
- * Whether [AppleKeychainEncryption.updateKeyAccessibility] needs to run its
- * `SecItemUpdate` IPC: only when the target `requireUnlocked` policy differs from the
- * last one successfully applied for this key-id this process ([lastApplied]; `null` =
- * not yet applied this process). Pure so the guard is unit-testable without a live
- * Keychain (FEEDBACK_4 FB3-M4).
+ * Whether [AppleKeychainEncryption.updateKeyAccessibility] must run its `SecItemUpdate`
+ * IPC: only when [target] differs from the policy last applied for this key-id this
+ * process ([lastApplied]; `null` = not yet applied). Pure, so it's unit-testable.
  */
 internal fun accessibilityUpdateNeeded(lastApplied: Boolean?, target: Boolean): Boolean =
     lastApplied != target
 
 /**
- * Apple-platform implementation of [KSafeEncryption] using Keychain Services and CryptoKit.
- * Shared by iOS, iPadOS and macOS — the `SecItem*`/`SecKey*` APIs, the Secure Enclave
- * token attribute and CryptoKit AES-GCM behave identically; only the Keychain database
- * location differs (per-app on iOS, per-user on macOS).
+ * Apple-platform [KSafeEncryption] over Keychain Services + CryptoKit, shared by iOS,
+ * iPadOS and macOS (only the Keychain database location differs — per-app on iOS,
+ * per-user on macOS).
  *
- * - AES keys are stored as Keychain generic-password items with `ThisDeviceOnly`
- *   accessibility (never in iCloud/iTunes backups); the unlock policy is configurable
- *   via [KSafeConfig.requireUnlockedDevice].
- * - With `hardwareIsolated = true`, keys use **envelope encryption**: an EC P-256 key
- *   pair in the Secure Enclave wraps/unwraps the AES key via ECIES, and only the
- *   wrapped AES key is stored in the Keychain. If the SE is unavailable (simulators,
- *   Intel Macs without T2, older devices), the path falls back to plain Keychain
- *   storage automatically.
- *
- * @property config Configuration for encryption (key size, default unlock policy).
- * @property serviceName The Keychain service name all items are scoped under.
+ * AES keys are stored as `ThisDeviceOnly` generic-password items (never backed up).
+ * With `hardwareIsolated = true` the AES key is envelope-encrypted: an EC P-256 key in
+ * the Secure Enclave wraps it via ECIES and only the wrapped key is stored; if the SE is
+ * unavailable (simulators, Intel Macs, older devices) the path falls back to plain storage.
  */
 @PublishedApi
 internal class AppleKeychainEncryption(
     private val config: KSafeConfig = KSafeConfig(),
     private val serviceName: String = SERVICE_NAME,
-    /**
-     * Test seam: an in-memory [AppleKeychainStore] for unit tests. Null in production, where
-     * the engine uses [RealKeychainStore] (real `SecItem*` calls).
-     */
+    /** Test seam: in-memory [AppleKeychainStore] for unit tests; null in production. */
     keychainStore: AppleKeychainStore? = null,
 ) : KSafeEncryption {
 
@@ -156,11 +141,9 @@ internal class AppleKeychainEncryption(
             listOf("$SE_KEY_TAG_PREFIX$keyId", keyId)
 
         /**
-         * OSStatus codes whose SE/unwrap failure is transient (NOT corruption),
-         * so the SE key must be preserved and the error propagated rather than
-         * triggering destructive regeneration. Deliberately conservative: every
-         * plausibly-retryable code stays here, biasing away from the
-         * data-destroying path.
+         * OSStatus codes whose SE/unwrap failure is transient (NOT corruption): the SE key
+         * must be preserved and the error propagated rather than regenerated. Conservative
+         * on purpose — every plausibly-retryable code stays here.
          */
         private val TRANSIENT_OSSTATUS: Set<Long> = setOf(
             errSecInteractionNotAllowed.toLong(), // -25308: device locked
@@ -172,15 +155,10 @@ internal class AppleKeychainEncryption(
         private val OSSTATUS_TAG = Regex("""osstatus=(-?\d+)""")
 
         /**
-         * True when an unwrap/SE error is transient (device locked, SE busy,
-         * interaction needed) and should propagate rather than trigger
-         * destructive cleanup.
-         *
-         * The primary signal is the locale-independent `[osstatus=<code>]` tag
-         * [cfErrorDescription] embeds for OSStatus-domain CFErrors, so the
-         * decision never depends on the device's localized error text. The
-         * English-substring check remains only as a fallback for hand-written
-         * ISE messages that state the condition in words.
+         * True when an unwrap/SE error is transient (device locked, SE busy) and should
+         * propagate rather than trigger destructive cleanup. Keys on the locale-independent
+         * `[osstatus=<code>]` tag [cfErrorDescription] embeds; the English-substring check
+         * is only a fallback for hand-written messages carrying no tag.
          */
         internal fun isTransientUnwrapFailure(message: String?): Boolean {
             val msg = message ?: return false
@@ -191,15 +169,10 @@ internal class AppleKeychainEncryption(
         }
 
         /**
-         * Builds the SE wrap/unwrap failure message. When [detail]'s OSStatus
-         * code classifies as transient, the message carries the
-         * " [transient Keychain failure]" marker that
-         * `KSafeCore.isTransientDecryptFailure` matches on. The engine-side
-         * classifier above is only consulted on the key-CREATION path, so
-         * without the marker a transient SE unwrap during DECRYPT would be
-         * misclassified permanent: `getDirect` would silently return the
-         * caller's default for a HARDWARE_ISOLATED secret (and `getFlow` emit
-         * it) instead of rethrowing for retry / skipping the emission.
+         * Builds the SE wrap/unwrap failure message. A transient [detail] gets the
+         * " [transient Keychain failure]" marker that `KSafeCore.isTransientDecryptFailure`
+         * matches on the DECRYPT path — without it a transient SE unwrap would be
+         * misclassified permanent and `getDirect` would silently return the caller's default.
          */
         internal fun seFailureMessage(op: String, detail: String): String {
             val transientBrand =
@@ -211,50 +184,35 @@ internal class AppleKeychainEncryption(
     private val keySizeBytes: Int = config.keySize / 8
 
     /**
-     * In-process cache of unwrapped raw AES key bytes, keyed by the user-facing
-     * `keyId`. Without it every `encrypt`/`decrypt` triggers a
-     * `SecItemCopyMatching` IPC into `securityd` (and, for SE-wrapped keys, a
-     * `SecKeyCreateDecryptedData` ECIES round-trip). Keychain bytes for a given
-     * alias are immutable for the alias's lifetime, so a simple
-     * `KSafeConcurrentMap` cache is sound: invalidated only via [deleteKey],
-     * never via accessibility updates (which preserve the bytes). Not persisted
-     * — process restart re-populates lazily on first use.
+     * In-process cache of unwrapped raw AES key bytes by `keyId`, sparing every
+     * encrypt/decrypt a `SecItemCopyMatching` IPC (and, for SE keys, an ECIES round-trip).
+     * Keychain bytes are immutable for an alias's lifetime, so this is invalidated only via
+     * [deleteKey], never by accessibility updates (which preserve the bytes).
      */
     private val keyBytesCache = KSafeConcurrentMap<ByteArray>()
 
     /**
-     * Last `requireUnlocked` accessibility successfully applied per key-id this process.
-     * Lets [updateKeyAccessibility] skip its three `SecItemUpdate` IPC round-trips when the
-     * policy is unchanged — the common case, since a HARDWARE_ISOLATED key's accessibility
-     * only needs re-asserting on an actual policy CHANGE, not on every write (FEEDBACK_4
-     * FB3-M4). Set only after all three updates succeed, so a best-effort partial failure
-     * is retried on the next write. Invalidated by [deleteKey]; not persisted (a process
-     * restart re-asserts once per key on its first write).
+     * Last `requireUnlocked` accessibility applied per key-id this process, letting
+     * [updateKeyAccessibility] skip its three `SecItemUpdate` IPC round-trips when the policy
+     * is unchanged (the common case). Set only after all three succeed, so a partial failure
+     * retries on the next write. Invalidated by [deleteKey].
      */
     private val lastAppliedAccessibility = KSafeConcurrentMap<Boolean>()
 
     /**
-     * Serializes the *key-resolution* critical section (cache-miss → look up / create →
-     * store → cache); `KSafeCore` relies on engines doing so ("DEFAULT writes serialise on
-     * the master alias's lock"). Concurrent creators are routine: the construction-time
-     * master-key prewarm races the first DEFAULT write batch, which encrypts up to 8
-     * entries in parallel against the **same** master alias. Without this lock two
-     * threads both read `errSecItemNotFound`, both generate a key, and the delete-then-add
-     * `storeInKeychain` lets the second clobber the first — after the first already
-     * produced ciphertext under its key — silently and permanently losing that data.
-     *
-     * A single engine-wide lock (not per-alias) is sufficient and simpler: it guards only key
-     * *resolution* (the cache-hit fast path below stays lock-free), so per-value AES never
-     * contends; distinct aliases only serialize during their one-time creation. Reentrant so
-     * the nested SE/plain/store helpers can't self-deadlock.
+     * Serializes the key-resolution critical section (cache-miss → look up / create → store →
+     * cache). Without it two threads both read `errSecItemNotFound`, both generate a key, and
+     * the delete-then-add `storeInKeychain` lets the second clobber the first — after the
+     * first already produced ciphertext under its key — permanently losing that data. One
+     * engine-wide lock suffices (the cache-hit fast path stays lock-free); reentrant so the
+     * nested SE/plain/store helpers can't self-deadlock.
      */
     private val keyResolutionLock = NSRecursiveLock()
 
     @OptIn(ExperimentalForeignApi::class)
     private inline fun <R> withKeyResolutionLock(block: () -> R): R =
-        // autoreleasepool drains the ObjC autoreleases produced by the NSRecursiveLock
-        // method bridging — Kotlin/Native worker threads (Dispatchers.Default) have no
-        // ambient pool, so without it the lock/unlock calls would leak on every encrypt.
+        // autoreleasepool drains the ObjC autoreleases from NSRecursiveLock bridging —
+        // Kotlin/Native worker threads have no ambient pool, so lock/unlock would else leak.
         autoreleasepool {
             keyResolutionLock.lock()
             try {
@@ -263,11 +221,6 @@ internal class AppleKeychainEncryption(
                 keyResolutionLock.unlock()
             }
         }
-
-    // ================================================================
-    // Helper layer: shared query-dictionary boilerplate (base attributes
-    // + CFRelease on every exit path) for the Keychain operations below.
-    // ================================================================
 
     private fun resolvedRequireUnlockedDevice(override: Boolean?): Boolean =
         override ?: config.requireUnlockedDevice
@@ -284,13 +237,10 @@ internal class AppleKeychainEncryption(
         (tag as NSString).dataUsingEncoding(NSUTF8StringEncoding)
 
     /**
-     * Description out of a CFError. For OSStatus-domain errors it appends a
-     * locale-independent `[osstatus=<code>]` tag so transient-vs-permanent
-     * classification can key on the numeric code instead of the localized text:
-     * on a non-English device the localized description of
-     * `errSecInteractionNotAllowed` contains neither "device is locked" nor
-     * "interaction", which would make a transient (locked-device / SE-busy)
-     * unwrap failure look permanent and trigger destructive key regeneration.
+     * Description out of a CFError. For OSStatus-domain errors it appends a locale-independent
+     * `[osstatus=<code>]` tag so transient-vs-permanent classification keys on the numeric
+     * code, not the localized text (which on a non-English device would make a transient
+     * locked-device failure look permanent and trigger destructive key regeneration).
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun cfErrorDescription(errorRef: CFErrorRefVar): String {
@@ -302,13 +252,8 @@ internal class AppleKeychainEncryption(
     }
 
     /**
-     * Builds a `kSecClassGenericPassword` query dictionary pre-populated with the
-     * library's service name and the given account, runs [block] with it, and
-     * releases the dictionary on every exit.
-     *
-     * [configure] lets the caller add class-specific attributes such as
-     * `kSecReturnData`, `kSecValueData`, or `kSecAttrAccessible` before [block]
-     * sees the dictionary.
+     * Builds a `kSecClassGenericPassword` query for [account] under the library's service
+     * name, lets [configure] add attributes, runs [block] with it, and releases on every exit.
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private inline fun <R> usingPasswordQuery(
@@ -317,10 +262,9 @@ internal class AppleKeychainEncryption(
         block: (CFMutableDictionaryRef?) -> R,
     ): R {
         val dict = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, null, null)
-        // CFBridgingRetain takes a +1 the caller owns. This dict has null value-callbacks, so it
-        // does NOT retain its values — releasing only the dict leaks every bridged value, one pair
-        // per call, on the hot strict-read path (FEEDBACK_4 H6). Hold each +1 until after [block]
-        // (the values must stay alive during the SecItem* call), then release it.
+        // The dict's null value-callbacks mean it does NOT retain its values: hold each
+        // CFBridgingRetain +1 across [block] (alive during the SecItem* call), then release,
+        // or every value leaks one pair per call.
         val serviceRef = CFBridgingRetain(serviceName)
         val accountRef = CFBridgingRetain(account)
         return try {
@@ -336,10 +280,7 @@ internal class AppleKeychainEncryption(
         }
     }
 
-    /**
-     * Builds a `kSecClassKey` query dictionary for an SE EC private key identified
-     * by its application-tag data, runs [block] with it, and releases on every exit.
-     */
+    /** Builds a `kSecClassKey` query for the SE EC key with [tagData], runs [block], releases. */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private inline fun <R> usingSeKeyQuery(
         tagData: NSData,
@@ -347,8 +288,8 @@ internal class AppleKeychainEncryption(
         block: (CFMutableDictionaryRef?) -> R,
     ): R {
         val dict = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, null, null)
-        // null value-callbacks → the dict does not retain [tagData]; hold the bridged +1 until
-        // after [block] and release it, or it leaks every call (FEEDBACK_4 H6).
+        // null value-callbacks → the dict does not retain [tagData]; hold the bridged +1
+        // across [block], then release, or it leaks every call.
         val tagRef = CFBridgingRetain(tagData)
         return try {
             CFDictionarySetValue(dict, kSecClass, kSecClassKey)
@@ -363,9 +304,8 @@ internal class AppleKeychainEncryption(
     }
 
     /**
-     * Runs [block] inside a `kSecClassGenericPassword` `SecItemCopyMatching` for the
-     * given account, returning the matched bytes or `null` on `errSecItemNotFound`
-     * and throwing on transient / unexpected Keychain statuses.
+     * The bytes at [account] via `SecItemCopyMatching`, `null` on `errSecItemNotFound`,
+     * throwing on transient / unexpected Keychain statuses.
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun copyKeychainBytes(account: String): ByteArray? =
@@ -391,10 +331,6 @@ internal class AppleKeychainEncryption(
             }
         } }
 
-    // ================================================================
-    // KSafeEncryption interface
-    // ================================================================
-
     override fun encrypt(
         identifier: String,
         data: ByteArray,
@@ -402,19 +338,12 @@ internal class AppleKeychainEncryption(
         requireUnlockedDevice: Boolean?,
     ): ByteArray {
         val keyBytes = getOrCreateKeychainKey(identifier, hardwareIsolated, requireUnlockedDevice)
-        // HARDWARE_ISOLATED entries reuse ONE per-entry Keychain alias regardless of the
-        // unlock policy, so a rewrite that tightens requireUnlockedDevice on an existing
-        // key must re-assert kSecAttrAccessible — otherwise the stored item keeps its
-        // original (looser) accessibility and the tightened policy is silently unenforced
-        // (deep-review H3). DEFAULT entries encode the policy in which master alias they
-        // use, so they need no update.
-        //
-        // BEST-EFFORT (round-3 audit R6): a first-time create already stored the correct
-        // accessibility, so this only matters for a policy CHANGE on an existing key. It must
-        // NOT fail an otherwise-successful encrypt — a transient securityd error inside
-        // SecItemUpdate would otherwise throw "device is locked" and drop the write. On such a
-        // failure the OS still enforces the key's current accessibility and the tightening is
-        // retried on the next write, so swallow it here.
+        // HARDWARE_ISOLATED entries reuse ONE alias regardless of policy, so tightening
+        // requireUnlockedDevice on an existing key must re-assert kSecAttrAccessible or the
+        // item keeps its looser accessibility (DEFAULT entries encode policy in the alias, so
+        // they need none). Best-effort: a transient SecItemUpdate failure must not drop an
+        // otherwise-successful encrypt — the OS keeps enforcing the current policy and the
+        // next write retries the tightening.
         if (hardwareIsolated) {
             runCatching { updateKeyAccessibility(identifier, resolvedRequireUnlockedDevice(requireUnlockedDevice)) }
         }
@@ -435,9 +364,8 @@ internal class AppleKeychainEncryption(
     }
 
     override fun deleteKey(identifier: String) {
-        // Delete SE artifacts unconditionally so orphan cleanup works even when the
-        // current instance has SE disabled. SecItemDelete on nonexistent items is a
-        // harmless no-op (errSecItemNotFound).
+        // Delete SE artifacts unconditionally so orphan cleanup works even when this instance
+        // has SE disabled; SecItemDelete on a missing item is a harmless no-op.
         keychain.delete(seWrappedAccount(identifier))
         deleteSecureEnclaveKey(seTag(identifier))
         keychain.delete(identifier)
@@ -445,25 +373,16 @@ internal class AppleKeychainEncryption(
         lastAppliedAccessibility.remove(identifier)
     }
 
-    // ================================================================
-    // SE naming
-    // ================================================================
-
     /** Application tag for the SE EC key pair. */
     private fun seTag(keyId: String): String = "$SE_KEY_TAG_PREFIX$keyId"
 
     /** Keychain account for the SE-wrapped (ECIES-encrypted) AES key. */
     private fun seWrappedAccount(keyId: String): String = "$SE_KEY_TAG_PREFIX$keyId"
 
-    // ================================================================
-    // SE key lifecycle
-    // ================================================================
-
     /**
-     * Creates a new EC P-256 key pair in the Secure Enclave with the given tag.
-     * Any existing key under the same tag is deleted first — `SecKeyCreateRandomKey`
-     * always creates a new key even if the tag already exists, which would leave
-     * `SecItemCopyMatching` returning the wrong one.
+     * Creates a new EC P-256 key pair in the Secure Enclave under [tag]. Any existing key at
+     * that tag is deleted first — `SecKeyCreateRandomKey` always mints a new one, which would
+     * otherwise leave `SecItemCopyMatching` returning the wrong key.
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun createSecureEnclaveKey(tag: String, requireUnlockedDevice: Boolean?): SecKeyRef {
@@ -473,8 +392,8 @@ internal class AppleKeychainEncryption(
                 ?: throw IllegalStateException("KSafe: Failed to encode SE tag")
             val accessibility = accessibleAttr(resolvedRequireUnlockedDevice(requireUnlockedDevice))
 
-            // null value-callbacks → hold each bridged +1 until after SecKeyCreateRandomKey,
-            // then release, or they leak on every SE key creation (FEEDBACK_4 H6).
+            // null value-callbacks → hold each bridged +1 across SecKeyCreateRandomKey, then
+            // release, or they leak on every SE key creation.
             val tagRef = CFBridgingRetain(tagData)
             val keySizeRef = CFBridgingRetain(NSNumber(int = 256))
             val privateKeyAttrs = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, null, null).apply {
@@ -503,9 +422,8 @@ internal class AppleKeychainEncryption(
     }
 
     /**
-     * Retrieves an existing EC private key from the Secure Enclave, or `null` if not
-     * found. Throws `IllegalStateException` on transient errors (locked device,
-     * missing entitlement) so callers don't mistake those for "key not found".
+     * The existing SE EC private key for [tag], or `null` if absent. Throws on transient
+     * errors (locked device, missing entitlement) so callers don't read them as "not found".
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun getSecureEnclaveKey(tag: String): SecKeyRef? =
@@ -541,9 +459,8 @@ internal class AppleKeychainEncryption(
         cryptWithSeKey(publicKey, aesKeyBytes, wrap = true)
 
     /**
-     * Unwraps (ECIES-decrypts) AES key bytes using an SE private key. The error
-     * message preserves the CFError description so the caller can distinguish
-     * transient failures (device locked) from permanent corruption.
+     * Unwraps (ECIES-decrypts) AES key bytes with an SE private key. The error preserves the
+     * CFError description so callers can tell transient failures from permanent corruption.
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun unwrapAesKey(privateKey: SecKeyRef, wrappedBytes: ByteArray): ByteArray =
@@ -582,46 +499,28 @@ internal class AppleKeychainEncryption(
         } }
     }
 
-    // ================================================================
-    // Keychain CRUD for AES keys
-    // ================================================================
-
-    /**
-     * Tries to retrieve an existing raw AES key for the given Keychain account.
-     * Returns `null` on `errSecItemNotFound`. Throws on device-locked or other
-     * Keychain errors so callers don't silently overwrite accessible-but-locked
-     * material.
-     */
+    /** Raw AES key bytes at [keyId], or `null` if absent; throws on locked/other errors. */
     private fun getExistingKeychainKeyRaw(keyId: String): ByteArray? = keychain.readBytes(keyId)
 
-    /** Test-only: the in-process cached raw key bytes for [keyId], or null. Lets a test
-     *  assert a strict rewrite evicts a lingering non-strict plaintext key (FEEDBACK_4 low). */
+    /** Test-only: the in-process cached raw key bytes for [keyId], or null. */
     @PublishedApi
     internal fun cachedKeyBytesForTest(keyId: String): ByteArray? = keyBytesCache[keyId]
 
     /**
-     * Retrieves an existing encryption key for decryption. Tries the SE-wrapped
-     * account first, falls back to the plain account. Throws if neither exists —
-     * decrypt has no "create on miss" semantics.
-     *
-     * Hits the in-process [keyBytesCache] before any Keychain IPC; the cache
-     * holds the unwrapped raw AES key, so SE-wrapped keys also avoid the
-     * `SecKeyCreateDecryptedData` ECIES round-trip on cache hit.
+     * The existing key for decryption: SE-wrapped account first, then plain, throwing if
+     * neither exists (decrypt has no create-on-miss). Hits [keyBytesCache] before any IPC —
+     * the cache holds the unwrapped key, so SE keys also skip the ECIES round-trip on a hit.
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     internal fun getExistingKeychainKey(keyId: String, requireUnlockedDevice: Boolean?): ByteArray {
-        // The decrypt path is read-only — it never creates or overwrites a Keychain item, so
-        // it does NOT take keyResolutionLock (that guards the create-vs-create clobber race).
-        // Lock-free also avoids a per-decrypt lock/bridge cost on the hot read path (and the
-        // background-thread autorelease leak that guards). Concurrent decrypts of the same
-        // alias are safe: they read the same Keychain bytes and converge on the thread-safe
-        // keyBytesCache (idempotent last-writer-wins).
+        // Read-only, so it does NOT take keyResolutionLock (that guards the create-vs-create
+        // clobber race). Concurrent decrypts of one alias read the same bytes and converge on
+        // the thread-safe keyBytesCache (idempotent last-writer-wins).
         if (requireUnlockedDevice != true) {
             keyBytesCache[keyId]?.let { return it }
         } else {
-            // Strict read: never serve or keep the plaintext from the in-process cache —
-            // evict any lingering NON-strict entry so it doesn't survive after the key was
-            // rewritten strict (FEEDBACK_4 low). The Keychain read below enforces the lock.
+            // Strict read: never serve or keep plaintext from the cache — evict any lingering
+            // NON-strict entry so it can't survive after the key was rewritten strict.
             keyBytesCache.remove(keyId)
         }
 
@@ -645,14 +544,9 @@ internal class AppleKeychainEncryption(
     }
 
     /**
-     * Gets an encryption key, creating one if it doesn't exist. When
-     * [hardwareIsolated] is true the key is protected by an SE EC key pair (ECIES
-     * wrap); transient failures propagate, genuine SE-unavailable errors fall back
-     * to plain storage.
-     *
-     * Cache-first: a populated [keyBytesCache] entry short-circuits the entire
-     * SE/plain decision tree. The cached bytes are populated by the first
-     * lookup-or-create and remain valid until [deleteKey].
+     * Gets an encryption key, creating one on miss. With [hardwareIsolated] the key is
+     * SE-wrapped (ECIES); transient failures propagate, genuine SE-unavailable errors fall
+     * back to plain storage. Cache-first: a [keyBytesCache] hit short-circuits the decision.
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     internal fun getOrCreateKeychainKey(
@@ -663,17 +557,14 @@ internal class AppleKeychainEncryption(
         if (requireUnlockedDevice != true) {
             keyBytesCache[keyId]?.let { return it }
         } else {
-            // Strict (requireUnlockedDevice) keys must NEVER keep their plaintext in the
-            // in-process cache — otherwise a NON-strict write's cached bytes linger after
-            // the key is rewritten strict, defeating the unlock policy in memory (FEEDBACK_4
-            // low). Reads for a strict key already bypass the cache and go to the Keychain.
+            // Strict keys must NEVER keep plaintext in the cache, else a prior NON-strict
+            // write's bytes linger after a strict rewrite and defeat the policy in memory.
             keyBytesCache.remove(keyId)
         }
 
         return withKeyResolutionLock {
-            // Re-check under the lock: a concurrent creator may have just populated the cache
-            // (and the Keychain), in which case we must reuse its key, not mint a clobbering
-            // one. Strict keys never read the cache (they mustn't cache plaintext).
+            // Re-check under the lock: a concurrent creator may have just populated the cache,
+            // in which case reuse its key rather than mint a clobbering one.
             if (requireUnlockedDevice != true) {
                 keyBytesCache[keyId]?.let { return@withKeyResolutionLock it }
             }
@@ -685,11 +576,11 @@ internal class AppleKeychainEncryption(
                     val msg = e.message ?: ""
                     if (isTransientUnwrapFailure(msg) ||
                         msg.contains("Keychain error") ||
-                        // A store failure is NOT "SE unavailable": don't silently fall back
-                        // to a divergent plain key under the same identifier.
+                        // A store failure is NOT "SE unavailable": don't fall back to a
+                        // divergent plain key under the same identifier.
                         msg.contains("Failed to store key in Keychain")
                     ) throw e
-                    // SE genuinely unavailable (simulator, old device, no entitlements)
+                    // SE genuinely unavailable (simulator, old device, no entitlements).
                     getOrCreateKeychainKeyPlain(keyId, requireUnlockedDevice)
                 }
             } else {
@@ -703,10 +594,8 @@ internal class AppleKeychainEncryption(
     }
 
     /**
-     * SE path. Lookup order:
-     *   1. SE-wrapped key exists (`se.{keyId}`) → unwrap and return.
-     *   2. Legacy unwrapped key exists (`{keyId}`) → return as-is (pre-SE data).
-     *   3. Neither → create a new SE-wrapped key.
+     * SE path, in order: SE-wrapped key (`se.{keyId}`) → unwrap; legacy plain key
+     * (`{keyId}`) → return as-is; neither → create a new SE-wrapped key.
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun getOrCreateKeychainKeyWithSE(keyId: String, requireUnlockedDevice: Boolean?): ByteArray {
@@ -733,7 +622,6 @@ internal class AppleKeychainEncryption(
         // Legacy pre-SE plain key — honour it.
         getExistingKeychainKeyRaw(keyId)?.let { return it }
 
-        // Create a fresh SE-wrapped key.
         val newAesKey = secureRandomBytes(keySizeBytes)
         val sePrivateKey = createSecureEnclaveKey(seTag(keyId), requireUnlockedDevice)
         try {
@@ -761,9 +649,8 @@ internal class AppleKeychainEncryption(
     }
 
     /**
-     * Adds a generic-password item carrying [keyData] under [keyId]. Any existing
-     * item at the same account is deleted first so the `SecItemAdd` can't
-     * duplicate-collision.
+     * Adds a generic-password item with [keyData] under [keyId], deleting any existing item
+     * first so `SecItemAdd` can't duplicate-collision.
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun storeInKeychain(keyId: String, keyData: ByteArray, requireUnlockedDevice: Boolean?) {
@@ -773,11 +660,9 @@ internal class AppleKeychainEncryption(
                 length = keyData.size.toULong(),
             )
 
-            // Delete any pre-existing item at this account.
             usingPasswordQuery(keyId) { deleteQuery -> SecItemDelete(deleteQuery) }
 
-            // null value-callbacks → hold the bridged +1 across the SecItemAdd, then release
-            // (FEEDBACK_4 H6). The dict is built + consumed inside usingPasswordQuery's block.
+            // null value-callbacks → hold the bridged +1 across SecItemAdd, then release.
             val nsDataRef = CFBridgingRetain(nsData)
             val addStatus = usingPasswordQuery(
                 account = keyId,
@@ -805,23 +690,19 @@ internal class AppleKeychainEncryption(
 
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     override fun updateKeyAccessibility(identifier: String, requireUnlocked: Boolean) {
-        // Skip the three SecItemUpdate IPC round-trips when the policy is unchanged since
-        // the last successful update in this process (FEEDBACK_4 FB3-M4): a first-time
-        // create already stored the correct accessibility, and a same-policy rewrite needs
-        // no change — so re-asserting on EVERY write is pure IPC overhead.
+        // Skip the three SecItemUpdate IPC round-trips when the policy is unchanged this
+        // process — re-asserting on every write is pure IPC overhead.
         if (!accessibilityUpdateNeeded(lastAppliedAccessibility[identifier], requireUnlocked)) return
         updateKeychainItemAccessibility(identifier, requireUnlocked)
         updateKeychainItemAccessibility(seWrappedAccount(identifier), requireUnlocked)
         updateSecureEnclaveKeyAccessibility(seTag(identifier), requireUnlocked)
-        // Record only after all three succeed — a best-effort partial failure (one of the
-        // helpers threw) leaves the cache unset so the next write retries the tightening.
+        // Record only after all three succeed, so a partial failure retries on the next write.
         lastAppliedAccessibility[identifier] = requireUnlocked
     }
 
     /**
-     * Updates the accessibility attribute on a Secure-Enclave-held EC private key.
-     * SE keys are `kSecClassKey` items, not generic-password, so they need their own
-     * `SecItemUpdate` query.
+     * Updates accessibility on the SE-held EC private key — `kSecClassKey`, not
+     * generic-password, so it needs its own `SecItemUpdate` query.
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun updateSecureEnclaveKeyAccessibility(tag: String, requireUnlocked: Boolean) {
@@ -844,10 +725,7 @@ internal class AppleKeychainEncryption(
         } }
     }
 
-    /**
-     * Runs `SecItemUpdate` with a one-attribute `kSecAttrAccessible` payload and
-     * releases the update dictionary.
-     */
+    /** Runs `SecItemUpdate` with a one-attribute `kSecAttrAccessible` payload, then releases. */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun runItemUpdate(query: CFMutableDictionaryRef?, requireUnlocked: Boolean): Int {
         val update = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, null, null)

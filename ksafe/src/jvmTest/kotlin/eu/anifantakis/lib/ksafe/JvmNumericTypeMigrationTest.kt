@@ -9,19 +9,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * CHARACTERIZATION suite for numeric primitive types: what a value is actually
- * persisted as, and what happens when a key is written with one numeric type and
- * later read as another (the "I shipped `ksafe(0)` and now want `ksafe(0L)`"
- * migration). Probes plain vs encrypted, Int<->Long, Float<->Double, including
- * out-of-range and the "encrypted 0, later store a Long" case.
- *
- * Reads exercise `KSafeCore.convertStoredValue` (plain path — a typed coercion
- * table) and `jsonDecode` (encrypted path — type-tagless JSON). These tests assert
- * the DESIRED behaviour (cross-type reads return the coerced value), so any case
- * the current code can't coerce will FAIL and pinpoint the gap.
- *
- * Uses FakeEncryption (reversible XOR) so the encrypted path is exercised
- * deterministically without touching a real OS key store.
+ * Locks in: numeric-primitive persistence and cross-type read coercion (Int↔Long, Float↔Double, whole/fractional/out-of-range) across the plain and encrypted paths, including overwriting a key with a different numeric type.
  */
 class JvmNumericTypeMigrationTest {
 
@@ -51,10 +39,6 @@ class JvmNumericTypeMigrationTest {
     private suspend fun numericValues(ksafe: KSafe): List<Any> =
         ksafe.dataStore.data.first().asMap().values
             .filter { it is Int || it is Long || it is Float || it is Double }
-
-    // ======================================================================
-    // GROUP A — what does an unencrypted primitive actually persist AS?
-    // ======================================================================
 
     @Test
     fun plain_int_persistsAsInt_notLong() = runTest {
@@ -91,10 +75,6 @@ class JvmNumericTypeMigrationTest {
         assertEquals(1, nums.size, "exactly one numeric value entry expected, got: $nums")
         assertTrue(nums.single() is Double, "plain Double persists as: ${nums.single()::class.simpleName}")
     }
-
-    // ======================================================================
-    // GROUP B — Int <-> Long migration
-    // ======================================================================
 
     @Test
     fun plain_intWritten_readAsLong_coerces() = runTest {
@@ -139,10 +119,6 @@ class JvmNumericTypeMigrationTest {
         assertEquals(-1, ksafe.get("k", -1), "out-of-Int-range Long should fall back to default")
     }
 
-    // ======================================================================
-    // GROUP C — Float <-> Double migration
-    // ======================================================================
-
     @Test
     fun plain_floatWritten_readAsDouble_coerces() = runTest {
         val ksafe = newKSafe()
@@ -171,10 +147,6 @@ class JvmNumericTypeMigrationTest {
         assertEquals(1.5f, ksafe.get("k", 0.0f), 1e-6f)
     }
 
-    // ======================================================================
-    // GROUP D — the specific "encrypted 0, later store a Long" question
-    // ======================================================================
-
     @Test
     fun encrypted_zeroAsInt_thenOverwrittenWithLong_readsBackCorrectly() = runTest {
         val ksafe = newKSafe(KSafeMemoryPolicy.ENCRYPTED)
@@ -185,12 +157,8 @@ class JvmNumericTypeMigrationTest {
         assertEquals(5_000_000_000L, ksafe.get("k", 0L), "later Long value reads back intact")
     }
 
-    // ======================================================================
-    // GROUP E — overwriting a key with a DIFFERENT numeric type
-    //   On typed-DataStore platforms a key is identified by (name, type), so an
-    //   Int `k` and a Long `k` are different on-disk keys. writeOne must purge the
-    //   stale entry so no duplicate lingers and reads stay deterministic.
-    // ======================================================================
+    // On typed-DataStore platforms a key is identified by (name, type), so Int `k` and Long `k` are
+    // different on-disk keys; writeOne must purge the stale entry so no duplicate lingers.
 
     @Test
     fun plain_intStored_thenOverwrittenWithLong_readsBackAsLong_andLeavesNoDuplicate() = runTest {
@@ -216,13 +184,8 @@ class JvmNumericTypeMigrationTest {
         assertTrue(nums.single() is Int, "the surviving on-disk entry must be the Int")
     }
 
-    // ======================================================================
-    // GROUP F — full integer <-> decimal matrix (plain path)
-    //   Widening (Int/Long -> Float/Double) is exact or loses only precision.
-    //   Decimal -> integer coerces ONLY when the value is whole and in range;
-    //   a fractional or out-of-range decimal falls back to the default rather
-    //   than silently truncating or wrapping.
-    // ======================================================================
+    // Widening (Int/Long → Float/Double) is exact or loses only precision. Decimal → integer coerces
+    // only when the value is whole and in range; a fractional or out-of-range decimal falls back to default.
 
     @Test fun plain_intReadAsDouble_widens() = runTest {
         val ksafe = newKSafe(); ksafe.put("k", 5, KSafeWriteMode.Plain)

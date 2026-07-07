@@ -11,12 +11,9 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * FEEDBACK_4 low: a biometric prompt can succeed at the very moment the caller's coroutine
- * is cancelled. Seeding the authorization-session cache then would grant a LATER call a
- * prompt-free pass off an authorization the caller never received — a biometric-gate
- * bypass. [seedBiometricSessionIfActive] must skip the seed (and propagate cancellation)
- * when the coroutine is no longer active, and seed normally when it is. (The helper is
- * commonMain and used by the Android + Apple verify-paths; verified here on JVM.)
+ * Locks in: [seedBiometricSessionIfActive] skips the seed (and propagates cancellation) when the
+ * coroutine is no longer active — a cancelled auth must not grant a later call a prompt-free pass —
+ * and seeds normally when active. The commonMain helper backs the Android + Apple verify-paths; verified here on JVM.
  */
 class SeedBiometricSessionIfActiveTest {
 
@@ -25,8 +22,7 @@ class SeedBiometricSessionIfActiveTest {
         var seeded = false
         coroutineScope {
             val job = launch {
-                // Simulate: the auth succeeded, but the caller's coroutine was cancelled
-                // before the seed runs.
+                // Auth succeeded, but the caller's coroutine was cancelled before the seed runs.
                 coroutineContext.job.cancel()
                 try {
                     seedBiometricSessionIfActive { seeded = true }

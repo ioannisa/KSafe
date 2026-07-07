@@ -27,32 +27,7 @@ import kotlin.test.assertFails
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * Device tests for the Android software-DEK fast path in [AndroidKeystoreEncryption].
- *
- * These exercise the engine directly (a real AndroidKeyStore is required, so they can't
- * run on the JVM). The wrapped DEK lives as a reserved entry ([DataStoreDekStore.DEK_KEY])
- * in the safe's own DataStore — never in SharedPreferences — so each test backs the engine
- * with its own temporary DataStore (one relaxed master KEK ⇒ one DEK per store). They assert:
- *  - relaxed DEFAULT entries are encrypted with the userspace DEK (self-describing header)
- *    and persist a wrapped DEK in the DataStore,
- *  - legacy TEE ciphertext (produced with the DEK path disabled) stays readable after the
- *    "upgrade" — the critical no-data-loss guarantee,
- *  - the strict `requireUnlockedDevice` master and `hardwareIsolated` entries keep the
- *    per-call TEE path (no DEK, no header, no DEK entry),
- *  - deleteKey / a missing DEK behave correctly for orphan reclamation, and
- *  - deleting an unrelated key never wipes the shared per-safe DEK.
- *
- * KNOWN FLAKE (device-side, not a product bug): the key-creation/encrypt calls below can
- * intermittently throw a TRANSIENT AndroidKeyStore error (keystore2 throttling under the burst of
- * key ops the full 181-test suite fires on a busy device) — surfacing as a failure AT the
- * `encrypt(...)` line, not at a DEK assertion. It reproduces only under the full suite, never in
- * isolation (each of these tests, and this whole class, passes reliably run alone), and is
- * independent of the strict/DEK logic: the `requireUnlockedDevice`/`hardwareIsolated` paths
- * provably never take the DEK branch (see [AndroidKeystoreEncryption.encrypt]'s
- * `!resolvedRequireUnlocked` guard), so a strict write can never persist a DEK. If one of these
- * fails intermittently, re-run in isolation before suspecting a regression.
- */
+/** Locks in: the Android software-DEK fast path — relaxed DEFAULT entries wrap a userspace DEK while strict/hardware-isolated writes stay on the per-call TEE path, legacy TEE ciphertext survives the upgrade, and DEK self-heal/regeneration never lose acknowledged writes. */
 @RunWith(AndroidJUnit4::class)
 class AndroidSoftwareDekTest {
 
@@ -116,30 +91,24 @@ class AndroidSoftwareDekTest {
         }
     }
 
-    /**
-     * THE critical test: ciphertext written before the DEK fast path existed (legacy TEE,
-     * no header) must remain decryptable afterwards, and new DEK writes must coexist with it.
-     */
+    /** Legacy TEE ciphertext (written before the DEK path) must stay decryptable, and new DEK writes coexist with it. */
     @Test
     fun crossVersion_legacyTeeBlob_staysReadable_andNewDekBlobCoexists() {
         val storage = newStorage()
         val alias = uniqueAlias()
-        val legacy = engine(storage, useSoftwareDek = false) // pre-upgrade behavior
-        val upgraded = engine(storage, useSoftwareDek = true) // post-upgrade behavior (separate caches)
+        val legacy = engine(storage, useSoftwareDek = false)
+        val upgraded = engine(storage, useSoftwareDek = true)
         try {
             val oldPlain = "legacy-tee-value".encodeToByteArray()
             val legacyBlob = legacy.encrypt(alias, oldPlain, hardwareIsolated = false, requireUnlockedDevice = false)
             assertFalse(legacyBlob.startsWithMagic(), "legacy TEE blob must NOT carry the DEK header")
 
-            // Upgraded engine reads the legacy blob via the TEE fallback path.
             assertContentEquals(oldPlain, upgraded.decrypt(alias, legacyBlob), "legacy data must survive the upgrade")
 
-            // A new write under the same alias uses the DEK and coexists with the old blob.
             val newPlain = "fresh-dek-value".encodeToByteArray()
             val dekBlob = upgraded.encrypt(alias, newPlain, hardwareIsolated = false, requireUnlockedDevice = false)
             assertTrue(dekBlob.startsWithMagic(), "post-upgrade write should use the DEK header")
             assertContentEquals(newPlain, upgraded.decrypt(alias, dekBlob))
-            // Old blob still readable after the DEK was introduced.
             assertContentEquals(oldPlain, upgraded.decrypt(alias, legacyBlob))
         } finally {
             upgraded.deleteKey(alias)
@@ -153,8 +122,7 @@ class AndroidSoftwareDekTest {
         val e = engine(storage)
         try {
             val plain = "locked-master-value".encodeToByteArray()
-            // requireUnlockedDevice = true → strict TEE path, never the DEK branch (see class KDoc:
-            // an intermittent throw here under full-suite load is a transient keystore flake).
+            // requireUnlockedDevice = true forces the strict TEE path — never the DEK branch.
             val blob = e.encrypt(alias, plain, hardwareIsolated = false, requireUnlockedDevice = true)
             assertFalse(blob.startsWithMagic(), "locked variant must stay on the TEE path (no DEK header)")
             assertFalse(dekPresent(storage), "locked variant must not persist a DEK")
@@ -189,12 +157,10 @@ class AndroidSoftwareDekTest {
         val blob = e.encrypt(alias, plain, hardwareIsolated = false, requireUnlockedDevice = false)
         assertTrue(dekPresent(storage))
 
-        // deleteKey removes the master KEK. The persisted DEK may linger (its storage key is
-        // fixed per safe), but without its KEK it can no longer be unwrapped.
+        // deleteKey removes the master KEK; the wrapped DEK lingers (fixed per-safe storage key)
+        // but can no longer be unwrapped, so a cold engine's decrypt fails definitively.
         e.deleteKey(alias)
 
-        // A fresh engine (cold caches) decrypting the old DEK blob must fail definitively:
-        // it reads the still-present wrapped DEK from storage, then can't unwrap it (KEK gone).
         val fresh = engine(storage)
         val ex = assertFails { fresh.decrypt(alias, blob) }
         assertTrue(
@@ -212,7 +178,7 @@ class AndroidSoftwareDekTest {
             val blob = e.encrypt(alias, "v".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
             // Simulate the wrapped DEK going missing (e.g. cleared storage) while the KEK lingers.
             runBlocking { storage.applyBatch(listOf(StorageOp.Delete(DataStoreDekStore.DEK_KEY))) }
-            val fresh = engine(storage) // cold dekCache so it must read storage (now empty)
+            val fresh = engine(storage)
             val ex = assertFails { fresh.decrypt(alias, blob) }
             assertTrue(ex.message?.contains("No encryption key found", ignoreCase = true) == true)
         } finally {
@@ -244,11 +210,7 @@ class AndroidSoftwareDekTest {
         }
     }
 
-    /**
-     * Self-heal: a persisted wrapped DEK that no longer unwraps (corrupt blob / KEK mismatch)
-     * must not fail writes forever — the next encrypt regenerates a fresh DEK + KEK. (Old DEK
-     * ciphertext is unrecoverable either way, exactly like a permanently-invalidated KEK.)
-     */
+    /** A corrupt wrapped DEK must self-heal: the next encrypt regenerates a fresh DEK + KEK rather than failing writes forever. */
     @Test
     fun corruptWrappedDek_selfHealsOnNextEncrypt() {
         val storage = newStorage()
@@ -270,8 +232,6 @@ class AndroidSoftwareDekTest {
                 )
             }
 
-            // A cold engine reads the corrupt DEK from storage; the next encrypt must recover
-            // (regenerate) rather than throw, and the new value must round-trip.
             val fresh = engine(storage)
             val blob = fresh.encrypt(master, "after".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
             assertTrue(blob.startsWithMagic(), "self-healed write should use the DEK header")
@@ -285,22 +245,14 @@ class AndroidSoftwareDekTest {
         }
     }
 
-    /**
-     * Concurrent regeneration must be atomic and must not discard a sibling's
-     * freshly-minted DEK. Two+ writers that all read the SAME corrupt wrapped
-     * DEK each route through regenerateDek concurrently; a discard there would
-     * wipe the DEK (and KEK) a sibling had already encrypted a value under,
-     * silently losing that acknowledged write. Exactly one DEK must survive and
-     * EVERY concurrently-written blob must still decrypt under it.
-     */
+    /** Concurrent regeneration must be atomic: writers that all read the same corrupt DEK regenerate concurrently, and no sibling's freshly-minted (already-written-under) DEK may be discarded — exactly one DEK survives and every blob still decrypts. */
     @Test
     fun concurrentRegenerate_doesNotDiscardAnotherWritersFreshDek() {
         val storage = newStorage()
         val master = uniqueAlias()
         val seed = engine(storage)
         try {
-            // Establish a DEK, then corrupt the persisted wrapped DEK so every cold-engine
-            // unwrap fails and routes through regenerateDek.
+            // Establish a DEK, then corrupt it so every cold-engine unwrap fails into regenerateDek.
             seed.encrypt(master, "seed".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
             assertTrue(dekPresent(storage))
             runBlocking {
@@ -314,8 +266,6 @@ class AndroidSoftwareDekTest {
                 )
             }
 
-            // Cold engine (empty dekCache) → all N concurrent encrypts hit the corrupt DEK
-            // and regenerate concurrently.
             val fresh = engine(storage)
             val n = 16
             val blobs = runBlocking(Dispatchers.Default) {
@@ -329,8 +279,6 @@ class AndroidSoftwareDekTest {
                 }.awaitAll()
             }
 
-            // Decisive: every concurrently-regenerated write round-trips — a writer
-            // whose fresh DEK was discarded by a sibling regenerate would fail to decrypt.
             blobs.forEach { (i, blob) ->
                 assertTrue(blob.startsWithMagic(), "regenerated write should use the DEK header")
                 assertContentEquals(
@@ -344,27 +292,22 @@ class AndroidSoftwareDekTest {
         }
     }
 
-    /**
-     * A corrupt wrapped DEK must self-heal by minting a fresh DEK under the
-     * SAME (healthy) KEK — it must NOT delete the KEK, or pre-upgrade legacy TEE ciphertext
-     * still encrypted directly under that KEK would be permanently destroyed.
-     */
+    /** A corrupt-DEK self-heal must mint a fresh DEK under the SAME healthy KEK, never deleting the KEK — or legacy TEE ciphertext encrypted directly under it would be destroyed. */
     @Test
     fun corruptDek_selfHeals_withoutDestroyingLegacyTeeCiphertextUnderSameKek() {
         val storage = newStorage()
         val master = uniqueAlias()
         try {
-            // Pre-upgrade: a legacy TEE blob encrypted DIRECTLY under the master KEK (DEK off).
+            // Legacy TEE blob encrypted DIRECTLY under the master KEK (DEK off).
             val legacy = engine(storage, useSoftwareDek = false)
             val legacyBlob = legacy.encrypt(master, "legacy-value".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
             assertFalse(legacyBlob.startsWithMagic(), "precondition: legacy TEE blob has no DEK header")
 
-            // Upgrade: a DEK write wraps a fresh DEK under that same KEK.
             val dekEngine = engine(storage, useSoftwareDek = true)
             dekEngine.encrypt(master, "dek-value".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
             assertTrue(dekPresent(storage))
 
-            // The wrapped DEK becomes corrupt (fails GCM auth) — but the KEK is fine.
+            // Corrupt the wrapped DEK (fails GCM auth) — the KEK stays fine.
             runBlocking {
                 storage.applyBatch(
                     listOf(
@@ -376,13 +319,10 @@ class AndroidSoftwareDekTest {
                 )
             }
 
-            // A cold engine self-heals on the next encrypt (mints a new DEK under the SAME KEK).
             val fresh = engine(storage, useSoftwareDek = true)
             val healed = fresh.encrypt(master, "after".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
             assertContentEquals("after".encodeToByteArray(), fresh.decrypt(master, healed), "regenerated DEK must round-trip")
 
-            // The decisive check: the legacy TEE ciphertext under the KEK must STILL decrypt —
-            // a self-heal that deleted the KEK would make this throw "No encryption key found".
             assertContentEquals(
                 "legacy-value".encodeToByteArray(),
                 fresh.decrypt(master, legacyBlob),
@@ -393,11 +333,7 @@ class AndroidSoftwareDekTest {
         }
     }
 
-    /**
-     * A wrapped DEK present while its KEK is ABSENT (Auto Backup restored the
-     * DataStore to a device with an empty Keystore, and an encrypted write beat the prewarm)
-     * must self-heal on the next encrypt, not brick every write with "No encryption key found".
-     */
+    /** A wrapped DEK present with its KEK absent (Auto Backup restored the DataStore to a device with an empty Keystore) must self-heal on the next encrypt, not brick every write. */
     @Test
     fun wrappedDekPresent_butKekAbsent_selfHealsOnEncrypt() {
         val storage = newStorage()
@@ -407,13 +343,12 @@ class AndroidSoftwareDekTest {
             e.encrypt(master, "v1".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
             assertTrue(dekPresent(storage))
 
-            // deleteKey removes the KEK from the Keystore but LEAVES the persisted wrapped DEK
-            // (its storage key is fixed per safe) — exactly the restored-DataStore + empty-
-            // Keystore state.
+            // deleteKey removes the KEK but leaves the wrapped DEK (fixed per-safe storage key)
+            // — the restored-DataStore + empty-Keystore state.
             e.deleteKey(master)
             assertTrue(dekPresent(storage), "precondition: wrapped DEK still present after KEK deletion")
 
-            val fresh = engine(storage) // cold caches
+            val fresh = engine(storage)
             val healed = fresh.encrypt(master, "v2".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
             assertTrue(healed.startsWithMagic())
             assertContentEquals(
@@ -426,11 +361,7 @@ class AndroidSoftwareDekTest {
         }
     }
 
-    /**
-     * A MALFORMED wrapped-DEK entry (invalid Base64 / blob shorter than the
-     * GCM IV) must self-heal like the corrupt-but-well-formed case — not bypass the recovery
-     * and brick encrypted writes forever.
-     */
+    /** A malformed wrapped-DEK entry (invalid Base64 / too short for the GCM IV) must self-heal like the corrupt-but-well-formed case, not brick encrypted writes. */
     @Test
     fun malformedWrappedDek_selfHealsOnEncrypt() {
         val storage = newStorage()
@@ -441,7 +372,7 @@ class AndroidSoftwareDekTest {
             assertTrue(dekPresent(storage))
 
             // Invalid Base64 → load() throws IllegalArgumentException (not AEADBadTagException);
-            // the self-heal must catch this shape too, or every encrypted write bricks.
+            // the self-heal must catch this shape too.
             runBlocking {
                 storage.applyBatch(
                     listOf(StorageOp.Put(DataStoreDekStore.DEK_KEY, StoredValue.Text("@@@not-valid-base64@@@")))
@@ -461,10 +392,7 @@ class AndroidSoftwareDekTest {
         }
     }
 
-    /**
-     * Lazy DEK: prewarm warms only the wrapping KEK and must NOT persist a DEK, so an
-     * unencrypted-only safe never writes one. The DEK appears on the first real encrypt.
-     */
+    /** Lazy DEK: prewarm warms only the wrapping KEK and must NOT persist a DEK — it appears on the first real encrypt, so an unencrypted-only safe never writes one. */
     @Test
     fun prewarmKey_doesNotPersistDek_butFirstEncryptDoes() {
         val storage = newStorage()
@@ -481,11 +409,7 @@ class AndroidSoftwareDekTest {
         }
     }
 
-    /**
-     * Guards the fixed-key delete semantics: the per-safe DEK has ONE storage key, so deleting
-     * an unrelated (per-entry / HARDWARE_ISOLATED) key must never remove it — otherwise every
-     * relaxed DEFAULT value in the safe would be bricked.
-     */
+    /** The per-safe DEK has ONE storage key, so deleting an unrelated (per-entry / HARDWARE_ISOLATED) key must never remove it — or every relaxed DEFAULT value would be bricked. */
     @Test
     fun deleteUnrelatedKey_doesNotRemoveSharedDek() {
         val storage = newStorage()
@@ -497,10 +421,9 @@ class AndroidSoftwareDekTest {
             assertTrue(dekPresent(storage))
 
             val other = uniqueAlias()
-            e.deleteKey(other) // an unrelated key — must not touch the shared DEK
+            e.deleteKey(other)
             assertTrue(dekPresent(storage), "deleting an unrelated key must not remove the shared DEK")
 
-            // The DEFAULT value still decrypts — proven from storage via a cold engine.
             val fresh = engine(storage)
             assertContentEquals(plain, fresh.decrypt(master, blob), "DEFAULT value must survive an unrelated delete")
         } finally {

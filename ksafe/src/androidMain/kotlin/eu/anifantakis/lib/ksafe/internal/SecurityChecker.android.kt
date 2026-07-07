@@ -6,24 +6,17 @@ import android.os.Debug
 import java.io.File
 
 /**
- * Android-specific security checker implementation.
+ * Android security checks. Root detection is best-effort — hiding tools (Magisk
+ * DenyList, Shamiko) can bypass it; use Play Integrity for high-security needs.
  *
- * Root detection is best-effort: hiding tools (Magisk DenyList/Hide, Shamiko) can
- * bypass most or all of these checks. For high-security applications, consider
- * additional measures like the Google Play Integrity API.
- *
- * The file/package probes are often defeated by the app sandbox — SELinux denies
- * the `untrusted_app` domain access to `su_exec`, so `File.exists("/system/xbin/su")`
- * can return false even when the binary is present. The build-signal checks —
- * `userdebug`/`eng` build type or `test-keys` signing, read via the public [Build]
- * fields and `android.os.SystemProperties` (not a `getprop` subprocess) — survive
- * the sandbox; such images ship `su` and permit `adb root` by construction. Note
- * that `user`-build emulators are signed `dev-keys` yet are *not* rooted — the
- * build *type*, not the signing tag, is what distinguishes them.
+ * The app sandbox often defeats the file/package probes (SELinux denies `untrusted_app`
+ * access to `su`, so `File.exists` reads false even when present). The build-signal checks
+ * survive the sandbox: a `userdebug`/`eng` type or `test-keys` signing indicates an image
+ * that ships `su` by construction. The build *type*, not the signing tag, is decisive —
+ * `user`-build emulators are `dev-keys`-signed yet not rooted.
  */
 internal actual object SecurityChecker {
 
-    // Common paths where su binary is found on rooted devices
     private val suPaths = listOf(
         "/system/app/Superuser.apk",
         "/sbin/su",
@@ -39,7 +32,7 @@ internal actual object SecurityChecker {
         "/system/xbin/daemonsu"
     )
 
-    // Magisk-specific paths (may be hidden by Magisk DenyList)
+    // Magisk paths (may be hidden by DenyList).
     private val magiskPaths = listOf(
         "/sbin/.magisk",
         "/data/adb/magisk",
@@ -50,7 +43,6 @@ internal actual object SecurityChecker {
         "/cache/.disable_magisk"
     )
 
-    // BusyBox paths (commonly installed on rooted devices)
     private val busyBoxPaths = listOf(
         "/system/xbin/busybox",
         "/system/bin/busybox",
@@ -60,7 +52,6 @@ internal actual object SecurityChecker {
         "/data/local/xbin/busybox"
     )
 
-    // Xposed Framework paths
     private val xposedPaths = listOf(
         "/system/framework/XposedBridge.jar",
         "/system/bin/app_process.orig",
@@ -70,40 +61,27 @@ internal actual object SecurityChecker {
         "/data/user_de/0/de.robv.android.xposed.installer"
     )
 
-    // Root management and hiding app packages
     private val rootPackages = listOf(
-        // Magisk variants (may use random package names)
         "com.topjohnwu.magisk",
-        // SuperUser apps
         "com.koushikdutta.superuser",
         "com.noshufou.android.su",
         "com.thirdparty.superuser",
         "eu.chainfire.supersu",
         "com.yellowes.su",
-        // Root tools
         "com.kingroot.kinguser",
         "com.kingo.root",
         "com.smedialink.oneclickroot",
         "com.zhiqupk.root.global",
-        // Xposed
         "de.robv.android.xposed.installer",
         "org.lsposed.manager",
-        // Root checkers (having these may indicate user is root-aware)
         "com.joeykrim.rootcheck"
     )
 
-    // Dangerous props that indicate rooting
     private val dangerousProps = mapOf(
         "ro.debuggable" to "1",
         "ro.secure" to "0"
     )
 
-    /**
-     * Check if the device is rooted.
-     * Uses multiple detection methods for better accuracy.
-     *
-     * Note: Sophisticated hiding tools (Magisk DenyList, Shamiko) may bypass these checks.
-     */
     actual fun isDeviceRooted(): Boolean {
         return checkRootPaths() ||
                 checkMagiskPaths() ||
@@ -114,21 +92,13 @@ internal actual object SecurityChecker {
                 checkDangerousProps()
     }
 
-    /**
-     * Check if a debugger is attached.
-     */
     actual fun isDebuggerAttached(): Boolean {
         return Debug.isDebuggerConnected() || Debug.waitingForDebugger()
     }
 
-    // Store application context for debug build detection
     internal var applicationContext: android.content.Context? = null
 
-    /**
-     * Check if this is a debug build.
-     * Note: This checks Android's debuggable flag, not BuildConfig.DEBUG
-     * since we don't have access to the app's BuildConfig.
-     */
+    // Reads Android's debuggable flag (the app's BuildConfig.DEBUG isn't reachable here).
     actual fun isDebugBuild(): Boolean {
         return try {
             val appInfo = applicationContext?.applicationInfo
@@ -140,9 +110,6 @@ internal actual object SecurityChecker {
         }
     }
 
-    /**
-     * Check if running on an emulator.
-     */
     actual fun isEmulator(): Boolean {
         return (Build.FINGERPRINT.startsWith("generic") ||
                 Build.FINGERPRINT.startsWith("unknown") ||
@@ -162,8 +129,6 @@ internal actual object SecurityChecker {
                 Build.TAGS.contains("test-keys") ||
                 Build.TYPE.contains("userdebug"))
     }
-
-    // --- Private helper methods ---
 
     private fun checkRootPaths(): Boolean {
         return suPaths.any { path ->
@@ -196,7 +161,6 @@ internal actual object SecurityChecker {
     }
 
     private fun checkXposed(): Boolean {
-        // Check for Xposed files
         val xposedFilesExist = xposedPaths.any { path ->
             try {
                 File(path).exists()
@@ -205,7 +169,7 @@ internal actual object SecurityChecker {
             }
         }
 
-        // Check for Xposed in stack traces (Xposed hooks leave traces)
+        // Xposed hooks leave frames in stack traces.
         val xposedInStack = try {
             throw Exception("Xposed check")
         } catch (e: Exception) {
@@ -232,12 +196,8 @@ internal actual object SecurityChecker {
         }
     }
 
-    /**
-     * Treats `userdebug`/`eng` builds (and `test-keys` signing) as a rooted-capable
-     * environment. Reads only the public [Build.TYPE]/[Build.TAGS] fields, so —
-     * unlike the file probes — it is unaffected by the app sandbox. Delegates to the
-     * pure [isRootIndicatingBuild] for deterministic testing.
-     */
+    // Treats `userdebug`/`eng` builds (and `test-keys` signing) as rooted-capable. Reads only
+    // the public [Build] fields, so — unlike the file probes — it survives the app sandbox.
     private fun checkRootIndicatingBuild(): Boolean =
         isRootIndicatingBuild(Build.TYPE, Build.TAGS)
 
@@ -247,13 +207,9 @@ internal actual object SecurityChecker {
         }
     }
 
-    /**
-     * Reads a system property via `android.os.SystemProperties.get` through
-     * reflection. This reads the native property area directly and therefore
-     * works from the app sandbox, unlike `Runtime.exec("getprop")`, which modern
-     * SELinux policy denies to the `untrusted_app` domain. Returns `null` on any
-     * failure (missing/empty/blocked) so callers fail safe.
-     */
+    // Reads a system property via reflected `android.os.SystemProperties.get`, which hits the
+    // native property area directly and works from the sandbox (unlike `Runtime.exec("getprop")`,
+    // which SELinux denies to `untrusted_app`). Returns null on any failure so callers fail safe.
     @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
     private fun readSystemProperty(name: String): String? = try {
         val clazz = Class.forName("android.os.SystemProperties")
@@ -265,19 +221,11 @@ internal actual object SecurityChecker {
 }
 
 /**
- * Pure predicate: do this build's type/tags indicate a rooted-capable image?
- *
- * The reliable signal is the **build type**: `userdebug`/`eng` system builds ship
- * `su`, allow `adb root`, and expose writable system partitions by construction.
- * `test-keys` signing (an AOSP/custom ROM signed with the public test keys, never a
- * retail device) is a secondary indicator.
- *
- * Deliberately does **not** key off `dev-keys`: modern Google emulator system images
- * are signed `dev-keys` for *both* `user` and `userdebug` builds, so the tag says
- * nothing about root — a `user`-build emulator (no `su`, `ro.debuggable=0`,
- * `adb root` refused) must not be flagged; only the build *type* separates it from a
- * rooted `userdebug` image. Top-level function over the public [Build] fields so it
- * is deterministically unit-testable.
+ * Does this build's type/tags indicate a rooted-capable image? The reliable signal is the
+ * build *type*: `userdebug`/`eng` ship `su` and allow `adb root` by construction; `test-keys`
+ * signing is a secondary indicator. Deliberately ignores `dev-keys` — modern Google emulator
+ * images are `dev-keys`-signed for both `user` and `userdebug`, so the tag says nothing about
+ * root and a `user`-build emulator must not be flagged.
  */
 internal fun isRootIndicatingBuild(buildType: String?, buildTags: String?): Boolean {
     val dangerousType = buildType == "userdebug" || buildType == "eng"

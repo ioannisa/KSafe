@@ -1,11 +1,8 @@
 package eu.anifantakis.lib.ksafe
 
 /**
- * Explicit write mode for KSafe put operations.
- *
- * This makes invalid combinations unrepresentable:
- * - Plain writes cannot set unlock policy
- * - Unlock policy is only available for encrypted writes
+ * Explicit write mode for KSafe put operations, making invalid combinations
+ * unrepresentable — only encrypted writes can set an unlock policy.
  */
 sealed interface KSafeWriteMode {
     data object Plain : KSafeWriteMode

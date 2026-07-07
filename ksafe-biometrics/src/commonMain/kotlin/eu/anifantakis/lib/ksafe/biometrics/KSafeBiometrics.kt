@@ -1,79 +1,21 @@
 package eu.anifantakis.lib.ksafe.biometrics
 
 /**
- * Standalone biometric authentication helper.
- *
- * `KSafeBiometrics` is a process-wide static API. Call its methods directly —
- * no instance, no DI wiring. Android initializes itself automatically via a
- * `ContentProvider` declared in the library's merged manifest; other
- * platforms have no init.
- *
- * The module is independent of `:ksafe`: use it on its own to gate any action,
- * or alongside `:ksafe` to require biometric verification before storage access.
- *
- * ## Example
- * ```kotlin
- * // Same call shape on every platform — no instance, no Context, no DI
- *
- * // Always prompt
- * val ok = KSafeBiometrics.verifyBiometric("Authenticate to delete account")
- *
- * // Cache successful auth for 60s within a scope
- * KSafeBiometrics.verifyBiometricDirect(
- *     reason = "Authenticate",
- *     authorizationDuration = BiometricAuthorizationDuration(60_000L, "settings")
- * ) { success -> /* ... */ }
- * ```
- *
- * ## Platform behaviour
- * - **Android:** real `BiometricPrompt` (BIOMETRIC_STRONG + DEVICE_CREDENTIAL).
- *   Requires a `FragmentActivity` / `AppCompatActivity` to be visible.
- * - **iOS:** real Face ID / Touch ID via `LAContext`. Returns `true` on the simulator
- *   (no biometric hardware available).
- * - **macOS:** Touch ID, password, or Apple Watch unlock via `LAContext`
- *   (`LAPolicyDeviceOwnerAuthentication`). Always shows a prompt — falls back to the
- *   macOS login password on machines without Touch ID.
- * - **JVM, JS, WasmJS:** no biometric hardware. All calls return `true` so shared
- *   business logic in `commonMain` can call into this module without branching.
- *   If you need a hard refusal on these platforms, gate the call in your own code.
+ * Process-wide static API for biometric authentication — no instance, no DI, zero-config init
+ * (real prompts on Android/iOS/macOS; JVM/JS/WasmJS have no hardware and always return `true`).
  */
 @Suppress("unused")
 object KSafeBiometrics {
 
     /**
-     * Verifies biometric authentication.
+     * Suspends until the biometric prompt completes, returning `true` on success and `false`
+     * on failure or cancellation.
      *
-     * Suspends until the user completes (or cancels) the prompt. Use [authorizationDuration]
-     * to skip the prompt when a recent successful authentication is still valid for the
-     * given scope.
-     *
-     * ## Example
-     * ```kotlin
-     * // Always prompt
-     * val ok = KSafeBiometrics.verifyBiometric("Authenticate to delete account")
-     *
-     * // Biometrics only — no PIN/password/pattern fallback
-     * val ok = KSafeBiometrics.verifyBiometric(
-     *     reason = "Authenticate",
-     *     allowDeviceCredentialFallback = false
-     * )
-     *
-     * // Cache for 60s scoped to settings screen
-     * val ok = KSafeBiometrics.verifyBiometric(
-     *     reason = "Authenticate",
-     *     authorizationDuration = BiometricAuthorizationDuration(60_000L, "settings-screen")
-     * )
-     * ```
-     *
-     * @param reason The reason shown to the user for the biometric prompt.
-     * @param authorizationDuration Optional duration configuration for caching successful
-     *        authentication. If `null` (default), authentication is required every time.
-     * @param allowDeviceCredentialFallback When `true` (default), the prompt accepts device
-     *        credentials (PIN / password / pattern on Android; login password or Apple Watch
-     *        on macOS) as a fallback if biometrics fail or are not enrolled. Set to `false`
-     *        to restrict to biometrics only — the prompt will not offer a password fallback.
-     *        On JVM, JS, and WasmJS this parameter is ignored.
-     * @return `true` if authentication succeeded, `false` if it failed or was cancelled.
+     * @param authorizationDuration When set, a successful authentication is cached for the
+     *        given duration/scope and calls within it skip the prompt; `null` always prompts.
+     * @param allowDeviceCredentialFallback When `true` (default), device credentials
+     *        (PIN/password/pattern, or login password/Apple Watch on macOS) are accepted as
+     *        fallback; `false` restricts to biometrics only. Ignored on JVM/JS/WasmJS.
      */
     suspend fun verifyBiometric(
         reason: String = "Authenticate to continue",
@@ -82,26 +24,7 @@ object KSafeBiometrics {
     ): Boolean = platformVerifyBiometric(reason, authorizationDuration, allowDeviceCredentialFallback)
 
     /**
-     * Non-blocking variant of [verifyBiometric].
-     *
-     * ## Example
-     * ```kotlin
-     * KSafeBiometrics.verifyBiometricDirect("Authenticate") { success ->
-     *     if (success) { /* … */ }
-     * }
-     *
-     * // Biometrics only — no PIN/password/pattern fallback
-     * KSafeBiometrics.verifyBiometricDirect(
-     *     reason = "Authenticate",
-     *     allowDeviceCredentialFallback = false
-     * ) { success -> /* ... */ }
-     * ```
-     *
-     * @param reason The reason shown to the user for the biometric prompt.
-     * @param authorizationDuration Optional duration configuration for caching successful
-     *        authentication. If `null` (default), authentication is required every time.
-     * @param allowDeviceCredentialFallback See [verifyBiometric] for full description.
-     * @param onResult Callback with `true` on success, `false` on failure or cancellation.
+     * Non-blocking variant of [verifyBiometric]; delivers the result via [onResult].
      */
     fun verifyBiometricDirect(
         reason: String = "Authenticate to continue",
@@ -111,20 +34,12 @@ object KSafeBiometrics {
     ) = platformVerifyBiometricDirect(reason, authorizationDuration, allowDeviceCredentialFallback, onResult)
 
     /**
-     * Clears cached biometric authorization for a specific scope or all scopes.
-     *
-     * Use this to force re-authentication, for example on user logout.
-     *
-     * @param scope The scope to clear. If `null`, clears ALL cached authorizations.
+     * Clears cached biometric authorization for [scope], or all scopes when `null`.
      */
     fun clearBiometricAuth(scope: String? = null) = platformClearBiometricAuth(scope)
 }
 
-// ─── Platform helpers ──────────────────────────────────────────────────────
-//
-// `KSafeBiometrics` delegates to these per-platform top-level functions.
-// Each platform owns its own session-cache state (Android/iOS: real cache;
-// JVM/JS/WasmJS: no cache, always returns true).
+// Per-platform implementations backing [KSafeBiometrics]; each platform owns its cache state.
 
 internal expect suspend fun platformVerifyBiometric(
     reason: String,
@@ -142,36 +57,11 @@ internal expect fun platformVerifyBiometricDirect(
 internal expect fun platformClearBiometricAuth(scope: String?)
 
 /**
- * Configuration for biometric authorization duration caching.
+ * Caches a successful authentication so calls within the window skip the prompt.
  *
- * When provided to [KSafeBiometrics.verifyBiometric] or [KSafeBiometrics.verifyBiometricDirect],
- * successful authentication is cached for the specified duration. Subsequent calls within
- * that duration (and same scope) return `true` without showing a biometric prompt.
- *
- * ## Examples
- * ```kotlin
- * // Cache for 60 seconds (global scope — any call benefits)
- * BiometricAuthorizationDuration(60_000L)
- *
- * // Cache for 60 seconds (scoped to "settings" — only settings calls benefit)
- * BiometricAuthorizationDuration(60_000L, "settings")
- *
- * // Cache for 5 minutes (scoped to user — invalidates on user change)
- * BiometricAuthorizationDuration(300_000L, "user_$userId")
- *
- * // Cache for 60 seconds (screen instance scope — invalidates on navigation)
- * BiometricAuthorizationDuration(60_000L, "screen_${viewModel.hashCode()}")
- * ```
- *
- * @property duration Duration in milliseconds for which the authentication remains valid.
- *           Must be greater than 0.
- * @property scope Optional scope identifier for the authorization session. Different scopes
- *           maintain separate authorization timestamps. Use this to invalidate cached auth
- *           when context changes:
- *           - `null` (default): Global scope, shared across all calls
- *           - Screen ID: Auth valid only while on that screen
- *           - User ID: Auth invalidated on user change
- *           - Random UUID: Forces fresh auth every time (when scope changes)
+ * @property duration Validity window in milliseconds; must be greater than 0 to cache.
+ * @property scope Cache scope — different scopes keep separate timestamps; `null` (default)
+ *           is the global scope shared across all calls.
  */
 data class BiometricAuthorizationDuration(
     val duration: Long,

@@ -1,16 +1,8 @@
 package eu.anifantakis.lib.ksafe
 
 /**
- * Shared web (wasmJs + js) test implementation.
- *
- * Uses [FakeEncryption] (synchronous XOR) for testing since WebCrypto
- * requires a browser environment. The test engine is injected via the
- * internal constructor.
- *
- * Each test gets a unique KSafe instance with a unique file name to
- * avoid `localStorage` key collisions between tests. The counter is
- * per-target (each target has its own classloader / module), which is
- * fine because tests for different targets run in separate processes.
+ * Web (wasmJs + js) [KSafeTest] runner. Uses [FakeEncryption] (WebCrypto needs a
+ * browser) and a unique fileName per test to avoid `localStorage` collisions.
  */
 class WebKSafeTest : KSafeTest() {
 

@@ -6,12 +6,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
-/**
- * Shared key/metadata helpers used across platform implementations.
- *
- * Keep key-shape and metadata parsing logic centralized so platform files
- * only handle storage/encryption specifics.
- */
+/** Key-shape and metadata parsing helpers shared by the platform implementations. */
 @PublishedApi
 internal object KeySafeMetadataManager {
     @PublishedApi
@@ -21,7 +16,6 @@ internal object KeySafeMetadataManager {
     @PublishedApi
     internal const val LEGACY_PROTECTION_SUFFIX = "__"
 
-    // Reserved for the unified key scheme migration path.
     @PublishedApi
     internal const val VALUE_PREFIX = "__ksafe_value_"
     @PublishedApi
@@ -31,22 +25,10 @@ internal object KeySafeMetadataManager {
     @PublishedApi
     internal const val ACCESS_POLICY_UNLOCKED = "unlocked"
 
-    /**
-     * Envelope version stored in the metadata `v` field.
-     *
-     * - **v1** (legacy): the entry's ciphertext was encrypted with a per-entry
-     *   key whose alias is derived from the user key. Reads must use that
-     *   per-entry alias.
-     * - **v2**: the entry was written by the master-key path. For
-     *   [KSafeProtection.DEFAULT] entries, ciphertext was encrypted with the
-     *   datastore's master key (the locked or unlocked variant, chosen by the
-     *   `u` field). For [KSafeProtection.HARDWARE_ISOLATED] entries, the per-
-     *   entry alias is still used (the v2 marker is along for the ride —
-     *   HARDWARE_ISOLATED never goes through the master key).
-     *
-     * No on-disk migration: existing v1 entries stay v1 until they're
-     * overwritten through the v2 write path.
-     */
+    // Metadata `v` field: v1 (legacy) ciphertext uses a per-entry key alias derived
+    // from the user key; v2 DEFAULT entries use the datastore master key (locked or
+    // unlocked per the `u` field) while HARDWARE_ISOLATED keeps the per-entry alias.
+    // No on-disk migration: v1 entries stay v1 until overwritten via the v2 path.
     @PublishedApi
     internal const val ENVELOPE_VERSION_V1 = 1
     @PublishedApi
@@ -97,15 +79,9 @@ internal object KeySafeMetadataManager {
 
     @PublishedApi
     internal fun isInternalStorageKey(rawKey: String): Boolean {
-        // The double-underscore `__ksafe_` namespace is KSafe-reserved (value/meta/
-        // protection entries, the Android DEK, master sentinels) and is never a user
-        // key. The SINGLE-underscore `ksafe_` namespace, by contrast, has exactly one
-        // internal raw-storage-key family: the web engine's legacy localStorage key
-        // store `ksafe_key_<alias>` (surfaced by LocalStorageStorage.snapshot once the
-        // instance prefix is stripped). A blanket `ksafe_` match also swallowed any
-        // pre-2.0 FLAT plaintext user key that merely began with `ksafe_` (e.g.
-        // "ksafe_theme"), silently dropping it on upgrade (FEEDBACK_4 M-C). Match only
-        // the genuine internal prefixes so real user keys survive.
+        // `__ksafe_` is the KSafe-reserved namespace; `ksafe_key_` is the web engine's
+        // legacy localStorage key store. Match only these — a blanket `ksafe_` match
+        // would swallow user keys that merely start with "ksafe_".
         return rawKey.startsWith("__ksafe_") || rawKey.startsWith("ksafe_key_")
     }
 
@@ -116,11 +92,7 @@ internal object KeySafeMetadataManager {
         val encrypted: Boolean
     )
 
-    /**
-     * Collects per-key metadata from canonical and legacy metadata entries.
-     *
-     * Canonical entries (`__ksafe_meta_*__`) always win over legacy metadata.
-     */
+    /** Collects per-key metadata; canonical entries (`__ksafe_meta_*__`) win over legacy ones. */
     @PublishedApi
     internal fun collectMetadata(
         entries: Iterable<Pair<String, String?>>,
@@ -158,11 +130,7 @@ internal object KeySafeMetadataManager {
         return merged
     }
 
-    /**
-     * Classifies a persisted key/value entry and resolves where it should live in memory cache.
-     *
-     * Returns `null` for internal metadata keys that are not user values.
-     */
+    /** Classifies a persisted entry and resolves its cache key; `null` for internal non-value keys. */
     @PublishedApi
     internal fun classifyStorageEntry(
         rawKey: String,
@@ -191,10 +159,6 @@ internal object KeySafeMetadataManager {
         return ClassifiedStorageEntry(rawKey, rawKey, false)
     }
 
-    /**
-     * Converts a [KSafeProtection] to its literal string representation.
-     * Use this when writing to `protectionMap` to avoid JSON parsing on reads.
-     */
     @PublishedApi
     internal fun protectionToLiteral(protection: KSafeProtection?): String = when (protection) {
         null -> "NONE"
@@ -202,10 +166,7 @@ internal object KeySafeMetadataManager {
         KSafeProtection.HARDWARE_ISOLATED -> "HARDWARE_ISOLATED"
     }
 
-    /**
-     * Extracts the protection literal from raw metadata (JSON or legacy literal).
-     * Parses JSON once so the result can be stored in `protectionMap` as a literal.
-     */
+    /** Extracts the protection literal from raw metadata (JSON `p` field or legacy literal). */
     @PublishedApi
     internal fun extractProtectionLiteral(rawMetadata: String): String {
         when (rawMetadata) {
@@ -217,11 +178,7 @@ internal object KeySafeMetadataManager {
         } catch (_: Exception) { "NONE" }
     }
 
-    /**
-     * Parses protection from either:
-     * 1) legacy literal values ("NONE", "DEFAULT", "HARDWARE_ISOLATED"), or
-     * 2) metadata JSON payload containing field `p`.
-     */
+    /** Parses protection from a legacy literal or the metadata JSON `p` field. */
     @PublishedApi
     internal fun parseProtection(raw: String?): KSafeProtection? {
         if (raw == null) return null
@@ -244,11 +201,7 @@ internal object KeySafeMetadataManager {
         }
     }
 
-    /**
-     * Parses per-key access policy from metadata JSON field `u`.
-     *
-     * Legacy metadata (`__ksafe_prot_*__`) has no `u` and returns null.
-     */
+    /** Parses the access policy from the metadata JSON `u` field; legacy metadata has none. */
     @PublishedApi
     internal fun parseAccessPolicy(raw: String?): String? {
         if (raw == null) return null
@@ -259,13 +212,7 @@ internal object KeySafeMetadataManager {
         }
     }
 
-    /**
-     * Builds compact metadata JSON payload.
-     *
-     * @param envelopeVersion The envelope version to write. Defaults to
-     *   [ENVELOPE_VERSION_LATEST] (v2). Test or migration code may pass
-     *   [ENVELOPE_VERSION_V1] explicitly to fabricate legacy entries.
-     */
+    /** Builds the metadata JSON payload; tests may pass [ENVELOPE_VERSION_V1] to fabricate legacy entries. */
     @PublishedApi
     internal fun buildMetadataJson(
         protection: KSafeProtection?,
@@ -287,17 +234,7 @@ internal object KeySafeMetadataManager {
         return payload.toString()
     }
 
-    /**
-     * Reads the envelope version from raw metadata.
-     *
-     * Returns [ENVELOPE_VERSION_V1] for:
-     * - null input (no metadata persisted, e.g. legacy entries),
-     * - the legacy literal forms ("DEFAULT" / "HARDWARE_ISOLATED" / "NONE"),
-     * - any JSON without a `v` field, or
-     * - parse failure.
-     *
-     * Otherwise returns the integer in `v`.
-     */
+    /** Envelope version from raw metadata; anything legacy or unparseable is [ENVELOPE_VERSION_V1]. */
     @PublishedApi
     internal fun parseEnvelopeVersion(raw: String?): Int {
         if (raw == null) return ENVELOPE_VERSION_V1
@@ -313,11 +250,6 @@ internal object KeySafeMetadataManager {
         }
     }
 
-    /**
-     * True if the entry's metadata records an "unlocked" access policy
-     * (the `u` field is `"unlocked"`). False otherwise — including for legacy
-     * metadata that has no `u` field, or any parse failure.
-     */
     @PublishedApi
     internal fun parseRequireUnlockedDevice(raw: String?): Boolean {
         return parseAccessPolicy(raw) == ACCESS_POLICY_UNLOCKED
@@ -329,9 +261,6 @@ internal object KeySafeMetadataManager {
     }
 }
 
-/**
- * Local shared JSON codec for helper parsing/encoding.
- */
 internal object KSafeJson {
     val codec = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 }

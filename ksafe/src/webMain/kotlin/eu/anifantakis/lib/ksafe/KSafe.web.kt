@@ -21,34 +21,17 @@ internal fun decodeBase64Web(encoded: String): ByteArray = Base64.decode(encoded
 
 private val fileNameRegex = Regex("[a-z][a-z0-9_]*")
 
-/**
- * Sentinel for the per-datastore master key created by the v2 envelope. Web
- * has no "device locked" concept so the locked-vs-unlocked split collapses to
- * a single alias.
- */
+/** Per-datastore master-key alias; web has no device-lock, so locked/unlocked collapse to one. */
 private const val MASTER_KEY_DEFAULT: String = "__ksafe_master__"
 
 /**
- * Web (wasmJs + js) factory for [KSafe]. Resolves to the same call syntax as
- * the pre-2.0 `KSafe(...)` constructor.
+ * Web (wasmJs + js) factory for [KSafe].
  *
- * Web is the only target where:
- * - **Encryption is async-only.** WebCrypto has no blocking path, so
- *   [WebSoftwareEncryption] overrides the suspend variants on
- *   [KSafeEncryption] and throws from the blocking ones. The core calls
- *   suspend crypto from every coroutine-context code path.
- * - **Memory policy is effectively PLAIN_TEXT.** There's no way to decrypt
- *   on-demand in the non-suspend [getDirect] path, so encrypted values are
- *   fully decrypted during the background preload and the cache holds
- *   plaintext. The `memoryPolicy` parameter is accepted for API parity but
- *   ignored.
- * - **Cold-start sync reads don't block.** Browsers can't block the main
- *   thread, so a `getDirect` that races the async preload returns
- *   `defaultValue` until the cache finishes warming. Callers that need
- *   certainty should `awaitCacheReady()` first.
- * - **localStorage is string-only.** [LocalStorageStorage] flattens every
- *   stored value to a string on write, and [KSafeCore]'s `convertStoredValue`
- *   reconstitutes the typed primitive through the request's serializer on read.
+ * WebCrypto is async-only, so the memory policy is effectively PLAIN_TEXT (the `memoryPolicy`
+ * argument is accepted for parity but ignored): encrypted values are decrypted during the
+ * background preload and cached as plaintext, since the non-suspend [getDirect] path can't
+ * decrypt on demand. A `getDirect` that races the preload returns `defaultValue` until it
+ * completes; call [awaitCacheReady] first for a deterministic first read.
  */
 @Suppress("UNUSED_PARAMETER")
 fun KSafe(
@@ -99,65 +82,52 @@ private fun buildWebKSafe(
     }
     validateSecurityPolicy(securityPolicy)
 
-    // Data-entry namespace. The scheme is prefix-free: `.` and `:` cannot
-    // appear in a fileName ([a-z][a-z0-9_]*), so no store's prefix can
-    // string-prefix another's — otherwise startsWith()-scoped reads and
-    // clearAll() of `KSafe("user")` would reach into `KSafe("user_cache")`.
-    // Existing data under the old `ksafe_<name>_` prefix is carried forward
-    // by the one-time migration below.
+    // Prefix-free data namespace: `.` and `:` can't appear in a fileName ([a-z][a-z0-9_]*), so no
+    // store's prefix can string-prefix another's — else startsWith()-scoped reads and clearAll() of
+    // KSafe("user") would reach into KSafe("user_cache"). Old `ksafe_<name>_` data migrates below.
     val legacyStoragePrefix: String = if (fileName != null) "ksafe_${fileName}_" else "ksafe_default_"
 
-    // appNamespace isolates the DATA namespace too, not just the engine's IndexedDB key
-    // record (round-3 audit R4 / findings 6,13). Without this, two same-origin setups with
-    // the same fileName but different appNamespace collide on the same localStorage slots
-    // and overwrite each other with mutually-undecryptable ciphertext. The namespace
-    // segment uses `@` as the delimiter — outside both the fileName alphabet ([a-z][a-z0-9_]*)
-    // and the sanitized appNamespace charset ([A-Za-z0-9._-]) — so the scheme stays
-    // prefix-free and injective (appNs has no `@`, so the first `@` is the unambiguous split).
+    // appNamespace isolates the data namespace too, not just the engine's IndexedDB key record:
+    // without it, two same-origin setups with the same fileName but different appNamespace collide
+    // on the same localStorage slots and overwrite each other with undecryptable ciphertext. `@`
+    // delimits the segment — outside both the fileName alphabet and the sanitized appNamespace
+    // charset ([A-Za-z0-9._-]) — so the scheme stays prefix-free and injective.
     val appNs: String? = config.appNamespace?.trim()?.takeIf { it.isNotEmpty() }
         ?.replace(Regex("[^A-Za-z0-9._-]"), "_")?.take(120)?.takeIf { it.isNotEmpty() }
     val nsSegment: String = if (appNs != null) "$appNs@" else ""
     val storagePrefix: String = if (fileName != null) "ksafe.$nsSegment${fileName}:" else "ksafe.$nsSegment:"
 
-    // The legacy prefix `ksafe_default_` is ALSO shared by two distinct valid constructions:
-    // KSafe() (unnamed) and KSafe(fileName = "default") both mapped to it pre-2.1.4. Their new
-    // prefixes are distinct (`ksafe.:` vs `ksafe.default:`) but the legacy MIGRATION source is
-    // the same ambiguous data, so neither may delete it or the shipped data vanishes for the
-    // other (FEEDBACK_4 H9).
+    // `ksafe_default_` is shared by two valid constructions: KSafe() (unnamed) and
+    // KSafe(fileName = "default") both map to it. Their new prefixes differ (`ksafe.:` vs
+    // `ksafe.default:`) but the migration source is the same data, so neither may delete it or the
+    // other loses its data.
     val legacyPrefixShared: Boolean = fileName == null || fileName == "default"
 
-    // Carry existing data forward: the old flat `ksafe_<name>_` layout first. Like the
-    // un-namespaced `ksafe.<name>:` prefix below, it has NO appNamespace segment — one
-    // SHARED source for every namespace of a fileName. Reclaim it (delete) only for a UNIQUE
-    // legacy prefix with no appNamespace (a single canonical store); with namespaces active,
-    // OR when the prefix is the shared `ksafe_default_` (H9), copy-if-absent and leave the
-    // source so every valid construction migrates from it, instead of the first-constructed one
-    // destroying it for the others (FEEDBACK_4 H1/H9, twin of the FB3-M2 fix below).
+    // Carry the old flat `ksafe_<name>_` layout forward. It has no appNamespace segment — one
+    // shared source for every namespace of a fileName — so delete it only for a unique legacy
+    // prefix with no appNamespace. With namespaces active, or for the shared `ksafe_default_`,
+    // copy-if-absent and leave the source so every valid construction migrates from it instead of
+    // the first-constructed one destroying it for the others.
     migrateLegacyLocalStoragePrefix(
         legacyStoragePrefix,
         storagePrefix,
         deleteSource = nsSegment.isEmpty() && !legacyPrefixShared,
     )
-    // …and, when an appNamespace is set, also the un-namespaced `ksafe.<name>:` prefix that
-    // shipped 2.1.x wrote to before appNamespace isolated the data store. Only runs when the
-    // namespaced prefix actually differs (appNs set), so the default path is unchanged.
+    // When an appNamespace is set, also carry forward the un-namespaced `ksafe.<name>:` prefix
+    // written before appNamespace isolated the data store.
     if (nsSegment.isNotEmpty()) {
         val unNamespaced = if (fileName != null) "ksafe.${fileName}:" else "ksafe.:"
-        // NON-destructive (deleteSource = false): the un-namespaced prefix is ALSO the
-        // live prefix of a co-existing no-namespace store on the same fileName, and this
-        // migration runs on EVERY construction (no done-marker). Deleting the source
-        // would cannibalize that sibling's fresh writes each launch (FEEDBACK_4 FB3-M2).
-        // Copy-if-absent leaves the sibling intact; the namespaced store scopes its own
-        // reads/clear strictly to its prefix, so the orphaned copy never bleeds across.
+        // Non-destructive: the un-namespaced prefix is also the live prefix of a co-existing
+        // no-namespace store on the same fileName, and this runs on every construction (no
+        // done-marker), so deleting the source would cannibalize that sibling's writes. The
+        // namespaced store scopes its reads/clear to its own prefix, so the copy never bleeds.
         migrateLegacyLocalStoragePrefix(unNamespaced, storagePrefix, deleteSource = false)
     }
 
-    // The ENGINE keeps the legacy prefix on purpose: it namespaces the key
-    // records — including the IndexedDB record NAMES that hold the
-    // non-extractable WebCrypto keys. Changing it would orphan every existing
-    // key and make all shipped ciphertext undecryptable. Key records are
-    // addressed by exact name (no startsWith scans across sibling stores), so
-    // the prefix-free property is not needed there.
+    // The engine deliberately keeps the legacy prefix: it namespaces the IndexedDB record names
+    // holding the non-extractable keys, so changing it would orphan every key and make existing
+    // ciphertext undecryptable. Key records are addressed by exact name (no startsWith scans), so
+    // the prefix-free property isn't needed here.
     val engine: KSafeEncryption =
         testEngine ?: WebSoftwareEncryption(config, legacyStoragePrefix)
 
@@ -165,16 +135,13 @@ private fun buildWebKSafe(
         storage = LocalStorageStorage(storagePrefix),
         engineProvider = { engine },
         config = config,
-        // Forced PLAIN_TEXT — WebCrypto can't decrypt from the sync getDirect
-        // path, so everything lives in the cache as plaintext after the
-        // background preload completes. Any user-supplied value is ignored.
+        // Forced PLAIN_TEXT: WebCrypto can't decrypt from the sync getDirect path, so the cache
+        // holds plaintext after preload. A user-supplied value is ignored.
         memoryPolicy = KSafeMemoryPolicy.PLAIN_TEXT,
         plaintextCacheTtl = plaintextCacheTtl,
-        // Strip requireUnlockedDevice on web (FEEDBACK_4 H-E): a browser has no
-        // device-lock to bind it to, and the strict read path routes to the engine's
-        // BLOCKING decrypt, which the async-only WebCrypto engine cannot serve —
-        // making strict values write-only. Clearing the flag keeps such values
-        // readable (they were never hardware-lock-enforceable on web anyway).
+        // Strip requireUnlockedDevice on web: a browser has no device-lock, and the strict read
+        // path routes to the engine's blocking decrypt, which the async-only WebCrypto engine
+        // can't serve — making strict values write-only. Clearing the flag keeps them readable.
         modeTransformer = { mode ->
             if (mode is KSafeWriteMode.Encrypted && mode.requireUnlockedDevice) {
                 mode.copy(requireUnlockedDevice = false)
@@ -184,9 +151,7 @@ private fun buildWebKSafe(
         },
         resolveKeyStorage = { _, _ -> KSafeKeyStorage.SOFTWARE },
         resolveKeyLevel = { _, protection ->
-            // Plain values: no key, no protection. Encrypted: the non-extractable
-            // WebCrypto CryptoKey in IndexedDB is bound to the browser origin —
-            // SANDBOX_PROTECTED on the universal scale.
+            // Encrypted values use a non-extractable CryptoKey bound to the origin: SANDBOX_PROTECTED.
             if (protection == null) KSafeProtectionLevel.SOFTWARE
             else KSafeProtectionLevel.SANDBOX_PROTECTED
         },
@@ -211,12 +176,8 @@ private fun buildWebKSafe(
 }
 
 /**
- * Suspends until the in-memory cache has been fully loaded from localStorage
- * — including async decryption of every encrypted value via WebCrypto.
- *
- * Web tests and apps that want a deterministic first read should call this
- * before `getDirect` / `mutableStateOf` / Compose delegates. Defined as an
- * extension because `awaitCacheReady` is web-only — JVM/Android/iOS
- * preload synchronously and don't need it.
+ * Suspends until the in-memory cache is fully loaded from localStorage, including async WebCrypto
+ * decryption of every encrypted value. Call before `getDirect` / `mutableStateOf` / Compose
+ * delegates for a deterministic first read; web-only (other targets preload synchronously).
  */
 suspend fun KSafe.awaitCacheReady() = core.ensureCacheReadySuspend()

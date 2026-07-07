@@ -8,12 +8,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * FEEDBACK_4 M6: the suspend `get()` path rethrows a transient decrypt failure (locked device /
- * busy vault) — the intentional M-B/M-H asymmetry with `getDirect`. `getOrCreateSecret` relies on
- * `get<String>(key, "")` collapsing an unreadable secret to `""` so it can route to its documented
- * refuse-to-rotate error; the rethrow made it surface a RAW keystore exception instead (and risked
- * regenerating over a still-present secret). It must now catch the transient failure and raise the
- * well-formed refuse-to-rotate `IllegalStateException`, never a raw one, and never regenerate.
+ * Locks in: when a transient decrypt failure prevents reading back an existing secret, getOrCreateSecret raises the well-formed refuse-to-rotate IllegalStateException (never a raw keystore exception) and never regenerates, so the original secret survives.
  */
 class JvmGetOrCreateSecretTransientTest {
 
@@ -42,7 +37,6 @@ class JvmGetOrCreateSecretTransientTest {
         val engine = ToggleTransientEngine()
         val ksafe = newKsafe(engine)
 
-        // First call generates + stores the secret.
         val secret1 = ksafe.getOrCreateSecret(key = "db")
         assertTrue(secret1.isNotEmpty())
 
@@ -51,7 +45,6 @@ class JvmGetOrCreateSecretTransientTest {
         val ex = assertFailsWith<IllegalStateException> {
             runBlocking { ksafe.getOrCreateSecret(key = "db") }
         }
-        // It must be the well-formed refuse-to-rotate error, NOT the raw keystore exception.
         assertTrue(
             ex.message?.contains("could not be read back", ignoreCase = true) == true,
             "must surface the documented refuse-to-rotate error, was: ${ex.message}",

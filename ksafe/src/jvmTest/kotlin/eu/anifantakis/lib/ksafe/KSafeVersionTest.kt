@@ -7,17 +7,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * Pins the single-source-of-truth contract for the artifact version.
- *
- * `gradle.properties` → `ksafe.version` feeds both the Maven coordinates
- * (via `version = providers.gradleProperty(...)` in each module) and the
- * generated `KSAFE_VERSION` constant (via the `generateKSafeBuildConfig`
- * task), which is in turn surfaced as [KSafe.VERSION] and
- * [KSafeProtectionInfo.kSafeVersion].
- *
- * If any branch of that wiring drifts (someone hardcodes a version in
- * `build.gradle.kts`, the codegen task gets removed, a platform factory
- * forgets to forward the default, …), these tests fail.
+ * Locks in: a single source of truth for the artifact version — `gradle.properties` `ksafe.version` feeds the Maven coordinates and the generated KSAFE_VERSION constant, so it must equal [KSafe.VERSION] and [KSafeProtectionInfo.kSafeVersion], and be SemVer-shaped.
  */
 class KSafeVersionTest {
 
@@ -36,8 +26,7 @@ class KSafeVersionTest {
 
     @Test
     fun protectionInfoCarriesTheVersion() {
-        // Cheap construction — no opt-in to OS keychain (jvmTest forces
-        // software fallback via systemProperty `ksafe.jvm.keyVault=software`).
+        // jvmTest forces software fallback via systemProperty ksafe.jvm.keyVault=software (no OS keychain opt-in).
         val ksafe = KSafe(fileName = "version_smoke_${System.nanoTime()}")
         try {
             assertEquals(
@@ -52,8 +41,7 @@ class KSafeVersionTest {
 
     @Test
     fun versionLooksLikeSemver() {
-        // Smoke check — catches an empty string or trailing whitespace leaking
-        // out of the generator template, without locking us to a fixed value.
+        // Catches an empty/whitespace version leaking out of the generator template, without pinning a value.
         assertTrue(
             KSafe.VERSION.matches(Regex("""\d+\.\d+\.\d+(?:-[A-Za-z0-9.+-]+)?""")),
             "KSafe.VERSION should be SemVer-shaped, was \"${KSafe.VERSION}\"",
@@ -61,10 +49,9 @@ class KSafeVersionTest {
     }
 
     private fun readGradleProperty(key: String): String? {
-        // Test JVM is forked per class with `user.home` overridden to a build
-        // dir, but `user.dir` still points at the project root.
+        // Test JVM is forked per class with `user.home` overridden to a build dir, but `user.dir` still
+        // points at the project root; walk up to find gradle.properties (handles `:ksafe` vs root invocation).
         val projectRoot = java.io.File(System.getProperty("user.dir"))
-        // Walk up to find gradle.properties (handles `:ksafe` vs root invocation).
         var dir: java.io.File? = projectRoot
         while (dir != null) {
             val candidate = java.io.File(dir, "gradle.properties")

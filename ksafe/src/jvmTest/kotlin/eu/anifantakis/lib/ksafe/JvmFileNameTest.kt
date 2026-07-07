@@ -8,35 +8,16 @@ import kotlin.test.*
 import kotlinx.serialization.Serializable
 import java.nio.file.Files
 
-/**
- * Exhaustive tests for custom file names (letters-only).
- * Each test uses a unique file name to avoid DataStore instance conflicts.
- *
- * Tests cover:
- * - Filename validation (letters-only requirement)
- * - Isolation between different file names
- * - Encryption behavior
- * - Flow emissions
- * - Property delegates
- * - Type support (primitives, serializable)
- * - Delete operations
- * - Composition patterns
- */
+/** Locks in: custom file-name behavior — validation, per-file isolation, encryption/auto-detection, flows, delegates, type support, and deletes. */
 @OptIn(ExperimentalCoroutinesApi::class)
 class JvmFileNameTest {
 
     companion object {
-        // Atomic counter to ensure unique file names across all tests in a single run
         private val testCounter = java.util.concurrent.atomic.AtomicInteger(0)
 
-        // Timestamp prefix ensures uniqueness across test runs
-        // Convert to base-26 letters since KSafe only allows [a-z]+
+        // Timestamp prefix (base-26 letters, since KSafe only allows [a-z]+) makes names unique across runs.
         private val runId: String = numberToLetters(System.currentTimeMillis())
 
-        /**
-         * Generates a unique file name using only lowercase letters.
-         * KSafe requires file names to match regex [a-z]+
-         */
         private fun generateUniqueFileName(): String {
             val count = testCounter.incrementAndGet()
             return "fnrun${runId}test${numberToLetters(count.toLong())}"
@@ -56,18 +37,14 @@ class JvmFileNameTest {
 
     private fun newStore(): KSafe = KSafe(generateUniqueFileName())
 
-    // ---------- Filename validation ----------
-
-    /** Verifies filename validation accepts lowercase letters, digits, and underscores */
     @Test
     fun filename_accepts_valid_names() {
-        // These should not throw
+        // These should not throw.
         KSafe("abc123")
         KSafe("with_underscore")
         KSafe("data_v2")
     }
 
-    /** Verifies that supplying a custom `baseDir` redirects storage to that directory. */
     @Test
     fun baseDir_storesFileInProvidedDirectory() = runTest {
         val tmpDir = Files.createTempDirectory("tmpKsafeTest").toFile()
@@ -76,19 +53,16 @@ class JvmFileNameTest {
             val safe = KSafe(fileName = name, baseDir = tmpDir)
             safe.put("hello", "world")
 
-            // File created in the custom dir, with the expected datastore name.
             val expected = java.io.File(tmpDir, "eu_anifantakis_ksafe_datastore_$name.preferences_pb")
             assertTrue(expected.exists(), "Expected $expected to exist")
             assertEquals(1, tmpDir.list()?.size ?: 0)
 
-            // Roundtrip the value through the same instance.
             assertEquals("world", safe.get("hello", "fallback"))
         } finally {
             tmpDir.deleteRecursively()
         }
     }
 
-    /** Verifies that `clearAll()` removes the file from a custom `baseDir`. */
     @Test
     fun baseDir_clearAll_removesFileFromProvidedDirectory() = runTest {
         val tmpDir = Files.createTempDirectory("tmpKsafeClearTest").toFile()
@@ -106,7 +80,6 @@ class JvmFileNameTest {
         }
     }
 
-    /** Verifies filename validation rejects invalid characters */
     @Test
     fun filename_rejects_invalid() {
         assertFailsWith<IllegalArgumentException> { KSafe("UPPER") }
@@ -118,9 +91,6 @@ class JvmFileNameTest {
         assertFailsWith<IllegalArgumentException> { KSafe("has space") }
     }
 
-    // ---------- Isolation between file names ----------
-
-    /** Verifies same keys in different files are isolated */
     @Test
     fun isolation_sameKeys_doNotLeakAcrossDifferentFiles() = runTest {
         val s1 = newStore()
@@ -132,9 +102,6 @@ class JvmFileNameTest {
         assertEquals("v2", s2.get(key, "x"))
     }
 
-    // ---------- Encryption behavior ----------
-
-    /** Verifies auto-detection finds encrypted data */
     @Test
     fun encryption_autoDetectionFindsEncryptedData() = runTest {
         val s = newStore()
@@ -143,7 +110,6 @@ class JvmFileNameTest {
         assertEquals("secret", s.get(k, "x")) // auto-detected
     }
 
-    /** Verifies unencrypted data round-trip works correctly */
     @Test
     fun unencrypted_roundTrip() = runTest {
         val s = newStore()
@@ -152,9 +118,6 @@ class JvmFileNameTest {
         assertEquals("p", s.get(k, "x"))
     }
 
-    // ---------- Flows ----------
-
-    /** Verifies unencrypted Flow emits value changes */
     @Test
     fun flow_unencrypted_emitsChanges() = runTest {
         val s = newStore()
@@ -169,7 +132,6 @@ class JvmFileNameTest {
         }
     }
 
-    /** Verifies encrypted Flow emits value changes */
     @Test
     fun flow_encrypted_emitsChanges() = runTest {
         val s = newStore()
@@ -184,9 +146,6 @@ class JvmFileNameTest {
         }
     }
 
-    // ---------- Delegates ----------
-
-    /** Verifies delegate uses property name as key and encrypts by default */
     @Test
     fun delegate_defaultEncrypted_and_propertyNameKey() = runTest {
         val s = newStore()
@@ -197,7 +156,6 @@ class JvmFileNameTest {
         assertEquals("z", s.get("secret", "x")) // auto-detected
     }
 
-    /** Verifies delegate with explicit key and unencrypted mode */
     @Test
     fun delegate_explicitKey_unencrypted() = runTest {
     val s = newStore()
@@ -208,9 +166,6 @@ class JvmFileNameTest {
         assertEquals(3, s.get("count", -1)) // auto-detected
     }
 
-    // ---------- Types ----------
-
-    /** Verifies all primitive types work with unencrypted storage */
     @Test
     fun primitives_unencrypted_roundTrip() = runTest {
         val s = newStore()
@@ -225,7 +180,6 @@ class JvmFileNameTest {
     @Serializable
     data class Person(val id: Long, val name: String)
 
-    /** Verifies @Serializable objects work with encrypted storage */
     @Test
     fun serializable_encrypted_roundTrip() = runTest {
         val s = newStore()
@@ -235,9 +189,6 @@ class JvmFileNameTest {
         assertEquals(p, s.get(k, Person(0, ""))) // auto-detected
     }
 
-    // ---------- Delete ----------
-
-    /** Verifies delete works for both plain and encrypted values */
     @Test
     fun delete_plain_and_encrypted() = runTest {
         val s = newStore()
@@ -248,15 +199,12 @@ class JvmFileNameTest {
         assertEquals("x", s.get(ke, "x"))
     }
 
-    // ---------- Composition ----------
-
     class Prefs(private val s: KSafe) {
         var theme: String by s(defaultValue = "light", key = "theme", mode = KSafeWriteMode.Plain)
         var auth: String by s(defaultValue = "", key = "auth") // encrypted
         var level: Int by s(defaultValue = 0, key = "level", mode = KSafeWriteMode.Plain)
     }
 
-    /** Verifies multiple KSafe instances with different files are isolated */
     @Test
     fun composition_multipleInstances_isolatePerFile() = runTest {
         val a = Prefs(newStore())
@@ -269,7 +217,6 @@ class JvmFileNameTest {
         assertEquals(1, a.level); assertEquals(2, b.level)
     }
 
-    /** Verifies delegate changes are visible via direct API */
     @Test
     fun composition_updates_visibleViaDirectAPI() = runTest {
         val s = newStore(); val p = Prefs(s)
