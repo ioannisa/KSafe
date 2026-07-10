@@ -1,22 +1,20 @@
 ---
 name: ksafe
 description: |
-  KSafe — Kotlin Multiplatform encrypted persistence library. Use this skill whenever
-  working with persisted preferences, tokens, secrets, encrypted DataStore, or secure
-  storage in a Kotlin Multiplatform project (Android, iOS, native macOS, JVM Desktop,
-  WasmJS, or Kotlin/JS browsers). Also use for biometric-gated state via the
-  :ksafe-biometrics companion module, Compose state that persists across recompositions
-  or process death via :ksafe-compose, packaging Compose Desktop release distributables
-  that contain KSafe, or migrating to KSafe from EncryptedSharedPreferences /
-  DataStore Preferences / KVault / Multiplatform Settings / MMKV.
-  Trigger phrases: "KSafe", "ksafe", "by ksafe(", "ksafe.put", "ksafe.get",
+  KSafe — Kotlin Multiplatform encrypted persistence library. Use whenever working
+  with persisted preferences, tokens, secrets, encrypted DataStore, or secure storage
+  in a KMP project (Android, iOS, native macOS, JVM Desktop, JS/WasmJS browsers).
+  Also for biometric-gated actions (:ksafe-biometrics), persisted Compose state
+  (:ksafe-compose), packaging Compose Desktop release distributables containing
+  KSafe, or migrating from EncryptedSharedPreferences / DataStore Preferences /
+  KVault / Multiplatform Settings / MMKV. Trigger phrases: "KSafe", "by ksafe(",
   "persist a token", "encrypted preferences", "encrypted DataStore", "secure
-  preferences on KMP", "Android Keystore", "Apple Keychain", "Secure Enclave",
-  "StrongBox", "DPAPI", "libsecret", "Secret Service", "biometric prompt for
-  storage", "BiometricPrompt", "Face ID for storage", "Touch ID for storage",
-  "mutableStateOf" with "persist", "KSafe.protectionInfo", "KSafeProtection",
-  "KSafeWriteMode", "ksafe-biometrics", "ksafe-compose", "jdk.unsupported"
-  in the context of Compose Desktop.
+  preferences on KMP", "Android Keystore", "Apple Keychain", "Keychain error
+  -34018", "Secure Enclave", "StrongBox", "DPAPI", "libsecret", "Secret Service",
+  "biometric prompt for storage", "BiometricPrompt", "Face ID / Touch ID for
+  storage", "mutableStateOf" with "persist", "KSafe.protectionInfo",
+  "KSafeWriteMode", "ksafe-biometrics", "ksafe-compose", "jdk.unsupported" with
+  Compose Desktop.
 ---
 
 # KSafe — Kotlin Multiplatform Encrypted Persistence
@@ -656,6 +654,9 @@ it. Can also be set without code: `-Dksafe.appNamespace=…` or env `KSAFE_APP_N
    - `jvm_user_opted_out` → `-Dksafe.jvm.keyVault=software` is set.
    - `android_strongbox_absent` → only matters for `HARDWARE_ISOLATED`.
    - `apple_secure_enclave_absent` → simulator or pre-T2 Intel Mac.
+   - `apple_keychain_entitlement_missing` → iOS Simulator app with no Keychain
+     entitlement (2.1.4+; keys transparently fall back to a sandbox file store so
+     encrypted writes keep working — never emitted on a real device).
 2. On JVM, check stderr for `KSafe SECURITY WARNING` (printed once on vault degrade).
 3. `ksafe.getKeyInfo(key)` — `null` means the key was never written.
 4. Android: confirm `applicationContext` (not Activity).
@@ -673,6 +674,13 @@ it. Can also be set without code: `-Dksafe.appNamespace=…` or env `KSAFE_APP_N
    file was unreadable (truncated/garbled); since 2.1.2 KSafe quarantines the corrupt
    bytes there and continues from an empty store instead of crashing forever. The original
    bytes are preserved for manual recovery.
+10. iOS Simulator: `Keychain error -34018` (`errSecMissingEntitlement`) on encrypted
+    writes → the app has no Keychain entitlement (no signing team / no Keychain Sharing
+    capability). Through 2.1.3 every encrypted write fails (suspend `put` throws;
+    `putDirect` logs `KSafe SEVERE` and silently drops the write); from 2.1.4 KSafe
+    auto-falls back to a sandbox file key store and just works. Either way the proper
+    Xcode fix — select a Team and/or add the Keychain Sharing capability — restores real
+    Keychain behavior. Real devices are unaffected (and never use the fallback).
 
 ---
 
