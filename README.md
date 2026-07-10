@@ -11,20 +11,42 @@
 
 ## 🤖 KSafe Skill for AI agents
 
-KSafe ships [**KSAFE_SKILL.md**](KSAFE_SKILL.md) — an [agentskills.io](https://agentskills.io)-compatible skill that teaches any AI agent (Claude Code, Codex, Gemini CLI, Copilot CLI, Junie) KSafe's patterns, anti-patterns, and gotchas. Restart your agent session after installing — skills load at session start.
+KSafe ships an [agentskills.io](https://agentskills.io)-compatible skill — [**skills/ksafe/SKILL.md**](skills/ksafe/SKILL.md) — that teaches any AI agent (Claude Code, Codex, Gemini CLI, Copilot CLI, Junie) KSafe's patterns, anti-patterns, and gotchas. Restart your agent session after installing — skills load at session start.
 
 <details>
-<summary><b>Install</b> — copy the skill into every supported agent's skills directory</summary>
+<summary><b>Claude Code (recommended)</b> — plugin install with updates</summary>
+
+```
+/plugin marketplace add ioannisa/KSafe
+/plugin install ksafe@ksafe
+```
+
+Claude Code checks the marketplace for updates at session start; `/plugin update` pulls
+the latest immediately. Skill updates ship with the repo — no re-download loop.
+</details>
+
+<details>
+<summary><b>Other agents</b> — via the skills.sh CLI or a plain copy</summary>
+
+With the cross-agent [skills CLI](https://skills.sh) (Codex, Gemini CLI, Cursor, Copilot, and 30+ agents):
 
 ```bash
-for agent in claude codex gemini copilot junie; do
+npx skills add ioannisa/KSafe
+```
+
+Re-run the same command to update. Or copy the file directly:
+
+```bash
+for agent in codex gemini copilot junie; do
   mkdir -p "$HOME/.$agent/skills/ksafe" && \
-    curl -fsSL https://raw.githubusercontent.com/ioannisa/KSafe/main/KSAFE_SKILL.md \
+    curl -fsSL https://raw.githubusercontent.com/ioannisa/KSafe/main/skills/ksafe/SKILL.md \
     > "$HOME/.$agent/skills/ksafe/SKILL.md"
 done
 ```
 
-Edit the loop to skip agents you don't use. If you've already cloned this repo, `cp KSAFE_SKILL.md "$HOME/.<agent>/skills/ksafe/SKILL.md"` works too (faster, offline).
+Edit the loop to skip agents you don't use (add `claude` if you prefer a plain skill over
+the plugin). The curl path has no update channel — re-run it to refresh. If you've already
+cloned this repo, `cp -r skills/ksafe "$HOME/.<agent>/skills/"` works too (faster, offline).
 </details>
 
 ## What is KSafe?
@@ -57,7 +79,7 @@ KSafe in action across many scenarios: **[KSafeDemo — Compose Multiplatform ap
 
 ## Table of Contents
 
-- [🤖 KSafe Skill for AI agents](#ksafe-skill-for-ai-agents) — [KSAFE_SKILL.md](KSAFE_SKILL.md)
+- [🤖 KSafe Skill for AI agents](#ksafe-skill-for-ai-agents) — [skills/ksafe/SKILL.md](skills/ksafe/SKILL.md)
 - [What is KSafe?](#what-is-ksafe)
 - [Setup](#setup)
 - [Basic Usage](#basic-usage) — full reference in [docs/USAGE.md](docs/USAGE.md)
@@ -417,7 +439,7 @@ Internals, advanced features, reference material:
 
 | Topic | Description |
 |-------|-------------|
-| [KSafe Skill for AI agents](KSAFE_SKILL.md) | Self-contained skill file teaching any agentskills.io-compatible agent (Claude Code, Codex, Gemini CLI, Copilot CLI, Junie, …) the patterns, anti-patterns, and gotchas for KSafe. Install instructions at the top of this README. |
+| [KSafe Skill for AI agents](skills/ksafe/SKILL.md) | Self-contained skill teaching any agentskills.io-compatible agent (Claude Code, Codex, Gemini CLI, Copilot CLI, Junie, …) the patterns, anti-patterns, and gotchas for KSafe. Install instructions at the top of this README. |
 | [Complete Usage Guide](docs/USAGE.md) | Every API shape: delegates, flow delegates, Compose state, suspend/direct APIs, write modes, nullables, full ViewModel |
 | [Setup with Koin](docs/SETUP.md) | Multi-instance setups (prefs vs vault), web `awaitCacheReady()` (wasmJs + js), full platform examples, custom storage directory (`baseDir` / `directory`) |
 | [Custom JSON Serialization](docs/SERIALIZATION.md) | Registering `KSerializer`s for `UUID`, `Instant`, and other third-party types |

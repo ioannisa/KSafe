@@ -1,0 +1,7 @@
+{
+  "name": "ksafe",
+  "description": "Agent skill for the KSafe Kotlin Multiplatform encrypted persistence library — setup, usage patterns, anti-patterns, and debugging.",
+  "author": {
+    "name": "Ioannis Anifantakis"
+  }
+}

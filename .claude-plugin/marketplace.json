@@ -1,0 +1,14 @@
+{
+  "name": "ksafe",
+  "description": "Agent skills for the KSafe Kotlin Multiplatform encrypted persistence library",
+  "owner": {
+    "name": "Ioannis Anifantakis"
+  },
+  "plugins": [
+    {
+      "name": "ksafe",
+      "source": "./",
+      "description": "KSafe \u2014 Kotlin Multiplatform encrypted persistence: patterns, anti-patterns, and gotchas for AI agents"
+    }
+  ]
+}
