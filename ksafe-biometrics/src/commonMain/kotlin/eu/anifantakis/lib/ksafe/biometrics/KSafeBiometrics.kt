@@ -2,7 +2,7 @@ package eu.anifantakis.lib.ksafe.biometrics
 
 /**
  * Process-wide static API for biometric authentication — no instance, no DI, zero-config init.
- * Real prompts on Android, iOS, macOS, and (since 2.1.4) JVM Desktop: JVM-on-macOS shows
+ * Real prompts on Android, iOS, macOS, and (since 2.2.0) JVM Desktop: JVM-on-macOS shows
  * Touch ID / password via `LocalAuthentication`, JVM-on-Windows shows Windows Hello via
  * `UserConsentVerifier`. JS/WasmJS — and JVM hosts with no prompt API (Linux) — return `true`.
  *

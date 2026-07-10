@@ -2,13 +2,13 @@
 
 All notable changes to KSafe will be documented in this file.
 
-## [2.1.4] - 2026-07-02
+## [2.2.0] - 2026-07-02
 
-Security and data-integrity hardening release. It completes the 2.1.3 `requireUnlockedDevice` fix (2.1.3 covered only the direct-read path) and closes a set of multi-instance, multi-tab, and biometric edge cases. **Drop-in upgrade from 2.1.3** — on-disk format is unchanged and existing data keeps working without migration.
+Security-hardening **and feature** release: real biometric prompts on JVM Desktop, and the iOS Simulator now works without Keychain entitlements. It completes the 2.1.3 `requireUnlockedDevice` fix (2.1.3 covered only the direct-read path) and closes a set of multi-instance, multi-tab, and biometric edge cases. **Drop-in upgrade from 2.1.3** — on-disk format is unchanged and existing data keeps working without migration.
 
 ### Highlights
 
-- **`requireUnlockedDevice = true` is now enforced on every read path, not just `getDirect`.** Flow / StateFlow / Compose-observe reads and the eager `PLAIN_TEXT` memory policy could still serve a strict entry from memory on Apple platforms; 2.1.4 routes strict entries through the native store on all of them. **Upgrade recommended for iOS/macOS apps that observe `requireUnlockedDevice` values via flows.**
+- **`requireUnlockedDevice = true` is now enforced on every read path, not just `getDirect`.** Flow / StateFlow / Compose-observe reads and the eager `PLAIN_TEXT` memory policy could still serve a strict entry from memory on Apple platforms; 2.2.0 routes strict entries through the native store on all of them. **Upgrade recommended for iOS/macOS apps that observe `requireUnlockedDevice` values via flows.**
 - **Web: `KSafeConfig.appNamespace` now isolates the data store, not just the key.** Two same-origin setups with the same `fileName` but different `appNamespace` no longer share — and overwrite — the same `localStorage` slots; existing data is migrated forward.
 - **Android: co-existing same-file instances no longer lose a write that races another instance's `clearAll()`.**
 - **Web: a tab keeps working after another tab logs out** — the encryption key self-heals instead of failing every encrypted write until reload.
@@ -90,7 +90,7 @@ Security and data-integrity hardening release. It completes the 2.1.3 `requireUn
 - **Web: constructing an `appNamespace`d store no longer cannibalizes a co-existing no-namespace store on the same `fileName`.** The un-namespaced data migration is non-destructive (copy-if-absent, no source delete), so a live sibling's entries are never stolen.
 - **Web: adding `appNamespace` on upgrade no longer orphans the encryption key.** A pre-`appNamespace` `CryptoKey` is migrated forward to its namespaced IndexedDB record name on first access (copy-only), so existing encrypted data survives the upgrade.
 - **Web (Kotlin/JS + Wasm): adding `appNamespace` no longer lets the first-constructed namespace destroy the shared legacy data for every other namespace of the same `fileName`.** The legacy `ksafe_<file>_` migration is non-destructive whenever an `appNamespace` is set (copy-if-absent, source preserved); the no-`appNamespace` path still reclaims the source.
-- **Web (Kotlin/JS + Wasm): `KSafe()` and `KSafe(fileName = "default")` no longer let whichever constructs first destroy the other's pre-2.1.4 data.** Both previously mapped to the same on-disk prefix; the shared legacy source now migrates non-destructively (copy-if-absent, source preserved), so both instances carry the previously-shared data forward.
+- **Web (Kotlin/JS + Wasm): `KSafe()` and `KSafe(fileName = "default")` no longer let whichever constructs first destroy the other's pre-2.2.0 data.** Both previously mapped to the same on-disk prefix; the shared legacy source now migrates non-destructively (copy-if-absent, source preserved), so both instances carry the previously-shared data forward.
 - **Web (Kotlin/JS + Wasm): the pre-`appNamespace` CryptoKey record carried forward by the key migration is intentionally retained on `deleteKey`/`clearAll`.** Its record name is byte-identical to the key a co-existing no-namespace sibling on the same origin uses, so deleting it would destroy that sibling's live key. The record is a non-extractable key with no plaintext exposure; a regression test locks in that a namespaced `clearAll()` never breaks the sibling.
 - **Web (Kotlin/JS + Wasm): a surviving tab failed every encrypted write after another tab deleted the key.** On a "key missing" error the engine now drops its stale "key ensured" marker, regenerates the key in IndexedDB, and retries once.
 - **Web: decrypting an entry whose IndexedDB key was evicted no longer mints a fresh key and permanently poisons the ciphertext.** The read path never creates a key: a genuinely absent key surfaces the recoverable "web key missing" error (matching the other engines), so the ciphertext stays decryptable once the key backend is restored. Only `encrypt` mints.

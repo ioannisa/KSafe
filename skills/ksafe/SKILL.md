@@ -464,11 +464,11 @@ KSafeBiometrics.verifyBiometric("Step-up", allowDeviceCredentialFallback = false
 Concurrent calls are serialized: a second prompt queues behind the first instead of
 stomping it. On macOS the LAPolicy depends on `allowDeviceCredentialFallback`: default
 `true` → `LAPolicyDeviceOwnerAuthentication` (always prompts); `false` →
-`...WithBiometrics` (Touch ID only, returns false on hardware-less Macs). Since 2.1.4 the
+`...WithBiometrics` (Touch ID only, returns false on hardware-less Macs). Since 2.2.0 the
 JVM target prompts for real too: JVM-on-macOS uses `LocalAuthentication` (same policy
 mapping as native macOS) and JVM-on-Windows uses Windows Hello (`UserConsentVerifier`;
 note the Hello PIN counts as Hello itself, so `false` can't exclude it there).
-`-Dksafe.biometrics.jvm.prompts=off` restores the pre-2.1.4 always-`true` no-op. JS/WasmJS
+`-Dksafe.biometrics.jvm.prompts=off` restores the pre-2.2.0 always-`true` no-op. JS/WasmJS
 (and JVM on Linux) still return `true` — **fail-open**: never let web builds rely on the
 biometric gate as a security boundary.
 
@@ -657,7 +657,7 @@ it. Can also be set without code: `-Dksafe.appNamespace=…` or env `KSAFE_APP_N
    - `android_strongbox_absent` → only matters for `HARDWARE_ISOLATED`.
    - `apple_secure_enclave_absent` → simulator or pre-T2 Intel Mac.
    - `apple_keychain_entitlement_missing` → iOS Simulator app with no Keychain
-     entitlement (2.1.4+; keys transparently fall back to a sandbox file store so
+     entitlement (2.2.0+; keys transparently fall back to a sandbox file store so
      encrypted writes keep working — never emitted on a real device).
 2. On JVM, check stderr for `KSafe SECURITY WARNING` (printed once on vault degrade).
 3. `ksafe.getKeyInfo(key)` — `null` means the key was never written.
@@ -679,7 +679,7 @@ it. Can also be set without code: `-Dksafe.appNamespace=…` or env `KSAFE_APP_N
 10. iOS Simulator: `Keychain error -34018` (`errSecMissingEntitlement`) on encrypted
     writes → the app has no Keychain entitlement (no signing team / no Keychain Sharing
     capability). Through 2.1.3 every encrypted write fails (suspend `put` throws;
-    `putDirect` logs `KSafe SEVERE` and silently drops the write); from 2.1.4 KSafe
+    `putDirect` logs `KSafe SEVERE` and silently drops the write); from 2.2.0 KSafe
     auto-falls back to a sandbox file key store and just works. Either way the proper
     Xcode fix — select a Team and/or add the Keychain Sharing capability — restores real
     Keychain behavior. Real devices are unaffected (and never use the fallback).

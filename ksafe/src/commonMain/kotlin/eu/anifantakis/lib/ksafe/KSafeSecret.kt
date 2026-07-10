@@ -140,7 +140,7 @@ private suspend fun KSafe.migrateLegacySecret(
     }
     if (legacyStored.isEmpty()) {
         if (getKeyInfo(legacyStorageKey) != null) throw IllegalStateException(
-            "KSafe.getOrCreateSecret: a pre-2.1.4 secret for key \"$key\" exists under its legacy " +
+            "KSafe.getOrCreateSecret: a pre-2.2.0 secret for key \"$key\" exists under its legacy " +
                 "storage slot but could not be read back — the backing key may be invalidated or " +
                 "rotated, the OS key vault may be temporarily unavailable, or the value corrupt. " +
                 "Refusing to generate a new secret that would orphan it. Resolve the vault/key " +
