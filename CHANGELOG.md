@@ -2,6 +2,30 @@
 
 All notable changes to KSafe will be documented in this file.
 
+## [2.2.0] - Unreleased
+
+### Added
+
+- **`ksafe-biometrics`: real biometric prompts on JVM Desktop.** The JVM target no longer
+  no-ops — it now shows the operating system's real authentication prompt:
+  - **macOS (JVM)**: Touch ID / password / Apple Watch via `LocalAuthentication`, bridged
+    through the Objective-C runtime with JNA. Policy mapping matches the native macOS
+    target exactly (`allowDeviceCredentialFallback = false` → Touch ID only).
+  - **Windows**: Windows Hello (biometrics or Hello PIN) via `UserConsentVerifier`,
+    bridged through WinRT COM interop with JNA — works on both x64 and ARM64 Windows.
+    Platform note: Windows treats the Hello PIN as part of Hello, so
+    `allowDeviceCredentialFallback = false` cannot exclude the PIN there; it still keys
+    the authorization cache strictly and hard-refuses when Hello is absent entirely.
+  - The per-scope authorization cache (`authorizationDuration`) works on desktop with the
+    same semantics as Android/Apple: monotonic clock, strength-keyed slots (a PIN/password
+    success can never satisfy a biometrics-only call), no seeding after cancellation.
+  - **Behavior change & migration**: previously the JVM target always returned `true`.
+    Desktop apps that relied on that pass-through can restore it with
+    `-Dksafe.biometrics.jvm.prompts=off` (or env `KSAFE_BIOMETRICS_JVM_PROMPTS=off`).
+    JVM-on-Linux, Kotlin/JS, and WasmJS keep the documented pass-through — no prompt API
+    exists there.
+  - New dependency for the JVM target only: JNA (already used by `:ksafe`'s JVM key vaults).
+
 ## [2.1.4] - 2026-07-02
 
 Security and data-integrity hardening release. It completes the 2.1.3 `requireUnlockedDevice` fix (2.1.3 covered only the direct-read path) and closes a set of multi-instance, multi-tab, and biometric edge cases. **Drop-in upgrade from 2.1.3** — on-disk format is unchanged and existing data keeps working without migration.

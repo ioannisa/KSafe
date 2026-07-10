@@ -35,7 +35,12 @@ On Android, the library auto-initializes via a `ContentProvider` declared in its
 | iOS device | `LAContext` — Face ID / Touch ID + password | `LAContext` — Face ID / Touch ID only |
 | iOS simulator | Returns `true` (no biometric hardware) | Returns `true` |
 | macOS | `LAContext` — Touch ID, password, or Apple Watch | `LAContext` — Touch ID only (fails gracefully on Macs without Touch ID) |
-| JVM, JS, WasmJS | Returns `true` | Returns `true` |
+| JVM on macOS (2.2+) | `LAContext` — Touch ID, password, or Apple Watch | `LAContext` — Touch ID only |
+| JVM on Windows (2.2+) | Windows Hello — biometrics or Hello PIN | Windows Hello (the Hello PIN cannot be excluded — platform limitation); hard-refuses if Hello is absent |
+| JVM on Linux, JS, WasmJS | Returns `true` | Returns `true` |
+
+> JVM desktop prompts are on by default from 2.2. `-Dksafe.biometrics.jvm.prompts=off`
+> (or env `KSAFE_BIOMETRICS_JVM_PROMPTS=off`) restores the pre-2.2 always-`true` no-op.
 
 ## Two APIs
 

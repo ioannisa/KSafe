@@ -9,10 +9,26 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * Locks in: on JVM (no biometric hardware) every static [KSafeBiometrics] method is a no-op that
- * succeeds. The same `actual`s back Kotlin/JS and Kotlin/Wasm, so JVM coverage suffices.
+ * Locks in: with desktop prompts opted out (`ksafe.biometrics.jvm.prompts=off` — the pre-2.2
+ * migration path), every static [KSafeBiometrics] method is a no-op that succeeds, exactly like
+ * the legacy JVM behavior and like Kotlin/JS and Kotlin/Wasm today.
  */
 class KSafeBiometricsJvmTest {
+
+    private var priorPromptsProperty: String? = null
+
+    @kotlin.test.BeforeTest
+    fun optOutOfRealPrompts() {
+        priorPromptsProperty = System.getProperty("ksafe.biometrics.jvm.prompts")
+        System.setProperty("ksafe.biometrics.jvm.prompts", "off")
+        KSafeBiometrics.clearBiometricAuth() // no cross-test cache hits masking the opt-out path
+    }
+
+    @kotlin.test.AfterTest
+    fun restorePromptsProperty() {
+        priorPromptsProperty?.let { System.setProperty("ksafe.biometrics.jvm.prompts", it) }
+            ?: System.clearProperty("ksafe.biometrics.jvm.prompts")
+    }
 
     @Test
     fun verifyBiometric_returnsTrue_onJvm() = runBlocking {

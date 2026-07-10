@@ -464,9 +464,13 @@ KSafeBiometrics.verifyBiometric("Step-up", allowDeviceCredentialFallback = false
 Concurrent calls are serialized: a second prompt queues behind the first instead of
 stomping it. On macOS the LAPolicy depends on `allowDeviceCredentialFallback`: default
 `true` → `LAPolicyDeviceOwnerAuthentication` (always prompts); `false` →
-`...WithBiometrics` (Touch ID only, returns false on hardware-less Macs). JVM/JS/WasmJS
-return `true` so shared logic compiles — **fail-open**: never let desktop/web builds rely
-on the biometric gate as a security boundary.
+`...WithBiometrics` (Touch ID only, returns false on hardware-less Macs). Since 2.2 the
+JVM target prompts for real too: JVM-on-macOS uses `LocalAuthentication` (same policy
+mapping as native macOS) and JVM-on-Windows uses Windows Hello (`UserConsentVerifier`;
+note the Hello PIN counts as Hello itself, so `false` can't exclude it there).
+`-Dksafe.biometrics.jvm.prompts=off` restores the pre-2.2 always-`true` no-op. JS/WasmJS
+(and JVM on Linux) still return `true` — **fail-open**: never let web builds rely on the
+biometric gate as a security boundary.
 
 ---
 

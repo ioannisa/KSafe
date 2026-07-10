@@ -1,12 +1,15 @@
 package eu.anifantakis.lib.ksafe.biometrics
 
 /**
- * Process-wide static API for biometric authentication — no instance, no DI, zero-config init
- * (real prompts on Android/iOS/macOS; JVM/JS/WasmJS have no hardware and always return `true`).
+ * Process-wide static API for biometric authentication — no instance, no DI, zero-config init.
+ * Real prompts on Android, iOS, macOS, and (since 2.2) JVM Desktop: JVM-on-macOS shows
+ * Touch ID / password via `LocalAuthentication`, JVM-on-Windows shows Windows Hello via
+ * `UserConsentVerifier`. JS/WasmJS — and JVM hosts with no prompt API (Linux) — return `true`.
  *
- * **Security note:** because the desktop/web targets have no biometric hardware, every call
- * there returns `true` — an unconditional pass — so shared `commonMain` logic can call in
- * without branching. If you need a hard refusal on those platforms, gate the call yourself.
+ * **Security note:** where no prompt API exists (web targets, JVM on Linux, or the
+ * `-Dksafe.biometrics.jvm.prompts=off` opt-out), every call returns `true` — an unconditional
+ * pass — so shared `commonMain` logic can call in without branching. If you need a hard
+ * refusal there, gate the call in your own code.
  */
 @Suppress("unused")
 object KSafeBiometrics {
@@ -19,7 +22,10 @@ object KSafeBiometrics {
      *        given duration/scope and calls within it skip the prompt; `null` always prompts.
      * @param allowDeviceCredentialFallback When `true` (default), device credentials
      *        (PIN/password/pattern, or login password/Apple Watch on macOS) are accepted as
-     *        fallback; `false` restricts to biometrics only. Ignored on JVM/JS/WasmJS.
+     *        fallback; `false` restricts to biometrics only. Ignored on JS/WasmJS. On
+     *        JVM-Windows the Hello PIN counts as Hello itself, so `false` cannot exclude
+     *        it (it still keys the authorization cache strictly and refuses when Hello
+     *        is absent).
      */
     suspend fun verifyBiometric(
         reason: String = "Authenticate to continue",

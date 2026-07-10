@@ -119,6 +119,15 @@ kotlin {
 
         // appleMain is shared by iosX64/iosArm64/iosSimulatorArm64 + macosX64/macosArm64.
         // LocalAuthentication framework is part of the Apple SDKs — no extra dep needed.
+
+        jvmMain {
+            dependencies {
+                // Native bridges for real desktop prompts: macOS Touch ID via the ObjC
+                // runtime (LocalAuthentication) and Windows Hello via WinRT COM interop.
+                implementation(libs.jna)
+                implementation(libs.jna.platform)
+            }
+        }
     }
 
     targets.withType<KotlinAndroidTarget>().configureEach {
@@ -127,6 +136,12 @@ kotlin {
             jvmTarget.set(JvmTarget.JVM_11)
         }
     }
+}
+
+tasks.withType<Test>().configureEach {
+    // Forward the live-probe opt-in (`-Dksafe.biometrics.live=1`) to test workers:
+    // it gates DesktopBiometricsTest.livePrompt, which pops a REAL system prompt.
+    System.getProperty("ksafe.biometrics.live")?.let { systemProperty("ksafe.biometrics.live", it) }
 }
 
 mavenPublishing {
