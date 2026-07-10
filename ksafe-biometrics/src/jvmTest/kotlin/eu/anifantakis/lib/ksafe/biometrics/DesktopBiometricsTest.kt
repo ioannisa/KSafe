@@ -9,8 +9,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Locks in: the 2.2 JVM desktop-prompt dispatch — a prompt denial propagates as `false`
- * (the pre-2.2 always-`true` no longer masks it), success seeds the authorization cache
+ * Locks in: the 2.1.4 JVM desktop-prompt dispatch — a prompt denial propagates as `false`
+ * (the pre-2.1.4 always-`true` no longer masks it), success seeds the authorization cache
  * with strength-keyed slots, and the WinRT pinterface-GUID computation the Windows Hello
  * bridge depends on reproduces published reference GUIDs. The OS prompt itself is
  * replaced by the test seam, so no real dialogs appear.
@@ -99,7 +99,7 @@ class DesktopBiometricsTest {
         try {
             assertTrue(
                 KSafeBiometrics.verifyBiometric("Authenticate"),
-                "the opt-out property must restore the pre-2.2 always-true no-op",
+                "the opt-out property must restore the pre-2.1.4 always-true no-op",
             )
         } finally {
             prior?.let { System.setProperty("ksafe.biometrics.jvm.prompts", it) }

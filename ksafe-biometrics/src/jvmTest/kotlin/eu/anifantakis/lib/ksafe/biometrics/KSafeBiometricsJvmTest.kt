@@ -9,7 +9,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * Locks in: with desktop prompts opted out (`ksafe.biometrics.jvm.prompts=off` — the pre-2.2
+ * Locks in: with desktop prompts opted out (`ksafe.biometrics.jvm.prompts=off` — the pre-2.1.4
  * migration path), every static [KSafeBiometrics] method is a no-op that succeeds, exactly like
  * the legacy JVM behavior and like Kotlin/JS and Kotlin/Wasm today.
  */

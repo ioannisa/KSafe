@@ -8,7 +8,7 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * JVM implementation of [KSafeBiometrics] — real desktop prompts since 2.2:
+ * JVM implementation of [KSafeBiometrics] — real desktop prompts since 2.1.4:
  *
  * - **macOS**: Touch ID / password / Apple Watch via `LocalAuthentication` (JNA→ObjC),
  *   with the same policy mapping as the native macOS target.
@@ -20,7 +20,7 @@ import java.util.concurrent.ConcurrentHashMap
  *   API exists there.
  *
  * Escape hatch: `-Dksafe.biometrics.jvm.prompts=off` (or env
- * `KSAFE_BIOMETRICS_JVM_PROMPTS=off`) restores the pre-2.2 always-`true` no-op —
+ * `KSAFE_BIOMETRICS_JVM_PROMPTS=off`) restores the pre-2.1.4 always-`true` no-op —
  * the migration path for desktop apps that relied on the old pass-through.
  */
 

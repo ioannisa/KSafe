@@ -2,7 +2,19 @@
 
 All notable changes to KSafe will be documented in this file.
 
-## [2.2.0] - Unreleased
+## [2.1.4] - 2026-07-02
+
+Security and data-integrity hardening release. It completes the 2.1.3 `requireUnlockedDevice` fix (2.1.3 covered only the direct-read path) and closes a set of multi-instance, multi-tab, and biometric edge cases. **Drop-in upgrade from 2.1.3** — on-disk format is unchanged and existing data keeps working without migration.
+
+### Highlights
+
+- **`requireUnlockedDevice = true` is now enforced on every read path, not just `getDirect`.** Flow / StateFlow / Compose-observe reads and the eager `PLAIN_TEXT` memory policy could still serve a strict entry from memory on Apple platforms; 2.1.4 routes strict entries through the native store on all of them. **Upgrade recommended for iOS/macOS apps that observe `requireUnlockedDevice` values via flows.**
+- **Web: `KSafeConfig.appNamespace` now isolates the data store, not just the key.** Two same-origin setups with the same `fileName` but different `appNamespace` no longer share — and overwrite — the same `localStorage` slots; existing data is migrated forward.
+- **Android: co-existing same-file instances no longer lose a write that races another instance's `clearAll()`.**
+- **Web: a tab keeps working after another tab logs out** — the encryption key self-heals instead of failing every encrypted write until reload.
+- **Biometrics: a cached PIN/password success can no longer satisfy a biometrics-only (`allowDeviceCredentialFallback = false`) call**, and a cancelled prompt no longer strands the next caller.
+- **iOS Simulator: KSafe now works out of the box in apps without Keychain entitlements** — no more `Keychain error -34018` on every encrypted write. Real devices are unaffected.
+- **`ksafe-biometrics`: real biometric prompts on JVM Desktop** — Touch ID on macOS, Windows Hello on Windows. Previously the JVM target always returned `true`; `-Dksafe.biometrics.jvm.prompts=off` restores that.
 
 ### Added
 
@@ -25,22 +37,6 @@ All notable changes to KSafe will be documented in this file.
     JVM-on-Linux, Kotlin/JS, and WasmJS keep the documented pass-through — no prompt API
     exists there.
   - New dependency for the JVM target only: JNA (already used by `:ksafe`'s JVM key vaults).
-
-## [2.1.4] - 2026-07-02
-
-Security and data-integrity hardening release. It completes the 2.1.3 `requireUnlockedDevice` fix (2.1.3 covered only the direct-read path) and closes a set of multi-instance, multi-tab, and biometric edge cases. **Drop-in upgrade from 2.1.3** — on-disk format is unchanged and existing data keeps working without migration.
-
-### Highlights
-
-- **`requireUnlockedDevice = true` is now enforced on every read path, not just `getDirect`.** Flow / StateFlow / Compose-observe reads and the eager `PLAIN_TEXT` memory policy could still serve a strict entry from memory on Apple platforms; 2.1.4 routes strict entries through the native store on all of them. **Upgrade recommended for iOS/macOS apps that observe `requireUnlockedDevice` values via flows.**
-- **Web: `KSafeConfig.appNamespace` now isolates the data store, not just the key.** Two same-origin setups with the same `fileName` but different `appNamespace` no longer share — and overwrite — the same `localStorage` slots; existing data is migrated forward.
-- **Android: co-existing same-file instances no longer lose a write that races another instance's `clearAll()`.**
-- **Web: a tab keeps working after another tab logs out** — the encryption key self-heals instead of failing every encrypted write until reload.
-- **Biometrics: a cached PIN/password success can no longer satisfy a biometrics-only (`allowDeviceCredentialFallback = false`) call**, and a cancelled prompt no longer strands the next caller.
-- **iOS Simulator: KSafe now works out of the box in apps without Keychain entitlements** — no more `Keychain error -34018` on every encrypted write. Real devices are unaffected.
-
-### Added
-
 - **The AI-agent skill is now distributed as a Claude Code plugin marketplace.** `/plugin marketplace add ioannisa/KSafe` + `/plugin install ksafe@ksafe` installs the skill with an update channel (checked at session start; `/plugin update` pulls the latest). The skill file moved from the repo root (`KSAFE_SKILL.md`) to the canonical `skills/ksafe/SKILL.md` layout; the curl install for other agents (Codex, Gemini CLI, Copilot CLI, Junie) now points at the new path. The skill's trigger description was also empirically optimized against a 20-query eval (held-out trigger accuracy 79% → 100%, zero false triggers).
 - **iOS Simulator: automatic fallback for an entitlement-blocked Keychain.** An app with no signing team or Keychain Sharing capability gets `errSecMissingEntitlement` (-34018) from every Keychain call on the Simulator, which previously made every encrypted `put`/`putDirect` fail (a suspend `put` threw; a `putDirect` was rolled back with only a `KSafe SEVERE` log). When that exact status is hit **on the Simulator**, the engine now transparently holds its AES keys in a per-app sandbox file store instead, so encrypted reads and writes just work with zero setup. The Simulator's Keychain is itself only a file on the host Mac, so nothing real is downgraded. Guard rails:
   - **Real devices never take this path** — the fallback store is only constructed when running on the Simulator, and an on-device -34018 still fails loudly (now with an actionable message naming the missing entitlement and the Xcode fix).
