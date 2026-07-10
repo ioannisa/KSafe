@@ -109,6 +109,11 @@ internal fun accessibilityUpdateNeeded(lastApplied: Boolean?, target: Boolean): 
  * With `hardwareIsolated = true` the AES key is envelope-encrypted: an EC P-256 key in
  * the Secure Enclave wraps it via ECIES and only the wrapped key is stored; if the SE is
  * unavailable (simulators, Intel Macs, older devices) the path falls back to plain storage.
+ *
+ * On the iOS Simulator only, an entitlement-blocked Keychain (`errSecMissingEntitlement`,
+ * -34018 — no signing team / Keychain Sharing capability) additionally falls back to a
+ * sandbox file key store instead of failing every encrypted write; see
+ * [SimulatorFallbackKeyStore]. Real devices never take that path.
  */
 @PublishedApi
 internal class AppleKeychainEncryption(
@@ -116,6 +121,19 @@ internal class AppleKeychainEncryption(
     private val serviceName: String = SERVICE_NAME,
     /** Test seam: in-memory [AppleKeychainStore] for unit tests; null in production. */
     keychainStore: AppleKeychainStore? = null,
+    /**
+     * Simulator-only escape hatch for an entitlement-blocked Keychain (see
+     * [SimulatorFallbackKeyStore]). Defaults to the sandbox file store on the iOS
+     * Simulator and to null (disabled) everywhere else — real devices and macOS keep
+     * failing loudly on -34018. Not auto-enabled when [keychainStore] is a test fake,
+     * so existing fake-store tests keep their exact semantics; tests inject their own.
+     */
+    private val simulatorFallback: SimulatorFallbackKeyStore? =
+        if (keychainStore == null && SecurityChecker.isEmulator()) {
+            FileSimulatorFallbackKeyStore(serviceName)
+        } else {
+            null
+        },
 ) : KSafeEncryption {
 
     /** Generic-password Keychain access — real `SecItem*` in production, a fake in tests. */
@@ -132,6 +150,31 @@ internal class AppleKeychainEncryption(
     companion object {
         private const val SERVICE_NAME = "eu.anifantakis.ksafe"
         internal const val SE_KEY_TAG_PREFIX = "se."
+
+        /**
+         * `errSecMissingEntitlement`: the process has no Keychain entitlement — the
+         * status an unsigned/unentitled Simulator build gets from every Keychain call.
+         * Local constant; the Kotlin platform libs don't re-export this symbol.
+         */
+        internal const val ERR_SEC_MISSING_ENTITLEMENT = -34018
+
+        /**
+         * True when [message] carries the missing-entitlement OSStatus. Every engine
+         * throw site embeds the raw numeric status, so the substring match is exact
+         * and locale-independent.
+         */
+        internal fun isMissingEntitlementFailure(message: String?): Boolean =
+            message?.contains(ERR_SEC_MISSING_ENTITLEMENT.toString()) == true
+
+        /** Actionable suffix for -34018 errors; empty for every other status. */
+        internal fun entitlementHint(status: Int): String =
+            if (status == ERR_SEC_MISSING_ENTITLEMENT) {
+                " (errSecMissingEntitlement: the process has no Keychain entitlement — " +
+                    "select a signing team and/or add the Keychain Sharing capability in " +
+                    "Xcode; on the iOS Simulator also try Device > Erase All Content and Settings)"
+            } else {
+                ""
+            }
 
         /**
          * Returns Keychain account lookup order for a given key id: SE-wrapped first,
@@ -198,6 +241,33 @@ internal class AppleKeychainEncryption(
      * retries on the next write. Invalidated by [deleteKey].
      */
     private val lastAppliedAccessibility = KSafeConcurrentMap<Boolean>()
+
+    /**
+     * Aliases served from [simulatorFallback] this process. Lets [encrypt] skip the
+     * accessibility `SecItemUpdate` IPC for fallback keys (the Keychain would reject it
+     * with -34018 on every write) and feeds the `protectionInfo` degrade report.
+     */
+    private val fallbackServedAliases = KSafeConcurrentMap<Boolean>()
+    private val fallbackActivated = KSafeAtomicFlag(false)
+    private val fallbackWarned = KSafeAtomicFlag(false)
+
+    /** True once any key op was served from the Simulator fallback store. */
+    internal fun isSimulatorFallbackActive(): Boolean = fallbackActivated.get()
+
+    /** Records (and, once per process, warns about) a fallback-served alias. */
+    private fun fallbackKeyServed(keyId: String) {
+        fallbackServedAliases[keyId] = true
+        fallbackActivated.set(true)
+        if (fallbackWarned.compareAndSet(false, true)) {
+            println(
+                "KSafe WARNING: the Keychain rejected this process with errSecMissingEntitlement " +
+                    "(-34018), so encryption keys are held in a sandbox file store instead " +
+                    "(iOS Simulator only; real devices never use this fallback). This usually " +
+                    "means the app has no signing team or Keychain Sharing capability — fix " +
+                    "that to test real Keychain behavior. See KSafe.protectionInfo."
+            )
+        }
+    }
 
     /**
      * Serializes the key-resolution critical section (cache-miss → look up / create → store →
@@ -325,7 +395,7 @@ internal class AppleKeychainEncryption(
                         "KSafe: Cannot access Keychain - device is locked. Key exists but is inaccessible."
                     )
                     else -> throw IllegalStateException(
-                        "KSafe: Keychain error $status for account $account"
+                        "KSafe: Keychain error $status for account $account${entitlementHint(status)}"
                     )
                 }
             }
@@ -343,8 +413,9 @@ internal class AppleKeychainEncryption(
         // item keeps its looser accessibility (DEFAULT entries encode policy in the alias, so
         // they need none). Best-effort: a transient SecItemUpdate failure must not drop an
         // otherwise-successful encrypt — the OS keeps enforcing the current policy and the
-        // next write retries the tightening.
-        if (hardwareIsolated) {
+        // next write retries the tightening. Skipped for Simulator-fallback keys: they have
+        // no Keychain item to update and the IPC would just re-fail with -34018 every write.
+        if (hardwareIsolated && fallbackServedAliases[identifier] != true) {
             runCatching { updateKeyAccessibility(identifier, resolvedRequireUnlockedDevice(requireUnlockedDevice)) }
         }
         return runBlocking {
@@ -369,6 +440,8 @@ internal class AppleKeychainEncryption(
         keychain.delete(seWrappedAccount(identifier))
         deleteSecureEnclaveKey(seTag(identifier))
         keychain.delete(identifier)
+        simulatorFallback?.delete(identifier)
+        fallbackServedAliases.remove(identifier)
         keyBytesCache.remove(identifier)
         lastAppliedAccessibility.remove(identifier)
     }
@@ -524,6 +597,19 @@ internal class AppleKeychainEncryption(
             keyBytesCache.remove(keyId)
         }
 
+        // A Simulator fallback key, once minted for this alias, wins over the Keychain
+        // unconditionally (sticky precedence): every run of an install decrypts with the
+        // same key even if the entitlement problem is fixed later. Consulted before the
+        // SE-wrapped read so an entitlement-blocked Keychain can't fail a decrypt whose
+        // key lives in the fallback store.
+        simulatorFallback?.read(keyId)?.let { bytes ->
+            fallbackKeyServed(keyId)
+            if (requireUnlockedDevice != true) {
+                keyBytesCache[keyId] = bytes
+            }
+            return bytes
+        }
+
         val wrappedBytes = getExistingKeychainKeyRaw(seWrappedAccount(keyId))
         val bytes = if (wrappedBytes != null) {
             val sePrivateKey = getSecureEnclaveKey(seTag(keyId))
@@ -574,14 +660,21 @@ internal class AppleKeychainEncryption(
                     getOrCreateKeychainKeyWithSE(keyId, requireUnlockedDevice)
                 } catch (e: IllegalStateException) {
                     val msg = e.message ?: ""
-                    if (isTransientUnwrapFailure(msg) ||
-                        msg.contains("Keychain error") ||
-                        // A store failure is NOT "SE unavailable": don't fall back to a
-                        // divergent plain key under the same identifier.
-                        msg.contains("Failed to store key in Keychain")
-                    ) throw e
-                    // SE genuinely unavailable (simulator, old device, no entitlements).
-                    getOrCreateKeychainKeyPlain(keyId, requireUnlockedDevice)
+                    when {
+                        // Entitlement-blocked Keychain on the Simulator (-34018): the
+                        // plain path serves or mints the sandbox fallback key. Checked
+                        // before the rethrow guards — the -34018 message also matches
+                        // their "Keychain error" substring.
+                        simulatorFallback != null && isMissingEntitlementFailure(msg) ->
+                            getOrCreateKeychainKeyPlain(keyId, requireUnlockedDevice)
+                        isTransientUnwrapFailure(msg) ||
+                            msg.contains("Keychain error") ||
+                            // A store failure is NOT "SE unavailable": don't fall back to a
+                            // divergent plain key under the same identifier.
+                            msg.contains("Failed to store key in Keychain") -> throw e
+                        // SE genuinely unavailable (simulator, old device, no entitlements).
+                        else -> getOrCreateKeychainKeyPlain(keyId, requireUnlockedDevice)
+                    }
                 }
             } else {
                 getOrCreateKeychainKeyPlain(keyId, requireUnlockedDevice)
@@ -639,12 +732,43 @@ internal class AppleKeychainEncryption(
         }
     }
 
-    /** Plain path — get or create an unwrapped AES key stored directly in the Keychain. */
+    /**
+     * Plain path — get or create an unwrapped AES key stored directly in the Keychain,
+     * or in the Simulator sandbox fallback store when the Keychain rejects this process
+     * with `errSecMissingEntitlement` (-34018). Real devices construct no fallback, so
+     * for them every branch below still fails loudly.
+     */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun getOrCreateKeychainKeyPlain(keyId: String, requireUnlockedDevice: Boolean?): ByteArray {
-        getExistingKeychainKeyRaw(keyId)?.let { return it }
+        // Fallback key first — sticky precedence (see getExistingKeychainKey).
+        simulatorFallback?.read(keyId)?.let {
+            fallbackKeyServed(keyId)
+            return it
+        }
+
+        val existing = try {
+            getExistingKeychainKeyRaw(keyId)
+        } catch (e: IllegalStateException) {
+            if (simulatorFallback == null || !isMissingEntitlementFailure(e.message)) throw e
+            // Unentitled Simulator process (no signing team / Keychain Sharing): mint
+            // straight into the sandbox store. The Keychain store is NOT attempted —
+            // its delete-then-add would run against a Keychain whose state is
+            // unreadable and could destroy an existing key were the block asymmetric.
+            val newKey = secureRandomBytes(keySizeBytes)
+            simulatorFallback.write(keyId, newKey)
+            fallbackKeyServed(keyId)
+            return newKey
+        }
+        if (existing != null) return existing
+
         val newKey = secureRandomBytes(keySizeBytes)
-        keychain.store(keyId, newKey, resolvedRequireUnlockedDevice(requireUnlockedDevice))
+        try {
+            keychain.store(keyId, newKey, resolvedRequireUnlockedDevice(requireUnlockedDevice))
+        } catch (e: IllegalStateException) {
+            if (simulatorFallback == null || !isMissingEntitlementFailure(e.message)) throw e
+            simulatorFallback.write(keyId, newKey)
+            fallbackKeyServed(keyId)
+        }
         return newKey
     }
 
@@ -682,7 +806,7 @@ internal class AppleKeychainEncryption(
                     "KSafe: Cannot store key in Keychain - device is locked."
                 )
                 else -> throw IllegalStateException(
-                    "KSafe: Failed to store key in Keychain, status: $addStatus"
+                    "KSafe: Failed to store key in Keychain, status: $addStatus${entitlementHint(addStatus)}"
                 )
             }
         } }

@@ -363,7 +363,10 @@ private fun buildAppleKSafe(
         onCancel = { if (released.compareAndSet(false, true)) releaseAppleBackend(datastoreFilePath) },
     )
 
-    // Apple custody can't change after construction, so the provider returns a snapshot.
+    // Keychain custody is fixed after construction, but the Simulator fallback for an
+    // entitlement-blocked Keychain (errSecMissingEntitlement, -34018) engages lazily on
+    // the first blocked key op — so the provider re-reads that flag per access.
+    val keychainEngine = engine as? AppleKeychainEncryption
     val protectionInfoSnapshot = KSafeProtectionInfo(
         intendedLevel = KSafeProtectionLevel.HARDWARE_BACKED,
         effectiveLevel = KSafeProtectionLevel.HARDWARE_BACKED,
@@ -374,10 +377,22 @@ private fun buildAppleKSafe(
         },
         notes = if (hasSecureEnclave) emptyList() else listOf("apple_secure_enclave_absent"),
     )
+    val fallbackProtectionInfo = KSafeProtectionInfo(
+        intendedLevel = KSafeProtectionLevel.HARDWARE_BACKED,
+        effectiveLevel = KSafeProtectionLevel.SOFTWARE,
+        custody = "Sandbox file key store (iOS Simulator fallback — Keychain entitlement missing)",
+        notes = buildList {
+            add("apple_keychain_entitlement_missing")
+            if (!hasSecureEnclave) add("apple_secure_enclave_absent")
+        },
+    )
     return KSafe(
         core = core,
         deviceKeyStorages = deviceKeyStorages,
-        protectionInfoProvider = { protectionInfoSnapshot },
+        protectionInfoProvider = {
+            if (keychainEngine?.isSimulatorFallbackActive() == true) fallbackProtectionInfo
+            else protectionInfoSnapshot
+        },
     )
 }
 

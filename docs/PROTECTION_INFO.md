@@ -124,6 +124,7 @@ explains why.
 | Android (StrongBox capable) | `HARDWARE_BACKED` | `HARDWARE_BACKED` | `"Android Keystore (TEE; StrongBox available per-write)"` | `[]` |
 | iOS / macOS native (SE present) | `HARDWARE_BACKED` | `HARDWARE_BACKED` | `"Apple Keychain (Secure Enclave available per-write)"` | `[]` |
 | iOS / macOS native (no SE) | `HARDWARE_BACKED` | `HARDWARE_BACKED` | `"Apple Keychain"` | `["apple_secure_enclave_absent"]` |
+| iOS Simulator, Keychain entitlement missing | `HARDWARE_BACKED` | **`SOFTWARE`** | `"Sandbox file key store (iOS Simulator fallback — Keychain entitlement missing)"` | `["apple_keychain_entitlement_missing", "apple_secure_enclave_absent"]` |
 | JVM, Windows DPAPI healthy | `SANDBOX_PROTECTED` | `SANDBOX_PROTECTED` | `"Windows DPAPI (CryptProtectData, current-user)"` | `[]` |
 | JVM, macOS Keychain healthy | `SANDBOX_PROTECTED` | `SANDBOX_PROTECTED` | `"macOS Keychain (Security.framework, login keychain)"` | `[]` |
 | JVM, Linux Secret Service healthy | `SANDBOX_PROTECTED` | `SANDBOX_PROTECTED` | `"Linux Secret Service (libsecret, login keyring)"` | `[]` |
@@ -150,6 +151,7 @@ rather than reject them (new codes may be added without a major version bump).
 | `jvm_user_opted_out` | JVM | `-Dksafe.jvm.keyVault=software` or env `KSAFE_JVM_KEY_VAULT=software` set. Fallback was requested, not forced. |
 | `android_strongbox_absent` | Android | Device lacks StrongBox. Informational at instance level; only meaningful for per-write `HARDWARE_ISOLATED`. (Currently the Android factory does not emit this code at the instance level since baseline is unaffected — reserved for future use.) |
 | `apple_secure_enclave_absent` | Apple | Device lacks Secure Enclave (simulator, pre-T2 Intel Mac). Informational at instance level; only meaningful for per-write `HARDWARE_ISOLATED`. |
+| `apple_keychain_entitlement_missing` | Apple (iOS Simulator only) | The Keychain rejected the process with `errSecMissingEntitlement` (-34018) — the app has no signing team / Keychain Sharing capability, common on unsigned Simulator builds. Keys fall back to a sandbox file store so encrypted writes keep working; fix the Xcode signing setup to test real Keychain behavior. Never emitted on a real device — there a -34018 still fails loudly. |
 
 ---
 

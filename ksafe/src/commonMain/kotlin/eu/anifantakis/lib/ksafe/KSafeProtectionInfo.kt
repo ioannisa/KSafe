@@ -36,6 +36,9 @@ data class KSafeProtectionInfo(
      *    `KSAFE_JVM_KEY_VAULT=software`) forced the software vault.
      *  - `"android_strongbox_absent"` — Android: device lacks StrongBox.
      *  - `"apple_secure_enclave_absent"` — Apple: device lacks a Secure Enclave.
+     *  - `"apple_keychain_entitlement_missing"` — iOS Simulator: the Keychain rejected
+     *    the process (`errSecMissingEntitlement`, no signing team / Keychain Sharing
+     *    capability); keys fall back to a sandbox file store. Never emitted on device.
      */
     val notes: List<String>,
 

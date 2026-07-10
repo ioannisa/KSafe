@@ -13,6 +13,15 @@ Security and data-integrity hardening release. It completes the 2.1.3 `requireUn
 - **Android: co-existing same-file instances no longer lose a write that races another instance's `clearAll()`.**
 - **Web: a tab keeps working after another tab logs out** — the encryption key self-heals instead of failing every encrypted write until reload.
 - **Biometrics: a cached PIN/password success can no longer satisfy a biometrics-only (`allowDeviceCredentialFallback = false`) call**, and a cancelled prompt no longer strands the next caller.
+- **iOS Simulator: KSafe now works out of the box in apps without Keychain entitlements** — no more `Keychain error -34018` on every encrypted write. Real devices are unaffected.
+
+### Added
+
+- **iOS Simulator: automatic fallback for an entitlement-blocked Keychain.** An app with no signing team or Keychain Sharing capability gets `errSecMissingEntitlement` (-34018) from every Keychain call on the Simulator, which previously made every encrypted `put`/`putDirect` fail (a suspend `put` threw; a `putDirect` was rolled back with only a `KSafe SEVERE` log). When that exact status is hit **on the Simulator**, the engine now transparently holds its AES keys in a per-app sandbox file store instead, so encrypted reads and writes just work with zero setup. The Simulator's Keychain is itself only a file on the host Mac, so nothing real is downgraded. Guard rails:
+  - **Real devices never take this path** — the fallback store is only constructed when running on the Simulator, and an on-device -34018 still fails loudly (now with an actionable message naming the missing entitlement and the Xcode fix).
+  - **Sticky keys** — once a fallback key is minted for an alias it keeps winning over the Keychain, so data written during the unentitled period stays readable after the signing setup is fixed.
+  - **Reported, never silent** — the degrade shows up in `KSafe.protectionInfo` (`effectiveLevel = SOFTWARE`, note `apple_keychain_entitlement_missing`) and a one-time console warning explains the cause and the proper Xcode fix.
+  - `deleteKey`/`clearAll` clean up fallback key files like any other key material, and a decrypt never mints a fallback key (absence still surfaces as an error rather than poisoning ciphertext).
 
 ### Fixed
 
