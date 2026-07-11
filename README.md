@@ -13,8 +13,8 @@
 
 KSafe ships an [agentskills.io](https://agentskills.io)-compatible skill — [**skills/ksafe/SKILL.md**](skills/ksafe/SKILL.md) — that teaches any AI agent (Claude Code, Codex, Gemini CLI, Copilot CLI, Junie) KSafe's patterns, anti-patterns, and gotchas. Restart your agent session after installing — skills load at session start.
 
-<details>
-<summary><b>Claude Code (recommended)</b> — installs once, updates itself</summary>
+### Claude Code (recommended)
+> installs once, updates itself
 
 Run **both** commands, in this order, inside any Claude Code session. It's a one-time setup:
 
@@ -30,10 +30,10 @@ happen to be named `ksafe` here). Restart the session and the skill is active.
 From then on you're done: Claude Code checks this repo for updates at the start of every
 session, so skill improvements arrive on their own. `/plugin update` fetches the latest
 immediately if you don't want to wait.
-</details>
 
-<details>
-<summary><b>Other agents</b> (Codex, Gemini CLI, Copilot, Cursor, Junie, …) — pick ONE of the two options below</summary>
+### Other agents
+> (Codex, Gemini CLI, Copilot, Cursor, Junie, …)
+> pick ONE of the two options below
 
 **Option A — the [skills.sh](https://skills.sh) CLI (recommended):** one command installs the
 skill into whichever of your agents you select in its prompt (30+ supported):
