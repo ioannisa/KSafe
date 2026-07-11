@@ -14,27 +14,39 @@
 KSafe ships an [agentskills.io](https://agentskills.io)-compatible skill — [**skills/ksafe/SKILL.md**](skills/ksafe/SKILL.md) — that teaches any AI agent (Claude Code, Codex, Gemini CLI, Copilot CLI, Junie) KSafe's patterns, anti-patterns, and gotchas. Restart your agent session after installing — skills load at session start.
 
 <details>
-<summary><b>Claude Code (recommended)</b> — plugin install with updates</summary>
+<summary><b>Claude Code (recommended)</b> — installs once, updates itself</summary>
+
+Run **both** commands, in this order, inside any Claude Code session. It's a one-time setup:
 
 ```
-/plugin marketplace add ioannisa/KSafe
-/plugin install ksafe@ksafe
+/plugin marketplace add ioannisa/KSafe    # 1. register this repo as a plugin source
+/plugin install ksafe@ksafe               # 2. install the ksafe skill from it
 ```
 
-Claude Code checks the marketplace for updates at session start; `/plugin update` pulls
-the latest immediately. Skill updates ship with the repo — no re-download loop.
+The first command only tells Claude Code where the plugin lives — it installs nothing by
+itself. The second does the actual install (the format is `<plugin>@<marketplace>`; both
+happen to be named `ksafe` here). Restart the session and the skill is active.
+
+From then on you're done: Claude Code checks this repo for updates at the start of every
+session, so skill improvements arrive on their own. `/plugin update` fetches the latest
+immediately if you don't want to wait.
 </details>
 
 <details>
-<summary><b>Other agents</b> — via the skills.sh CLI or a plain copy</summary>
+<summary><b>Other agents</b> (Codex, Gemini CLI, Copilot, Cursor, Junie, …) — pick ONE of the two options below</summary>
 
-With the cross-agent [skills CLI](https://skills.sh) (Codex, Gemini CLI, Cursor, Copilot, and 30+ agents):
+**Option A — the [skills.sh](https://skills.sh) CLI (recommended):** one command installs the
+skill into whichever of your agents you select in its prompt (30+ supported):
 
 ```bash
 npx skills add ioannisa/KSafe
 ```
 
-Re-run the same command to update. Or copy the file directly:
+There is no auto-update for these agents — re-run the same command whenever you want the
+latest skill (e.g. after a KSafe release).
+
+**Option B — plain copy, no tooling:** fetch the file straight into each agent's skills
+directory. Edit the agent list to match what you actually use:
 
 ```bash
 for agent in codex gemini copilot junie; do
@@ -44,9 +56,10 @@ for agent in codex gemini copilot junie; do
 done
 ```
 
-Edit the loop to skip agents you don't use (add `claude` if you prefer a plain skill over
-the plugin). The curl path has no update channel — re-run it to refresh. If you've already
-cloned this repo, `cp -r skills/ksafe "$HOME/.<agent>/skills/"` works too (faster, offline).
+Re-run it to refresh (again: no auto-update). If you've already cloned this repo,
+`cp -r skills/ksafe "$HOME/.<agent>/skills/"` does the same thing offline. Add `claude` to
+the list only if you prefer a plain skill over the plugin from the section above — don't
+do both.
 </details>
 
 ## What is KSafe?
