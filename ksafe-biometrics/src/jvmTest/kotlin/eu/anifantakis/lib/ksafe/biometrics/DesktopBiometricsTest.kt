@@ -9,8 +9,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Locks in: the 2.2.0 JVM desktop-prompt dispatch — a prompt denial propagates as `false`
- * (the pre-2.2.0 always-`true` no longer masks it), success seeds the authorization cache
+ * Locks in: the 2.2.0 JVM desktop-prompt dispatch — a prompt denial propagates as `false`,
+ * success seeds the authorization cache
  * with strength-keyed slots, and the WinRT pinterface-GUID computation the Windows Hello
  * bridge depends on reproduces published reference GUIDs. The OS prompt itself is
  * replaced by the test seam, so no real dialogs appear.
@@ -190,12 +190,7 @@ class DesktopBiometricsTest {
 
     @Test
     fun asyncOpUserConsent_usesTheNonFlagsEnumSignature() {
-        // The published reference test above only covers string type-args, so it never
-        // exercised the enum-signature path — which is exactly where the shipped bug lived:
-        // UserConsentVerificationResult is a non-[Flags] enum (Int32 underlying type) → "i4",
-        // NOT "u4". The wrong "u4" GUID made RequestVerificationForWindowAsync reject the
-        // REFIID with E_NOINTERFACE, and the permissive pass-through masked it as success.
-        // Windows confirmed this value by accepting the REFIID (RequestVerification -> S_OK).
+        // The reference GUIDs above cover string type-args only; this locks in the enum path.
         assertEquals(
             "fd596ffd-2318-558f-9dbe-d21df43764a5",
             WinRtGuid.ASYNC_OP_USER_CONSENT,

@@ -94,11 +94,6 @@ private fun warnUnavailableOnce(reason: String) {
     }
 }
 
-/**
- * Runs the WebAuthn gate. Opt-out → legacy pass-through; authenticator genuinely
- * unavailable → permissive passes / strict refuses; reachable authenticator → the real
- * ceremony outcome, with denials and unexpected errors failing closed.
- */
 private suspend fun runWebAuthnGate(allowDeviceCredentialFallback: Boolean): Boolean {
     if (!KSafeBiometricsWeb.promptsEnabled) return true // legacy no-op, both modes
 
@@ -117,9 +112,7 @@ private suspend fun runWebAuthnGate(allowDeviceCredentialFallback: Boolean): Boo
             webBioLocalSet(WEBAUTHN_CREDENTIAL_ID_KEY, outcome.removePrefix("registered:"))
             true
         }
-        // denied:* (cancel/refusal) and error:* both fail closed — the authenticator was
-        // reachable, so nothing short of a verified ceremony may pass.
-        else -> false
+        else -> false // denied:* and error:* — fail closed
     }
 }
 
@@ -142,7 +135,6 @@ internal actual suspend fun platformVerifyBiometric(
     val success = promptGate.withSinglePrompt { runWebAuthnGate(allowDeviceCredentialFallback) }
 
     if (success && BiometricAuthSession.shouldCache(authorizationDuration)) {
-        // Seed only while the caller is still active (mirrors the other platforms).
         seedBiometricSessionIfActive {
             biometricAuthSessions[
                 BiometricAuthSession.sessionKey(
@@ -180,9 +172,8 @@ internal actual fun platformClearBiometricAuth(scope: String?) {
 }
 
 internal actual suspend fun platformBiometricsAvailable(allowDeviceCredentialFallback: Boolean): Boolean {
-    // Opted out → verify is the legacy pass-through, so there is no real prompt to report.
-    // The fallback flag is accepted for API symmetry but cannot narrow the answer here:
-    // WebAuthn user verification is whatever the platform authenticator offers.
+    // The fallback flag is accepted for API symmetry only — WebAuthn user verification
+    // is whatever the platform authenticator offers, so it cannot narrow the answer.
     if (!KSafeBiometricsWeb.promptsEnabled) return false
     return ceremony("available", null) == "yes"
 }

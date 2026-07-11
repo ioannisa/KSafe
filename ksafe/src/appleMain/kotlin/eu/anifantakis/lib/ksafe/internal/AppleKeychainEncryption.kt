@@ -124,9 +124,8 @@ internal class AppleKeychainEncryption(
     /**
      * Simulator-only escape hatch for an entitlement-blocked Keychain (see
      * [SimulatorFallbackKeyStore]). Defaults to the sandbox file store on the iOS
-     * Simulator and to null (disabled) everywhere else — real devices and macOS keep
-     * failing loudly on -34018. Not auto-enabled when [keychainStore] is a test fake,
-     * so existing fake-store tests keep their exact semantics; tests inject their own.
+     * Simulator and to null (disabled) everywhere else. Not auto-enabled when
+     * [keychainStore] is a test fake; tests inject their own.
      */
     private val simulatorFallback: SimulatorFallbackKeyStore? =
         if (keychainStore == null && SecurityChecker.isEmulator()) {
@@ -597,11 +596,9 @@ internal class AppleKeychainEncryption(
             keyBytesCache.remove(keyId)
         }
 
-        // A Simulator fallback key, once minted for this alias, wins over the Keychain
-        // unconditionally (sticky precedence): every run of an install decrypts with the
-        // same key even if the entitlement problem is fixed later. Consulted before the
-        // SE-wrapped read so an entitlement-blocked Keychain can't fail a decrypt whose
-        // key lives in the fallback store.
+        // A Simulator fallback key, once minted, wins over the Keychain unconditionally
+        // (sticky precedence): every run of an install decrypts with the same key even if
+        // the entitlement problem is fixed later.
         simulatorFallback?.read(keyId)?.let { bytes ->
             fallbackKeyServed(keyId)
             if (requireUnlockedDevice != true) {
@@ -661,10 +658,8 @@ internal class AppleKeychainEncryption(
                 } catch (e: IllegalStateException) {
                     val msg = e.message ?: ""
                     when {
-                        // Entitlement-blocked Keychain on the Simulator (-34018): the
-                        // plain path serves or mints the sandbox fallback key. Checked
-                        // before the rethrow guards — the -34018 message also matches
-                        // their "Keychain error" substring.
+                        // Must precede the rethrow guards: the -34018 message also
+                        // matches their "Keychain error" substring.
                         simulatorFallback != null && isMissingEntitlementFailure(msg) ->
                             getOrCreateKeychainKeyPlain(keyId, requireUnlockedDevice)
                         isTransientUnwrapFailure(msg) ||
@@ -735,8 +730,7 @@ internal class AppleKeychainEncryption(
     /**
      * Plain path — get or create an unwrapped AES key stored directly in the Keychain,
      * or in the Simulator sandbox fallback store when the Keychain rejects this process
-     * with `errSecMissingEntitlement` (-34018). Real devices construct no fallback, so
-     * for them every branch below still fails loudly.
+     * with `errSecMissingEntitlement` (-34018).
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     private fun getOrCreateKeychainKeyPlain(keyId: String, requireUnlockedDevice: Boolean?): ByteArray {
@@ -750,10 +744,8 @@ internal class AppleKeychainEncryption(
             getExistingKeychainKeyRaw(keyId)
         } catch (e: IllegalStateException) {
             if (simulatorFallback == null || !isMissingEntitlementFailure(e.message)) throw e
-            // Unentitled Simulator process (no signing team / Keychain Sharing): mint
-            // straight into the sandbox store. The Keychain store is NOT attempted —
-            // its delete-then-add would run against a Keychain whose state is
-            // unreadable and could destroy an existing key were the block asymmetric.
+            // Mint straight into the sandbox store — storeInKeychain's delete-then-add
+            // must not run against a Keychain whose state is unreadable.
             val newKey = secureRandomBytes(keySizeBytes)
             simulatorFallback.write(keyId, newKey)
             fallbackKeyServed(keyId)

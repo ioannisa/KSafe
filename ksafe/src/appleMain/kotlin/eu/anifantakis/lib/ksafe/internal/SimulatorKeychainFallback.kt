@@ -20,10 +20,9 @@ import platform.posix.memcpy
  * Simulator-only escape hatch for an entitlement-blocked Keychain.
  *
  * An app with no signing team / no Keychain Sharing capability gets
- * `errSecMissingEntitlement` (-34018) from every Keychain call on the iOS Simulator —
- * previously failing every encrypted KSafe write with nothing the developer could do
- * short of changing their Xcode signing setup. When that exact status is hit *on the
- * Simulator*, [AppleKeychainEncryption] falls back to this store instead.
+ * `errSecMissingEntitlement` (-34018) from every Keychain call on the iOS Simulator.
+ * When that exact status is hit *on the Simulator*, [AppleKeychainEncryption] falls
+ * back to this store instead of failing every encrypted write.
  *
  * Security: the Simulator's Keychain is itself just a file on the host Mac — no SEP,
  * no hardware — so a sandbox-file key here is the same trust tier, not a downgrade of
@@ -57,8 +56,6 @@ internal class FileSimulatorFallbackKeyStore(
     private val serviceName: String,
 ) : SimulatorFallbackKeyStore {
 
-    // Resolved lazily: it only matters once a fallback key is actually read or minted,
-    // and a resolution failure should surface on that op, not at engine construction.
     private val dirPath: String by lazy {
         val base = NSFileManager.defaultManager.URLForDirectory(
             directory = NSApplicationSupportDirectory,

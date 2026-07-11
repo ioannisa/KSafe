@@ -166,13 +166,6 @@ internal class KSafeCore(
      */
     private val maxParallelEncrypts = 8
 
-    // NOTE: construction side-effects live in the init block at the BOTTOM of this class.
-    // They launch coroutines onto other threads, and Kotlin runs property initializers and
-    // init blocks in declaration order — an init placed here let those coroutines observe
-    // null for properties declared further down (the collector's startup cleanup read
-    // `startupCleanupDone` before its initializer ran: an NPE that only starved 2-vCPU CI
-    // runners were slow enough to hit).
-
     /**
      * Eagerly creates both master keys (relaxed + strict) off-thread. Failures are
      * swallowed — the lazy-create path retries on the first real write.
@@ -1585,13 +1578,6 @@ internal class KSafeCore(
         internal fun isNullSentinel(value: Any?): Boolean = value == NULL_SENTINEL
     }
 
-    // Construction side-effects — deliberately the LAST declaration in the class. These
-    // launch coroutines onto other threads; because Kotlin runs property initializers and
-    // init blocks in declaration order, this block must come after every property or a
-    // fast-scheduled coroutine can observe a half-constructed instance (null fields).
-    // Exactly that bit us on starved 2-vCPU CI runners: the collector's first-emission
-    // startup cleanup read `startupCleanupDone` before its initializer had run (NPE at
-    // compareAndSet), failing dozens of JVM tests and crashing Native test workers.
     init {
         startWriteConsumer()
         if (!lazyLoad) startBackgroundCollector()

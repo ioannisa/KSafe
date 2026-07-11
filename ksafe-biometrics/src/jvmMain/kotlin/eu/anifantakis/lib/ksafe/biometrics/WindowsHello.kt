@@ -41,11 +41,9 @@ internal object WinRtGuid {
 
     /**
      * `IAsyncOperation<Windows.Security.Credentials.UI.UserConsentVerificationResult>`.
-     * The enum's WinRT signature is `i4` (signed Int32): `UserConsentVerificationResult`
-     * is a non-`[Flags]` enum, and those have Int32 underlying type. `u4` (UInt32, used only
-     * for `[Flags]` enums) computes a *different* GUID, which `RequestVerificationForWindowAsync`
-     * rejects with `E_NOINTERFACE` (0x80004002) — the bug that made the prompt silently
-     * pass through instead of gating. Locked in by [DesktopBiometricsTest].
+     * The enum signature is `i4`: a non-`[Flags]` enum has Int32 underlying type. `u4`
+     * ([Flags]/UInt32) computes a different GUID, which `RequestVerificationForWindowAsync`
+     * rejects with `E_NOINTERFACE`.
      */
     val ASYNC_OP_USER_CONSENT: String = pinterfaceGuid(
         "pinterface({9fc2b0bb-e446-44e2-aa61-9cab8f636af2};" +
@@ -81,7 +79,6 @@ internal object WindowsHello {
 
     private const val RUNTIME_CLASS = "Windows.Security.Credentials.UI.UserConsentVerifier"
     private const val IID_USER_CONSENT_VERIFIER_INTEROP = "39e050c3-4e74-441a-8dc0-b81104df949c"
-    // From the winmd metadata (windows-rs bindings publish it verbatim).
     private const val IID_USER_CONSENT_VERIFIER_STATICS = "af4f3f91-564c-4ddc-b8b5-973447627c65"
     private const val IID_ASYNC_INFO = "00000036-0000-0000-c000-000000000046"
     private const val RPC_E_CHANGED_MODE = -0x7FFEFEFA // 0x80010106
@@ -171,9 +168,8 @@ internal object WindowsHello {
             if (hrFactory != 0) return false
             statics = staticsRef.value
 
-            // IUserConsentVerifierStatics is IInspectable-based → slot 6 is
-            // CheckAvailabilityAsync(void** asyncOp) — the typed async op comes out
-            // directly, no REFIID parameter (per the winmd vtable).
+            // IInspectable-based → slot 6 is CheckAvailabilityAsync(void** asyncOp);
+            // the typed async op comes out directly, no REFIID parameter.
             val asyncRef = PointerByReference()
             if (comCall(statics, 6, asyncRef) != 0) return false
             asyncOp = asyncRef.value
@@ -211,7 +207,6 @@ internal object WindowsHello {
         }
     }
 
-    /** Maps a `UserConsentVerificationResult` to the final decision. Pure, so it is unit-tested. */
     internal fun classifyResult(resultValue: Int, allowDeviceCredentialFallback: Boolean): Boolean = when (resultValue) {
         VERIFIED -> true
         // Hello IS installed but not usable for this device/user — a genuine "unavailable"
@@ -230,8 +225,7 @@ internal object WindowsHello {
      * later COM/bridge failure fails CLOSED (`false`). Pass-through is reserved for a genuine
      * "Hello not usable" — the factory never resolved (runtime absent), or [classifyResult]
      * sees an explicit no-device / not-configured / policy-disabled result — where permissive
-     * mode keeps the legacy pass-through and strict mode refuses. (The pre-fix code passed
-     * through on *every* early failure, which is exactly what masked the u4/i4 GUID bug.)
+     * mode keeps the legacy pass-through and strict mode refuses.
      */
     fun evaluate(reason: String, allowDeviceCredentialFallback: Boolean, timeoutMs: Long = 300_000): Boolean {
         val rt = runtime ?: return false
@@ -254,8 +248,6 @@ internal object WindowsHello {
             if (hrFactory != 0) return unavailable(allowDeviceCredentialFallback)
             factory = factoryRef.value
 
-            // Factory resolved above → Hello IS present. From here, a failure is a bridge error,
-            // not "Hello absent": fail closed (false), never pass through.
             reasonHstr = createHString(rt, reason) ?: return false
             val asyncRef = PointerByReference()
             // IUserConsentVerifierInterop is IInspectable-based → slot 6 is
@@ -265,13 +257,13 @@ internal object WindowsHello {
                 pickWindowHandle(rt), reasonHstr,
                 WinRtGuid.toWindowsBytes(WinRtGuid.ASYNC_OP_USER_CONSENT), asyncRef,
             )
-            if (hrRequest != 0) return false // post-factory bridge error → fail closed (this was the masked bug)
+            if (hrRequest != 0) return false
             asyncOp = asyncRef.value
 
             // Wait via IAsyncInfo::get_Status (slot 7) — polling avoids implementing a
             // COM callback object for the Completed handler.
             val infoRef = PointerByReference()
-            if (comCall(asyncOp, 0, WinRtGuid.toWindowsBytes(IID_ASYNC_INFO), infoRef) != 0) return false // bridge error → fail closed
+            if (comCall(asyncOp, 0, WinRtGuid.toWindowsBytes(IID_ASYNC_INFO), infoRef) != 0) return false
             asyncInfo = infoRef.value
             val deadline = System.nanoTime() + timeoutMs * 1_000_000
             while (true) {

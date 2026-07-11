@@ -27,7 +27,7 @@ import java.util.concurrent.ConcurrentHashMap
 private val biometricAuthSessions = ConcurrentHashMap<String, Long>()
 
 // Monotonic TTL clock (System.nanoTime never goes backward): a wall-clock jump must
-// not extend a cached authorization. Mirrors the Apple/Android implementations.
+// not extend a cached authorization.
 private fun monotonicNowMs(): Long = System.nanoTime() / 1_000_000
 
 private val directCallbackScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -90,8 +90,8 @@ internal actual suspend fun platformVerifyBiometric(
     val success = prompted ?: true // legacy pass-through where no prompt path exists
 
     if (success && BiometricAuthSession.shouldCache(authorizationDuration)) {
-        // Seed only while the caller is still active: a success arriving for a cancelled
-        // caller must not grant a later call a prompt-free pass (mirrors appleMain).
+        // A success arriving for a cancelled caller must not grant a later call a
+        // prompt-free pass.
         seedBiometricSessionIfActive {
             biometricAuthSessions[
                 BiometricAuthSession.sessionKey(authorizationDuration!!.scope, requireStrict = !allowDeviceCredentialFallback)
