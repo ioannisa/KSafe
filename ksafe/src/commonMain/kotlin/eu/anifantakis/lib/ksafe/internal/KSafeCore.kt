@@ -18,11 +18,14 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -308,13 +311,18 @@ internal class KSafeCore(
             // an empty pre-migration snapshot would treat every Keychain key as orphaned and
             // delete unrecreatable Secure Enclave keys.
             var firstEmission = true
-            storage.snapshotFlow().collect { snapshot ->
-                updateCache(snapshot)
-                if (firstEmission) {
-                    firstEmission = false
-                    runOneTimeStartupCleanup()
+            storage.snapshotFlow()
+                .onEach { snapshot ->
+                    updateCache(snapshot)
+                    if (firstEmission) {
+                        firstEmission = false
+                        runOneTimeStartupCleanup()
+                    }
                 }
-            }
+                .retryingTransientReads { attempt ->
+                    println("KSafe: snapshot collector read failed (attempt $attempt); resubscribing.")
+                }
+                .collect { }
         }
     }
 
@@ -614,6 +622,7 @@ internal class KSafeCore(
     private fun startWriteConsumer() {
         writeScope.launch {
             val batch = mutableListOf<PendingWrite>()
+            try {
             while (isActive) {
                 batch.add(writeChannel.receive())
 
@@ -650,6 +659,15 @@ internal class KSafeCore(
                         )
                     }
                 batch.clear()
+            }
+            } finally {
+                // Cancelled mid-assembly: writes pulled into this batch but not yet processed
+                // would otherwise leave their awaiters hung forever. Hand them the same
+                // cancellation a still-queued write gets in cancel().
+                if (batch.isNotEmpty()) {
+                    val cause = CancellationException("KSafe write consumer was cancelled")
+                    batch.forEach { it.completion?.cancel(cause) }
+                }
             }
         }
     }
@@ -1111,7 +1129,8 @@ internal class KSafeCore(
 
             val toCache: Any = if (value == null) NULL_SENTINEL
             else when (value) {
-                is Boolean, is Int, is Long, is Float, is Double, is String -> value
+                is String -> encodePlainString(value)
+                is Boolean, is Int, is Long, is Float, is Double -> value
                 else -> jsonEncode(json, serializer, value)
             }
             memoryCache[rawCacheKey] = toCache
@@ -1120,7 +1139,8 @@ internal class KSafeCore(
 
             val storedInBatch: Any = if (value == null) NULL_SENTINEL
             else when (value) {
-                is Boolean, is Int, is Long, is Float, is Double, is String -> value
+                is String -> encodePlainString(value)
+                is Boolean, is Int, is Long, is Float, is Double -> value
                 else -> jsonEncode(json, serializer, value)
             }
             writeChannel.trySend(
@@ -1194,7 +1214,8 @@ internal class KSafeCore(
 
         val toCache: Any = if (value == null) NULL_SENTINEL
         else when (value) {
-            is Boolean, is Int, is Long, is Float, is Double, is String -> value
+            is String -> encodePlainString(value)
+            is Boolean, is Int, is Long, is Float, is Double -> value
             else -> jsonEncode(json, serializer, value)
         }
         // Cache the value BEFORE the protection literal — the post-commit repair's orphan
@@ -1205,7 +1226,8 @@ internal class KSafeCore(
 
         val storedInBatch: Any = if (value == null) NULL_SENTINEL
         else when (value) {
-            is Boolean, is Int, is Long, is Float, is Double, is String -> value
+            is String -> encodePlainString(value)
+            is Boolean, is Int, is Long, is Float, is Double -> value
             else -> jsonEncode(json, serializer, value)
         }
 
@@ -1454,7 +1476,7 @@ internal class KSafeCore(
                 else -> defaultValue
             }
             kotlinx.serialization.descriptors.PrimitiveKind.STRING -> when (storedValue) {
-                is String -> if (storedValue == NULL_SENTINEL) null else storedValue
+                is String -> if (storedValue == NULL_SENTINEL) null else decodePlainString(storedValue)
                 else -> defaultValue
             }
             else -> {
@@ -1541,6 +1563,12 @@ internal class KSafeCore(
         // scope already terminates the consumer, and the channel is then GC'd with the core.
         writeScope.cancel()
         collectorScope.cancel()
+        // The consumer is now cancelled, so any write still sitting in the channel will never
+        // be processed. Drain them and hand each waiting caller a cancellation — otherwise a
+        // suspend put/delete/clearAll await()ing its completion on a still-live scope hangs
+        // forever. (We still don't CLOSE the channel — see the note above.)
+        val teardown = CancellationException("KSafe was cancelled before this write was processed")
+        writeChannel.drainRemaining { it.completion?.cancel(teardown) }
         // Platform hook — cancels the DataStore scope and evicts Android's process-static
         // DataStore cache; without it DataStore's coroutines pin the whole graph in heap.
         runCatching { onCancel() }
@@ -1576,6 +1604,20 @@ internal class KSafeCore(
 
         @PublishedApi
         internal fun isNullSentinel(value: Any?): Boolean = value == NULL_SENTINEL
+
+        // Escapes the one pathological plaintext String that collides with the null sentinel: a
+        // user value literally equal to NULL_SENTINEL (or already starting with this NUL-delimited
+        // marker, which no ordinary string does) would otherwise be stored raw and read back as
+        // null. Only the colliding values carry the prefix; every other string is stored verbatim.
+        private const val NULL_ESCAPE_PREFIX: String = " __KSAFE_ESC__ "
+
+        @PublishedApi
+        internal fun encodePlainString(value: String): String =
+            if (value == NULL_SENTINEL || value.startsWith(NULL_ESCAPE_PREFIX)) NULL_ESCAPE_PREFIX + value else value
+
+        @PublishedApi
+        internal fun decodePlainString(stored: String): String =
+            if (stored.startsWith(NULL_ESCAPE_PREFIX)) stored.removePrefix(NULL_ESCAPE_PREFIX) else stored
     }
 
     init {
@@ -1590,3 +1632,35 @@ private fun b64Encode(bytes: ByteArray): String = Base64.encode(bytes)
 
 @OptIn(ExperimentalEncodingApi::class)
 private fun b64Decode(encoded: String): ByteArray = Base64.decode(encoded)
+
+/**
+ * Receives and applies every element currently queued in this channel without closing it,
+ * stopping when the channel is momentarily empty. Used at teardown to hand queued-but-
+ * unprocessed writes their cancellation instead of leaving awaiters hung forever.
+ */
+internal fun <T> Channel<T>.drainRemaining(action: (T) -> Unit) {
+    while (true) {
+        val next = tryReceive().getOrNull() ?: break
+        action(next)
+    }
+}
+
+/** Capped exponential backoff (50ms, 100, 200, 400, 800, then 1s) for [retryingTransientReads]. */
+internal fun collectorRetryBackoffMs(attempt: Long): Long =
+    minOf(1_000L, 50L shl minOf(attempt, 5L).toInt())
+
+/**
+ * Resubscribes on a transient collection failure instead of terminating. Without it a single
+ * storage-read IOException (or an updateCache hiccup) permanently kills the snapshot collector,
+ * freezing the in-memory cache for the whole process lifetime — every later read serves stale
+ * data and no external change is ever observed. Cancellation still stops it; [onRetry] receives
+ * the 1-based attempt for logging.
+ */
+internal fun <T> Flow<T>.retryingTransientReads(
+    onRetry: (attempt: Long) -> Unit = {},
+): Flow<T> = retryWhen { cause, attempt ->
+    if (cause is CancellationException) return@retryWhen false
+    onRetry(attempt + 1)
+    delay(collectorRetryBackoffMs(attempt))
+    true
+}

@@ -66,6 +66,17 @@ abstract class KSafeTest {
     }
 
     @Test
+    fun testPlainString_equalToInternalNullMarker_roundTrips_notNull() = runTest {
+        val ksafe = createKSafe()
+        // A user value that is byte-for-byte the internal "stored null" marker must come back
+        // as the literal string, not as null (M8 — plaintext null-sentinel collision).
+        val collision = "__KSAFE_NULL_VALUE__"
+        ksafe.put("collision", collision, KSafeWriteMode.Plain)
+        assertEquals(collision, ksafe.get("collision", "fallback"))
+        assertEquals(collision, ksafe.getDirect("collision", "fallback"))
+    }
+
+    @Test
     fun testCustomPrimitiveDescriptorSerializer_roundTrips_inPlainMode() = runTest {
         val ksafe = createKSafe()
         ksafe.put("tag_plain", Tag("alpha"), KSafeWriteMode.Plain)
