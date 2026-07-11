@@ -132,6 +132,36 @@ class DesktopBiometricsTest {
         )
     }
 
+    @Test
+    fun classifyResult_passesThroughOnlyGenuineUnavailability_blocksRealDenials() {
+        // Raw UserConsentVerificationResult codes: 0=Verified, 1=DeviceNotPresent,
+        // 2=NotConfiguredForUser, 3=DisabledByPolicy, 6=Canceled.
+        assertTrue(WindowsHello.classifyResult(0, allowDeviceCredentialFallback = true), "Verified")
+        assertTrue(WindowsHello.classifyResult(0, allowDeviceCredentialFallback = false), "Verified is always true")
+        // A real denial blocks even in permissive mode — Hello was shown and refused.
+        assertFalse(WindowsHello.classifyResult(6, allowDeviceCredentialFallback = true), "Canceled must block")
+        // Genuine "Hello not usable" → permissive passes through, strict refuses.
+        assertTrue(WindowsHello.classifyResult(2, allowDeviceCredentialFallback = true), "NotConfigured + permissive → pass")
+        assertFalse(WindowsHello.classifyResult(2, allowDeviceCredentialFallback = false), "NotConfigured + strict → refuse")
+        assertFalse(WindowsHello.classifyResult(1, allowDeviceCredentialFallback = false), "DeviceNotPresent + strict → refuse")
+        assertTrue(WindowsHello.classifyResult(3, allowDeviceCredentialFallback = true), "DisabledByPolicy + permissive → pass")
+    }
+
+    @Test
+    fun asyncOpUserConsent_usesTheNonFlagsEnumSignature() {
+        // The published reference test above only covers string type-args, so it never
+        // exercised the enum-signature path — which is exactly where the shipped bug lived:
+        // UserConsentVerificationResult is a non-[Flags] enum (Int32 underlying type) → "i4",
+        // NOT "u4". The wrong "u4" GUID made RequestVerificationForWindowAsync reject the
+        // REFIID with E_NOINTERFACE, and the permissive pass-through masked it as success.
+        // Windows confirmed this value by accepting the REFIID (RequestVerification -> S_OK).
+        assertEquals(
+            "fd596ffd-2318-558f-9dbe-d21df43764a5",
+            WinRtGuid.ASYNC_OP_USER_CONSENT,
+            "IAsyncOperation<UserConsentVerificationResult> must use the i4 (non-flags enum) signature",
+        )
+    }
+
     // ---- Live probe (opt-in): pops a REAL system prompt; excluded from normal runs ----
 
     @Test

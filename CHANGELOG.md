@@ -24,10 +24,10 @@ Security-hardening **and feature** release: real biometric prompts on JVM Deskto
     through the Objective-C runtime with JNA. Policy mapping matches the native macOS
     target exactly (`allowDeviceCredentialFallback = false` → Touch ID only).
   - **Windows**: Windows Hello (biometrics or Hello PIN) via `UserConsentVerifier`,
-    bridged through WinRT COM interop with JNA — works on both x64 and ARM64 Windows.
+    bridged through WinRT COM interop with JNA — on both x64 and ARM64 Windows.
     Platform note: Windows treats the Hello PIN as part of Hello, so
     `allowDeviceCredentialFallback = false` cannot exclude the PIN there; it still keys
-    the authorization cache strictly and hard-refuses when Hello is absent entirely.
+    the authorization cache strictly.
   - The per-scope authorization cache (`authorizationDuration`) works on desktop with the
     same semantics as Android/Apple: monotonic clock, strength-keyed slots (a PIN/password
     success can never satisfy a biometrics-only call), no seeding after cancellation.

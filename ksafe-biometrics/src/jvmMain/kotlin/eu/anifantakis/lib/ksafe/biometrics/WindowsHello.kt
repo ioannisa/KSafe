@@ -39,10 +39,17 @@ internal object WinRtGuid {
         return "${hex(0, 4)}-${hex(4, 6)}-${hex(6, 8)}-${hex(8, 10)}-${hex(10, 16)}"
     }
 
-    /** `IAsyncOperation<Windows.Security.Credentials.UI.UserConsentVerificationResult>`. */
+    /**
+     * `IAsyncOperation<Windows.Security.Credentials.UI.UserConsentVerificationResult>`.
+     * The enum's WinRT signature is `i4` (signed Int32): `UserConsentVerificationResult`
+     * is a non-`[Flags]` enum, and those have Int32 underlying type. `u4` (UInt32, used only
+     * for `[Flags]` enums) computes a *different* GUID, which `RequestVerificationForWindowAsync`
+     * rejects with `E_NOINTERFACE` (0x80004002) — the bug that made the prompt silently
+     * pass through instead of gating. Locked in by [DesktopBiometricsTest].
+     */
     val ASYNC_OP_USER_CONSENT: String = pinterfaceGuid(
         "pinterface({9fc2b0bb-e446-44e2-aa61-9cab8f636af2};" +
-            "enum(Windows.Security.Credentials.UI.UserConsentVerificationResult;u4))"
+            "enum(Windows.Security.Credentials.UI.UserConsentVerificationResult;i4))"
     )
 
     /** A canonical-string GUID as the 16-byte little-endian Windows layout JNA can pass as REFIID. */
@@ -138,11 +145,27 @@ internal object WindowsHello {
         return if (hr == 0) out.value else null
     }
 
+    /** Maps a `UserConsentVerificationResult` to the final decision. Pure, so it is unit-tested. */
+    internal fun classifyResult(resultValue: Int, allowDeviceCredentialFallback: Boolean): Boolean = when (resultValue) {
+        VERIFIED -> true
+        // Hello IS installed but not usable for this device/user — a genuine "unavailable"
+        // that Windows reports explicitly: pass through (permissive) / refuse (strict).
+        DEVICE_NOT_PRESENT, NOT_CONFIGURED_FOR_USER, DISABLED_BY_POLICY ->
+            unavailable(allowDeviceCredentialFallback)
+        else -> false // Canceled, RetriesExhausted, DeviceBusy — a real denial, block.
+    }
+
     /**
      * Shows the Windows Hello prompt and blocks until it resolves (call from a
-     * background dispatcher). Returns true only on [VERIFIED]; when Hello is entirely
-     * unavailable (no device / not configured / policy-disabled) the permissive mode
-     * preserves the legacy pass-through and strict mode refuses.
+     * background dispatcher). Returns true only on [VERIFIED].
+     *
+     * Unavailable-vs-error split, so a broken bridge can never be mistaken for a successful
+     * auth: once the activation factory resolves, Hello IS present on this machine, so any
+     * later COM/bridge failure fails CLOSED (`false`). Pass-through is reserved for a genuine
+     * "Hello not usable" — the factory never resolved (runtime absent), or [classifyResult]
+     * sees an explicit no-device / not-configured / policy-disabled result — where permissive
+     * mode keeps the legacy pass-through and strict mode refuses. (The pre-fix code passed
+     * through on *every* early failure, which is exactly what masked the u4/i4 GUID bug.)
      */
     fun evaluate(reason: String, allowDeviceCredentialFallback: Boolean, timeoutMs: Long = 300_000): Boolean {
         val rt = runtime ?: return false
@@ -165,7 +188,9 @@ internal object WindowsHello {
             if (hrFactory != 0) return unavailable(allowDeviceCredentialFallback)
             factory = factoryRef.value
 
-            reasonHstr = createHString(rt, reason) ?: return unavailable(allowDeviceCredentialFallback)
+            // Factory resolved above → Hello IS present. From here, a failure is a bridge error,
+            // not "Hello absent": fail closed (false), never pass through.
+            reasonHstr = createHString(rt, reason) ?: return false
             val asyncRef = PointerByReference()
             // IUserConsentVerifierInterop is IInspectable-based → slot 6 is
             // RequestVerificationForWindowAsync(HWND, HSTRING, REFIID, void**).
@@ -174,15 +199,13 @@ internal object WindowsHello {
                 pickWindowHandle(rt), reasonHstr,
                 WinRtGuid.toWindowsBytes(WinRtGuid.ASYNC_OP_USER_CONSENT), asyncRef,
             )
-            if (hrRequest != 0) return unavailable(allowDeviceCredentialFallback)
+            if (hrRequest != 0) return false // post-factory bridge error → fail closed (this was the masked bug)
             asyncOp = asyncRef.value
 
             // Wait via IAsyncInfo::get_Status (slot 7) — polling avoids implementing a
             // COM callback object for the Completed handler.
             val infoRef = PointerByReference()
-            if (comCall(asyncOp, 0, WinRtGuid.toWindowsBytes(IID_ASYNC_INFO), infoRef) != 0) {
-                return unavailable(allowDeviceCredentialFallback)
-            }
+            if (comCall(asyncOp, 0, WinRtGuid.toWindowsBytes(IID_ASYNC_INFO), infoRef) != 0) return false // bridge error → fail closed
             asyncInfo = infoRef.value
             val deadline = System.nanoTime() + timeoutMs * 1_000_000
             while (true) {
@@ -202,12 +225,7 @@ internal object WindowsHello {
             // IAsyncOperation<T>::GetResults — slot 8 (6 IInspectable + put/get_Completed).
             val resultRef = IntByReference()
             if (comCall(asyncOp, 8, resultRef) != 0) return false
-            return when (resultRef.value) {
-                VERIFIED -> true
-                DEVICE_NOT_PRESENT, NOT_CONFIGURED_FOR_USER, DISABLED_BY_POLICY ->
-                    unavailable(allowDeviceCredentialFallback)
-                else -> false // Canceled, RetriesExhausted, DeviceBusy
-            }
+            return classifyResult(resultRef.value, allowDeviceCredentialFallback)
         } catch (t: Throwable) {
             System.err.println("KSafe biometrics: Windows Hello prompt failed (${t.message})")
             return false
