@@ -2,7 +2,7 @@
 
 All notable changes to KSafe will be documented in this file.
 
-## [2.2.0] - 2026-07-02
+## [2.2.0] - 2026-07-11
 
 Security-hardening **and feature** release: real biometric prompts on JVM Desktop, and the iOS Simulator now works without Keychain entitlements. It completes the 2.1.3 `requireUnlockedDevice` fix (2.1.3 covered only the direct-read path) and closes a set of multi-instance, multi-tab, and biometric edge cases. **Drop-in upgrade from 2.1.3** — on-disk format is unchanged and existing data keeps working without migration.
 
