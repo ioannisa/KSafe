@@ -459,6 +459,15 @@ KSafeBiometrics.verifyBiometric(
 KSafeBiometrics.verifyBiometric("Step-up", allowDeviceCredentialFallback = false)
 ```
 
+Know up front whether a real prompt is even possible (2.2.0+) — `false` means verify would
+pass through / refuse without gating, so route to your own PIN/password flow instead:
+
+```kotlin
+// suspend (+ biometricsAvailableDirect { } callback). Never shows UI, no gesture needed.
+// Probe ONCE at startup (on web: next to awaitCacheReady()) and keep in app state.
+if (KSafeBiometrics.biometricsAvailable()) { /* biometric flow */ } else { /* PIN screen */ }
+```
+
 `verifyBiometric` is `suspend`; `verifyBiometricDirect` is callback-based and delivers
 `onResult` on the **main thread** on Android and Apple (2.1.2+) — safe to touch UI from it.
 Concurrent calls are serialized (a second prompt queues behind the first).
@@ -752,6 +761,7 @@ KSafe.VERSION                 // linked artifact version
 // Biometrics (:ksafe-biometrics — static, suspend verifyBiometric / callback verifyBiometricDirect)
 suspend fun a() = KSafeBiometrics.verifyBiometric(reason)            // Boolean
 KSafeBiometrics.verifyBiometricDirect(reason) { success -> }
+suspend fun avail() = KSafeBiometrics.biometricsAvailable()          // real prompt possible? (false = pass-through)
 
 // Secrets — getOrCreateSecret is SUSPEND
 suspend fun s() { val pw: ByteArray = ksafe.getOrCreateSecret("name") }   // 256-bit, hw-isolated

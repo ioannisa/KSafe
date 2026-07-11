@@ -145,3 +145,29 @@ private fun runLAContextEvaluate(
         CoroutineScope(Dispatchers.Main).launch { onResult(success) }
     }
 }
+
+/** Synchronous platform check backing both `biometricsAvailable` variants. */
+@OptIn(ExperimentalForeignApi::class)
+private fun appleBiometricsAvailability(allowDeviceCredentialFallback: Boolean): Boolean {
+    // The Simulator verify path is a pass-through (no real gate), so availability reports
+    // false — the API's contract is "will verifyBiometric show a REAL prompt".
+    if (isSimulator()) return false
+    val policy = if (allowDeviceCredentialFallback) {
+        platform.LocalAuthentication.LAPolicyDeviceOwnerAuthentication
+    } else {
+        platform.LocalAuthentication.LAPolicyDeviceOwnerAuthenticationWithBiometrics
+    }
+    return platform.LocalAuthentication.LAContext().canEvaluatePolicy(policy, error = null)
+}
+
+internal actual suspend fun platformBiometricsAvailable(allowDeviceCredentialFallback: Boolean): Boolean =
+    appleBiometricsAvailability(allowDeviceCredentialFallback)
+
+internal actual fun platformBiometricsAvailableDirect(
+    allowDeviceCredentialFallback: Boolean,
+    onResult: (Boolean) -> Unit,
+) {
+    val result = appleBiometricsAvailability(allowDeviceCredentialFallback)
+    // Main-thread delivery, like the other Apple callbacks.
+    CoroutineScope(Dispatchers.Main).launch { onResult(result) }
+}

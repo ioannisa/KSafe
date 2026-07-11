@@ -81,6 +81,8 @@ internal object WindowsHello {
 
     private const val RUNTIME_CLASS = "Windows.Security.Credentials.UI.UserConsentVerifier"
     private const val IID_USER_CONSENT_VERIFIER_INTEROP = "39e050c3-4e74-441a-8dc0-b81104df949c"
+    // From the winmd metadata (windows-rs bindings publish it verbatim).
+    private const val IID_USER_CONSENT_VERIFIER_STATICS = "af4f3f91-564c-4ddc-b8b5-973447627c65"
     private const val IID_ASYNC_INFO = "00000036-0000-0000-c000-000000000046"
     private const val RPC_E_CHANGED_MODE = -0x7FFEFEFA // 0x80010106
 
@@ -143,6 +145,70 @@ internal object WindowsHello {
         val hr = rt.combase.getFunction("WindowsCreateString")
             .invokeInt(arrayOf(WString(s), s.length, out))
         return if (hr == 0) out.value else null
+    }
+
+    /**
+     * `UserConsentVerifier.CheckAvailabilityAsync` — whether [evaluate] would show a real
+     * Hello prompt. Prompt-free and fast (local COM round-trip); blocks briefly, so call it
+     * off the caller's dispatcher. `Available` (0) → true; anything else (no device, not
+     * configured, policy-disabled, busy) or any COM failure → false.
+     */
+    fun checkAvailability(timeoutMs: Long = 10_000): Boolean {
+        val rt = runtime ?: return false
+        var classHstr: Pointer? = null
+        var statics: Pointer? = null
+        var asyncOp: Pointer? = null
+        var asyncInfo: Pointer? = null
+        try {
+            val hrInit = rt.combase.getFunction("RoInitialize").invokeInt(arrayOf(1))
+            if (hrInit != 0 && hrInit != 1 && hrInit != RPC_E_CHANGED_MODE) return false
+
+            classHstr = createHString(rt, RUNTIME_CLASS) ?: return false
+            val staticsRef = PointerByReference()
+            val hrFactory = rt.combase.getFunction("RoGetActivationFactory").invokeInt(
+                arrayOf(classHstr, WinRtGuid.toWindowsBytes(IID_USER_CONSENT_VERIFIER_STATICS), staticsRef)
+            )
+            if (hrFactory != 0) return false
+            statics = staticsRef.value
+
+            // IUserConsentVerifierStatics is IInspectable-based → slot 6 is
+            // CheckAvailabilityAsync(void** asyncOp) — the typed async op comes out
+            // directly, no REFIID parameter (per the winmd vtable).
+            val asyncRef = PointerByReference()
+            if (comCall(statics, 6, asyncRef) != 0) return false
+            asyncOp = asyncRef.value
+
+            val infoRef = PointerByReference()
+            if (comCall(asyncOp, 0, WinRtGuid.toWindowsBytes(IID_ASYNC_INFO), infoRef) != 0) return false
+            asyncInfo = infoRef.value
+            val deadline = System.nanoTime() + timeoutMs * 1_000_000
+            while (true) {
+                val statusRef = IntByReference()
+                if (comCall(asyncInfo, 7, statusRef) != 0) return false
+                if (statusRef.value != STATUS_STARTED) {
+                    if (statusRef.value != STATUS_COMPLETED) return false
+                    break
+                }
+                if (System.nanoTime() > deadline) {
+                    runCatching { comCall(asyncInfo, 9) } // IAsyncInfo::Cancel
+                    return false
+                }
+                Thread.sleep(5)
+            }
+
+            val resultRef = IntByReference()
+            if (comCall(asyncOp, 8, resultRef) != 0) return false
+            return resultRef.value == 0 // UserConsentVerifierAvailability.Available
+        } catch (t: Throwable) {
+            System.err.println("KSafe biometrics: Windows Hello availability check failed (${t.message})")
+            return false
+        } finally {
+            release(asyncInfo)
+            release(asyncOp)
+            release(statics)
+            val delete = runtime?.combase?.getFunction("WindowsDeleteString")
+            classHstr?.let { runCatching { delete?.invokeInt(arrayOf(it)) } }
+        }
     }
 
     /** Maps a `UserConsentVerificationResult` to the final decision. Pure, so it is unit-tested. */

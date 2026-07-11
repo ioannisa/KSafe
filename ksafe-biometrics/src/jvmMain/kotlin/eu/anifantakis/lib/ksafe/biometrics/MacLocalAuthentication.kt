@@ -80,6 +80,28 @@ internal object MacLocalAuthentication {
     val isAvailable: Boolean get() = runtime != null
 
     /**
+     * `LAContext.canEvaluatePolicy:error:` — whether [evaluate] would show a real prompt
+     * for this policy. Synchronous and prompt-free.
+     */
+    fun canEvaluate(allowDeviceCredentialFallback: Boolean): Boolean {
+        val rt = runtime ?: return false
+        val policy = if (allowDeviceCredentialFallback) LA_POLICY_DEVICE_OWNER else LA_POLICY_BIOMETRICS
+        val pool = rt.poolPush.invokePointer(emptyArray())
+        var context: Pointer? = null
+        return try {
+            context = rt.msgSendPtr(rt.laContextClass, rt.sel("alloc"))
+                ?.let { rt.msgSendPtr(it, rt.sel("init")) } ?: return false
+            // BOOL return marshals as int; a null error out-pointer is valid.
+            rt.msgSend.invokeInt(arrayOf(context, rt.sel("canEvaluatePolicy:error:"), policy, null)) != 0
+        } catch (t: Throwable) {
+            false
+        } finally {
+            context?.let { c -> runCatching { rt.msgSendVoid(c, rt.sel("release")) } }
+            rt.poolPop.invoke(arrayOf(pool))
+        }
+    }
+
+    /**
      * Shows the system authentication prompt and suspends until it resolves.
      * Cancelling the coroutine invalidates the pending prompt (mirrors appleMain).
      */

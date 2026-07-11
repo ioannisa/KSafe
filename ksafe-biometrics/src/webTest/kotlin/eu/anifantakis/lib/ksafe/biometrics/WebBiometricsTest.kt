@@ -166,6 +166,37 @@ class WebBiometricsTest {
     }
 
     @Test
+    fun biometricsAvailable_trueWhenPlatformAuthenticatorExists() = runTest {
+        webAuthnCallOverrideForTest = { op, _ ->
+            assertEquals("available", op, "availability must not run any prompt ceremony")
+            "yes"
+        }
+        assertTrue(KSafeBiometrics.biometricsAvailable())
+        assertTrue(KSafeBiometrics.biometricsAvailable(allowDeviceCredentialFallback = false))
+    }
+
+    @Test
+    fun biometricsAvailable_falseWhenAbsent_andWhenOptedOut() = runTest {
+        webAuthnCallOverrideForTest = { _, _ -> "no:no-platform-authenticator" }
+        assertFalse(KSafeBiometrics.biometricsAvailable())
+
+        KSafeBiometricsWeb.promptsEnabled = false
+        webAuthnCallOverrideForTest = { _, _ -> fail("opt-out must not reach the ceremony") }
+        assertFalse(
+            KSafeBiometrics.biometricsAvailable(),
+            "opted-out verify is a pass-through, so availability must report no real prompt",
+        )
+    }
+
+    @Test
+    fun biometricsAvailableDirect_deliversTheCallbackResult() = runTest {
+        webAuthnCallOverrideForTest = { _, _ -> "yes" }
+        val result = CompletableDeferred<Boolean>()
+        KSafeBiometrics.biometricsAvailableDirect { available -> result.complete(available) }
+        assertTrue(result.await())
+    }
+
+    @Test
     fun verifyBiometricDirect_deliversTheCallbackResult() = runTest {
         webBioLocalSet(WEBAUTHN_CREDENTIAL_ID_KEY, "cred-x")
         webAuthnCallOverrideForTest = { op, _ ->

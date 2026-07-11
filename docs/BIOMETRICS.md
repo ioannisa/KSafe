@@ -54,6 +54,38 @@ On Android, the library auto-initializes via a `ContentProvider` declared in its
 > localhost) is required. If the user removes the passkey OS-side, call
 > `KSafeBiometricsWeb.resetRegistration()` to force a fresh enrollment.
 
+## Checking availability — `biometricsAvailable()`
+
+Ask up front whether `verifyBiometric` would show a **real** prompt — `false` means the
+call would pass through (permissive) or refuse (strict) without gating, so your app can
+route to an alternative flow (its own PIN screen, a password) instead:
+
+```kotlin
+if (KSafeBiometrics.biometricsAvailable()) {          // suspend; also: biometricsAvailableDirect { }
+    if (KSafeBiometrics.verifyBiometric("Unlock")) unlock()
+} else {
+    showPinScreenInstead()
+}
+```
+
+The check never shows UI and needs no user gesture. It is `suspend` because the browser
+(WebAuthn) and Windows (Hello) can only answer asynchronously — the recommended pattern is
+to probe **once at startup** and keep the result in app state (on web, right next to the
+`awaitCacheReady()` call you already make):
+
+```kotlin
+LaunchedEffect(Unit) {
+    ksafe.awaitCacheReady()                                        // web storage readiness
+    appState.canUseBiometrics = KSafeBiometrics.biometricsAvailable()
+    ready = true
+}
+```
+
+The optional `allowDeviceCredentialFallback` parameter mirrors `verifyBiometric`:
+`biometricsAvailable(false)` asks whether a **biometrics-only** prompt is possible.
+Reports `false` under the opt-outs, on JVM Linux (no prompt API), and on the iOS
+Simulator (where `verifyBiometric` is a pass-through).
+
 ## Two APIs
 
 | Method | Type | Use Case |

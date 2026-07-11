@@ -55,10 +55,16 @@ object BiometricHelper {
      */
     var confirmationRequired: Boolean = true
 
+    // Application context for context-only APIs (the BiometricManager availability check);
+    // the application context cannot leak an Activity.
+    internal var applicationContext: android.content.Context? = null
+        private set
+
     /** Initialize activity tracking. Called automatically by [KSafeBiometrics]. */
     fun init(application: Application) {
         if (isInitialized) return
         isInitialized = true
+        applicationContext = application.applicationContext
 
         application.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {

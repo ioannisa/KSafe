@@ -50,6 +50,38 @@ object KSafeBiometrics {
      * Clears cached biometric authorization for [scope], or all scopes when `null`.
      */
     fun clearBiometricAuth(scope: String? = null) = platformClearBiometricAuth(scope)
+
+    /**
+     * Whether [verifyBiometric] would show a REAL authentication prompt here — `false`
+     * means the call would pass through (permissive) or refuse (strict) without any
+     * prompt, so the app can route to an alternative flow (its own PIN screen, a
+     * password, …) instead of relying on a gate that doesn't gate.
+     *
+     * `false` on: JVM Linux (no prompt API), the opt-outs
+     * (`-Dksafe.biometrics.jvm.prompts=off`, `KSafeBiometricsWeb.promptsEnabled = false`),
+     * devices with nothing to prompt (no enrolled biometrics/credentials per
+     * [allowDeviceCredentialFallback]), insecure web contexts, and the iOS Simulator
+     * (where [verifyBiometric] is a pass-through).
+     *
+     * Suspending because the browser (WebAuthn) and Windows (Hello) can only answer
+     * asynchronously; the check never shows UI and needs no user gesture, so probe it
+     * once at startup (on web, right next to `awaitCacheReady()`) and keep the result
+     * in app state for synchronous `if (available)` use everywhere.
+     *
+     * @param allowDeviceCredentialFallback mirror of [verifyBiometric]'s parameter:
+     *        `true` asks "would the default permissive prompt show", `false` asks
+     *        "is a biometrics-only prompt possible".
+     */
+    suspend fun biometricsAvailable(allowDeviceCredentialFallback: Boolean = true): Boolean =
+        platformBiometricsAvailable(allowDeviceCredentialFallback)
+
+    /**
+     * Non-suspending variant of [biometricsAvailable]; delivers the result via [onResult].
+     */
+    fun biometricsAvailableDirect(
+        allowDeviceCredentialFallback: Boolean = true,
+        onResult: (Boolean) -> Unit,
+    ) = platformBiometricsAvailableDirect(allowDeviceCredentialFallback, onResult)
 }
 
 // Per-platform implementations backing [KSafeBiometrics]; each platform owns its cache state.
@@ -68,6 +100,13 @@ internal expect fun platformVerifyBiometricDirect(
 )
 
 internal expect fun platformClearBiometricAuth(scope: String?)
+
+internal expect suspend fun platformBiometricsAvailable(allowDeviceCredentialFallback: Boolean): Boolean
+
+internal expect fun platformBiometricsAvailableDirect(
+    allowDeviceCredentialFallback: Boolean,
+    onResult: (Boolean) -> Unit,
+)
 
 /**
  * Caches a successful authentication so calls within the window skip the prompt.

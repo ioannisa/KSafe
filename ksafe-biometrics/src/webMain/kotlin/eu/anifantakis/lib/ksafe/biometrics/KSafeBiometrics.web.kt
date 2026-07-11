@@ -178,3 +178,23 @@ internal actual fun platformClearBiometricAuth(scope: String?) {
     biometricAuthSessions.remove(BiometricAuthSession.sessionKey(scope, requireStrict = false))
     biometricAuthSessions.remove(BiometricAuthSession.sessionKey(scope, requireStrict = true))
 }
+
+internal actual suspend fun platformBiometricsAvailable(allowDeviceCredentialFallback: Boolean): Boolean {
+    // Opted out → verify is the legacy pass-through, so there is no real prompt to report.
+    // The fallback flag is accepted for API symmetry but cannot narrow the answer here:
+    // WebAuthn user verification is whatever the platform authenticator offers.
+    if (!KSafeBiometricsWeb.promptsEnabled) return false
+    return ceremony("available", null) == "yes"
+}
+
+internal actual fun platformBiometricsAvailableDirect(
+    allowDeviceCredentialFallback: Boolean,
+    onResult: (Boolean) -> Unit,
+) {
+    directCallbackScope.launch {
+        val result = runCatching {
+            platformBiometricsAvailable(allowDeviceCredentialFallback)
+        }.getOrDefault(false)
+        onResult(result)
+    }
+}

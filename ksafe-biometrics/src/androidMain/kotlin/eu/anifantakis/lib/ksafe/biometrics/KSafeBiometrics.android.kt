@@ -110,3 +110,30 @@ internal actual fun platformClearBiometricAuth(scope: String?) {
         if (biometricAuthSessions.compareAndSet(current, updated)) break
     }
 }
+
+/** Synchronous platform check backing both `biometricsAvailable` variants. */
+private fun androidBiometricsAvailability(allowDeviceCredentialFallback: Boolean): Boolean {
+    // Init runs from the ContentProvider at startup; a null context means the provider was
+    // stripped/not initialized — no way to ask the OS, so report "no real prompt".
+    val context = BiometricHelper.applicationContext ?: return false
+    val authenticators = if (allowDeviceCredentialFallback) {
+        androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG or
+            androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
+    } else {
+        androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
+    }
+    return androidx.biometric.BiometricManager.from(context).canAuthenticate(authenticators) ==
+        androidx.biometric.BiometricManager.BIOMETRIC_SUCCESS
+}
+
+internal actual suspend fun platformBiometricsAvailable(allowDeviceCredentialFallback: Boolean): Boolean =
+    androidBiometricsAvailability(allowDeviceCredentialFallback)
+
+internal actual fun platformBiometricsAvailableDirect(
+    allowDeviceCredentialFallback: Boolean,
+    onResult: (Boolean) -> Unit,
+) {
+    val result = runCatching { androidBiometricsAvailability(allowDeviceCredentialFallback) }.getOrDefault(false)
+    // Main-thread delivery, like the other Android callbacks.
+    Handler(Looper.getMainLooper()).post { onResult(result) }
+}

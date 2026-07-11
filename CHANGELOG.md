@@ -41,6 +41,18 @@ Security-hardening **and feature** release: real biometric prompts on JVM Deskto
     (insecure context, no enrolled biometrics) the permissive mode passes through and
     strict refuses. `KSafeBiometricsWeb.resetRegistration()` forces a fresh enrollment
     (e.g. after the passkey was removed OS-side).
+  - **`biometricsAvailable()` / `biometricsAvailableDirect { }`** — asks, without showing
+    any UI, whether `verifyBiometric` would present a REAL prompt here (`false` = the call
+    would pass through or refuse without gating), so apps can route to an alternative flow
+    (their own PIN screen, a password) up front. Mirrors `verifyBiometric`'s
+    `allowDeviceCredentialFallback` parameter for a biometrics-only answer. Suspending
+    (plus a callback variant) because the browser and Windows can only answer
+    asynchronously — probe it once at startup (on web, next to `awaitCacheReady()`) and
+    keep the result in app state. Backed by `BiometricManager.canAuthenticate` (Android),
+    `LAContext.canEvaluatePolicy` (Apple + JVM-macOS), `UserConsentVerifier.
+    CheckAvailabilityAsync` (JVM-Windows), and the WebAuthn platform-authenticator probe
+    (web); reports `false` under the opt-outs, on JVM Linux, and on the iOS Simulator
+    (where `verifyBiometric` is a pass-through).
   - **Behavior change & migration**: previously the JVM and web targets always returned
     `true`. Apps that relied on that pass-through can restore it with
     `-Dksafe.biometrics.jvm.prompts=off` (or env `KSAFE_BIOMETRICS_JVM_PROMPTS=off`) on

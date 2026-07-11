@@ -25,6 +25,7 @@ class DesktopBiometricsTest {
     @AfterTest
     fun tearDown() {
         desktopPromptOverrideForTest = null
+        desktopAvailabilityOverrideForTest = null
         KSafeBiometrics.clearBiometricAuth()
     }
 
@@ -105,6 +106,46 @@ class DesktopBiometricsTest {
             prior?.let { System.setProperty("ksafe.biometrics.jvm.prompts", it) }
                 ?: System.clearProperty("ksafe.biometrics.jvm.prompts")
         }
+    }
+
+    // ---- biometricsAvailable ----
+
+    @Test
+    fun biometricsAvailable_reportsFalse_whenPromptsAreOptedOut() = runBlocking {
+        // Opted-out verify is a pass-through → availability must report "no real prompt",
+        // regardless of what the machine's real authenticator would say.
+        val prior = System.getProperty("ksafe.biometrics.jvm.prompts")
+        System.setProperty("ksafe.biometrics.jvm.prompts", "off")
+        try {
+            assertFalse(KSafeBiometrics.biometricsAvailable())
+            assertFalse(KSafeBiometrics.biometricsAvailable(allowDeviceCredentialFallback = false))
+        } finally {
+            prior?.let { System.setProperty("ksafe.biometrics.jvm.prompts", it) }
+                ?: System.clearProperty("ksafe.biometrics.jvm.prompts")
+        }
+    }
+
+    @Test
+    fun biometricsAvailable_passesTheStrengthFlagThrough() = runBlocking {
+        val flagsSeen = mutableListOf<Boolean>()
+        desktopAvailabilityOverrideForTest = { allowFallback -> flagsSeen += allowFallback; allowFallback }
+
+        assertTrue(KSafeBiometrics.biometricsAvailable(allowDeviceCredentialFallback = true))
+        assertFalse(KSafeBiometrics.biometricsAvailable(allowDeviceCredentialFallback = false))
+        assertEquals(listOf(true, false), flagsSeen)
+    }
+
+    @Test
+    fun biometricsAvailableDirect_deliversTheCallbackResult() {
+        desktopAvailabilityOverrideForTest = { _ -> true }
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var received = false
+        KSafeBiometrics.biometricsAvailableDirect { available ->
+            received = available
+            latch.countDown()
+        }
+        assertTrue(latch.await(2, java.util.concurrent.TimeUnit.SECONDS), "callback within 2s")
+        assertTrue(received)
     }
 
     // ---- WinRT pinterface GUID computation (the Windows Hello bridge depends on it) ----

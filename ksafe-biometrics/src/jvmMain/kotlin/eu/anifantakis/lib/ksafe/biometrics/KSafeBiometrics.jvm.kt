@@ -35,6 +35,9 @@ private val directCallbackScope = CoroutineScope(SupervisorJob() + Dispatchers.I
 /** Test seam: replaces the OS prompt so unit tests never show real dialogs. */
 internal var desktopPromptOverrideForTest: ((reason: String, allowFallback: Boolean) -> Boolean)? = null
 
+/** Test seam: replaces the OS availability probe (its real answer is machine-dependent). */
+internal var desktopAvailabilityOverrideForTest: ((allowFallback: Boolean) -> Boolean)? = null
+
 private enum class DesktopOs { MAC, WINDOWS, OTHER }
 
 private val desktopOs: DesktopOs by lazy {
@@ -122,4 +125,29 @@ internal actual fun platformClearBiometricAuth(scope: String?) {
     // Clear BOTH the permissive and strict slots for this scope (see BiometricAuthSession).
     biometricAuthSessions.remove(BiometricAuthSession.sessionKey(scope, requireStrict = false))
     biometricAuthSessions.remove(BiometricAuthSession.sessionKey(scope, requireStrict = true))
+}
+
+internal actual suspend fun platformBiometricsAvailable(allowDeviceCredentialFallback: Boolean): Boolean {
+    desktopAvailabilityOverrideForTest?.let { return it(allowDeviceCredentialFallback) }
+    if (desktopPromptsDisabled()) return false // opted out → verify is a pass-through, no real prompt
+    return when (desktopOs) {
+        DesktopOs.MAC -> MacLocalAuthentication.isAvailable &&
+            MacLocalAuthentication.canEvaluate(allowDeviceCredentialFallback)
+        // Blocking COM round-trip (prompt-free) — keep it off the caller's dispatcher.
+        DesktopOs.WINDOWS -> WindowsHello.isAvailable &&
+            withContext(Dispatchers.IO) { WindowsHello.checkAvailability() }
+        DesktopOs.OTHER -> false // no portable prompt API (Linux) → verify passes through
+    }
+}
+
+internal actual fun platformBiometricsAvailableDirect(
+    allowDeviceCredentialFallback: Boolean,
+    onResult: (Boolean) -> Unit,
+) {
+    directCallbackScope.launch {
+        val result = runCatching {
+            platformBiometricsAvailable(allowDeviceCredentialFallback)
+        }.getOrDefault(false)
+        onResult(result)
+    }
 }
