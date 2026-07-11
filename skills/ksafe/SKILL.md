@@ -471,14 +471,18 @@ Concurrent calls are serialized (a second prompt queues behind the first).
 | iOS / native macOS | `LAContext` | `false` |
 | JVM macOS (2.2.0+) | `LocalAuthentication` (policy maps like native macOS) | strict + no Touch ID → `false` |
 | JVM Windows (2.2.0+) | Windows Hello (`UserConsentVerifier`) | strict + Hello not-configured → `false` |
+| JS / WasmJS (2.2.0+) | WebAuthn platform authenticator (Touch ID / Hello / fingerprint) | permissive `true` / strict `false` |
 | **JVM Linux** | none (no portable API) | **always `true`** (pass-through) |
-| **JS / WasmJS** | none | **always `true`** (pass-through) |
 
-`-Dksafe.biometrics.jvm.prompts=off` forces pass-through on any JVM desktop. Two footguns:
-(1) On Windows the Hello PIN counts as Hello, so `allowDeviceCredentialFallback = false` can't
-exclude it there. (2) Strict (`false` = biometrics-only) is **not uniformly enforced** — it
-refuses on Windows/Mac when biometrics are absent, but **Linux/web still return `true`**. Never
-rely on `verifyBiometric` as your ONLY security boundary on Linux/web — gate it yourself.
+Opt-outs restore the legacy always-`true` no-op: `-Dksafe.biometrics.jvm.prompts=off` (JVM
+desktop), `KSafeBiometricsWeb.promptsEnabled = false` (web). Web specifics: first successful
+call enrolls a passkey (that ceremony verifies the user); the `reason` string is NOT shown
+(browser-controlled dialog); call from a user gesture or the browser may reject; needs a
+secure context (HTTPS/localhost); `KSafeBiometricsWeb.resetRegistration()` re-enrolls after
+an OS-side passkey removal. Footguns: (1) on Windows — and on the web where the platform
+treats the PIN as part of Hello — `allowDeviceCredentialFallback = false` can't exclude the
+PIN; it still keys the auth cache strictly. (2) **JVM Linux always returns `true`** (no prompt
+API) — never rely on `verifyBiometric` as your ONLY security boundary there; gate it yourself.
 
 ---
 

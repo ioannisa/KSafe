@@ -37,10 +37,22 @@ On Android, the library auto-initializes via a `ContentProvider` declared in its
 | macOS | `LAContext` — Touch ID, password, or Apple Watch | `LAContext` — Touch ID only (fails gracefully on Macs without Touch ID) |
 | JVM on macOS (2.2.0+) | `LAContext` — Touch ID, password, or Apple Watch | `LAContext` — Touch ID only |
 | JVM on Windows (2.2.0+) | Windows Hello — biometrics or Hello PIN | Windows Hello (the Hello PIN cannot be excluded — platform limitation); hard-refuses if Hello is absent |
-| JVM on Linux, JS, WasmJS | Returns `true` | Returns `true` |
+| JS, WasmJS (2.2.0+) | WebAuthn platform authenticator — Touch ID / Windows Hello / fingerprint | Same prompt (the platform PIN cannot be excluded where the OS treats it as part of the authenticator); hard-refuses if no platform authenticator |
+| JVM on Linux | Returns `true` (no portable prompt API) | Returns `true` |
 
-> JVM desktop prompts are on by default from 2.2.0. `-Dksafe.biometrics.jvm.prompts=off`
-> (or env `KSAFE_BIOMETRICS_JVM_PROMPTS=off`) restores the pre-2.2.0 always-`true` no-op.
+> JVM desktop and web prompts are on by default from 2.2.0. Opt-outs restore the
+> pre-2.2.0 always-`true` no-op: `-Dksafe.biometrics.jvm.prompts=off` (or env
+> `KSAFE_BIOMETRICS_JVM_PROMPTS=off`) on JVM desktop, `KSafeBiometricsWeb.promptsEnabled
+> = false` on the web.
+>
+> **Web specifics (JS/WasmJS).** The prompt is a WebAuthn *platform authenticator*
+> ceremony used as a local re-auth gate (self-generated challenge, no server). The first
+> successful call enrolls a passkey for the origin — that ceremony itself verifies the
+> user — and later calls verify against it. The `reason` string is **not displayed**
+> (WebAuthn dialogs are browser-controlled). Call from a user gesture (e.g. a click
+> handler) or the browser may reject the ceremony, and a secure context (HTTPS or
+> localhost) is required. If the user removes the passkey OS-side, call
+> `KSafeBiometricsWeb.resetRegistration()` to force a fresh enrollment.
 
 ## Two APIs
 

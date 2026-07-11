@@ -345,7 +345,7 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 
 ## Biometric Authentication
 
-A standalone biometric helper (Android + iOS + macOS — and, from 2.2.0, JVM Desktop: Touch ID on macOS, Windows Hello on Windows) that can gate **any action** in your app — not just KSafe ops. Ships as the optional `:ksafe-biometrics` artifact and depends on nothing else from KSafe, so apps that need only biometric verification can use it on its own.
+A standalone biometric helper (Android + iOS + macOS — and, from 2.2.0, JVM Desktop and web: Touch ID on macOS, Windows Hello on Windows, WebAuthn in the browser) that can gate **any action** in your app — not just KSafe ops. Ships as the optional `:ksafe-biometrics` artifact and depends on nothing else from KSafe, so apps that need only biometric verification can use it on its own.
 
 **Static API.** No instance, no DI wiring, no `Context` parameter. On Android the library auto-initializes via a `ContentProvider` declared in its merged manifest (the same pattern WorkManager / Firebase use), so consumers don't need to touch their `Application` class.
 

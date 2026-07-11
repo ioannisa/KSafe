@@ -103,6 +103,13 @@ kotlin {
             }
         }
 
+        // Shared js + wasmJs tests (the WebAuthn gate) need runTest for suspend ceremonies.
+        getByName("webTest") {
+            dependencies {
+                implementation(libs.kotlinx.coroutines.test)
+            }
+        }
+
         androidMain {
             dependencies {
                 implementation(libs.androidx.biometric)

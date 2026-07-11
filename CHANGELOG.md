@@ -14,7 +14,7 @@ Security-hardening **and feature** release: real biometric prompts on JVM Deskto
 - **Web: a tab keeps working after another tab logs out** — the encryption key self-heals instead of failing every encrypted write until reload.
 - **Biometrics: a cached PIN/password success can no longer satisfy a biometrics-only (`allowDeviceCredentialFallback = false`) call**, and a cancelled prompt no longer strands the next caller.
 - **iOS Simulator: KSafe now works out of the box in apps without Keychain entitlements** — no more `Keychain error -34018` on every encrypted write. Real devices are unaffected.
-- **`ksafe-biometrics`: real biometric prompts on JVM Desktop** — Touch ID on macOS, Windows Hello on Windows. Previously the JVM target always returned `true`; `-Dksafe.biometrics.jvm.prompts=off` restores that.
+- **`ksafe-biometrics`: real biometric prompts on JVM Desktop and the web** — Touch ID on macOS, Windows Hello on Windows, and the browser's WebAuthn platform authenticator on JS/WasmJS. Previously these targets always returned `true`; `-Dksafe.biometrics.jvm.prompts=off` (desktop) and `KSafeBiometricsWeb.promptsEnabled = false` (web) restore that.
 
 ### Added
 
@@ -31,9 +31,20 @@ Security-hardening **and feature** release: real biometric prompts on JVM Deskto
   - The per-scope authorization cache (`authorizationDuration`) works on desktop with the
     same semantics as Android/Apple: monotonic clock, strength-keyed slots (a PIN/password
     success can never satisfy a biometrics-only call), no seeding after cancellation.
-  - **Behavior change & migration**: previously the JVM target always returned `true`.
-    Desktop apps that relied on that pass-through can restore it with
-    `-Dksafe.biometrics.jvm.prompts=off` (or env `KSAFE_BIOMETRICS_JVM_PROMPTS=off`).
+  - **Web (JS/WasmJS)**: the browser's WebAuthn **platform authenticator** prompt
+    (Touch ID in Safari/Chrome on macOS, Windows Hello in Edge/Chrome, fingerprint on
+    Android browsers), used as a local re-auth gate — no server ceremony. The first
+    successful call enrolls a passkey (that ceremony itself verifies the user); later
+    calls verify against it. Web notes: the `reason` string is not displayed (WebAuthn
+    dialogs are browser-controlled); call from a user gesture (e.g. a click handler) or
+    the browser may reject the ceremony; when no platform authenticator exists
+    (insecure context, no enrolled biometrics) the permissive mode passes through and
+    strict refuses. `KSafeBiometricsWeb.resetRegistration()` forces a fresh enrollment
+    (e.g. after the passkey was removed OS-side).
+  - **Behavior change & migration**: previously the JVM and web targets always returned
+    `true`. Apps that relied on that pass-through can restore it with
+    `-Dksafe.biometrics.jvm.prompts=off` (or env `KSAFE_BIOMETRICS_JVM_PROMPTS=off`) on
+    desktop, and `KSafeBiometricsWeb.promptsEnabled = false` on the web.
     JVM-on-Linux, Kotlin/JS, and WasmJS keep the documented pass-through — no prompt API
     exists there.
   - New dependency for the JVM target only: JNA (already used by `:ksafe`'s JVM key vaults).

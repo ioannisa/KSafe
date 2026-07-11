@@ -2,14 +2,17 @@ package eu.anifantakis.lib.ksafe.biometrics
 
 /**
  * Process-wide static API for biometric authentication — no instance, no DI, zero-config init.
- * Real prompts on Android, iOS, macOS, and (since 2.2.0) JVM Desktop: JVM-on-macOS shows
- * Touch ID / password via `LocalAuthentication`, JVM-on-Windows shows Windows Hello via
- * `UserConsentVerifier`. JS/WasmJS — and JVM hosts with no prompt API (Linux) — return `true`.
+ * Real prompts on Android, iOS, macOS, and (since 2.2.0) JVM Desktop and the web:
+ * JVM-on-macOS shows Touch ID / password via `LocalAuthentication`, JVM-on-Windows shows
+ * Windows Hello via `UserConsentVerifier`, and JS/WasmJS show the browser's WebAuthn
+ * platform-authenticator prompt (Touch ID / Windows Hello / fingerprint) when one exists.
+ * JVM hosts with no prompt API (Linux) return `true`.
  *
- * **Security note:** where no prompt API exists (web targets, JVM on Linux, or the
- * `-Dksafe.biometrics.jvm.prompts=off` opt-out), every call returns `true` — an unconditional
- * pass — so shared `commonMain` logic can call in without branching. If you need a hard
- * refusal there, gate the call in your own code.
+ * **Security note:** where no prompt path exists (JVM on Linux, browsers without a platform
+ * authenticator in permissive mode, or the opt-outs — `-Dksafe.biometrics.jvm.prompts=off`
+ * on desktop, `KSafeBiometricsWeb.promptsEnabled = false` on web), the call returns `true` —
+ * an unconditional pass — so shared `commonMain` logic can call in without branching. If you
+ * need a hard refusal there, gate the call in your own code.
  */
 @Suppress("unused")
 object KSafeBiometrics {
