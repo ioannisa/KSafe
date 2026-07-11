@@ -10,7 +10,7 @@ The module is **independent of `:ksafe`** — you can use it on its own (no stor
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe-biometrics:2.1.1")
+implementation("eu.anifantakis:ksafe-biometrics:2.2.1")
 ```
 
 That's it — no transitive dependency on `:ksafe`. Apps that don't need biometrics simply don't add this artifact.
@@ -35,13 +35,13 @@ On Android, the library auto-initializes via a `ContentProvider` declared in its
 | iOS device | `LAContext` — Face ID / Touch ID + password | `LAContext` — Face ID / Touch ID only |
 | iOS simulator | Returns `true` (no biometric hardware) | Returns `true` |
 | macOS | `LAContext` — Touch ID, password, or Apple Watch | `LAContext` — Touch ID only (fails gracefully on Macs without Touch ID) |
-| JVM on macOS (2.2.0+) | `LAContext` — Touch ID, password, or Apple Watch | `LAContext` — Touch ID only |
-| JVM on Windows (2.2.0+) | Windows Hello — biometrics or Hello PIN | Windows Hello (the Hello PIN cannot be excluded — platform limitation); hard-refuses if Hello is absent |
-| JS, WasmJS (2.2.0+) | WebAuthn platform authenticator — Touch ID / Windows Hello / fingerprint | Same prompt (the platform PIN cannot be excluded where the OS treats it as part of the authenticator); hard-refuses if no platform authenticator |
+| JVM on macOS (2.2.1+) | `LAContext` — Touch ID, password, or Apple Watch | `LAContext` — Touch ID only |
+| JVM on Windows (2.2.1+) | Windows Hello — biometrics or Hello PIN | Windows Hello (the Hello PIN cannot be excluded — platform limitation); hard-refuses if Hello is absent |
+| JS, WasmJS (2.2.1+) | WebAuthn platform authenticator — Touch ID / Windows Hello / fingerprint | Same prompt (the platform PIN cannot be excluded where the OS treats it as part of the authenticator); hard-refuses if no platform authenticator |
 | JVM on Linux | Returns `true` (no portable prompt API) | Returns `true` |
 
-> JVM desktop and web prompts are on by default from 2.2.0. Opt-outs restore the
-> pre-2.2.0 always-`true` no-op: `-Dksafe.biometrics.jvm.prompts=off` (or env
+> JVM desktop and web prompts are on by default from 2.2.1. Opt-outs restore the
+> pre-2.2.1 always-`true` no-op: `-Dksafe.biometrics.jvm.prompts=off` (or env
 > `KSAFE_BIOMETRICS_JVM_PROMPTS=off`) on JVM desktop, `KSafeBiometricsWeb.promptsEnabled
 > = false` on the web.
 >
@@ -348,7 +348,7 @@ In 2.0 it moved to its own module ([issue #14](https://github.com/ioannisa/KSafe
 
 ```kotlin
 // After (2.0)
-// build.gradle.kts: + implementation("eu.anifantakis:ksafe-biometrics:2.1.1")  // or latest
+// build.gradle.kts: + implementation("eu.anifantakis:ksafe-biometrics:2.2.1")  // or latest
 import eu.anifantakis.lib.ksafe.biometrics.KSafeBiometrics
 import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration
 

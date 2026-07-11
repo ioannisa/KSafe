@@ -649,7 +649,7 @@ Not exhaustively covered, but briefly:
 ### Sister-module tests
 
 - **`:ksafe-biometrics/commonTest/`** — `BiometricAuthorizationDurationTest` (the data class).
-- **`:ksafe-biometrics/jvmTest/`** — `KSafeBiometricsJvmTest` pins the opt-out (`ksafe.biometrics.jvm.prompts=off`) no-op contract — the pre-2.2.0 behavior and what JS/WasmJS still do. `DesktopBiometricsTest` covers the 2.2.0 desktop-prompt dispatch via a test seam (denial propagates as `false`, success seeds the strength-keyed authorization cache) plus the WinRT pinterface-GUID computation the Windows Hello bridge depends on, verified against published reference GUIDs; its `livePrompt` test (opt-in via `-Dksafe.biometrics.live=1`) pops a real system prompt.
+- **`:ksafe-biometrics/jvmTest/`** — `KSafeBiometricsJvmTest` pins the opt-out (`ksafe.biometrics.jvm.prompts=off`) no-op contract — the pre-2.2.1 behavior and what JS/WasmJS still do. `DesktopBiometricsTest` covers the 2.2.1 desktop-prompt dispatch via a test seam (denial propagates as `false`, success seeds the strength-keyed authorization cache) plus the WinRT pinterface-GUID computation the Windows Hello bridge depends on, verified against published reference GUIDs; its `livePrompt` test (opt-in via `-Dksafe.biometrics.live=1`) pops a real system prompt.
 - **`:ksafe-compose/commonTest/`** — `KSafeComposeStateTest`, `KSafeMutableStateOfTest`. The latter's `mutableStateOf_encryptsByDefault` / `mutableStateOf_canStoreUnencrypted` tests use `getKeyInfo(...).protection` to verify encryption — the 2.0-correct way, since the deprecated `encrypted: Boolean` parameter on reads is auto-detected and ignored.
 
 ---

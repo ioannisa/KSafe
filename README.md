@@ -118,9 +118,9 @@ KSafe in action across many scenarios: **[KSafeDemo — Compose Multiplatform ap
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:2.1.3")
-implementation("eu.anifantakis:ksafe-compose:2.1.3")     // ← Compose state (optional)
-implementation("eu.anifantakis:ksafe-biometrics:2.1.3")  // ← Biometric auth (optional)
+implementation("eu.anifantakis:ksafe:2.2.1")
+implementation("eu.anifantakis:ksafe-compose:2.2.1")     // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe-biometrics:2.2.1")  // ← Biometric auth (optional)
 ```
 
 > Skip `ksafe-compose` if you don't use Jetpack Compose or `mutableStateOf` persistence.
@@ -358,7 +358,7 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 
 ## Biometric Authentication
 
-A standalone biometric helper (Android + iOS + macOS — and, from 2.2.0, JVM Desktop and web: Touch ID on macOS, Windows Hello on Windows, WebAuthn in the browser) that can gate **any action** in your app — not just KSafe ops. Ships as the optional `:ksafe-biometrics` artifact and depends on nothing else from KSafe, so apps that need only biometric verification can use it on its own.
+A standalone biometric helper (Android + iOS + macOS — and, from 2.2.1, JVM Desktop and web: Touch ID on macOS, Windows Hello on Windows, WebAuthn in the browser) that can gate **any action** in your app — not just KSafe ops. Ships as the optional `:ksafe-biometrics` artifact and depends on nothing else from KSafe, so apps that need only biometric verification can use it on its own.
 
 **Static API.** No instance, no DI wiring, no `Context` parameter. On Android the library auto-initializes via a `ContentProvider` declared in its merged manifest (the same pattern WorkManager / Firebase use), so consumers don't need to touch their `Application` class.
 
@@ -376,9 +376,9 @@ if (KSafeBiometrics.verifyBiometric("Authenticate to increment")) {
 }
 ```
 
-Check availability up front with `KSafeBiometrics.biometricsAvailable()` (2.2.0+) and fall back to your own flow where no real prompt exists. Auth caching, scoped sessions, platform setup, complete examples: [docs/BIOMETRICS.md](docs/BIOMETRICS.md).
+Check availability up front with `KSafeBiometrics.biometricsAvailable()` (2.2.1+) and fall back to your own flow where no real prompt exists. Auth caching, scoped sessions, platform setup, complete examples: [docs/BIOMETRICS.md](docs/BIOMETRICS.md).
 
-> **Migrating from KSafe ≤1.x?** Biometric methods used to live on `KSafe` itself. In 2.0 they moved to a separate module. Add `implementation("eu.anifantakis:ksafe-biometrics:2.1.3")`, change `import eu.anifantakis.lib.ksafe.BiometricAuthorizationDuration` → `import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration`, replace `ksafe.verifyBiometric(...)` with `KSafeBiometrics.verifyBiometric(...)`. Method names and signatures are unchanged. No instance to construct, no DI wiring needed.
+> **Migrating from KSafe ≤1.x?** Biometric methods used to live on `KSafe` itself. In 2.0 they moved to a separate module. Add `implementation("eu.anifantakis:ksafe-biometrics:2.2.1")`, change `import eu.anifantakis.lib.ksafe.BiometricAuthorizationDuration` → `import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration`, replace `ksafe.verifyBiometric(...)` with `KSafeBiometrics.verifyBiometric(...)`. Method names and signatures are unchanged. No instance to construct, no DI wiring needed.
 
 ***
 

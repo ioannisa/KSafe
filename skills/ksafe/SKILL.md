@@ -459,7 +459,7 @@ KSafeBiometrics.verifyBiometric(
 KSafeBiometrics.verifyBiometric("Step-up", allowDeviceCredentialFallback = false)
 ```
 
-Know up front whether a real prompt is even possible (2.2.0+) — `false` means verify would
+Know up front whether a real prompt is even possible (2.2.1+) — `false` means verify would
 pass through / refuse without gating, so route to your own PIN/password flow instead:
 
 ```kotlin
@@ -478,9 +478,9 @@ Concurrent calls are serialized (a second prompt queues behind the first).
 |---|---|---|
 | Android | BiometricPrompt | `false` |
 | iOS / native macOS | `LAContext` | `false` |
-| JVM macOS (2.2.0+) | `LocalAuthentication` (policy maps like native macOS) | strict + no Touch ID → `false` |
-| JVM Windows (2.2.0+) | Windows Hello (`UserConsentVerifier`) | strict + Hello not-configured → `false` |
-| JS / WasmJS (2.2.0+) | WebAuthn platform authenticator (Touch ID / Hello / fingerprint) | permissive `true` / strict `false` |
+| JVM macOS (2.2.1+) | `LocalAuthentication` (policy maps like native macOS) | strict + no Touch ID → `false` |
+| JVM Windows (2.2.1+) | Windows Hello (`UserConsentVerifier`) | strict + Hello not-configured → `false` |
+| JS / WasmJS (2.2.1+) | WebAuthn platform authenticator (Touch ID / Hello / fingerprint) | permissive `true` / strict `false` |
 | **JVM Linux** | none (no portable API) | **always `true`** (pass-through) |
 
 Opt-outs restore the legacy always-`true` no-op: `-Dksafe.biometrics.jvm.prompts=off` (JVM
@@ -678,7 +678,7 @@ it. Can also be set without code: `-Dksafe.appNamespace=…` or env `KSAFE_APP_N
    - `android_strongbox_absent` → only matters for `HARDWARE_ISOLATED`.
    - `apple_secure_enclave_absent` → simulator or pre-T2 Intel Mac.
    - `apple_keychain_entitlement_missing` → iOS Simulator app with no Keychain
-     entitlement (2.2.0+; keys transparently fall back to a sandbox file store so
+     entitlement (2.2.1+; keys transparently fall back to a sandbox file store so
      encrypted writes keep working — never emitted on a real device).
 2. On JVM, check stderr for `KSafe SECURITY WARNING` (printed once on vault degrade).
 3. `ksafe.getKeyInfo(key)` — `null` means the key was never written.
@@ -700,7 +700,7 @@ it. Can also be set without code: `-Dksafe.appNamespace=…` or env `KSAFE_APP_N
 10. iOS Simulator: `Keychain error -34018` (`errSecMissingEntitlement`) on encrypted
     writes → the app has no Keychain entitlement (no signing team / no Keychain Sharing
     capability). Through 2.1.3 every encrypted write fails (suspend `put` throws;
-    `putDirect` logs `KSafe SEVERE` and silently drops the write); from 2.2.0 KSafe
+    `putDirect` logs `KSafe SEVERE` and silently drops the write); from 2.2.1 KSafe
     auto-falls back to a sandbox file key store and just works. Either way the proper
     Xcode fix — select a Team and/or add the Keychain Sharing capability — restores real
     Keychain behavior. Real devices are unaffected (and never use the fallback).
