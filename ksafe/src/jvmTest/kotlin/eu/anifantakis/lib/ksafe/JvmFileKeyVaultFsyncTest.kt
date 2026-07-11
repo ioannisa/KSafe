@@ -5,6 +5,7 @@ import java.io.File
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.test.assertContentEquals
 
@@ -33,5 +34,21 @@ class JvmFileKeyVaultFsyncTest {
         val countAfterPut = syncedDirs.size
         vault.delete("alias")
         assertTrue(syncedDirs.size > countAfterPut, "delete (which rewrites the file) must also fsync the parent directory")
+    }
+
+    @Test
+    fun write_sweepsCrashLeftoverTempFilesHoldingThePlaintextKeyMap() {
+        val file = File(tmp, "vault.ksafe-keys.json")
+        // A write whose process died between the data fsync and the atomic move leaves a temp
+        // file named like Files.createTempFile(dir, file.name, ".tmp"), holding the full key map.
+        val staleTemp = File(tmp, "${file.name}8481920.tmp").apply { writeText("{\"alias\":\"plaintext-key\"}") }
+        assertTrue(staleTemp.exists())
+
+        // The next legitimate write must sweep the orphan away before creating its own temp.
+        FileKeyVault(file).put("alias", byteArrayOf(9, 9, 9))
+
+        assertFalse(staleTemp.exists(), "a crashed write's plaintext temp file must be swept on the next write")
+        assertTrue(file.exists(), "the real key file is still committed")
+        assertContentEquals(byteArrayOf(9, 9, 9), FileKeyVault(file).get("alias"))
     }
 }

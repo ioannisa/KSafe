@@ -377,6 +377,9 @@ private fun deleteResidualFallbackFiles(storageDir: File, baseFileName: String) 
             val n = f.name
             if (n.startsWith(prefix) &&
                 (n == liveJson || n == liveKeys ||
+                    // Crash-leftover temp files from FileKeyVault.write() — each is a full plaintext
+                    // copy of the AES key map (`<base>.ksafe-keys.json<random>.tmp`).
+                    (n.startsWith(liveKeys) && n.endsWith(".tmp")) ||
                     n.endsWith(".migrated") || n.endsWith(".migration-pending") || n.contains(".corrupt-"))
             ) {
                 runCatching { f.delete() }

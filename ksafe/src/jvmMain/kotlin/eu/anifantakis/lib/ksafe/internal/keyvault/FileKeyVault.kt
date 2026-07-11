@@ -60,6 +60,11 @@ internal class FileKeyVault(
     private fun write(map: Map<String, String>) {
         val parent = file.parentFile
         if (parent != null && !parent.exists()) parent.mkdirs()
+        // Sweep temp files a previously crashed write left behind BEFORE creating a new one:
+        // each holds the FULL plaintext key map, and a process killed between the data-fsync and
+        // the atomic move below can't run its own cleanup. Doing it here bounds the on-disk
+        // exposure to the single in-flight write and survives clearAll-less lifecycles.
+        deleteStaleTempFiles(parent)
         // Temp file created owner-only (rw-------) so the plaintext AES key is never briefly
         // group/world-readable; ATOMIC_MOVE carries those perms onto the destination.
         // Non-POSIX filesystems (Windows) rely on the 0700 parent dir instead.
@@ -89,6 +94,22 @@ internal class FileKeyVault(
         } catch (e: Throwable) {
             runCatching { tmp.delete() }
             throw e
+        }
+    }
+
+    /**
+     * Deletes leftover `<file.name>*.tmp` files from a write whose process died before the
+     * atomic move. Each such orphan is a full plaintext copy of the key map. Best-effort;
+     * never deletes the destination key file itself.
+     */
+    private fun deleteStaleTempFiles(parent: File?) {
+        val dir = parent ?: file.absoluteFile.parentFile ?: return
+        runCatching {
+            dir.listFiles()?.forEach { f ->
+                if (f.name != file.name && f.name.startsWith(file.name) && f.name.endsWith(".tmp")) {
+                    runCatching { f.delete() }
+                }
+            }
         }
     }
 
