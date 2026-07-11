@@ -461,16 +461,24 @@ KSafeBiometrics.verifyBiometric("Step-up", allowDeviceCredentialFallback = false
 
 `verifyBiometric` is `suspend`; `verifyBiometricDirect` is callback-based and delivers
 `onResult` on the **main thread** on Android and Apple (2.1.2+) — safe to touch UI from it.
-Concurrent calls are serialized: a second prompt queues behind the first instead of
-stomping it. On macOS the LAPolicy depends on `allowDeviceCredentialFallback`: default
-`true` → `LAPolicyDeviceOwnerAuthentication` (always prompts); `false` →
-`...WithBiometrics` (Touch ID only, returns false on hardware-less Macs). Since 2.2.0 the
-JVM target prompts for real too: JVM-on-macOS uses `LocalAuthentication` (same policy
-mapping as native macOS) and JVM-on-Windows uses Windows Hello (`UserConsentVerifier`;
-note the Hello PIN counts as Hello itself, so `false` can't exclude it there).
-`-Dksafe.biometrics.jvm.prompts=off` restores the pre-2.2.0 always-`true` no-op. JS/WasmJS
-(and JVM on Linux) still return `true` — **fail-open**: never let web builds rely on the
-biometric gate as a security boundary.
+Concurrent calls are serialized (a second prompt queues behind the first).
+
+**Where a real prompt shows vs. pass-through** — `verifyBiometric` does NOT gate on every platform:
+
+| Platform | Real prompt | Biometrics unavailable |
+|---|---|---|
+| Android | BiometricPrompt | `false` |
+| iOS / native macOS | `LAContext` | `false` |
+| JVM macOS (2.2.0+) | `LocalAuthentication` (policy maps like native macOS) | strict + no Touch ID → `false` |
+| JVM Windows (2.2.0+) | Windows Hello (`UserConsentVerifier`) | strict + Hello not-configured → `false` |
+| **JVM Linux** | none (no portable API) | **always `true`** (pass-through) |
+| **JS / WasmJS** | none | **always `true`** (pass-through) |
+
+`-Dksafe.biometrics.jvm.prompts=off` forces pass-through on any JVM desktop. Two footguns:
+(1) On Windows the Hello PIN counts as Hello, so `allowDeviceCredentialFallback = false` can't
+exclude it there. (2) Strict (`false` = biometrics-only) is **not uniformly enforced** — it
+refuses on Windows/Mac when biometrics are absent, but **Linux/web still return `true`**. Never
+rely on `verifyBiometric` as your ONLY security boundary on Linux/web — gate it yourself.
 
 ---
 
