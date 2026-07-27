@@ -2,12 +2,32 @@
 
 * **Encrypted by default. Plain _(unencrypted)_ when needed.**
 * **Persist variables, Compose State, StateFlow, and serializable objects across Android, iOS, macOS, Desktop, and Web**
-* **Easy to use by design**
+* **Easy to use by design** — plus key rotation, cross-platform biometrics, and an encryption preflight
 
 [![Maven Central](https://img.shields.io/maven-central/v/eu.anifantakis/ksafe.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/eu.anifantakis/ksafe)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Changelog](https://img.shields.io/badge/Changelog-latest-informational.svg)](CHANGELOG.md)
 
 ![image](https://github.com/user-attachments/assets/e1b396e3-70a7-4473-a703-1ca0f2aa23c2)
+
+## What is KSafe?
+
+KSafe is a secure-by-default Kotlin Multiplatform key/value persistence library. Persist ordinary Kotlin variables, Compose `MutableState`, `MutableStateFlow`, and `@Serializable` objects across app restarts with **one API** on Android, iOS, macOS, JVM/Desktop, WASM, and Kotlin/JS. **Encrypted (AES-256-GCM) by default; plain per-entry with `mode = KSafeWriteMode.Plain`.**
+
+```kotlin
+var counter by ksafe(0)
+counter++   // auto-encrypted (AES-256-GCM), auto-persisted, survives process death
+```
+
+Read and write it like any normal Kotlin variable — no `suspend`, no `runBlocking`, no DataStore boilerplate, no explicit `encrypt`/`decrypt`. Reads hit a hot in-memory cache (~0.002 ms under plaintext policies; `ENCRYPTED` entries run a decrypt on every access — a keystore round-trip on hardware-backed paths — and the very first read after cold start briefly blocks to warm the cache); writes encrypt and flush in the background — **synchronous, but never blocking**. Reach for the `suspend` API (`get` / `put`) only when *you* want to await the disk flush.
+
+- **Easy?** ✔ one-line setup, property-delegate API
+- **Encrypted by default?** ✔ AES-256-GCM, hardware-backed where available
+- **Plain storage?** ✔ opt out with one parameter
+- **Synchronous?** ✔ non-blocking hot-cache reads
+- **Asynchronous?** ✔ full suspend API for guaranteed disk flushes
+
+**Extras when you encrypt:** biometrics (Face ID / Touch ID / Fingerprint — optional standalone `ksafe-biometrics` module) · root/jailbreak detection (WARN/BLOCK + analytics callback) · memory policy (RAM-exposure modes) · a one-line hardware-isolated DB passphrase for SQLCipher / SQLDelight / Room.
 
 ## 🤖 KSafe Skill for AI agents
 
@@ -60,26 +80,6 @@ Re-run it to refresh (again: no auto-update). If you've already cloned this repo
 `cp -r skills/ksafe "$HOME/.<agent>/skills/"` does the same thing offline. Add `claude` to
 the list only if you prefer a plain skill over the plugin from the section above — don't
 do both.
-</details>
-
-## What is KSafe?
-
-KSafe is a secure-by-default Kotlin Multiplatform key/value persistence library. Persist ordinary Kotlin variables, Compose `MutableState`, `MutableStateFlow`, and `@Serializable` objects across app restarts with **one API** on Android, iOS, macOS, JVM/Desktop, WASM, and Kotlin/JS. **Encrypted (AES-256-GCM) by default; plain per-entry with `mode = KSafeWriteMode.Plain`.**
-
-```kotlin
-var counter by ksafe(0)
-counter++   // auto-encrypted (AES-256-GCM), auto-persisted, survives process death
-```
-
-Read and write it like any normal Kotlin variable — no `suspend`, no `runBlocking`, no DataStore boilerplate, no explicit `encrypt`/`decrypt`. Reads hit a hot in-memory cache (~0.002 ms); writes encrypt and flush in the background — **synchronous, but never blocking**. Reach for the `suspend` API (`get` / `put`) only when *you* want to await the disk flush.
-
-- **Easy?** ✔ one-line setup, property-delegate API
-- **Encrypted by default?** ✔ AES-256-GCM, hardware-backed where available
-- **Plain storage?** ✔ opt out with one parameter
-- **Synchronous?** ✔ non-blocking hot-cache reads
-- **Asynchronous?** ✔ full suspend API for guaranteed disk flushes
-
-**Extras when you encrypt:** biometrics (Face ID / Touch ID / Fingerprint — optional standalone `ksafe-biometrics` module) · root/jailbreak detection (WARN/BLOCK + analytics callback) · memory policy (RAM-exposure modes) · a one-line hardware-isolated DB passphrase for SQLCipher / SQLDelight / Room.
 
 ## Demo & Videos
 
@@ -92,18 +92,22 @@ KSafe in action across many scenarios: **[KSafeDemo — Compose Multiplatform ap
 
 ## Table of Contents
 
-- [🤖 KSafe Skill for AI agents](#ksafe-skill-for-ai-agents) — [skills/ksafe/SKILL.md](skills/ksafe/SKILL.md)
 - [What is KSafe?](#what-is-ksafe)
+- [🤖 KSafe Skill for AI agents](#-ksafe-skill-for-ai-agents) — [skills/ksafe/SKILL.md](skills/ksafe/SKILL.md)
 - [Setup](#setup)
 - [Basic Usage](#basic-usage) — full reference in [docs/USAGE.md](docs/USAGE.md)
 - [Custom JSON Serialization](#custom-json-serialization) — full guide in [docs/SERIALIZATION.md](docs/SERIALIZATION.md)
+- [Isolating an app's keys (Desktop / Web)](#isolating-an-apps-keys-desktop--web) — [docs/SETUP.md](docs/SETUP.md)
+- [Compose Desktop release builds](#compose-desktop-release-builds--strongly-recommend-modulesjdkunsupported) — [docs/JVM_PROTECTION.md](docs/JVM_PROTECTION.md)
 - [Cryptographic Utilities](#cryptographic-utilities) — full reference in [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md)
+- [Key Rotation](#key-rotation) — full reference in [docs/KEY_ROTATION.md](docs/KEY_ROTATION.md)
 - [Why use KSafe?](#why-use-ksafe)
 - [How KSafe Compares](#how-ksafe-compares)
 - [Performance Benchmarks](#performance-benchmarks)
 - [Compatibility](#compatibility)
 - [Biometric Authentication](#biometric-authentication)
 - [Runtime Security Policy](#runtime-security-policy)
+- [Key Protection Diagnostics](#key-protection-diagnostics) — [docs/PROTECTION_INFO.md](docs/PROTECTION_INFO.md)
 - [Memory Security Policy](#memory-security-policy)
 - [Deep-Dive Documentation](#deep-dive-documentation)
 - [Community](#community)
@@ -118,9 +122,9 @@ KSafe in action across many scenarios: **[KSafeDemo — Compose Multiplatform ap
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:2.2.1")
-implementation("eu.anifantakis:ksafe-compose:2.2.1")     // ← Compose state (optional)
-implementation("eu.anifantakis:ksafe-biometrics:2.2.1")  // ← Biometric auth (optional)
+implementation("eu.anifantakis:ksafe:3.0.0")
+implementation("eu.anifantakis:ksafe-compose:3.0.0")     // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe-biometrics:3.0.0")  // ← Biometric auth (optional)
 ```
 
 > Skip `ksafe-compose` if you don't use Jetpack Compose or `mutableStateOf` persistence.
@@ -179,7 +183,7 @@ Multi-instance setups, web `awaitCacheReady()` (wasmJs + js), full per-platform 
 A handful of examples cover 95% of real-world use. Full reference (Compose `policy`, cross-screen sync, write modes, nullables, deletion, full ViewModel): **[docs/USAGE.md](docs/USAGE.md)**.
 
 ```kotlin
-// 1. Property delegate — synchronous, non-blocking, encrypted, persisted
+// 1. Property delegate — synchronous, non-suspending, encrypted, persisted
 var counter by ksafe(0)
 counter++
 
@@ -238,13 +242,7 @@ For third-party types you can't annotate (`UUID`, `Instant`, `BigDecimal`…), r
 
 ## Isolating an app's keys (Desktop / Web)
 
-Android and iOS keystores are OS-sandboxed per app. The **JVM/Desktop** OS secret store (macOS Keychain / Linux Secret Service) is **per-OS-user, shared by every process**, and **Web** IndexedDB/localStorage is shared per browser origin — so two apps using the same `fileName` could collide on the same key. Set a stable, app-unique namespace:
-
-```Kotlin
-val ksafe = KSafe(config = KSafeConfig(appNamespace = "com.example.myapp"))
-```
-
-Production desktop apps should set it explicitly. Only the key-store destination is namespaced — KSafe ≤ 2.0 data still migrates unchanged. See **[docs/USAGE.md](docs/USAGE.md)**.
+On **JVM/Desktop** the OS secret store is per-OS-user and shared by every process, and on **Web** IndexedDB/localStorage is shared per browser origin — so two apps using the same `fileName` could collide. Set a stable, app-unique namespace (`KSafeConfig(appNamespace = "com.example.myapp")`); Android/iOS are already OS-sandboxed per app. On JVM an explicit `appNamespace` isolates both the DataStore data directory (the file moves into a namespace subdirectory) and the key-store destination; existing un-namespaced KSafe ≤ 2.0 data is copied forward, not stranded (the `-Dksafe.appNamespace` / env override namespaces only the key store). Details: **[docs/SETUP.md](docs/SETUP.md)**.
 
 ## Compose Desktop release builds — strongly recommend `modules("jdk.unsupported")`
 
@@ -286,10 +284,35 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 
 ***
 
+## Key Rotation
+
+Re-encrypt everything under fresh keys — one line, on every platform (3.0.0+):
+
+```kotlin
+val result = ksafe.rotateKeys()   // rotated / skipped / failed counts + new generation
+```
+
+Or make it a policy and forget about it:
+
+```kotlin
+val ksafe = KSafe(config = KSafeConfig(
+    keyRotationPolicy = KSafeKeyRotationPolicy.MaxAge(90.days)  // rotate in the background when the key turns 90 days old
+))
+```
+
+Crash-safe and resumable by design: every entry records which key generation decrypts it, so an interrupted rotation leaves a store where **everything stays readable** and the next pass picks up the rest. Concurrent writes always win over the rotation; superseded keys are deleted only when nothing references them. Values — including `getOrCreateSecret` passphrases — never change; only the key material and envelopes do.
+
+Rotation also hardens the encryption itself: once rotated, encrypted entries **can't be copied, swapped, or relocated between keys** — tampering that relocates, swaps, or re-tiers an *encrypted* entry breaks its GCM tag, so the read **fails closed to the caller's default** rather than decrypting in the wrong context (the one boundary: rewriting an entry's metadata to *plaintext* reclassifies it, so the read returns the stored bytes verbatim — undecipherable ciphertext, never the underlying secret). A gen-1 (un-rotated) store keeps the exact pre-3.0.0 bytes, so this kicks in at the first `rotateKeys()`.
+
+Semantics, compliance notes, and edge cases: **[docs/KEY_ROTATION.md](docs/KEY_ROTATION.md)**.
+
+***
+
 ## Why use KSafe?
 
 * **Hardware-backed security** — AES-256-GCM, keys in Android Keystore / Apple Keychain (iOS + macOS) / JVM OS secret store (Windows DPAPI · macOS Keychain · Linux libsecret, software fallback) / non-extractable WebCrypto key in IndexedDB. Per-property control via `KSafeWriteMode` + `KSafeEncryptedProtection` tiers
 * **Biometric auth** — Face ID, Touch ID, Fingerprint, with auth caching
+* **Key rotation** — `rotateKeys()` or a declarative `MaxAge` policy; crash-safe, resumable, zero data churn
 * **Root & jailbreak detection** — configurable WARN/BLOCK actions
 * **Clean reinstalls** — automatic cleanup on fresh install
 * **One code path** — no expect/actual juggling; common code owns the vault
@@ -330,14 +353,14 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 
 **vs competitors (encrypted):** encrypted reads are **faster than EncryptedSharedPreferences and KVault even decrypting on every read** (~3.4× / ~2.6×), and ~37× / ~28× faster with cached (`PLAIN_TEXT`) memory; encrypted writes are **~31× faster than EncryptedSharedPreferences** and ~383× faster than KVault. Unencrypted `putDirect()` is **~12× faster than SharedPreferences**. Reads are ~9× slower than SharedPreferences in absolute µs (the cost of type-safe generics) — still ~1.5 µs.
 
-> Measured on a **Samsung Galaxy S24 Ultra** (release build, KSafe 2.1.2, 500 iterations). 2.1.2 adds an Android software-DEK fast path: the per-datastore master key stays non-exportable in the TEE and wraps a data-encryption key that is unwrapped once into memory, so per-value AES-GCM runs in userspace — `ENCRYPTED`-memory decrypt-every-read dropped from ~8 ms to ~0.014 ms on real hardware. Suspend-API benchmarks issue all iterations as concurrent coroutines (`GlobalScope.launch` + `joinAll`). Real-world numbers depend on device, workload, and data size — see [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for methodology, full tables, cold-start numbers, and architecture notes.
+> Measured on a **Samsung Galaxy S24 Ultra** (release build, measured on KSafe 2.1.2; figures current for 3.0.0 — un-rotated generation-1 stores use the same crypto path; 500 iterations). 2.1.2 adds an Android software-DEK fast path: the per-datastore master key stays non-exportable in the TEE and wraps a data-encryption key that is unwrapped once into memory, so per-value AES-GCM runs in userspace — `ENCRYPTED`-memory decrypt-every-read dropped from ~8 ms to ~0.014 ms on real hardware. Suspend-API benchmarks issue all iterations as concurrent coroutines (`GlobalScope.launch` + `joinAll`). Real-world numbers depend on device, workload, and data size — see [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for methodology, full tables, cold-start numbers, and architecture notes.
 
 ## Compatibility
 
 | Platform | Minimum Version | Notes |
 |----------|-----------------|-------|
 | **Android** | API 24 (Android 7.0) | Hardware-backed Keystore on supported devices |
-| **iOS** | iOS 13+ | Keychain-backed symmetric keys (protected by device passcode); Secure Enclave on real devices |
+| **iOS** | iOS 13+ | Keychain-backed symmetric keys (protected by device passcode); Secure Enclave on real devices. Entitlement-less Simulators transparently fall back to a sandbox file store (reported `SOFTWARE`); real devices unaffected |
 | **macOS (native)** | macOS 11+ (`macosArm64`, `macosX64`) | Same Keychain + CryptoKit path as iOS; Secure Enclave on Apple Silicon and T2-equipped Macs |
 | **JVM/Desktop** | JDK 11+ | Key in OS secret store — Windows DPAPI / macOS Keychain / Linux Secret Service (libsecret); software fallback + warning when none is available |
 | **Kotlin/WASM (Browser)** | Browsers with WasmGC (Chrome 119+, Firefox 120+, Safari 18+) | WebCrypto API; non-extractable key in IndexedDB, values in localStorage |
@@ -358,7 +381,7 @@ Sizes, protection tiers, Room + SQLCipher / SQLDelight examples: **[docs/SECURIT
 
 ## Biometric Authentication
 
-A standalone biometric helper (Android + iOS + macOS — and, from 2.2.1, JVM Desktop and web: Touch ID on macOS, Windows Hello on Windows, WebAuthn in the browser) that can gate **any action** in your app — not just KSafe ops. Ships as the optional `:ksafe-biometrics` artifact and depends on nothing else from KSafe, so apps that need only biometric verification can use it on its own.
+A standalone biometric helper (Android + iOS + macOS — and, since 2.2.1, JVM Desktop and web: Touch ID on macOS, Windows Hello on Windows, WebAuthn in the browser) that can gate **any action** in your app — not just KSafe ops. Ships as the optional `:ksafe-biometrics` artifact and depends on nothing else from KSafe, so apps that need only biometric verification can use it on its own.
 
 **Static API.** No instance, no DI wiring, no `Context` parameter. On Android the library auto-initializes via a `ContentProvider` declared in its merged manifest (the same pattern WorkManager / Firebase use), so consumers don't need to touch their `Application` class.
 
@@ -378,7 +401,7 @@ if (KSafeBiometrics.verifyBiometric("Authenticate to increment")) {
 
 Check availability up front with `KSafeBiometrics.biometricsAvailable()` (2.2.1+) and fall back to your own flow where no real prompt exists. Auth caching, scoped sessions, platform setup, complete examples: [docs/BIOMETRICS.md](docs/BIOMETRICS.md).
 
-> **Migrating from KSafe ≤1.x?** Biometric methods used to live on `KSafe` itself. In 2.0 they moved to a separate module. Add `implementation("eu.anifantakis:ksafe-biometrics:2.2.1")`, change `import eu.anifantakis.lib.ksafe.BiometricAuthorizationDuration` → `import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration`, replace `ksafe.verifyBiometric(...)` with `KSafeBiometrics.verifyBiometric(...)`. Method names and signatures are unchanged. No instance to construct, no DI wiring needed.
+> **Migrating from KSafe ≤1.x?** Biometric methods used to live on `KSafe` itself. In 2.0 they moved to a separate module. Add `implementation("eu.anifantakis:ksafe-biometrics:3.0.0")`, change `import eu.anifantakis.lib.ksafe.BiometricAuthorizationDuration` → `import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration`, replace `ksafe.verifyBiometric(...)` with `KSafeBiometrics.verifyBiometric(...)`. Method names and signatures are unchanged. No instance to construct, no DI wiring needed.
 
 ***
 
@@ -411,16 +434,26 @@ Find out what key custody this `KSafe` instance **actually** got — including a
 
 ```kotlin
 val info = ksafe.protectionInfo
-// info.intendedLevel  = SANDBOX_PROTECTED              // engine baseline
-// info.effectiveLevel = SOFTWARE                       // vault self-test failed
-// info.custody        = "DataStore (software, ...)"    // human-readable
-// info.notes          = ["jvm_os_vault_unavailable"]   // stable code
+// info.intendedLevel          = SANDBOX_PROTECTED           // engine baseline
+// info.effectiveLevel         = SOFTWARE                    // vault self-test failed
+// info.custody                = "DataStore (software, ...)" // human-readable
+// info.notes                  = ["jvm_os_vault_unavailable"]// stable code
+// info.isEncryptionOperational = true                       // encryption still works
+```
 
-// Gate startup, drive feature logic, or surface a UX banner
+There are two independent gates, and they answer different questions:
+
+```kotlin
+// 1. Will encrypted writes actually succeed at all? (works even on weaker fallbacks)
+if (!info.isEncryptionOperational) blockLoginUntilServedOverHttps()
+
+// 2. Is the key custody strong enough for this feature?
 check(info.effectiveLevel >= KSafeProtectionLevel.SANDBOX_PROTECTED)
 ```
 
-`KSafeProtectionLevel` is a universally-ordered scale — `SOFTWARE < SANDBOX_PROTECTED < HARDWARE_BACKED < HARDWARE_ISOLATED`. One ordinal comparison works across every platform. Per-platform truth table, runtime-decision patterns (gating, tighter re-auth windows, feature disablement, UX honesty banners, intended-vs-effective delta), and all defined `notes` codes: **[docs/PROTECTION_INFO.md](docs/PROTECTION_INFO.md)**.
+`isEncryptionOperational` (3.0.0) is `true` wherever encryption works — including the weaker-but-working JVM-software and iOS-Simulator fallbacks — and `false` only when an encrypted write genuinely can't run: a web page served outside a secure context (no `crypto.subtle`), or a JVM whose OS vault exists but is unreachable at startup. `effectiveLevel` is a separate question about *strength*: `KSafeProtectionLevel` is a universally-ordered scale — `SOFTWARE < SANDBOX_PROTECTED < HARDWARE_BACKED < HARDWARE_ISOLATED`, one ordinal comparison across every platform.
+
+Per-platform truth table, runtime-decision patterns (gating, tighter re-auth windows, feature disablement, UX honesty banners, intended-vs-effective delta), and all defined `notes` codes: **[docs/PROTECTION_INFO.md](docs/PROTECTION_INFO.md)**.
 
 ***
 
@@ -438,9 +471,9 @@ val ksafe = KSafe(
 | Policy | Best For | RAM Contents | Read Cost | Security |
 |--------|----------|-------------|-----------|----------|
 | `LAZY_PLAIN_TEXT` (Default) | General-purpose: settings, tokens, app state | Ciphertext at rest; plaintext appears after first read of each key and stays | First read decrypts, then O(1) forever | Low (after first read) — same exposure as `PLAIN_TEXT` for keys you've actually touched |
-| `PLAIN_TEXT` (discouraged) | Apps that want decrypt failures surfaced synchronously at startup | Plaintext (forever, eagerly decrypted at cold start) | O(1) lookup | Low — all data exposed in memory; cold start pays $O(n)$ Keystore round-trips up front |
-| `ENCRYPTED` | Tokens, passwords, financial data | Ciphertext only | AES-GCM decrypt every read | High — nothing plaintext in RAM |
-| `ENCRYPTED_WITH_TIMED_CACHE` | Compose/SwiftUI screens accessing the same encrypted value many times per frame | Ciphertext + short-lived plaintext (TTL) | First read of a window decrypts, then O(1) for TTL | Medium — plaintext only for recently-accessed keys, only for seconds |
+| `PLAIN_TEXT` (discouraged) | Apps that want every value plaintext-resident and O(1) from the very first read (no per-key first-read decrypt latency) | Plaintext (forever, eagerly decrypted at cold start) | O(1) lookup | Low — all data exposed in memory; cold start pays $O(n)$ Keystore round-trips up front |
+| `ENCRYPTED` | Tokens, passwords, financial data | Ciphertext only | AES-GCM decrypt every read | High — nothing plaintext in RAM at rest |
+| `ENCRYPTED_WITH_TIMED_CACHE` | Compose/SwiftUI screens accessing the same encrypted value many times per frame | Ciphertext + short-lived plaintext (TTL) | First read of a window decrypts, then O(1) for TTL | Medium — plaintext only for recently-accessed keys, reusable only for seconds (the cached copy is ignored, not proactively wiped, after the TTL) |
 
 Timed cache details, constructor params, lock-state policies, multi-instance lock policies: [docs/MEMORY.md](docs/MEMORY.md).
 
@@ -448,23 +481,36 @@ Timed cache details, constructor params, lock-state policies, multi-instance loc
 
 ## Deep-Dive Documentation
 
-Internals, advanced features, reference material:
+Internals, advanced features, reference material. **New here? Start with [USAGE](docs/USAGE.md) and [SETUP](docs/SETUP.md).**
+
+**Getting started**
 
 | Topic | Description |
 |-------|-------------|
-| [KSafe Skill for AI agents](skills/ksafe/SKILL.md) | Self-contained skill teaching any agentskills.io-compatible agent (Claude Code, Codex, Gemini CLI, Copilot CLI, Junie, …) the patterns, anti-patterns, and gotchas for KSafe. Install instructions at the top of this README. |
 | [Complete Usage Guide](docs/USAGE.md) | Every API shape: delegates, flow delegates, Compose state, suspend/direct APIs, write modes, nullables, full ViewModel |
 | [Setup with Koin](docs/SETUP.md) | Multi-instance setups (prefs vs vault), web `awaitCacheReady()` (wasmJs + js), full platform examples, custom storage directory (`baseDir` / `directory`) |
 | [Custom JSON Serialization](docs/SERIALIZATION.md) | Registering `KSerializer`s for `UUID`, `Instant`, and other third-party types |
-| [Performance Benchmarks](docs/BENCHMARKS.md) | Full benchmark tables, cold start numbers, architecture deep-dive |
 | [Biometric Authentication](docs/BIOMETRICS.md) | Authorization caching, scoped sessions, platform setup, complete examples |
+| [KSafe Skill for AI agents](skills/ksafe/SKILL.md) | Self-contained skill teaching any agentskills.io-compatible agent (Claude Code, Codex, Gemini CLI, Copilot CLI, Junie, …) the patterns, anti-patterns, and gotchas for KSafe. Install instructions near the top of this README. |
+
+**Security & keys**
+
+| Topic | Description |
+|-------|-------------|
 | [Security Model](docs/SECURITY_MODEL.md) | Runtime security policy, encryption internals, threat model, hardware isolation, key storage queries, crypto utilities |
-| [Protection Info](docs/PROTECTION_INFO.md) | Instance-level diagnostic API: `KSafe.protectionInfo`, the cross-platform `KSafeProtectionLevel` scale, per-platform truth table, consumer gating / telemetry / UI patterns |
+| [Key Rotation](docs/KEY_ROTATION.md) | `rotateKeys()` and the `MaxAge` policy: resumable mixed-generation design, concurrency guarantees, compliance notes, observability, edge cases |
+| [Protection Info](docs/PROTECTION_INFO.md) | Instance-level diagnostic API: `KSafe.protectionInfo`, `isEncryptionOperational`, the cross-platform `KSafeProtectionLevel` scale, per-platform truth table, consumer gating / telemetry / UI patterns |
 | [JVM Key Protection](docs/JVM_PROTECTION.md) | Deep dive on how the AES key is held on each JVM host: Windows DPAPI, macOS login Keychain, Linux Secret Service (libsecret), the software fallback, the opt-out, and the per-app namespace |
-| [Encryption Proof](docs/ENCRYPTION_PROOF.md) | Per-platform automated proof tests + manual commands to inspect the raw stored bytes and see the ciphertext yourself |
 | [Memory Policy](docs/MEMORY.md) | Timed cache, constructor parameters, encryption config, device lock-state policies |
+| [Encryption Proof](docs/ENCRYPTION_PROOF.md) | Per-platform automated proof tests + manual commands to inspect the raw stored bytes and see the ciphertext yourself |
+
+**Reference & internals**
+
+| Topic | Description |
+|-------|-------------|
 | [Architecture](docs/ARCHITECTURE.md) | The conceptual model: three modules, three rings (public API / `KSafeCore` orchestrator / platform shells), hot cache + write coalescer, the `KSafePlatformStorage` and `KSafeEncryption` interfaces, memory policies, and how 2.0 consolidated ~5,900 lines of duplicated platform logic into ~890 |
 | [Source-tree tour](docs/TOUR.md) | File-by-file walkthrough of every Kotlin source file in `:ksafe`: where each behaviour lives and why. Companion to the Architecture doc — Architecture is "the model," TOUR is "the map." |
+| [Performance Benchmarks](docs/BENCHMARKS.md) | Full benchmark tables, cold start numbers, architecture deep-dive |
 | [Testing](docs/TESTING.md) | Running tests, building iOS test app, test features |
 | [Migration Guide](docs/MIGRATION.md) | Upgrading from v1.x → v2.0 (biometric module extraction, iOS path migration), v1.6.x → v1.7.0 (`encrypted: Boolean` → `KSafeWriteMode`), and v1.1.x → v1.2.0+ |
 | [Alternatives & Comparison](docs/COMPARISON.md) | KSafe vs EncryptedSharedPrefs, KVault, SQLCipher, and more |
@@ -473,7 +519,7 @@ Internals, advanced features, reference material:
 
 ## Community
 
-Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening issues or pull requests, and follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening issues or pull requests, and follow the [Code of Conduct](CODE_OF_CONDUCT.md). Release notes live in [CHANGELOG.md](CHANGELOG.md).
 
 Security-sensitive bug reports should follow [SECURITY.md](SECURITY.md), not public GitHub issues.
 

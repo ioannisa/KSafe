@@ -16,11 +16,6 @@ plugins {
     alias(libs.plugins.gradle.test.retry)
 }
 
-group = "eu.anifantakis"
-// Single source of truth — see `ksafe.version` in the root gradle.properties.
-// The same property feeds the generated `KSAFE_VERSION` constant below.
-version = providers.gradleProperty("ksafe.version").get()
-
 kotlin {
     android {
         namespace = "eu.anifantakis"
@@ -120,8 +115,17 @@ kotlin {
             }
         }
 
+        // Intermediate source set for the two JVM-bytecode targets only: their concurrency and
+        // CSPRNG actuals are pure java.* / kotlinx code with no Android API, so they live here once.
+        // It cannot be datastoreMain — appleMain shares that one and has its own actuals for these.
+        // (Logging is the exception: Apple's actual is the same `println`, so it lives there.)
+        val jvmSharedMain by creating {
+            dependsOn(commonMain)
+        }
+
         androidMain {
             dependsOn(datastoreMain)
+            dependsOn(jvmSharedMain)
             dependencies {
                 implementation(libs.androidx.datastore.preferences)
             }
@@ -140,6 +144,7 @@ kotlin {
         // Dependencies for the JVM target
         val jvmMain by getting {
             dependsOn(datastoreMain)
+            dependsOn(jvmSharedMain)
             dependencies {
                 implementation(libs.androidx.datastore.preferences)
                 // The no-`sun.misc.Unsafe` JSON fallback (DataStoreJsonStorage)
@@ -256,43 +261,11 @@ kotlin.sourceSets.named("commonMain") {
     kotlin.srcDir(generateKSafeBuildConfig)
 }
 
+// Coordinates, licence, developer and SCM metadata come from the root build script.
 mavenPublishing {
-    publishToMavenCentral()
-
-    // Release builds sign; local `publishToMavenLocal` runs and contributors
-    // without GPG keys can opt out with `-Pksafe.skipSign=true`. CI release
-    // jobs leave the property unset, so they continue to require signatures.
-    if (!project.hasProperty("ksafe.skipSign")) signAllPublications()
-    coordinates(
-        groupId =  group.toString(),
-        artifactId = "ksafe",
-        version = version.toString()
-    )
-
     pom {
         name = "KSafe MultiPlatform Encrypted Persistence"
         description = "Library to allow for multiplatform seamless encrypted persistence using DataStore Preferences"
-        inceptionYear = "2025"
-        url = "https://github.com/ioannisa/ksafe"
-        licenses {
-            license {
-                name = "Apache-2.0"
-                url = "https://www.apache.org/licenses/LICENSE-2.0"
-            }
-        }
-        developers {
-            developer {
-                id = "ioannis-anifantakis"
-                name = "Ioannis Anifantakis"
-                url = "https://anifantakis.eu"
-                email = "ioannisanif@gmail.com"
-            }
-        }
-        scm {
-            url = "https://github.com/ioannisa/ksafe"
-            connection = "scm:git:https://github.com/ioannisa/ksafe.git"
-            developerConnection = "scm:git:ssh://git@github.com/ioannisa/ksafe.git"
-        }
     }
 }
 
@@ -324,6 +297,13 @@ val ciEnv = providers.environmentVariable("CI")
 // documented livelock). Default (absent) = full local intensity.
 val ksafeStressScale = providers.gradleProperty("ksafeStressScale")
 
+// `-PksafeTorture` enables JvmTortureTest (skipped otherwise — it runs for
+// `-PksafeTortureSeconds` of wall-clock chaos, default 45). `-PksafeTortureSeed`
+// reproduces a failed run from the seed it printed.
+val ksafeTorture = providers.gradleProperty("ksafeTorture")
+val ksafeTortureSeconds = providers.gradleProperty("ksafeTortureSeconds")
+val ksafeTortureSeed = providers.gradleProperty("ksafeTortureSeed")
+
 tasks.named<Test>("jvmTest") {
     // Stress tests in JvmKSafeTest each launch tens of thousands of concurrent
     // putDirect operations whose state (memoryCache + dirtyKeys + DataStore write
@@ -347,6 +327,15 @@ tasks.named<Test>("jvmTest") {
     }
     if (ksafeStressScale.isPresent) {
         systemProperty("ksafe.stressScale", ksafeStressScale.get())
+    }
+    if (ksafeTorture.isPresent) {
+        systemProperty("ksafe.torture", "1")
+    }
+    if (ksafeTortureSeconds.isPresent) {
+        systemProperty("ksafe.torture.seconds", ksafeTortureSeconds.get())
+    }
+    if (ksafeTortureSeed.isPresent) {
+        systemProperty("ksafe.torture.seed", ksafeTortureSeed.get())
     }
     // Flaky-test retry — CI only. A runner-variance flake passes on retry
     // (build green, still listed in the report so it's tracked, not hidden);

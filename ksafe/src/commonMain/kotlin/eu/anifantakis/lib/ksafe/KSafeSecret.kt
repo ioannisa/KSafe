@@ -1,11 +1,10 @@
 package eu.anifantakis.lib.ksafe
 
 import eu.anifantakis.lib.ksafe.internal.secureRandomBytes
+import eu.anifantakis.lib.ksafe.internal.toLowercaseHex
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlin.io.encoding.Base64
-import kotlin.io.encoding.ExperimentalEncodingApi
 
 /** Guards concurrent first-time generation to prevent duplicate secrets. */
 private val secretMutex = Mutex()
@@ -28,7 +27,6 @@ private val secretMutex = Mutex()
  * @throws IllegalStateException if a secret for [key] exists but cannot be read
  *   back; resolve the vault/key problem and retry, or delete it to rotate.
  */
-@OptIn(ExperimentalEncodingApi::class)
 suspend fun KSafe.getOrCreateSecret(
     key: String = "main_db",
     size: Int = 32,
@@ -38,15 +36,16 @@ suspend fun KSafe.getOrCreateSecret(
     require(key.isNotBlank()) { "key must not be blank" }
     require(size > 0) { "size must be positive" }
 
-    // Injective storage key: a key already in [A-Za-z0-9_] keeps its slot "ksafe_secret_<key>";
-    // any other key is hex-encoded under the distinct "ksafe_secretx_" prefix. The prefixes differ
-    // at a fixed position ('_' vs 'x'), so a hex slot can never equal a plain slot and distinct
-    // keys never collide.
+    // Injective slot: [A-Za-z0-9_] keys use "ksafe_secret_<key>", others hex under "ksafe_secretx_";
+    // the '_' vs 'x' prefix split keeps hex and plain slots from ever colliding.
     val safeKey = key.all { it == '_' || it in '0'..'9' || it in 'a'..'z' || it in 'A'..'Z' }
     val storageKey = if (safeKey) "ksafe_secret_$key" else "ksafe_secretx_${hexEncodeUtf8(key)}"
-    // Collision-prone legacy slot where non-[A-Za-z0-9_] chars collapse to '_', so distinct
-    // special-char keys share it. Equals [storageKey] for a safe key; the migration source otherwise.
-    val legacyStorageKey = "ksafe_secret_${key.replace(Regex("[^a-zA-Z0-9_]"), "_")}"
+    // Collision-prone legacy slot ('_'-collapsed); the pre-2.2.0 migration source for special-char keys.
+    val collapsedKey = key.replace(Regex("[^a-zA-Z0-9_]"), "_")
+    val legacyStorageKey = "ksafe_secret_$collapsedKey"
+    // Marks "ksafe_secret_<name>" as a live safe-key slot, so a special-char sibling whose collapsed
+    // name equals <name> can't misread it (via the legacy probe) as its own secret and silently share it.
+    val safeOwnerKey = "ksafe_secretowner_$key"
 
     return secretMutex.withLock {
         val stored = try {
@@ -54,18 +53,18 @@ suspend fun KSafe.getOrCreateSecret(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
-            // The suspend get() rethrows a transient decrypt failure (locked device /
-            // momentarily-unavailable vault) rather than collapsing it to "". A secret only has
-            // ciphertext once it exists, so treat that as "exists but unreadable" and fall to the
-            // refuse-to-rotate branch; if nothing is stored the throw is unexpected — re-raise it.
+            // Transient decrypt failure with ciphertext present = "exists but unreadable": fall to
+            // refuse-to-rotate. Nothing stored = unexpected throw, re-raise.
             if (getKeyInfo(storageKey) == null) throw e
             ""
         }
         when {
-            stored.isNotEmpty() -> Base64.decode(stored)
+            stored.isNotEmpty() -> {
+                if (safeKey) markSafeSecretOwner(safeOwnerKey)
+                decodeStoredSecret(stored, key, storageKey)
+            }
 
-            // Entry exists on disk but reads back empty ⇒ unreadable secret. Regenerating
-            // would orphan everything encrypted under the old one, so refuse.
+            // Exists but reads back empty ⇒ unreadable; regenerating would orphan old data, so refuse.
             getKeyInfo(storageKey) != null -> throw IllegalStateException(
                 "KSafe.getOrCreateSecret: a secret for key \"$key\" exists but could not be " +
                     "read back — the backing encryption key may have been invalidated or " +
@@ -77,17 +76,24 @@ suspend fun KSafe.getOrCreateSecret(
             )
 
             else -> {
-                // Absent under the injective key. A special-char key may still have a secret under
-                // the legacy slot — migrate it forward non-destructively before generating.
-                val migrated = if (!safeKey) {
+                // May still exist under the legacy slot — migrate forward before generating. Skip when
+                // a safe sibling owns that slot (its collapsed name matches ours): adopting it would
+                // hand this key the sibling's live secret and silently share it across two keys.
+                val migrated = if (!safeKey && get<String>("ksafe_secretowner_$collapsedKey", "").isEmpty()) {
                     migrateLegacySecret(key, legacyStorageKey, storageKey, protection, requireUnlockedDevice)
                 } else null
 
                 migrated ?: run {
                     val secret = secureRandomBytes(size)
+                    // Owner marker first: crashing between the two writes then leaves a marker
+                    // with an empty slot, which is benign — this branch only runs when no secret
+                    // exists, so a sibling's skipped legacy probe finds nothing to lose. The
+                    // reverse order leaves a live secret without its marker, which a colliding
+                    // special-char sibling would adopt via the legacy probe and silently share.
+                    if (safeKey) markSafeSecretOwner(safeOwnerKey)
                     put(
                         key = storageKey,
-                        value = Base64.encode(secret),
+                        value = KSafeBase64.encode(secret),
                         mode = KSafeWriteMode.Encrypted(
                             protection = protection,
                             requireUnlockedDevice = requireUnlockedDevice
@@ -100,27 +106,39 @@ suspend fun KSafe.getOrCreateSecret(
     }
 }
 
+/**
+ * Decodes a persisted secret, normalizing a malformed-Base64 failure to the documented
+ * "exists but cannot be read back" [IllegalStateException] — the raw [IllegalArgumentException]
+ * is reserved by the KDoc contract for caller-input validation (blank key / bad size).
+ */
+private fun decodeStoredSecret(stored: String, key: String, slot: String): ByteArray = try {
+    KSafeBase64.decode(stored)
+} catch (e: IllegalArgumentException) {
+    throw IllegalStateException(
+        "KSafe.getOrCreateSecret: a secret for key \"$key\" exists but is not valid Base64 — " +
+            "the reserved slot \"$slot\" was likely overwritten outside getOrCreateSecret, or " +
+            "the stored value is corrupt. Refusing to overwrite it: generating a new secret " +
+            "would permanently orphan any data encrypted under the existing one. Restore the " +
+            "value, or call delete(\"$slot\") to intentionally discard it.",
+        e,
+    )
+}
+
 /** Lowercase-hex of the UTF-8 bytes of [s] — an injective, [0-9a-f]-only encoding. */
-private fun hexEncodeUtf8(s: String): String {
-    val bytes = s.encodeToByteArray()
-    val digits = "0123456789abcdef"
-    val sb = StringBuilder(bytes.size * 2)
-    for (b in bytes) {
-        val v = b.toInt() and 0xff
-        sb.append(digits[v ushr 4])
-        sb.append(digits[v and 0x0f])
-    }
-    return sb.toString()
+private fun hexEncodeUtf8(s: String): String = s.encodeToByteArray().toLowercaseHex()
+
+/** Idempotently marks a safe key's "ksafe_secret_<name>" slot as safe-owned so a colliding
+ *  special-char sibling won't adopt it via the legacy probe. Caller holds [secretMutex]. */
+private suspend fun KSafe.markSafeSecretOwner(ownerKey: String) {
+    if (get<String>(ownerKey, "").isEmpty()) put(ownerKey, "1", KSafeWriteMode.Plain)
 }
 
 /**
- * Copies a special-char key's secret forward from the collision-prone legacy slot. Returns the
- * migrated secret, `null` when nothing is stored there (caller generates), or throws the
- * refuse-to-rotate error when a legacy secret exists but can't be read right now. Non-destructive:
- * the legacy slot is never deleted — for a collapsed key it may hold a co-existing distinct key's
- * live secret, so deleting it would orphan the sibling. Caller holds [secretMutex].
+ * Migrates a special-char key's secret forward from the legacy slot. Returns the secret, `null`
+ * if nothing is stored (caller generates), or throws refuse-to-rotate if a legacy secret exists
+ * but is unreadable. Non-destructive: the legacy slot may hold a collision sibling's live secret,
+ * so it is never deleted. Caller holds [secretMutex].
  */
-@OptIn(ExperimentalEncodingApi::class)
 private suspend fun KSafe.migrateLegacySecret(
     key: String,
     legacyStorageKey: String,
@@ -133,8 +151,7 @@ private suspend fun KSafe.migrateLegacySecret(
     } catch (e: CancellationException) {
         throw e
     } catch (e: Throwable) {
-        // Legacy slot momentarily unreadable → refuse-to-rotate check below; genuinely absent
-        // → let the caller generate.
+        // Unreadable → refuse-to-rotate check below; genuinely absent → caller generates.
         if (getKeyInfo(legacyStorageKey) == null) return null
         ""
     }
@@ -148,10 +165,13 @@ private suspend fun KSafe.migrateLegacySecret(
         )
         return null
     }
+    // Decode BEFORE the copy-forward: a malformed legacy value must throw the documented
+    // unreadable-secret failure without being propagated into the canonical slot.
+    val secret = decodeStoredSecret(legacyStored, key, legacyStorageKey)
     put(
         key = storageKey,
         value = legacyStored,
         mode = KSafeWriteMode.Encrypted(protection = protection, requireUnlockedDevice = requireUnlockedDevice),
     )
-    return Base64.decode(legacyStored)
+    return secret
 }

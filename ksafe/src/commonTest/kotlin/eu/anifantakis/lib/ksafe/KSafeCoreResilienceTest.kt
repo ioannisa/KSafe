@@ -1,9 +1,9 @@
 package eu.anifantakis.lib.ksafe
 
 import eu.anifantakis.lib.ksafe.internal.KSafeCore
-import eu.anifantakis.lib.ksafe.internal.collectorRetryBackoffMs
-import eu.anifantakis.lib.ksafe.internal.drainRemaining
-import eu.anifantakis.lib.ksafe.internal.retryingTransientReads
+import eu.anifantakis.lib.ksafe.internal.coreparts.collectorRetryBackoffMs
+import eu.anifantakis.lib.ksafe.internal.coreparts.drainRemaining
+import eu.anifantakis.lib.ksafe.internal.coreparts.retryingTransientReads
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.take
@@ -38,14 +38,22 @@ class KSafeCoreResilienceTest {
         }
 
         var retries = 0
+        var lastCause: Throwable? = null
         val collected = source
-            .retryingTransientReads { retries++ }
+            .retryingTransientReads { _, cause ->
+                retries++
+                lastCause = cause
+            }
             .take(3)               // 1 (pre-throw), then 2, 3 after resubscribe — proves recovery
             .toList()
 
         assertEquals(listOf(1, 2, 3), collected, "the collector must recover the post-failure emissions")
         assertEquals(2, subscriptions, "it must resubscribe exactly once after the throw")
         assertTrue(retries >= 1, "the retry callback must fire")
+        assertEquals(
+            "transient storage read hiccup", lastCause?.message,
+            "the callback must surface the failure so a permanent error is diagnosable from logs",
+        )
     }
 
     @Test

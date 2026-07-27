@@ -1,9 +1,12 @@
 package eu.anifantakis.lib.ksafe
 
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.ExperimentalUuidApi
 
 /**
@@ -32,7 +35,15 @@ class MacosMultiInstanceTest {
         val b = KSafe(fileName = file, directory = d, testEngine = FakeEncryption())
 
         a.put("ka", "va")
-        assertEquals("va", b.get("ka", "none"), "a co-existing same-file instance must read the shared store")
+        // Awaited, not asserted outright: a sibling instance learns of the write through its own
+        // collector on the shared store, so `a.put` returning means the value is DURABLE, not that
+        // b has merged it yet. Asserting immediately passes only while the scheduler happens to be
+        // idle. The timeout keeps a genuine "sibling never sees it" regression a failure.
+        assertEquals(
+            "va",
+            withTimeout(10.seconds) { b.getFlow("ka", "none").first { it == "va" } },
+            "a co-existing same-file instance must read the shared store",
+        )
 
         b.put("kb", "vb")
         a.close(); b.close()

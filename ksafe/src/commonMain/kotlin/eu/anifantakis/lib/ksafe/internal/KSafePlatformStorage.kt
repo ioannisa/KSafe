@@ -41,6 +41,19 @@ internal sealed interface StoredValue {
     data class Text(val value: String) : StoredValue
 }
 
+/**
+ * Flattens a value for the string-only backends (the JSON file store, Web Storage): the type
+ * is recovered on read from the stored text, so this must stay their single spelling of it.
+ */
+internal fun StoredValue.asString(): String = when (this) {
+    is StoredValue.BoolVal -> value.toString()
+    is StoredValue.IntVal -> value.toString()
+    is StoredValue.LongVal -> value.toString()
+    is StoredValue.FloatVal -> value.toString()
+    is StoredValue.DoubleVal -> value.toString()
+    is StoredValue.Text -> value
+}
+
 @PublishedApi
 internal sealed interface StorageOp {
     val rawKey: String

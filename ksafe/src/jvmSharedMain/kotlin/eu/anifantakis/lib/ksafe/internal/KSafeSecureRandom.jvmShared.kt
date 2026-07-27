@@ -1,3 +1,6 @@
+// See KSafeConcurrent.jvmShared.kt — same ABI-stability pin for the moved facade.
+@file:JvmName("KSafeSecureRandom_jvmKt")
+
 package eu.anifantakis.lib.ksafe.internal
 
 import java.security.SecureRandom

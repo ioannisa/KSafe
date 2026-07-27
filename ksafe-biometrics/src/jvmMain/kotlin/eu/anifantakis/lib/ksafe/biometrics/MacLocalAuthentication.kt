@@ -10,24 +10,30 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * macOS Touch ID / password prompt for the JVM, bridged to `LocalAuthentication`'s
- * `LAContext` through the Objective-C runtime via JNA (`objc_msgSend`) — the same
- * pattern the `:ksafe` JVM key vaults use for C APIs, extended to ObjC messaging.
+ * macOS Touch ID / password prompt for the JVM, bridging `LAContext` through the
+ * ObjC runtime via JNA (`objc_msgSend`).
  *
- * Policy mapping mirrors the native `macosMain` target exactly:
  * `allowDeviceCredentialFallback = true` → `LAPolicyDeviceOwnerAuthentication`
- * (Touch ID, password, or Apple Watch — available on every Mac);
- * `false` → `LAPolicyDeviceOwnerAuthenticationWithBiometrics` (Touch ID only —
- * fails on hardware-less Macs, matching the native target's `false` there).
+ * (Touch ID, password, or Apple Watch); `false` →
+ * `LAPolicyDeviceOwnerAuthenticationWithBiometrics` (Touch ID only, fails on
+ * hardware-less Macs).
  *
- * The consent dialog is rendered by `coreauthd`/`SecurityAgent`, a separate system
- * process, so no NSApplication run loop is required — plain JVM apps work.
+ * The dialog is rendered by `coreauthd`/`SecurityAgent`, so no NSApplication run
+ * loop is required — plain JVM apps work.
  */
 internal object MacLocalAuthentication {
 
     private const val LA_POLICY_BIOMETRICS = 1L          // LAPolicyDeviceOwnerAuthenticationWithBiometrics
     private const val LA_POLICY_DEVICE_OWNER = 2L        // LAPolicyDeviceOwnerAuthentication
     private const val BLOCK_IS_GLOBAL = 1 shl 28
+
+    // Strong, GC-durable anchors for the native objects LA invokes from its async reply (callback,
+    // block, descriptor, reason buffer, NSString). This must OUTLIVE the continuation's cancellation
+    // handler: after invalidate() LA still delivers the reply exactly once, AFTER that handler has
+    // run and been dropped, so the block must stay reachable until the reply lands — where it (and
+    // the catch, if the reply can never fire) removes its entry. JNA keeps the callback alive only
+    // via a weak CallbackReference, so without a strong anchor the trampoline can be freed mid-prompt.
+    private val pendingEvaluations = java.util.concurrent.ConcurrentHashMap<Any, List<Any>>()
 
     /** ObjC completion-block signature: `void (^)(BOOL success, NSError *error)`. */
     internal interface LAReplyCallback : Callback {
@@ -62,30 +68,20 @@ internal object MacLocalAuthentication {
         }
     }
 
-    // Lazy so merely loading this class (e.g. on Windows) never touches macOS libraries;
-    // a failure is remembered and surfaces as "bridge unavailable" rather than retrying.
-    private val runtime: Runtime? by lazy {
-        try {
-            Runtime()
-        } catch (t: Throwable) {
-            System.err.println(
-                "KSafe biometrics: macOS LocalAuthentication bridge unavailable (${t.message}); " +
-                    "verifyBiometric falls back to pass-through."
-            )
-            null
-        }
-    }
+    private val runtime: Runtime? by lazyNativeBridge("macOS LocalAuthentication") { Runtime() }
 
     /** True when the ObjC bridge loaded; false means callers should use the legacy pass-through. */
     val isAvailable: Boolean get() = runtime != null
 
-    /**
-     * `LAContext.canEvaluatePolicy:error:` — whether [evaluate] would show a real prompt
-     * for this policy. Synchronous and prompt-free.
-     */
+    // The prompt and the probe must ask about the SAME policy, or canEvaluate answers for a
+    // prompt that is never shown.
+    private fun policyFor(allowDeviceCredentialFallback: Boolean): Long =
+        if (allowDeviceCredentialFallback) LA_POLICY_DEVICE_OWNER else LA_POLICY_BIOMETRICS
+
+    /** Whether [evaluate] would show a real prompt for this policy. Synchronous, prompt-free. */
     fun canEvaluate(allowDeviceCredentialFallback: Boolean): Boolean {
         val rt = runtime ?: return false
-        val policy = if (allowDeviceCredentialFallback) LA_POLICY_DEVICE_OWNER else LA_POLICY_BIOMETRICS
+        val policy = policyFor(allowDeviceCredentialFallback)
         val pool = rt.poolPush.invokePointer(emptyArray())
         var context: Pointer? = null
         return try {
@@ -107,11 +103,13 @@ internal object MacLocalAuthentication {
      */
     suspend fun evaluate(reason: String, allowDeviceCredentialFallback: Boolean): Boolean {
         val rt = runtime ?: return false
-        val policy = if (allowDeviceCredentialFallback) LA_POLICY_DEVICE_OWNER else LA_POLICY_BIOMETRICS
+        val policy = policyFor(allowDeviceCredentialFallback)
 
         return suspendCancellableCoroutine { continuation ->
             val resumed = AtomicBoolean(false)
             val released = AtomicBoolean(false)
+            // Declared before the try so the catch (reply will never fire) can also drop the anchor.
+            val anchorKey = Any()
 
             val pool = rt.poolPush.invokePointer(emptyArray())
             var context: Pointer? = null
@@ -138,17 +136,19 @@ internal object MacLocalAuthentication {
                 val nsReason = rt.msgSendPtr(nsString, rt.sel("stringWithUTF8String:"), reasonBuf)
                     ?: throw IllegalStateException("NSString creation failed")
 
-                // The reply callback: fires exactly once on LocalAuthentication's private
-                // queue. References to callback/block/descriptor are held by this closure
-                // (and JNA's CallbackReference) until resume, so nothing is collected early.
+                // LA fires this once on its private queue after this lambda returns. JNA does not
+                // keep the callback/block/descriptor alive via the native function pointer, and the
+                // suspended coroutine doesn't capture them — the pendingEvaluations anchor keeps them
+                // alive until this reply runs (the one point guaranteed to fire exactly once, on
+                // resolve OR after a cancel's invalidate), then drops them here.
                 val callback = object : LAReplyCallback {
                     override fun invoke(block: Pointer?, success: Byte, error: Pointer?) {
                         releaseContextOnce()
                         if (resumed.compareAndSet(false, true) && continuation.isActive) {
                             continuation.resumeWith(Result.success(success.toInt() != 0))
                         }
-                        // Keep reasonBuf reachable until the prompt resolved.
-                        reasonBuf.size()
+                        // LA will not touch these native objects again after this reply.
+                        pendingEvaluations.remove(anchorKey)
                     }
                 }
 
@@ -167,15 +167,25 @@ internal object MacLocalAuthentication {
                     setPointer(24, descriptor)
                 }
 
+                // Anchor every native object LA touches when the reply fires in a process-durable map
+                // (not the cancellation handler): the handler is dropped the moment the continuation
+                // completes, but on cancel LA still delivers the reply once AFTER invalidate() — the
+                // reply removes the anchor, so it survives exactly that long.
+                pendingEvaluations[anchorKey] = listOf(callback, block, descriptor, reasonBuf, nsReason)
+
                 continuation.invokeOnCancellation {
-                    // Dismisses the pending system prompt; the reply then fires with
-                    // success=false and the guarded resume above no-ops.
+                    // Only invalidate, never release: if cancelled at registration this runs
+                    // synchronously before evaluatePolicy, and releasing the retain-count-1 context
+                    // would make evaluatePolicy message a freed object (SIGSEGV). invalidate keeps it
+                    // alive; LA's reply releases it (and removes the anchor) exactly once.
                     runCatching { rt.msgSendVoid(ctx, rt.sel("invalidate")) }
-                    releaseContextOnce()
                 }
 
                 rt.msgSendVoid(ctx, rt.sel("evaluatePolicy:localizedReason:reply:"), policy, nsReason, block)
             } catch (t: Throwable) {
+                // evaluatePolicy threw → no reply will ever fire → drop the anchor so it can't leak.
+                // Idempotent, and mutually exclusive with the reply path, so no double-remove hazard.
+                pendingEvaluations.remove(anchorKey)
                 context?.let { c -> if (released.compareAndSet(false, true)) runCatching { rt.msgSendVoid(c, rt.sel("release")) } }
                 if (resumed.compareAndSet(false, true) && continuation.isActive) {
                     continuation.resumeWith(Result.failure(t))

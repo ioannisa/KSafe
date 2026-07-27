@@ -17,20 +17,6 @@ import kotlin.test.assertTrue
  */
 class JvmObservableFlowResilienceTest {
 
-    /** Encrypts like the XOR [FakeEncryption], but `decrypt` throws a *transient* error
-     *  (matches `isTransientDecryptFailure`) while [failTransient] is set. */
-    private class ToggleTransientEngine : KSafeEncryption {
-        @Volatile var failTransient = false
-        private val xor = FakeEncryption()
-        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray =
-            xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
-        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
-            if (failTransient) throw IllegalStateException("KSafe: Cannot access Keystore key - device is locked.")
-            return xor.decrypt(identifier, data)
-        }
-        override fun deleteKey(identifier: String) {}
-    }
-
     @Test
     fun getFlow_skipsTransientDecryptFailure_insteadOfThrowing() = runBlocking {
         val engine = ToggleTransientEngine()
@@ -57,9 +43,9 @@ class JvmObservableFlowResilienceTest {
     private class KeychainErrorEngine : KSafeEncryption {
         @Volatile var fail = false
         private val xor = FakeEncryption()
-        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray =
+        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?,    aad: ByteArray?,): ByteArray =
             xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
-        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
+        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray {
             if (fail) throw IllegalStateException("KSafe: Keychain error -25308 for account $identifier")
             return xor.decrypt(identifier, data)
         }

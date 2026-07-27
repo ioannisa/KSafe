@@ -1,6 +1,7 @@
 package eu.anifantakis.lib.ksafe
 
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
+import eu.anifantakis.lib.ksafe.internal.KSafeInitLock
 
 /**
  * Test-only [KSafeEncryption] that "encrypts" via a deterministic, reversible XOR so KSafe
@@ -9,6 +10,10 @@ import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
  */
 @PublishedApi
 internal class FakeEncryption : KSafeEncryption {
+
+    // The commit path encrypts a batch's entries concurrently; unguarded set adds
+    // race (lost tracking entries at best, a corrupted HashSet at worst).
+    private val lock = KSafeInitLock()
 
     /** Key identifiers that have been encrypted. */
     val encryptedKeys = mutableSetOf<String>()
@@ -23,32 +28,37 @@ internal class FakeEncryption : KSafeEncryption {
         identifier: String,
         data: ByteArray,
         hardwareIsolated: Boolean,
-        requireUnlockedDevice: Boolean?
+        requireUnlockedDevice: Boolean?,
+        aad: ByteArray?,
     ): ByteArray {
-        encryptedKeys.add(identifier)
-        val key = deriveKey(identifier)
+        lock.withLock { encryptedKeys.add(identifier) }
+        val key = deriveKey(identifier, aad)
         return xorWithKey(data, key)
     }
 
-    override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
-        decryptedKeys.add(identifier)
-        val key = deriveKey(identifier)
+    override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray {
+        lock.withLock { decryptedKeys.add(identifier) }
+        val key = deriveKey(identifier, aad)
         return xorWithKey(data, key)
     }
 
     override fun deleteKey(identifier: String) {
-        deletedKeys.add(identifier)
+        lock.withLock { deletedKeys.add(identifier) }
     }
 
     /** Clears all tracking sets; call between tests for isolation. */
     fun reset() {
-        encryptedKeys.clear()
-        decryptedKeys.clear()
-        deletedKeys.clear()
+        lock.withLock {
+            encryptedKeys.clear()
+            decryptedKeys.clear()
+            deletedKeys.clear()
+        }
     }
 
-    private fun deriveKey(identifier: String): ByteArray {
-        val hash = identifier.hashCode()
+    private fun deriveKey(identifier: String, aad: ByteArray? = null): ByteArray {
+        // AAD folds into the key so a mismatched AAD yields garbage — modelling GCM's
+        // authentication failure closely enough for swap/tamper tests.
+        val hash = identifier.hashCode() * 31 + (aad?.decodeToString()?.hashCode() ?: 0)
         return byteArrayOf(
             (hash shr 24).toByte(),
             (hash shr 16).toByte(),

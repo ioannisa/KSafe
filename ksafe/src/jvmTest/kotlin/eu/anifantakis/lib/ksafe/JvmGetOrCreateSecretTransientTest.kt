@@ -12,19 +12,6 @@ import kotlin.test.assertTrue
  */
 class JvmGetOrCreateSecretTransientTest {
 
-    /** XOR-encrypts, but `decrypt` throws a TRANSIENT (device-locked) error while armed. */
-    private class ToggleTransientEngine : KSafeEncryption {
-        @Volatile var failTransient = false
-        private val xor = FakeEncryption()
-        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray =
-            xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
-        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
-            if (failTransient) throw IllegalStateException("KSafe: Cannot access Keystore key - device is locked.")
-            return xor.decrypt(identifier, data)
-        }
-        override fun deleteKey(identifier: String) {}
-    }
-
     private fun newKsafe(engine: KSafeEncryption) = KSafe(
         fileName = JvmKSafeTest.generateUniqueFileName(),
         memoryPolicy = KSafeMemoryPolicy.ENCRYPTED, // every read decrypts → the transient path is hit

@@ -74,17 +74,3 @@ class AndroidEncryptionProofTest {
         private const val KEY = "proof_token"
     }
 }
-
-/** Inlined [containsUtf8] — the commonTest version isn't visible from this sibling source set. */
-private fun ByteArray.containsUtf8(needle: String): Boolean {
-    val needleBytes = needle.encodeToByteArray()
-    if (needleBytes.isEmpty()) return true
-    if (needleBytes.size > this.size) return false
-    outer@ for (i in 0..(this.size - needleBytes.size)) {
-        for (j in needleBytes.indices) {
-            if (this[i + j] != needleBytes[j]) continue@outer
-        }
-        return true
-    }
-    return false
-}

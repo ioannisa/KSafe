@@ -17,6 +17,14 @@ import kotlinx.coroutines.yield
 @PublishedApi
 internal class LocalStorageStorage(
     private val storagePrefix: String,
+    /**
+     * The one-time migration done-markers gating copy-forwards INTO this store from retained
+     * sources (they live outside [storagePrefix], see the factory). [clear] seals them: an
+     * explicit wipe means the user chose an empty store, so a marker whose original write
+     * failed (quota/SecurityError) must not let the still-present source re-seed the wiped
+     * data on the next construction.
+     */
+    private val migrationMarkersSealedOnClear: List<String> = emptyList(),
 ) : KSafePlatformStorage {
 
     private val changes = MutableStateFlow<Map<String, StoredValue>>(readSnapshotSync())
@@ -27,17 +35,18 @@ internal class LocalStorageStorage(
 
     override suspend fun applyBatch(ops: List<StorageOp>) {
         if (ops.isEmpty()) return
-        // localStorage has no transaction API, so emulate all-or-nothing: snapshot every key the
-        // batch touches and restore on failure (typically QuotaExceededError mid-batch). Otherwise
-        // a partial batch can persist a value without its metadata, which a later read
-        // misclassifies as plaintext and hands back as the raw ciphertext string.
+        // localStorage has no transaction API. A synchronous mid-batch failure (usually
+        // QuotaExceededError) is rolled back below. Writes are ordered metadata-before-value so a
+        // crash leaves metadata without its value (reads fall back to the default via
+        // classifyStorageEntry, never raw ciphertext) rather than a value without metadata.
+        val ordered = orderMetaBeforeValue(ops)
         val priors = HashMap<String, String?>()
-        for (op in ops) {
+        for (op in ordered) {
             val fullKey = storagePrefix + op.rawKey
             if (fullKey !in priors) priors[fullKey] = localStorageGet(fullKey)
         }
         try {
-            for (op in ops) when (op) {
+            for (op in ordered) when (op) {
                 is StorageOp.Put -> safeLocalStorageSet(storagePrefix + op.rawKey, op.value.asString())
                 is StorageOp.Delete -> localStorageRemove(storagePrefix + op.rawKey)
             }
@@ -45,21 +54,32 @@ internal class LocalStorageStorage(
             try {
                 rollbackPriors(priors, ::localStorageSet, ::localStorageRemove)
             } catch (rollbackError: Throwable) {
-                // A rollback that couldn't fully restore is worse than the write failure (silent
-                // data loss); surface it with the original write failure attached.
+                // A rollback that couldn't fully restore means silent data loss; surface it with
+                // the original write failure attached.
                 rollbackError.addSuppressed(e)
                 throw rollbackError
             }
             throw e
         } finally {
             changes.value = readSnapshotSync()
-            // Single-threaded browsers: without a yield, collectors don't run until this coroutine
-            // returns, so a put()-then-subscribe wouldn't see the new value yet.
+            // Single-threaded browsers: without a yield, a put()-then-subscribe wouldn't see the
+            // new value until this coroutine returns.
             yield()
         }
     }
 
-    /** Catches QuotaExceededError and rethrows with actionable context. */
+    // Deletes first, then metadata Puts, then value Puts, so a process death mid-batch can't leave a
+    // value persisted ahead of its metadata. Stable within each group.
+    private fun orderMetaBeforeValue(ops: List<StorageOp>): List<StorageOp> =
+        ops.sortedBy { op ->
+            when {
+                op is StorageOp.Delete -> 0
+                op is StorageOp.Put &&
+                    KeySafeMetadataManager.tryExtractCanonicalValueKey(op.rawKey) != null -> 2
+                else -> 1
+            }
+        }
+
     private fun safeLocalStorageSet(key: String, value: String) {
         try {
             localStorageSet(key, value)
@@ -74,23 +94,24 @@ internal class LocalStorageStorage(
     }
 
     override suspend fun clear() {
+        // Seal BEFORE the wipe so a crash mid-clear can't leave the store half-wiped AND
+        // re-seedable; repeated after it for the rare set() that failed on a full quota
+        // (the wipe just freed space). Best-effort: a markerless clear still wipes.
+        sealMigrationMarkers()
         val keysToRemove = buildList {
             for (i in 0 until localStorageLength()) {
                 localStorageKey(i)?.takeIf { it.startsWith(storagePrefix) }?.let(::add)
             }
         }
         keysToRemove.forEach(::localStorageRemove)
+        sealMigrationMarkers()
         changes.value = emptyMap()
     }
 
-    /** localStorage is string-only; every [StoredValue] collapses to `.toString()` here. */
-    private fun StoredValue.asString(): String = when (this) {
-        is StoredValue.BoolVal -> value.toString()
-        is StoredValue.IntVal -> value.toString()
-        is StoredValue.LongVal -> value.toString()
-        is StoredValue.FloatVal -> value.toString()
-        is StoredValue.DoubleVal -> value.toString()
-        is StoredValue.Text -> value
+    private fun sealMigrationMarkers() {
+        for (marker in migrationMarkersSealedOnClear) {
+            runCatching { localStorageSet(marker, "1") }
+        }
     }
 
     private fun readSnapshotSync(): Map<String, StoredValue> {
@@ -101,7 +122,7 @@ internal class LocalStorageStorage(
             if (!fullKey.startsWith(storagePrefix)) continue
             val short = fullKey.removePrefix(storagePrefix)
             val value = localStorageGet(fullKey) ?: continue
-            // Always Text; primitives survive via the core's serializer-driven conversion.
+            // Always Text; primitives are re-typed by the core's serializer on read.
             out[short] = StoredValue.Text(value)
         }
         return out
@@ -112,63 +133,84 @@ internal class LocalStorageStorage(
  * One-time migration of a store's data entries from the legacy `ksafe_<name>_…` namespace to the
  * prefix-free `ksafe.<name>:…` one.
  *
- * Only canonical entries (remainder starts with `__ksafe_`) move. That gate keeps the migration
- * order-independent for nested store names: store "user" scanning `ksafe_user_cache___ksafe_value_x`
- * sees the non-canonical remainder `cache___ksafe_value_x` and leaves it for store "user_cache".
- * Engine key records (`…ksafe_key_<alias>`) aren't canonical-shaped and stay put.
+ * Only canonical entries (remainder starts with `__ksafe_`) move — that gate keeps the migration
+ * order-independent for nested store names and leaves non-canonical engine key records untouched.
  *
- * Copy-if-absent then delete: the source is cleared only once the destination verifiably holds the
- * value, so a mid-migration failure (e.g. quota) retries later and never loses the only copy.
+ * Copy-if-absent then delete: the source is cleared only once the destination holds the value, so a
+ * mid-migration failure retries later and never loses the only copy.
+ *
+ * Returns `true` only when every required copy is verifiably present at the destination, so
+ * callers gating a one-time done-marker on the result never seal a partially failed migration
+ * (e.g. a quota failure on one large value) behind a marker that prevents any retry.
  */
-internal fun migrateLegacyLocalStoragePrefix(oldPrefix: String, newPrefix: String, deleteSource: Boolean = true) {
+internal fun migrateLegacyLocalStoragePrefix(oldPrefix: String, newPrefix: String, deleteSource: Boolean = true): Boolean {
     val keys = buildList {
         for (i in 0 until localStorageLength()) {
             localStorageKey(i)?.takeIf { it.startsWith(oldPrefix) }?.let(::add)
         }
     }
-    for (oldKey in keys) {
+    return migratePrefixedEntries(
+        keys, oldPrefix, newPrefix, deleteSource,
+        ::localStorageGet, ::localStorageSet, ::localStorageRemove,
+    )
+}
+
+/**
+ * Copy loop of [migrateLegacyLocalStoragePrefix], pure over [get]/[set]/[remove] so partial-failure
+ * behavior is testable without a real `localStorage` (mirroring [rollbackPriors]). Returns `true`
+ * only when every canonical entry in [sourceKeys] is verifiably present at the destination;
+ * skipped non-canonical entries and vanished sources count as success.
+ */
+internal fun migratePrefixedEntries(
+    sourceKeys: List<String>,
+    oldPrefix: String,
+    newPrefix: String,
+    deleteSource: Boolean,
+    get: (String) -> String?,
+    set: (String, String) -> Unit,
+    remove: (String) -> Unit,
+): Boolean {
+    var allCopied = true
+    for (oldKey in sourceKeys) {
         val rest = oldKey.removePrefix(oldPrefix)
-        // Only canonical entries migrate (gate explained above). Legacy 1.6/1.7 FLAT entries
-        // (bare `<key>` / `encrypted_<key>`) carry no canonical marker, so a shorter-named store
-        // can't tell its own flat key from a nested sibling's; migrating them would steal the
-        // sibling's only copy and surface it under the wrong store. They're left untouched
-        // (orphaned-but-private, recoverable) until a scheme can disambiguate nested names.
-        if (!rest.startsWith("__ksafe_")) continue
-        val value = localStorageGet(oldKey) ?: continue
+        // Legacy 1.6/1.7 flat entries (`<key>` / `encrypted_<key>`) carry no canonical marker, so a
+        // shorter-named store can't tell its own flat key from a nested sibling's; migrating them
+        // would steal the sibling's only copy. Left untouched until a scheme can disambiguate.
+        if (!rest.startsWith(KSAFE_RESERVED_NAMESPACE_PREFIX)) continue
+        val value = get(oldKey) ?: continue
         val newKey = newPrefix + rest
-        if (localStorageGet(newKey) == null) {
-            runCatching { localStorageSet(newKey, value) }
+        if (get(newKey) == null) {
+            runCatching { set(newKey, value) }
         }
-        // Delete the source only when [deleteSource]. For the appNamespace upgrade the source
-        // prefix `ksafe.<file>:` is also the live prefix of a co-existing no-namespace store on the
-        // same fileName; deleting it would cannibalize that sibling's writes on every construction.
-        // Copy-if-absent + no-delete is idempotent; the only cost is a harmless orphaned copy under
-        // the old prefix after a genuine one-way upgrade.
-        if (deleteSource && localStorageGet(newKey) != null) {
-            runCatching { localStorageRemove(oldKey) }
+        val copied = get(newKey) != null
+        if (!copied) allCopied = false
+        // For the appNamespace upgrade the source prefix is also the live prefix of a co-existing
+        // no-namespace store on the same fileName; deleting it would cannibalize that sibling's
+        // writes on every construction. Copy-if-absent + no-delete is idempotent.
+        if (deleteSource && copied) {
+            runCatching { remove(oldKey) }
         }
     }
+    return allCopied
 }
 
 /**
  * Restores the pre-batch state in [priors] (full key → prior value, or `null` if absent) after an
- * [LocalStorageStorage.applyBatch] failure. Pure over [set]/[remove] so the ordering and failure
- * contract are testable without a real `localStorage`.
+ * [LocalStorageStorage.applyBatch] failure. Pure over [set]/[remove] so it's testable without a real
+ * `localStorage`.
  *
- * Order matters: all touched keys are removed first — freeing the space the partial batch
- * consumed — before priors are restored, so a restore can't hit the same quota that failed the
- * batch. A restore that still fails is surfaced, not swallowed.
+ * All touched keys are removed first — freeing the space the partial batch consumed — before priors
+ * are restored, so a restore can't hit the same quota that failed the batch. A failed restore is
+ * surfaced, not swallowed.
  */
 internal fun rollbackPriors(
     priors: Map<String, String?>,
     set: (String, String) -> Unit,
     remove: (String) -> Unit,
 ) {
-    // Free all space the partial batch consumed before restoring anything.
     for (fullKey in priors.keys) {
         runCatching { remove(fullKey) }
     }
-    // Restore prior values; collect (don't swallow) any that still fail.
     val failures = ArrayList<Pair<String, Throwable>>()
     for ((fullKey, prior) in priors) {
         if (prior != null) {

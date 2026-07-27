@@ -19,9 +19,9 @@ class JvmFlowDecryptDispatcherTest {
     private class ThreadRecordingEngine : KSafeEncryption {
         val decryptThreads = CopyOnWriteArrayList<String>()
         private val xor = FakeEncryption()
-        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray =
+        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?,    aad: ByteArray?,): ByteArray =
             xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
-        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
+        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray {
             decryptThreads.add(Thread.currentThread().name)
             return xor.decrypt(identifier, data)
         }

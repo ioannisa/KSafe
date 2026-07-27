@@ -5,49 +5,68 @@ import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
+import eu.anifantakis.lib.ksafe.internal.CORRUPT_QUARANTINE_TIMESTAMP_INFIX
+import eu.anifantakis.lib.ksafe.internal.DATASTORE_FILE_SUFFIX
+import eu.anifantakis.lib.ksafe.internal.FALLBACK_MIGRATED_SUFFIX
+import eu.anifantakis.lib.ksafe.internal.FALLBACK_MIGRATION_PENDING_SUFFIX
+import eu.anifantakis.lib.ksafe.internal.JSON_FALLBACK_SUFFIX
 import eu.anifantakis.lib.ksafe.internal.DataStoreJsonStorage
 import eu.anifantakis.lib.ksafe.internal.DataStoreStorage
 import eu.anifantakis.lib.ksafe.internal.JvmSoftwareEncryption
+import eu.anifantakis.lib.ksafe.internal.KSafeAliasFormat
 import eu.anifantakis.lib.ksafe.internal.KSafeCore
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
+import eu.anifantakis.lib.ksafe.internal.KSafeKeyTier
 import eu.anifantakis.lib.ksafe.internal.KSafePlatformStorage
-import eu.anifantakis.lib.ksafe.internal.StoredValue
+import eu.anifantakis.lib.ksafe.internal.KSafeProtectionNotes
+import eu.anifantakis.lib.ksafe.internal.NAMESPACE_SANITIZE_REGEX
+import eu.anifantakis.lib.ksafe.internal.NAMESPACE_TOKEN_MAX_LENGTH
+import eu.anifantakis.lib.ksafe.internal.OneShotWarning
+import eu.anifantakis.lib.ksafe.internal.SharedBackendRegistry
+import eu.anifantakis.lib.ksafe.internal.SharedStoreBackend
+import eu.anifantakis.lib.ksafe.internal.asKeyStorage
+import eu.anifantakis.lib.ksafe.internal.asProtectionLevel
+import eu.anifantakis.lib.ksafe.internal.dataStoreBaseFileName
 import eu.anifantakis.lib.ksafe.internal.migrateJsonFallbackToOsBacked
 import eu.anifantakis.lib.ksafe.internal.keyvault.FileKeyVault
+import eu.anifantakis.lib.ksafe.internal.keyvault.KEY_VAULT_TEMP_SUFFIX
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVaultProvider
+import eu.anifantakis.lib.ksafe.internal.keyvault.canonicalJvmNamespaceToken
+import eu.anifantakis.lib.ksafe.internal.keyvault.jvmKeyVaultOptedOut
+import eu.anifantakis.lib.ksafe.internal.quarantineCorruptStoreFile
+import eu.anifantakis.lib.ksafe.internal.requireValidStoreFileName
+import eu.anifantakis.lib.ksafe.internal.resolveStoreIdentity
+import eu.anifantakis.lib.ksafe.internal.sweepCorruptQuarantineCopies
+import eu.anifantakis.lib.ksafe.internal.toStoredMap
 import eu.anifantakis.lib.ksafe.internal.validateSecurityPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.nio.file.attribute.PosixFilePermission
-import kotlin.io.encoding.Base64
-import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
-/** Encodes raw bytes (e.g. ciphertext) as Base64. */
-@OptIn(ExperimentalEncodingApi::class)
-fun encodeBase64(bytes: ByteArray): String = Base64.encode(bytes)
+// The JVM key vaults persist raw key bytes as Base64 text. The codec itself is KSafeBase64;
+// these stay declared here only because the vaults are jvmMain-only.
 
-@OptIn(ExperimentalEncodingApi::class)
-@PublishedApi
-internal fun decodeBase64(encoded: String): ByteArray = Base64.decode(encoded)
+internal fun encodeBase64(bytes: ByteArray): String = KSafeBase64.encode(bytes)
 
-private val fileNameRegex = Regex("[a-z][a-z0-9_]*")
-
-/** v2-envelope master-key alias; JVM has no locked/unlocked split, so both policies route here. */
-private const val MASTER_KEY_DEFAULT: String = "__ksafe_master__"
+internal fun decodeBase64(encoded: String): ByteArray = KSafeBase64.decode(encoded)
 
 /**
  * Creates a JVM [KSafe] whose data lives under [baseDir] (default
  * `~/.eu_anifantakis_ksafe`, created if missing with POSIX 0700 permissions).
+ *
+ * **[fileName] is the key-isolation boundary**, not [baseDir]: the OS key vault (or software
+ * fallback) is keyed by an alias scoped to [fileName] (and [KSafeConfig.appNamespace]) only,
+ * so two instances that share a [fileName] but differ only in [baseDir] share the same key
+ * material — one instance's `clearAll()` deletes the key the other still needs. Give
+ * independent stores DISTINCT [fileName]s (or `appNamespace`s). [baseDir] chooses where the
+ * data file lives and, once a store has been rotated, is bound into the v3 AAD (so a rotated
+ * ciphertext can't be transplanted to a store with a different [baseDir]); it still does not
+ * isolate key material.
  */
 fun KSafe(
     fileName: String? = null,
@@ -96,48 +115,23 @@ internal fun KSafe(
  */
 private class JvmBackend(
     val storage: KSafePlatformStorage,
-    val scope: CoroutineScope,
+    scope: CoroutineScope,
     val engine: KSafeEncryption,
     val clearAllCleanup: suspend () -> Unit,
-) {
-    val refCount = java.util.concurrent.atomic.AtomicInteger(0)
-}
+) : SharedStoreBackend(scope)
 
-private val jvmBackends = java.util.concurrent.ConcurrentHashMap<String, JvmBackend>()
-private val jvmTerminatingScopes = java.util.concurrent.ConcurrentHashMap<String, CoroutineScope>()
-private val jvmPathLocks = java.util.concurrent.ConcurrentHashMap<String, Any>()
-private fun jvmPathLock(path: String): Any = jvmPathLocks.computeIfAbsent(path) { Any() }
+private val jvmBackends = SharedBackendRegistry<JvmBackend>(Dispatchers.IO)
 
 /**
- * Returns the ref-counted backend for [path], creating it atomically on first use. A recreate
- * awaits the prior owner's teardown (bounded): DataStore frees a file only when its scope completes.
+ * Custody of one JVM key: an OS secret store (DPAPI / Keychain / Secret Service) is sandbox
+ * protection, its software fallback is not, and a test-injected engine is assumed to be baseline.
+ * There is no device key hardware here, so this never reaches the HARDWARE tiers.
  */
-private fun acquireJvmBackend(
-    path: String,
-    create: (CoroutineScope) -> JvmBackend,
-): JvmBackend = synchronized(jvmPathLock(path)) {
-    jvmBackends[path]?.let {
-        it.refCount.incrementAndGet()
-        return it
-    }
-    jvmTerminatingScopes.remove(path)?.coroutineContext?.get(Job)?.let { priorJob ->
-        runBlocking { withTimeoutOrNull(2_000) { priorJob.join() } }
-    }
-    val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    val backend = create(scope).also { it.refCount.set(1) }
-    jvmBackends[path] = backend
-    backend
-}
-
-/** Drops one ref; the last release evicts the entry, parks the scope for a later recreate to
- *  await, and cancels it. Each [KSafe] must call this at most once (guarded by the caller). */
-private fun releaseJvmBackend(path: String) = synchronized(jvmPathLock(path)) {
-    val backend = jvmBackends[path] ?: return
-    if (backend.refCount.decrementAndGet() <= 0) {
-        jvmBackends.remove(path)
-        jvmTerminatingScopes[path] = backend.scope
-        backend.scope.cancel()
-    }
+private fun jvmKeyTier(engine: KSafeEncryption, protection: KSafeProtection?): KSafeKeyTier = when {
+    protection == null -> KSafeKeyTier.SOFTWARE
+    engine is JvmSoftwareEncryption && engine.keyVaultIsOsBacked -> KSafeKeyTier.SANDBOX_PROTECTED
+    engine is JvmSoftwareEncryption -> KSafeKeyTier.SOFTWARE
+    else -> KSafeKeyTier.SANDBOX_PROTECTED
 }
 
 private fun buildJvmKSafe(
@@ -150,9 +144,7 @@ private fun buildJvmKSafe(
     baseDir: File?,
     testEngine: KSafeEncryption?,
 ): KSafe {
-    if (fileName != null && !fileName.matches(fileNameRegex)) {
-        throw IllegalArgumentException("File name must start with a lowercase letter and contain only lowercase letters, digits, or underscores")
-    }
+    requireValidStoreFileName(fileName)
     validateSecurityPolicy(securityPolicy)
 
     val resolvedBaseDir: File = baseDir ?: File(
@@ -164,39 +156,70 @@ private fun buildJvmKSafe(
     }
     secureDirectory(resolvedBaseDir)
 
-    val baseFileName = fileName?.let { "eu_anifantakis_ksafe_datastore_$it" }
-        ?: "eu_anifantakis_ksafe_datastore"
+    val baseFileName = dataStoreBaseFileName(fileName)
 
-    // An explicit appNamespace isolates the data file (per-namespace subdir) too, not just the
-    // OS-vault keys; apps without one keep the historical un-namespaced path.
-    val explicitNamespace = config.appNamespace
-        ?.replace(Regex("[^A-Za-z0-9._-]"), "_")
-        ?.trimStart('.')          // never "." / ".." → no path traversal
-        ?.take(120)
-        ?.takeIf { it.isNotBlank() }
+    // Same canonicalization as the key vault's namespace (resolveJvmAppNamespace), so one
+    // configured token can never split into different data-dir and vault identities.
+    val explicitNamespace = canonicalJvmNamespaceToken(config.appNamespace)
+    // The pre-3.0.0 directory token (no trim, so whitespace became '_'): when it differs from
+    // the canonical one, a shipped app's live data sits in the old subdir — carried forward as
+    // the preferred copy source so the canonicalization can't strand it.
+    val legacyNamespaceDir: File? = config.appNamespace
+        ?.replace(NAMESPACE_SANITIZE_REGEX, "_")
+        ?.trimStart('.')
+        ?.take(NAMESPACE_TOKEN_MAX_LENGTH)
+        ?.takeIf { it.isNotBlank() && it != explicitNamespace }
+        ?.let { File(resolvedBaseDir, it) }
     val storageDir: File = if (explicitNamespace != null) {
         File(resolvedBaseDir, explicitNamespace).also { nsDir ->
             if (!nsDir.exists()) nsDir.mkdirs()
             secureDirectory(nsDir)
-            // Copy (never move) pre-existing un-namespaced files: a move would steal another
-            // app's shared file; undecryptable entries just read as defaults.
-            for (suffix in listOf(".preferences_pb", ".ksafe.json", ".ksafe-keys.json", ".ksafe.json.migrated")) {
-                val src = File(resolvedBaseDir, baseFileName + suffix)
-                val dst = File(nsDir, baseFileName + suffix)
-                if (src.exists() && !dst.exists()) runCatching { src.copyTo(dst, overwrite = false) }
-            }
+            copyStoreFilesForward(listOfNotNull(legacyNamespaceDir, resolvedBaseDir), nsDir, baseFileName)
         }
     } else {
+        // A canonicalized-away token (e.g. whitespace-only) may still have pre-3.0.0 data in
+        // its old subdir; surface it at the un-namespaced path it now maps to.
+        if (legacyNamespaceDir != null) copyStoreFilesForward(listOf(legacyNamespaceDir), resolvedBaseDir, baseFileName)
         resolvedBaseDir
     }
 
-    // Alias scheme shared by KSafeCore and the fallback migration so both compute identical aliases.
-    val keyAlias: (String) -> String = { userKey -> fileName?.let { "$it:$userKey" } ?: userKey }
-    val masterAlias: (Boolean) -> String = { _ -> fileName?.let { "$it:$MASTER_KEY_DEFAULT" } ?: MASTER_KEY_DEFAULT }
+    // KSafeCore and the fallback migration must compute identical aliases.
+    val keyAlias: (String) -> String = { userKey -> KSafeAliasFormat.colon(fileName, userKey) }
+    // JVM has no locked/unlocked split, so both access policies route to the one master.
+    val masterAlias: (Boolean) -> String = { _ -> KSafeAliasFormat.colonMaster(fileName) }
 
-    // Identifies the safe regardless of which backend (DataStore vs JSON fallback) is selected.
-    val backendPath = File(storageDir, baseFileName).absolutePath
-    val backend = acquireJvmBackend(backendPath) { storageScope ->
+    // v3 AAD store identity: the pre-namespace baseDir + fileName, NOT storageDir. Two same-fileName
+    // stores in different baseDirs share the fileName-scoped key by design, so binding the baseDir
+    // makes a rotated (v3) ciphertext transplanted between them fail closed instead of decrypting.
+    // resolvedBaseDir (not storageDir) is deliberate: the appNamespace copy-forward relocates the
+    // file into a namespace subdir but resolvedBaseDir is invariant across it, so a v3 entry stays
+    // decryptable after that move. Must match all consumers (both engines, migration, KSafeCore).
+    // Home-relative, never absolute: a JVM user home can move (renamed account, OS
+    // migration, portable install), and an absolute path in the v3 AAD would make every
+    // rotated entry fail authentication afterwards. Same defect class as the iOS
+    // container-UUID relocation; see KeySafeMetadataManager.stableStoreIdentity.
+    // Canonical spelling (symlinks / `..` / a relative baseDir under a changing working
+    // directory resolved) so one physical store keeps ONE identity however its baseDir was
+    // spelled — two spellings would otherwise bind different AAD and read each other's rotated
+    // entries as defaults.
+    val identityBaseFile = File(resolvedBaseDir, baseFileName)
+    val rawUserHome = System.getProperty("user.home")
+    val storeIdentity = resolveStoreIdentity(
+        canonicalPath = runCatching { identityBaseFile.canonicalPath }
+            .getOrDefault(identityBaseFile.absolutePath),
+        // Canonicalized to the same degree as the store path: a symlinked or mounted home
+        // (/home -> /System/Volumes/Data/home, /var -> /private/var) would otherwise never
+        // prefix-match a canonical path, leaving the identity absolute and the guard inert.
+        canonicalHome = rawUserHome?.let { h -> runCatching { File(h).canonicalPath }.getOrDefault(h) },
+        rawPath = identityBaseFile.absolutePath,
+        rawHome = rawUserHome,
+    )
+
+    // Canonical registry key so two spellings of one physical file share the ref-counted backend
+    // instead of tripping DataStore's "multiple instances active" fail-fast.
+    val backendFile = File(storageDir, baseFileName)
+    val backendPath = runCatching { backendFile.canonicalPath }.getOrDefault(backendFile.absolutePath)
+    val backend = jvmBackends.acquire(backendPath) { storageScope ->
         createJvmBackend(
             storageScope = storageScope,
             storageDir = storageDir,
@@ -205,51 +228,119 @@ private fun buildJvmKSafe(
             testEngine = testEngine,
             keyAlias = keyAlias,
             masterAlias = masterAlias,
+            storeIdentity = storeIdentity.canonical,
+            fallbackStoreIdentity = storeIdentity.fallback,
+            keyNamespace = fileName,
         )
     }
 
-    // Guards this instance's single backend release (KSafeCore.cancel() is idempotent).
+    // Guards this instance's single backend release; KSafeCore.cancel() is idempotent.
     val released = java.util.concurrent.atomic.AtomicBoolean(false)
 
     val core = KSafeCore(
+        // The live v3 AAD authority. MUST be the derived store identity (not fileName) so runtime
+        // reads/writes bind the same baseDir-inclusive identity the fallback migration uses —
+        // otherwise a v3 entry written here would fail the migration's decrypt and be dropped.
+        storeIdentity = storeIdentity.canonical,
+        fallbackStoreIdentity = storeIdentity.fallback,
+        keyNamespace = fileName,
+        commitMutex = backend.commitMutex,
         storage = backend.storage,
         engineProvider = { backend.engine },
         config = config,
         memoryPolicy = memoryPolicy,
         plaintextCacheTtl = plaintextCacheTtl,
-        resolveKeyStorage = { _, _ -> KSafeKeyStorage.SOFTWARE },
-        resolveKeyLevel = { _, protection ->
-            // Plain values have no key; otherwise the active vault decides (OS-backed →
-            // SANDBOX_PROTECTED, fallback/opt-out → SOFTWARE).
-            val eng = backend.engine
-            when {
-                protection == null -> KSafeProtectionLevel.SOFTWARE
-                eng is JvmSoftwareEncryption && eng.keyVaultIsOsBacked ->
-                    KSafeProtectionLevel.SANDBOX_PROTECTED
-                eng is JvmSoftwareEncryption ->
-                    KSafeProtectionLevel.SOFTWARE
-                else -> KSafeProtectionLevel.SANDBOX_PROTECTED   // test-injected engine: assume baseline
-            }
-        },
+        resolveKeyStorage = { _, protection, _ -> jvmKeyTier(backend.engine, protection).asKeyStorage() },
+        resolveKeyLevel = { _, protection, _ -> jvmKeyTier(backend.engine, protection).asProtectionLevel() },
         lazyLoad = lazyLoad,
         keyAlias = keyAlias,
         masterAlias = masterAlias,
-        onCancel = { if (released.compareAndSet(false, true)) releaseJvmBackend(backendPath) },
+        onCancel = { if (released.compareAndSet(false, true)) jvmBackends.release(backendPath) },
     )
 
     return KSafe(
         core = core,
         deviceKeyStorages = setOf(KSafeKeyStorage.SOFTWARE),
-        // Recomputed per access so a runtime degrade shows up in `KSafe.protectionInfo`.
+        // Recomputed per access so a runtime degrade shows up in `protectionInfo`.
         protectionInfoProvider = { jvmProtectionInfo(backend.engine) },
         onClearAllCleanup = backend.clearAllCleanup,
     )
 }
 
 /**
- * Builds the storage + engine + clearAll-cleanup for one file, selecting the normal DataStore
- * backend or the no-`sun.misc.Unsafe` JSON-file fallback and running the one-time
- * JSON→OS-backed forward migration. Invoked once per file path, under that path's lock.
+ * Publish order, not merely the file list: whatever a published file makes the next launch DO must
+ * already be in place when that file appears. The fallback JSON is the trigger — its presence alone
+ * re-runs the drain — so it goes last, after the two markers that gate the drain, the key sidecar
+ * that decrypts it, and the store file whose newer values it must not roll back.
+ */
+private val storeCohortSuffixes = listOf(
+    JSON_FALLBACK_SUFFIX + FALLBACK_MIGRATED_SUFFIX,
+    JSON_FALLBACK_SUFFIX + FALLBACK_MIGRATION_PENDING_SUFFIX,
+    ".ksafe-keys.json",
+    DATASTORE_FILE_SUFFIX,
+    JSON_FALLBACK_SUFFIX,
+)
+
+/**
+ * Copies one store's on-disk files into [dstDir] (existing destinations kept). Copy, never
+ * move: a move would steal another app's shared un-namespaced file. The whole cohort comes
+ * from ONE source directory — the first of [srcDirs] holding any cohort file — because
+ * per-file source selection could pair a data file with a different historical store's key
+ * sidecar, or carry a foreign `.migrated`/`.migration-pending` marker whose mtime defeats
+ * the fallback-migration gate. Each file is staged to a temp name and published by rename
+ * only after every copy succeeded, so a failure mid-cohort leaves no final name occupied (a
+ * truncated destination would count as "exists" and block the retry forever) and the next
+ * launch retries the whole cohort. Each copy keeps the SOURCE mtime: `copyTo` stamps copy
+ * time, which would make the copied `.migrated` marker at least as new as the copied
+ * fallback JSON and deterministically skip a genuinely-newer second fallback period's
+ * migration, stranding its values. The `.migration-pending` marker is carried too: without
+ * it a namespaced first launch after an un-namespaced transient migration failure reverts to
+ * "fallback wins" and can overwrite the newer OS-backed writes the copied `.preferences_pb`
+ * holds.
+ */
+internal fun copyStoreFilesForward(
+    srcDirs: List<File>,
+    dstDir: File,
+    baseFileName: String,
+    rename: (File, File) -> Boolean = { tmp, dst -> tmp.renameTo(dst) },
+    copy: (File, File) -> Unit = { src, dst -> src.copyTo(dst, overwrite = true) },
+) {
+    val srcDir = srcDirs.firstOrNull { dir ->
+        storeCohortSuffixes.any { File(dir, baseFileName + it).exists() }
+    } ?: return
+    val staged = ArrayList<Pair<File, File>>()
+    for (suffix in storeCohortSuffixes) {
+        val dst = File(dstDir, baseFileName + suffix)
+        if (dst.exists()) continue
+        val src = File(srcDir, baseFileName + suffix).takeIf { it.exists() } ?: continue
+        val tmp = File(dstDir, dst.name + ".fwd-tmp")
+        try {
+            copy(src, tmp)
+            val srcMtime = src.lastModified()
+            if (srcMtime > 0) tmp.setLastModified(srcMtime)
+            staged += tmp to dst
+        } catch (_: Throwable) {
+            runCatching { tmp.delete() }
+            staged.forEach { (t, _) -> runCatching { t.delete() } }
+            return
+        }
+    }
+    for ((index, entry) in staged.withIndex()) {
+        val (tmp, dst) = entry
+        if (rename(tmp, dst)) continue
+        // Same-directory renames fail rarely (an indexer's file lock), but skipping just the
+        // failed one would publish a later file without the earlier one it depends on — the
+        // whole point of the order above. Dropping the rest instead leaves those names absent
+        // for the next launch to re-copy; what is published stays a valid prefix of the cohort.
+        staged.drop(index).forEach { (rest, _) -> runCatching { rest.delete() } }
+        return
+    }
+}
+
+/**
+ * Builds the storage + engine + clearAll-cleanup for one file, selecting the DataStore backend
+ * or the no-`sun.misc.Unsafe` JSON-file fallback and running the one-time JSON→OS-backed
+ * migration. Invoked once per file path, under that path's lock.
  */
 private fun createJvmBackend(
     storageScope: CoroutineScope,
@@ -259,19 +350,20 @@ private fun createJvmBackend(
     testEngine: KSafeEncryption?,
     keyAlias: (String) -> String,
     masterAlias: (Boolean) -> String,
+    storeIdentity: String,
+    fallbackStoreIdentity: String,
+    keyNamespace: String?,
 ): JvmBackend {
     val storage: KSafePlatformStorage
     val engine: KSafeEncryption
     val clearAllCleanup: suspend () -> Unit
 
     if (testEngine == null && !isSunMiscUnsafePresent()) {
-        // JSON-file fallback: `sun.misc.Unsafe` (JDK module `jdk.unsupported`) is missing
-        // (typically a jlink-trimmed Compose Desktop distributable). DataStore's protobuf
-        // hard-requires it and would crash, so persist to a plain JSON file instead
-        // (software-encrypted, no OS-backed keys, but data is NOT lost). Adding
-        // modules("jdk.unsupported") restores the DataStore + OS-keyvault path.
+        // `sun.misc.Unsafe` (JDK module `jdk.unsupported`) is missing (typically a jlink-trimmed
+        // Compose Desktop distributable); DataStore's protobuf hard-requires it and would crash,
+        // so persist to a software-encrypted JSON file instead (no OS-backed keys, no data loss).
         warnUsingJsonFileFallbackOnce()
-        val jsonFile = File(storageDir, "$baseFileName.ksafe.json")
+        val jsonFile = File(storageDir, "$baseFileName$JSON_FALLBACK_SUFFIX")
         val keysFile = File(storageDir, "$baseFileName.ksafe-keys.json")
         storage = DataStoreJsonStorage(jsonFile, storageScope)
         engine = JvmSoftwareEncryption(
@@ -279,24 +371,19 @@ private fun createJvmBackend(
             vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFile)),
         )
         clearAllCleanup = {
-            runCatching { if (jsonFile.exists()) jsonFile.delete() }
-            runCatching { if (keysFile.exists()) keysFile.delete() }
-            deleteResidualFallbackFiles(storageDir, baseFileName)
+            // The live jsonFile (ciphertext) and keysFile (plaintext AES keys) are wiped on the
+            // write consumer by core.clearAll(); a raw File.delete() on this caller thread would
+            // race a concurrent put()'s consumer batch and drop an acknowledged write, so they
+            // are excluded here and only stale archive/quarantine residue is swept.
+            deleteResidualFallbackFiles(storageDir, baseFileName, exclude = setOf(jsonFile.name, keysFile.name))
         }
     } else {
-        // Normal DataStore path (Unsafe present, or a test engine injected).
-        val datastoreFile = File(storageDir, "$baseFileName.preferences_pb")
+        val datastoreFile = File(storageDir, "$baseFileName$DATASTORE_FILE_SUFFIX")
         val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
-            // A corrupt .preferences_pb otherwise throws CorruptionException on every read
-            // forever. Quarantine the unreadable file (copy aside for recovery) and continue
-            // from an empty store — same posture as the JSON-fallback backend.
+            // A corrupt .preferences_pb otherwise throws CorruptionException on every read forever;
+            // quarantine the unreadable file (copy aside for recovery) and continue from empty.
             corruptionHandler = ReplaceFileCorruptionHandler {
-                runCatching {
-                    datastoreFile.copyTo(
-                        File(datastoreFile.parentFile, "${datastoreFile.name}.corrupt-${System.currentTimeMillis()}"),
-                        overwrite = false,
-                    )
-                }
+                quarantineCorruptStoreFile(datastoreFile)
                 emptyPreferences()
             },
             scope = storageScope,
@@ -305,41 +392,28 @@ private fun createJvmBackend(
         storage = DataStoreStorage(dataStore)
         engine = testEngine ?: JvmSoftwareEncryption(config, dataStore)
         clearAllCleanup = {
-            // Also remove the physical DataStore file after `core.clearAll()` (DataStore's own
-            // `clear()` leaves an empty file behind).
-            try {
-                if (datastoreFile.exists()) datastoreFile.delete()
-            } catch (_: Exception) { /* best-effort */ }
-            // The corruption handler above quarantines an unreadable store as
-            // `<base>.preferences_pb.corrupt-<ts>`, a copy still holding decryptable
-            // ciphertext; clearAll() promises a full wipe, so remove those siblings too
-            // (deleteResidualFallbackFiles only matches the `<base>.ksafe` prefix). Matched by
-            // the exact datastore file-name prefix so a sibling safe's files aren't touched.
-            runCatching {
-                val corruptPrefix = "${datastoreFile.name}.corrupt-"
-                storageDir.listFiles()?.forEach { f ->
-                    if (f.name.startsWith(corruptPrefix)) runCatching { f.delete() }
-                }
-            }
-            // A prior run's JSON fallback may have left recoverable residue here even on the
+            // The DataStore file is NOT deleted here: core.clearAll() already emptied it on the
+            // write consumer, and a raw File.delete() on this caller thread would race a concurrent
+            // consumer batch (e.g. a key mint during rotation) and strand an in-RAM-only key.
+            // deleteResidualFallbackFiles below only matches the `<base>.ksafe` prefix, so the
+            // datastore file's own quarantine copies need this sweep.
+            sweepCorruptQuarantineCopies(datastoreFile)
+            // A prior JSON-fallback period may have left recoverable residue even on the
             // OS-backed path; clearAll() must wipe it too.
             deleteResidualFallbackFiles(storageDir, baseFileName)
         }
 
-        // One-time forward migration: if an earlier run persisted through the no-`Unsafe` JSON
-        // fallback, re-encrypt that data under the OS-backed key so it carries forward instead
-        // of appearing empty. The fallback values win over anything already in the target —
-        // except, on a retry after a transient failure, keys the user wrote in the target since
-        // that failed attempt (tracked via `.migration-pending`). Skipped for test engines.
+        // One-time forward migration: re-encrypt any no-`Unsafe` JSON-fallback data under the
+        // OS-backed key so it carries forward instead of appearing empty. Fallback values win
+        // over the target, except keys written to the target since a failed prior attempt
+        // (tracked via `.migration-pending`). Skipped for test engines.
         if (testEngine == null) {
-            val jsonFallback = File(storageDir, "$baseFileName.ksafe.json")
-            val migrationMarker = File(storageDir, "$baseFileName.ksafe.json.migrated")
-            // Migrate when a live fallback file exists AND is newer than the last migration's
-            // marker. Gating on `!marker.exists()` alone would skip a second fallback period
-            // forever (the `.migrated` archive is permanent), so data from a later modules-off →
-            // modules-on toggle would never reach the OS-backed store. Comparing mtimes
-            // distinguishes fresh fallback data (migrate) from a stale source a prior clean pass
-            // couldn't rename away (skip, so we don't re-drain every launch).
+            val jsonFallback = File(storageDir, "$baseFileName$JSON_FALLBACK_SUFFIX")
+            val migrationMarker =
+                File(storageDir, "$baseFileName$JSON_FALLBACK_SUFFIX$FALLBACK_MIGRATED_SUFFIX")
+            // Compare mtimes, not just `!marker.exists()`: the `.migrated` archive is permanent, so
+            // gating on existence alone would skip a second modules-off→on fallback period forever.
+            // A fallback file newer than the marker is fresh data to migrate; older is stale residue.
             val needsMigration = jsonFallback.exists() &&
                 (!migrationMarker.exists() || jsonFallback.lastModified() > migrationMarker.lastModified())
             if (needsMigration) {
@@ -351,6 +425,9 @@ private fun createJvmBackend(
                     targetEngine = engine,
                     keyAlias = keyAlias,
                     masterAlias = masterAlias,
+                    storeIdentity = storeIdentity,
+                    fallbackStoreIdentity = fallbackStoreIdentity,
+                    keyNamespace = keyNamespace,
                 )
             }
         }
@@ -360,27 +437,42 @@ private fun createJvmBackend(
 }
 
 /**
- * Deletes residual JVM-fallback files that still hold recoverable secrets: the `*.migrated`
- * archives from a completed JSON→OS-backed migration (the keys archive is the plaintext AES
- * bytes, the JSON archive the ciphertext they decrypt), the `*.corrupt-<ts>` quarantine
- * copies, and the live `<base>.ksafe.json` / `<base>.ksafe-keys.json` a prior no-`Unsafe`
- * period may have left. clearAll() promises a full wipe including key deletion; leaving any
- * of these would let anyone with file access decrypt every pre-migration secret offline.
+ * Deletes residual JVM-fallback files that still hold recoverable secrets — `*.migrated` migration
+ * archives (plaintext AES keys + the ciphertext they decrypt), `*.corrupt-<ts>` quarantine copies,
+ * and any live `<base>.ksafe.json` / `<base>.ksafe-keys.json`. clearAll() promises a full wipe;
+ * leaving any of these would let anyone with file access decrypt pre-migration secrets offline.
  * Matched by the `<baseFileName>.ksafe` prefix so a sibling safe's files aren't touched.
  */
-private fun deleteResidualFallbackFiles(storageDir: File, baseFileName: String) {
+private fun deleteResidualFallbackFiles(
+    storageDir: File,
+    baseFileName: String,
+    // On the JSON-fallback backend the two live files are the active store, wiped on the write
+    // consumer by core.clearAll(); deleting them here (caller thread) would race a concurrent
+    // write, so they are excluded. On the OS-backed backend they are stale residue, swept normally.
+    exclude: Set<String> = emptySet(),
+) {
     runCatching {
         val prefix = "$baseFileName.ksafe"
-        val liveJson = "$baseFileName.ksafe.json"
+        val liveJson = "$baseFileName$JSON_FALLBACK_SUFFIX"
         val liveKeys = "$baseFileName.ksafe-keys.json"
         storageDir.listFiles()?.forEach { f ->
             val n = f.name
+            if (n in exclude) return@forEach
+            // Crash-leftover copy-forward staging temps still hold recoverable data (the
+            // keys temp is a full plaintext AES key map); matched on `<base>.` so a
+            // longer-named sibling safe's temps aren't touched.
+            if (n.endsWith(".fwd-tmp") && n.startsWith("$baseFileName.")) {
+                runCatching { f.delete() }
+                return@forEach
+            }
             if (n.startsWith(prefix) &&
                 (n == liveJson || n == liveKeys ||
-                    // Crash-leftover temp files from FileKeyVault.write() — each is a full plaintext
-                    // copy of the AES key map (`<base>.ksafe-keys.json<random>.tmp`).
-                    (n.startsWith(liveKeys) && n.endsWith(".tmp")) ||
-                    n.endsWith(".migrated") || n.endsWith(".migration-pending") || n.contains(".corrupt-"))
+                    // Crash-leftover FileKeyVault.write() temp files: each a full plaintext copy
+                    // of the AES key map (`<base>.ksafe-keys.json<random>.tmp`).
+                    (n.startsWith(liveKeys) && n.endsWith(KEY_VAULT_TEMP_SUFFIX)) ||
+                    n.endsWith(FALLBACK_MIGRATED_SUFFIX) ||
+                    n.endsWith(FALLBACK_MIGRATION_PENDING_SUFFIX) ||
+                    n.contains(CORRUPT_QUARANTINE_TIMESTAMP_INFIX))
             ) {
                 runCatching { f.delete() }
             }
@@ -389,9 +481,8 @@ private fun deleteResidualFallbackFiles(storageDir: File, baseFileName: String) 
 }
 
 /**
- * Builds [KSafeProtectionInfo] for the JVM target from the active vault descriptor. A
- * test-injected engine has no vault to introspect, so it reports the engine's class name as
- * custody and leaves the level at the intended baseline.
+ * Builds [KSafeProtectionInfo] from the active vault descriptor. A test-injected engine has no
+ * vault to introspect, so it reports the engine class name as custody at the intended baseline.
  */
 private fun jvmProtectionInfo(engine: KSafeEncryption): KSafeProtectionInfo {
     val intended = KSafeProtectionLevel.SANDBOX_PROTECTED
@@ -404,29 +495,26 @@ private fun jvmProtectionInfo(engine: KSafeEncryption): KSafeProtectionInfo {
         )
     }
     val osBacked = engine.keyVaultIsOsBacked
-    val optOut = (System.getProperty(PROP_KEY_VAULT) ?: System.getenv(ENV_KEY_VAULT))
-        ?.lowercase()
-        ?.let { it in OPT_OUT_VALUES } ?: false
+    val optOut = jvmKeyVaultOptedOut()
     return KSafeProtectionInfo(
         intendedLevel = intended,
         effectiveLevel = if (osBacked) KSafeProtectionLevel.SANDBOX_PROTECTED else KSafeProtectionLevel.SOFTWARE,
         custody = engine.keyVaultName,
         notes = when {
             osBacked -> emptyList()
-            optOut   -> listOf("jvm_user_opted_out")
-            else     -> listOf("jvm_os_vault_unavailable")
+            optOut   -> listOf(KSafeProtectionNotes.JVM_USER_OPTED_OUT)
+            // An OS vault exists but failed its self-test: KSafe refuses to mint keys to protect
+            // the real OS key, so encrypted ops THROW. Non-operational — a distinct note from the
+            // "no OS vault, software works" case below so isEncryptionOperational can tell them apart.
+            engine.osVaultUnavailable -> listOf(KSafeProtectionNotes.JVM_OS_VAULT_DEGRADED)
+            else     -> listOf(KSafeProtectionNotes.JVM_OS_VAULT_UNAVAILABLE)
         },
     )
 }
 
-private const val PROP_KEY_VAULT = "ksafe.jvm.keyVault"
-private const val ENV_KEY_VAULT = "KSAFE_JVM_KEY_VAULT"
-private val OPT_OUT_VALUES = setOf("software", "datastore", "off", "false", "none")
-
 /**
- * True iff `sun.misc.Unsafe` (JDK module `jdk.unsupported`) is on the runtime. Drives the
- * storage-backend selection: absent (a jlink-trimmed runtime) falls back to
- * [DataStoreJsonStorage] rather than crashing inside DataStore's protobuf.
+ * True iff `sun.misc.Unsafe` (JDK module `jdk.unsupported`) is on the runtime. Absent (a
+ * jlink-trimmed runtime) selects [DataStoreJsonStorage] rather than crashing in DataStore's protobuf.
  */
 private fun isSunMiscUnsafePresent(): Boolean = try {
     Class.forName("sun.misc.Unsafe", false, KSafe::class.java.classLoader)
@@ -435,22 +523,19 @@ private fun isSunMiscUnsafePresent(): Boolean = try {
     false
 }
 
-private val jsonFallbackWarned = java.util.concurrent.atomic.AtomicBoolean(false)
+private val jsonFallbackWarning = OneShotWarning()
 
-/** One-time notice that KSafe is running on the JSON-file fallback because `sun.misc.Unsafe` is unavailable. */
 private fun warnUsingJsonFileFallbackOnce() {
-    if (jsonFallbackWarned.compareAndSet(false, true)) {
-        System.err.println(
-            "KSafe NOTICE: `sun.misc.Unsafe` (JDK module `jdk.unsupported`) is " +
-                "missing — using the JSON-file storage fallback. Data still " +
-                "persists (software-encrypted in a plain JSON file), but without " +
-                "the Jetpack DataStore backend or OS-backed key custody. This is " +
-                "usually a Compose Desktop release distributable whose jlink " +
-                "runtime was trimmed; add `modules(\"jdk.unsupported\")` to your " +
-                "`compose.desktop.application.nativeDistributions` block to restore " +
-                "DataStore + the OS keyvault (add `\"java.management\"` too if you " +
-                "use a non-default KSafeSecurityPolicy). See docs/JVM_PROTECTION.md."
-        )
+    jsonFallbackWarning.warn {
+        "KSafe NOTICE: `sun.misc.Unsafe` (JDK module `jdk.unsupported`) is " +
+            "missing — using the JSON-file storage fallback. Data still " +
+            "persists (software-encrypted in a plain JSON file), but without " +
+            "the Jetpack DataStore backend or OS-backed key custody. This is " +
+            "usually a Compose Desktop release distributable whose jlink " +
+            "runtime was trimmed; add `modules(\"jdk.unsupported\")` to your " +
+            "`compose.desktop.application.nativeDistributions` block to restore " +
+            "DataStore + the OS keyvault (add `\"java.management\"` too if you " +
+            "use a non-default KSafeSecurityPolicy). See docs/JVM_PROTECTION.md."
     }
 }
 
@@ -474,7 +559,7 @@ private fun secureDirectory(file: File) {
     }
 }
 
-// Whitebox test hooks. KSafe lives in commonMain (no platform members), so these are
+// Whitebox test hooks: KSafe is in commonMain (no platform members), so these are
 // platform-source-set extensions in the same package.
 
 @PublishedApi
@@ -485,23 +570,9 @@ internal val KSafe.dataStore: DataStore<Preferences>
 internal val KSafe.engine: KSafeEncryption
     get() = core.engine
 
-/** Deterministically merges a DataStore snapshot into the core's in-memory cache (tests). */
 @PublishedApi
 internal fun KSafe.updateCache(prefs: Preferences) {
-    val raw = prefs.asMap()
-    val out = HashMap<String, StoredValue>(raw.size)
-    for ((k, v) in raw) {
-        val sv: StoredValue = when (v) {
-            is Boolean -> StoredValue.BoolVal(v)
-            is Int -> StoredValue.IntVal(v)
-            is Long -> StoredValue.LongVal(v)
-            is Float -> StoredValue.FloatVal(v)
-            is Double -> StoredValue.DoubleVal(v)
-            is String -> StoredValue.Text(v)
-            else -> continue
-        }
-        out[k.name] = sv
-    }
+    val out = toStoredMap(prefs)
     // core.updateCache is suspend for web's async decrypt; JVM crypto is blocking, so runBlocking is fine.
     kotlinx.coroutines.runBlocking { core.updateCache(out) }
 }

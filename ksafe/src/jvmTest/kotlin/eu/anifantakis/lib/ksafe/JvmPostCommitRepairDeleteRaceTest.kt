@@ -10,12 +10,6 @@ import kotlin.test.assertNull
  */
 class JvmPostCommitRepairDeleteRaceTest {
 
-    private class IdentityEngine : KSafeEncryption {
-        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray = data
-        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray = data
-        override fun deleteKey(identifier: String) {}
-    }
-
     @Test
     fun concurrentDeleteDuringRepair_doesNotResurrectMetadata_forDeletedEncryptedKey() {
         val ksafe = KSafe(

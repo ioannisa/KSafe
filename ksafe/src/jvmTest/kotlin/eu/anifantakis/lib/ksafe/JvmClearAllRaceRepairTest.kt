@@ -14,9 +14,9 @@ class JvmClearAllRaceRepairTest {
     private class HookedXorEncryption : KSafeEncryption {
         private val xor = FakeEncryption()
         @Volatile var onDeleteKey: (() -> Unit)? = null
-        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray =
+        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?,    aad: ByteArray?,): ByteArray =
             xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
-        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray =
+        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray =
             xor.decrypt(identifier, data)
         override fun deleteKey(identifier: String) {
             onDeleteKey?.also { onDeleteKey = null }?.invoke()

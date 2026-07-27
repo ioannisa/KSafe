@@ -9,105 +9,85 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.preferencesDataStoreFile
+import eu.anifantakis.lib.ksafe.internal.ANDROID_KEYSTORE_PROVIDER
 import eu.anifantakis.lib.ksafe.internal.AndroidKeystoreEncryption
+import eu.anifantakis.lib.ksafe.internal.BACKEND_TEARDOWN_TIMEOUT_MS
+import eu.anifantakis.lib.ksafe.internal.DATASTORE_FILE_SUFFIX
 import eu.anifantakis.lib.ksafe.internal.DataStoreDekStore
 import eu.anifantakis.lib.ksafe.internal.DataStoreStorage
+import eu.anifantakis.lib.ksafe.internal.KSAFE_OS_STORE_IDENTITY
+import eu.anifantakis.lib.ksafe.internal.KSafeAliasFormat
 import eu.anifantakis.lib.ksafe.internal.KSafeCore
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
+import eu.anifantakis.lib.ksafe.internal.KSafeKeyTier
+import eu.anifantakis.lib.ksafe.internal.KSafeProtectionNotes
+import eu.anifantakis.lib.ksafe.internal.KSafeReservedKeys
 import eu.anifantakis.lib.ksafe.internal.SecurityChecker
+import eu.anifantakis.lib.ksafe.internal.SharedBackendRegistry
+import eu.anifantakis.lib.ksafe.internal.SharedStoreBackend
+import eu.anifantakis.lib.ksafe.internal.asKeyStorage
+import eu.anifantakis.lib.ksafe.internal.asProtectionLevel
+import eu.anifantakis.lib.ksafe.internal.dataStoreBaseFileName
+import eu.anifantakis.lib.ksafe.internal.promoteDefaultToIsolated
+import eu.anifantakis.lib.ksafe.internal.quarantineCorruptStoreFile
+import eu.anifantakis.lib.ksafe.internal.requireValidStoreFileName
+import eu.anifantakis.lib.ksafe.internal.resolveStoreIdentity
+import eu.anifantakis.lib.ksafe.internal.sweepCorruptQuarantineCopies
 import eu.anifantakis.lib.ksafe.internal.validateSecurityPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
-import kotlin.io.encoding.Base64
-import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
-@OptIn(ExperimentalEncodingApi::class)
-@PublishedApi
-internal fun encodeBase64(bytes: ByteArray): String = Base64.encode(bytes)
-
-@OptIn(ExperimentalEncodingApi::class)
-@PublishedApi
-internal fun decodeBase64(encoded: String): ByteArray = Base64.decode(encoded)
-
-private val fileNameRegex = Regex("[a-z][a-z0-9_]*")
-
-const val KEY_ALIAS_PREFIX: String = "eu.anifantakis.ksafe"
-
-// Reserved master-key segments; the `__`-fenced convention can't collide with a user key.
-private const val MASTER_KEY_DEFAULT: String = "__ksafe_master__"
-private const val MASTER_KEY_LOCKED: String = "__ksafe_master_locked__"
+const val KEY_ALIAS_PREFIX: String = KSAFE_OS_STORE_IDENTITY
 
 /**
  * Per-datastore-path shared backend: every [KSafe] on one file shares a single [DataStore]
  * and [AndroidKeystoreEncryption] engine, so their in-memory DEK caches can't diverge from
- * the one on-disk wrapped-DEK slot (which would silently lose data). Ref-counted — only the
- * last instance to close tears down the scope; [pathLock] serializes acquire/release and
- * keeps creation atomic (two DataStores on one file throw "multiple DataStores active").
+ * the one on-disk wrapped-DEK slot (which would silently lose data).
  */
 private class AndroidBackend(
     val dataStore: DataStore<Preferences>,
-    val scope: CoroutineScope,
-) {
-    /** Live [KSafe] instances sharing this backend; evicted at 0. */
-    val refCount = java.util.concurrent.atomic.AtomicInteger(0)
+    scope: CoroutineScope,
+) : SharedStoreBackend(scope)
 
-    /** Shared engine, created lazily on first production use (never for tests). */
-    @Volatile
-    var engine: AndroidKeystoreEncryption? = null
-
-    fun engineOrCreate(create: () -> AndroidKeystoreEncryption): AndroidKeystoreEncryption {
-        engine?.let { return it }
-        return synchronized(this) { engine ?: create().also { engine = it } }
-    }
+private val backends = SharedBackendRegistry<AndroidBackend>(Dispatchers.IO) { path ->
+    println(
+        "KSafe: prior DataStore for '$path' had not finished tearing down within " +
+            "${BACKEND_TEARDOWN_TIMEOUT_MS}ms; the first access may transiently fail " +
+            "(\"multiple DataStores active for the same file\") until it does, then self-recovers."
+    )
 }
 
-// Live backends by absolute path; per-path check-then-act is serialized by [pathLock].
-private val backends = ConcurrentHashMap<String, AndroidBackend>()
+// Actual-custody probe results per alias. Safe to cache: a minted Keystore key never migrates
+// between security levels in place — rotation and self-heal mint under NEW aliases.
+private val strongBoxByAlias = ConcurrentHashMap<String, Boolean>()
 
-// Evicted backend's scope, awaited before a recreate: DataStore frees a file only once its
-// scope's Job completes, else the new DataStore hits "multiple DataStores active".
-private val terminatingScopes = ConcurrentHashMap<String, CoroutineScope>()
-
-// One monitor per path so a file never has two DataStores constructed concurrently.
-private val pathLocks = ConcurrentHashMap<String, Any>()
-private fun pathLock(path: String): Any = pathLocks.computeIfAbsent(path) { Any() }
-
-// Shared backend for [path], created atomically on first use and ref-counted. A recreate
-// awaits the prior owner's teardown, since DataStore frees the file only when its scope ends.
-private fun acquireBackend(
-    path: String,
-    createDataStore: (CoroutineScope) -> DataStore<Preferences>,
-): AndroidBackend = synchronized(pathLock(path)) {
-    backends[path]?.let {
-        it.refCount.incrementAndGet()
-        return it
-    }
-    terminatingScopes.remove(path)?.coroutineContext?.get(Job)?.let { priorJob ->
-        runBlocking { withTimeoutOrNull(2_000) { priorJob.join() } }
-    }
-    val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    val backend = AndroidBackend(createDataStore(scope), scope).also { it.refCount.set(1) }
-    backends[path] = backend
-    backend
-}
-
-// Drops one ref; the last release evicts the entry, parks the scope for the next recreate
-// to await, and cancels it. Each [KSafe] must release exactly once.
-private fun releaseBackend(path: String) = synchronized(pathLock(path)) {
-    val backend = backends[path] ?: return
-    if (backend.refCount.decrementAndGet() <= 0) {
-        backends.remove(path)
-        terminatingScopes[path] = backend.scope
-        backend.scope.cancel()
+/**
+ * Whether the Keystore key at [alias] actually resides in StrongBox — key creation can silently
+ * fall back to the TEE ([android.security.keystore.StrongBoxUnavailableException]) or reuse a
+ * pre-existing TEE key, so the requested tier alone can over-report. Only answerable on API 31+
+ * (`KeyInfo.getSecurityLevel`; below that KeyInfo cannot tell StrongBox from TEE); `null` means
+ * indeterminate (older API, absent alias, probe failure) and callers keep the documented
+ * capability inference.
+ */
+private fun isKeyActuallyStrongBox(alias: String?): Boolean? {
+    if (alias == null || Build.VERSION.SDK_INT < 31) return null
+    strongBoxByAlias[alias]?.let { return it }
+    return try {
+        val keyStore = java.security.KeyStore.getInstance(ANDROID_KEYSTORE_PROVIDER).apply { load(null) }
+        val key = keyStore.getKey(alias, null) as? javax.crypto.SecretKey ?: return null
+        val info = javax.crypto.SecretKeyFactory.getInstance(key.algorithm, ANDROID_KEYSTORE_PROVIDER)
+            .getKeySpec(key, android.security.keystore.KeyInfo::class.java)
+            as android.security.keystore.KeyInfo
+        val strongBox =
+            info.securityLevel == android.security.keystore.KeyProperties.SECURITY_LEVEL_STRONGBOX
+        strongBoxByAlias[alias] = strongBox
+        strongBox
+    } catch (_: Throwable) {
+        null
     }
 }
 
@@ -116,11 +96,19 @@ private fun releaseBackend(path: String) = synchronized(pathLock(path)) {
  *
  * @param fileName Optional logical name (lowercase letters / digits / underscores) that
  *   differentiates instances in one process; null uses the default datastore name.
+ *   **[fileName] is the key-isolation boundary on Android**: the Android Keystore is a single
+ *   per-app store keyed by alias string, and KSafe's key aliases are scoped by [fileName]
+ *   only (not [baseDir]). Two instances that must have INDEPENDENT keys and lifecycles must
+ *   therefore use DISTINCT [fileName]s — two instances sharing a [fileName] but differing only
+ *   in [baseDir] share the same Keystore key material, so one instance's `clearAll()` deletes
+ *   the key the other still needs. (Their ciphertexts are still cryptographically isolated
+ *   after a `rotateKeys()` via the v3 AAD, which binds the full store path.)
  * @param useStrongBox Deprecated — use `KSafeProtection.HARDWARE_ISOLATED` per property.
  * @param baseDir Optional override for the `.preferences_pb` directory. Null (recommended)
  *   uses the app-private path, where the sandbox enforces permissions. A custom dir is
  *   created if missing but not sandbox-isolated — never point it at external storage
- *   (SD card / `getExternalFilesDir()`) for sensitive data.
+ *   (SD card / `getExternalFilesDir()`) for sensitive data. Does NOT isolate key material —
+ *   see [fileName].
  */
 fun KSafe(
     context: Context,
@@ -182,9 +170,7 @@ private fun buildAndroidKSafe(
     baseDir: File?,
     testEngine: KSafeEncryption?,
 ): KSafe {
-    if (fileName != null && !fileName.matches(fileNameRegex)) {
-        throw IllegalArgumentException("File name must start with a lowercase letter and contain only lowercase letters, digits, or underscores")
-    }
+    requireValidStoreFileName(fileName)
 
     SecurityChecker.applicationContext = context.applicationContext
 
@@ -199,102 +185,102 @@ private fun buildAndroidKSafe(
         if (hasStrongBox) add(KSafeKeyStorage.HARDWARE_ISOLATED)
     }
 
-    val baseFileName = fileName?.let { "eu_anifantakis_ksafe_datastore_$it" }
-        ?: "eu_anifantakis_ksafe_datastore"
+    val baseFileName = dataStoreBaseFileName(fileName)
 
     // Absolute path uniquely identifies a DataStore: same file → shared DataStore (avoids
     // DataStore's "multiple active instances" error), different dir → separate DataStores.
     val datastoreFile: File = if (baseDir != null) {
         if (!baseDir.exists()) baseDir.mkdirs()
-        File(baseDir, "$baseFileName.preferences_pb")
+        File(baseDir, "$baseFileName$DATASTORE_FILE_SUFFIX")
     } else {
         context.preferencesDataStoreFile(baseFileName)
     }
 
-    // Per-path shared backend (DataStore + scope + engine); see [AndroidBackend].
     val datastorePath = datastoreFile.absolutePath
-    val backend = acquireBackend(datastorePath) { scope ->
-        PreferenceDataStoreFactory.create(
-            // Quarantine a corrupt .preferences_pb and continue from empty, rather than throwing
-            // on every read forever (which crashes the collector); corrupt bytes are copied aside.
+    // Canonical spelling so a custom baseDir reached via a relative/symlinked/`..` path keeps one
+    // identity; also the registry key, so two spellings of one file share one DataStore.
+    val backendKey = runCatching { datastoreFile.canonicalPath }.getOrDefault(datastorePath)
+    val rawDataDir = context.applicationInfo.dataDir
+    // Home-relative v3 AAD identity, never the raw absolute path: moving the app to
+    // adoptable storage relocates its data dir (/data/user/0/<pkg> → /mnt/expand/<uuid>/…)
+    // while the AndroidKeyStore keys survive, so an absolute path would fail every rotated
+    // entry's AAD after the move and the orphan sweep would then delete it. A custom baseDir
+    // outside the data dir stays absolute (stableStoreIdentity's pass-through branch).
+    val storeIdentity = resolveStoreIdentity(
+        canonicalPath = backendKey,
+        // /data/user/0/<pkg> is a symlink to /data/data/<pkg>, so a canonical path compared against
+        // the raw dataDir would never prefix-match and the identity would silently stay absolute.
+        canonicalHome = runCatching { File(rawDataDir).canonicalPath }.getOrDefault(rawDataDir),
+        rawPath = datastorePath,
+        rawHome = rawDataDir,
+    )
+    val backend = backends.acquire(backendKey) { scope ->
+        val dataStore = PreferenceDataStoreFactory.create(
+            // Quarantine a corrupt .preferences_pb and continue from empty, rather than throwing on
+            // every read forever (which crashes the collector).
             corruptionHandler = ReplaceFileCorruptionHandler {
-                runCatching {
-                    datastoreFile.copyTo(
-                        File(datastoreFile.parentFile, "${datastoreFile.name}.corrupt-${System.currentTimeMillis()}"),
-                        overwrite = false,
-                    )
-                }
+                quarantineCorruptStoreFile(datastoreFile)
                 emptyPreferences()
             },
             scope = scope,
             produceFile = { datastoreFile },
         )
+        AndroidBackend(dataStore, scope)
     }
 
-    // One storage shared by engine and core, so each safe's DEK lives in its own DataStore.
-    // The production engine is created lazily and shared, so instances on this file share one
-    // DEK cache over the single wrapped-DEK slot.
+    // The base alias (un-suffixed relaxed master — the only alias that used the DEK before key
+    // rotation existed) MUST match masterAlias(false) below, so its record stays on the historical
+    // fixed key and existing installs upgrade with zero migration.
     val storage = DataStoreStorage(backend.dataStore)
+    val relaxedMasterBaseAlias = KSafeAliasFormat.dotted(fileName, KSafeReservedKeys.MASTER)
     val engine: KSafeEncryption = testEngine
         ?: backend.engineOrCreate {
-            AndroidKeystoreEncryption(config = config, dekStore = DataStoreDekStore(storage))
+            AndroidKeystoreEncryption(
+                config = config,
+                dekStore = DataStoreDekStore(storage, baseAlias = relaxedMasterBaseAlias),
+            )
         }
 
-    fun resolveKeyStorageTier(userKey: String, protection: KSafeProtection?): KSafeKeyStorage {
-        if (protection == null) return KSafeKeyStorage.SOFTWARE
-        return if (protection == KSafeProtection.HARDWARE_ISOLATED && hasStrongBox)
-            KSafeKeyStorage.HARDWARE_ISOLATED
-        else KSafeKeyStorage.HARDWARE_BACKED
+    // A `false` probe means the alias's key VERIFIABLY sits in the TEE (silent StrongBox
+    // fallback, or a tier-upgrade write reusing a pre-existing TEE key) — report the honest
+    // tier. `true`/`null` keep the capability inference the KDoc documents.
+    fun resolveKeyTier(protection: KSafeProtection?, engineAlias: String?): KSafeKeyTier {
+        if (protection == null) return KSafeKeyTier.SOFTWARE
+        return if (protection == KSafeProtection.HARDWARE_ISOLATED && hasStrongBox &&
+            isKeyActuallyStrongBox(engineAlias) != false
+        ) KSafeKeyTier.HARDWARE_ISOLATED
+        else KSafeKeyTier.HARDWARE_BACKED
     }
 
-    fun resolveKeyLevelTier(userKey: String, protection: KSafeProtection?): KSafeProtectionLevel {
-        if (protection == null) return KSafeProtectionLevel.SOFTWARE
-        return if (protection == KSafeProtection.HARDWARE_ISOLATED && hasStrongBox)
-            KSafeProtectionLevel.HARDWARE_ISOLATED
-        else KSafeProtectionLevel.HARDWARE_BACKED
-    }
-
-    // Honors the deprecated useStrongBox flag: promotes default-protection encrypted writes to
-    // HARDWARE_ISOLATED; explicit protection levels pass through unchanged.
-    @Suppress("DEPRECATION")
-    fun promoteMode(mode: KSafeWriteMode): KSafeWriteMode {
-        if (!useStrongBox) return mode
-        if (mode !is KSafeWriteMode.Encrypted) return mode
-        if (mode.protection != KSafeEncryptedProtection.DEFAULT) return mode
-        return KSafeWriteMode.Encrypted(
-            protection = KSafeEncryptedProtection.HARDWARE_ISOLATED,
-            requireUnlockedDevice = mode.requireUnlockedDevice,
-        )
-    }
-
-    // Guards this instance's single backend release (KSafeCore.cancel() is idempotent).
+    // Guards this instance to exactly one backend release (KSafeCore.cancel() is idempotent).
     val released = java.util.concurrent.atomic.AtomicBoolean(false)
 
     val core = KSafeCore(
+        // v3 AAD binds the FULL store path (baseDir + fileName), not just fileName: two instances
+        // sharing a fileName but differing in baseDir share key material (the alias is fileName-
+        // scoped — see factory KDoc), so the path binding cryptographically isolates their
+        // ciphertexts after rotation. The KEK alias stays fileName-scoped: a non-exportable
+        // Keystore key cannot move to a new alias without unrecoverable data loss.
+        storeIdentity = storeIdentity.canonical,
+        fallbackStoreIdentity = storeIdentity.fallback,
+        keyNamespace = fileName,
+        commitMutex = backend.commitMutex,
         storage = storage,
         engineProvider = { engine },
         config = config,
         memoryPolicy = memoryPolicy,
         plaintextCacheTtl = plaintextCacheTtl,
-        resolveKeyStorage = ::resolveKeyStorageTier,
-        resolveKeyLevel = ::resolveKeyLevelTier,
+        resolveKeyStorage = { _, protection, engineAlias -> resolveKeyTier(protection, engineAlias).asKeyStorage() },
+        resolveKeyLevel = { _, protection, engineAlias -> resolveKeyTier(protection, engineAlias).asProtectionLevel() },
         lazyLoad = lazyLoad,
-        keyAlias = { userKey ->
-            listOfNotNull(KEY_ALIAS_PREFIX, fileName, userKey).joinToString(".")
-        },
-        masterAlias = { requireUnlockedDevice ->
-            val sentinel = if (requireUnlockedDevice) MASTER_KEY_LOCKED else MASTER_KEY_DEFAULT
-            listOfNotNull(KEY_ALIAS_PREFIX, fileName, sentinel).joinToString(".")
-        },
-        modeTransformer = ::promoteMode,
+        keyAlias = { userKey -> KSafeAliasFormat.dotted(fileName, userKey) },
+        masterAlias = { requireUnlockedDevice -> KSafeAliasFormat.dottedMaster(fileName, requireUnlockedDevice) },
+        modeTransformer = { promoteDefaultToIsolated(it, useStrongBox) },
         onCancel = {
-            // Drop this instance's backend ref (only the last release cancels the scope).
-            // cancel() is idempotent, so guard to exactly one decrement per instance.
-            if (released.compareAndSet(false, true)) releaseBackend(datastorePath)
+            if (released.compareAndSet(false, true)) backends.release(backendKey)
         },
     )
 
-    // Android custody is fixed at construction (no runtime fallback), so snapshot it.
     val protectionInfoSnapshot = KSafeProtectionInfo(
         intendedLevel = KSafeProtectionLevel.HARDWARE_BACKED,
         effectiveLevel = KSafeProtectionLevel.HARDWARE_BACKED,
@@ -304,16 +290,19 @@ private fun buildAndroidKSafe(
             "Android Keystore (TEE; relaxed DEFAULT values use a TEE-wrapped AES key held in memory)"
         },
         notes = buildList {
-            if (!hasStrongBox) add("android_strongbox_absent")
-            // Relaxed DEFAULT values use a DEK wrapped by the non-exportable TEE master key;
-            // the unwrapped DEK lives in process memory after first use. HARDWARE_ISOLATED and
-            // the strict requireUnlockedDevice master keep keys inside the TEE on every op.
-            add("relaxed_default_uses_software_dek")
+            if (!hasStrongBox) add(KSafeProtectionNotes.ANDROID_STRONGBOX_ABSENT)
+            // Relaxed DEFAULT values use a TEE-wrapped DEK whose unwrapped bytes live in process
+            // memory after first use; HARDWARE_ISOLATED and strict masters keep keys in the TEE.
+            add(KSafeProtectionNotes.ANDROID_RELAXED_DEFAULT_USES_SOFTWARE_DEK)
         },
     )
     return KSafe(
         core = core,
         deviceKeyStorages = deviceKeyStorages,
         protectionInfoProvider = { protectionInfoSnapshot },
+        onClearAllCleanup = {
+            // The quarantine copies also hold the wrapped DEK, not just ciphertext.
+            sweepCorruptQuarantineCopies(datastoreFile)
+        },
     )
 }

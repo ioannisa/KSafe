@@ -18,13 +18,22 @@ package eu.anifantakis.lib.ksafe.internal
 @PublishedApi
 internal expect suspend fun webKeyEnsure(idbName: String, legacyRawKeyB64: String?, mintIfAbsent: Boolean)
 
-/** Encrypts [plaintextB64]; returns Base64 of `IV ‖ ciphertext ‖ tag`. */
+/**
+ * Encrypts [plaintextB64]; returns Base64 of `IV ‖ ciphertext ‖ tag`.
+ *
+ * After encrypting, the key record is re-read and a vanished record (a cross-tab delete racing
+ * this write) surfaces as "web key missing" — recoverable, the caller re-ensures and retries —
+ * instead of returning ciphertext no key survives reload to decrypt. A delete landing between
+ * that check and the caller's storage commit can still orphan the one racing write (reclaimed
+ * by the startup orphan sweep); fully closing that window would take Web Locks held across
+ * delete vs encrypt-plus-commit, deliberately not paid for a self-healing single-write race.
+ */
 @PublishedApi
-internal expect suspend fun webKeyEncrypt(idbName: String, plaintextB64: String): String
+internal expect suspend fun webKeyEncrypt(idbName: String, plaintextB64: String, aadB64: String? = null): String
 
 /** Decrypts Base64 [ivAndCipherB64] (`IV ‖ ciphertext ‖ tag`); returns Base64 plaintext. */
 @PublishedApi
-internal expect suspend fun webKeyDecrypt(idbName: String, ivAndCipherB64: String): String
+internal expect suspend fun webKeyDecrypt(idbName: String, ivAndCipherB64: String, aadB64: String? = null): String
 
 /**
  * Copies the CryptoKey from [fromIdbName] to [toIdbName] only if [toIdbName] is absent and

@@ -2,22 +2,24 @@
 
 Here are benchmark results comparing KSafe against popular Android persistence libraries.
 
-> **2.1.2 release headline — Android software-DEK fast path.** Before 2.1.2, `ENCRYPTED`-memory "decrypt on every read" ran its AES-GCM *inside* the Android Keystore (TEE) on every call, so each read was a hardware round-trip — ~8 ms/op on a real Galaxy S24 Ultra (an emulator's software keystore hid this; it looked like ~0.2 ms). 2.1.2 keeps the per-datastore master key (the **KEK**) non-exportable in the TEE but uses it to wrap a **data-encryption key (DEK)** that is unwrapped **once** into process memory; per-value AES-GCM then runs in **userspace**. Result: `ENCRYPTED`-memory decrypt-every-read dropped from **~8 ms → ~0.014 ms** on the S24 Ultra — KSafe now *beats* EncryptedSharedPreferences and KVault even on the decrypt-every-read path. This brings Android in line with the Apple (CryptoKit) and JVM (JCE) engines, which already held raw key bytes in memory and did userspace AES. `HARDWARE_ISOLATED` writes and the strict `requireUnlockedDevice` master keep keys inside the TEE on every op (unchanged).
+> **Architecture note — Android software-DEK fast path.** The number that makes these Android figures possible is how `ENCRYPTED`-memory "decrypt on every read" gets its AES-GCM done. Naively, that AES-GCM would run *inside* the Android Keystore (TEE) on every call, making each read a hardware round-trip — ~8 ms/op on a real Galaxy S24 Ultra (an emulator's software keystore hides this; it looks like ~0.2 ms). KSafe instead keeps the per-datastore master key (the **KEK**) non-exportable in the TEE but uses it to wrap a **data-encryption key (DEK)** that is unwrapped **once** into process memory; per-value AES-GCM then runs in **userspace**. Result: `ENCRYPTED`-memory decrypt-every-read lands at **~0.014 ms** on the S24 Ultra instead of ~8 ms — KSafe *beats* EncryptedSharedPreferences and KVault even on the decrypt-every-read path. This brings Android in line with the Apple (CryptoKit) and JVM (JCE) engines, which already held raw key bytes in memory and did userspace AES. `HARDWARE_ISOLATED` writes and the strict `requireUnlockedDevice` master keep keys inside the TEE on every op.
 >
 > The default memory policy is **`LAZY_PLAIN_TEXT`**. Its read profile matches `PLAIN_TEXT` after first access (plaintext cached in the side cache) and matches `ENCRYPTED` cold-start (no bulk decrypt at startup). The first read of each key under `LAZY_PLAIN_TEXT` pays one decrypt — comparable to a single `ENCRYPTED`-memory read.
 
 ### Benchmark Environment
 
 - **Device:** Samsung Galaxy S24 Ultra (`SM-S928B`), Android 16, release build.
-- **Library:** KSafe 2.1.2.
+- **Library:** Measured on KSafe 2.1.2; figures current for 3.0.0.
 - **Test:** 500 read/write operations per library, exercised in their natural usage pattern, after a full warmup of every code path.
 - **Reported numbers:** values from a representative steady-state run.
+
+> **Why 2.1.2 numbers still apply to 3.0.0.** These figures were captured on 2.1.2, but they reflect an un-rotated (generation-1) store, whose on-disk format and per-value crypto path are byte-for-byte unchanged in 3.0.0 — a fresh 3.0.0 install writes the exact same envelope. Nothing on the read/write hot path moved, so re-running the suite on 3.0.0 reproduces the same steady-state numbers. The one 3.0.0 addition, key rotation, is opt-in and off the hot path (see [Key rotation cost](#key-rotation-cost) below).
 
 > **Real-device note.** The S24 Ultra is a high-end flagship; mid-range and older devices will be slower in absolute terms, and the per-read AES cost scales with value size. The **relative comparisons between libraries on the same device** are the meaningful signal. Run-to-run variance at µs scale can reach ±20–30%; the numbers below are typical, not best-case. Numbers are reported in a single unit (ms) throughout.
 
 ### Results Summary
 
-KSafe exposes three API shapes. **Direct** (`getDirect`/`putDirect`) is the canonical hot-cache API and the one quoted below; the **Delegated** (`by ksafe(...)`) path routes through the same code and performs equivalently; the **Coroutine** (suspend `get`/`put`) path awaits the DataStore disk commit (durable) and is fired concurrently, so its figures are throughput, not per-op latency.
+KSafe exposes three API shapes. **Direct** (`getDirect`/`putDirect`) is the canonical hot-cache API and the one quoted below; the **Delegated** (`by ksafe(...)`) path routes through the same code and performs equivalently; the **Coroutine** suspend `put` path awaits the DataStore disk commit (durable) and is fired concurrently, so its write figures are throughput, not per-op latency. The suspend `get` path serves from the same hot in-memory cache as `getDirect` once warm and does **not** await a disk commit — its extra cost over `getDirect` is coroutine dispatch/context-switch, not a disk read.
 
 #### Unencrypted Operations
 
@@ -77,7 +79,7 @@ KSafe exposes three API shapes. **Direct** (`getDirect`/`putDirect`) is the cano
 - Reads are ~9× slower in absolute µs (cost of type-safe generics + cross-platform API) — still ~1.5 µs
 
 **Direct vs Suspend API (within KSafe):**
-- `getDirect()` is **~10× faster** than suspend `get()` for encrypted reads (hot cache vs DataStore round-trip), ~1.5× for unencrypted.
+- `getDirect()` is **~10× faster** than suspend `get()` for encrypted reads, ~1.5× for unencrypted — both read the same in-memory cache and run the same userspace decrypt; the gap is the suspend path's coroutine dispatch (`withContext(Dispatchers.Default)`), not a DataStore round-trip.
 - `putDirect()` is **~800× faster** than suspend `put()` for writes (queue + return vs await disk commit). Reach for suspend `get`/`put` only when you must guarantee the value has hit disk.
 
 ### Cold Start Performance
@@ -116,7 +118,7 @@ KSafe with Hot Cache:
 
 1. **ConcurrentHashMap cache** — O(1) per-key reads and writes.
 2. **Per-datastore master-key envelope** — `KSafeProtection.DEFAULT` writes encrypt against a single per-datastore key cached in-process, instead of a per-entry Keystore key, eliminating per-entry key lookups.
-3. **Userspace AES via a wrapped DEK (Android, 2.1.2)** — the master key (KEK) stays non-exportable in the TEE and wraps a random data-encryption key (DEK); the DEK is unwrapped **once** into memory, after which every encrypt/decrypt of a `DEFAULT` value is pure-CPU AES-GCM with no Keystore/TEE round-trip. This matches what the Apple (CryptoKit) and JVM (JCE) engines already do. The wrapped DEK is stored at rest; the unwrapped DEK lives in process memory after first use — the same posture as EncryptedSharedPreferences/Tink. `HARDWARE_ISOLATED` and the strict `requireUnlockedDevice` master keep keys inside the TEE and decrypt there on every op.
+3. **Userspace AES via a wrapped DEK (Android, since 2.1.2)** — the master key (KEK) stays non-exportable in the TEE and wraps a random data-encryption key (DEK); the DEK is unwrapped **once** into memory, after which every encrypt/decrypt of a `DEFAULT` value is pure-CPU AES-GCM with no Keystore/TEE round-trip. This matches what the Apple (CryptoKit) and JVM (JCE) engines already do. The wrapped DEK is stored at rest; the unwrapped DEK lives in process memory after first use — the same posture as EncryptedSharedPreferences/Tink. `HARDWARE_ISOLATED` and the strict `requireUnlockedDevice` master keep keys inside the TEE and decrypt there on every op.
 4. **Write coalescing** — batches writes within a 16 ms window into a single DataStore edit; concurrent suspend `put()` calls coalesce automatically.
 5. **Deferred encryption** — encryption work moves to the background; the UI thread returns instantly from `putDirect`.
 6. **Auto-protection-detection** — readers don't have to remember whether a key is encrypted; the library figures it out from per-key metadata. Plain-only stores short-circuit the lookup via an atomic flag.
@@ -127,8 +129,19 @@ This means KSafe gives you DataStore's safety guarantees (atomic transactions, t
 
 - **Warmup.** Every KSafe code path (both memory-policy instances, plain + encrypted, Direct + Delegated + suspend) is exercised before any timed benchmark, so benchmark order does not bias per-op numbers. Direct and Delegated therefore land close together (they share the same `core` path); the canonical figures quoted above use the **Direct** API.
 - **Read/write benchmarks** for the suspend API issue all 500 operations as concurrent `GlobalScope.launch` jobs awaited with `joinAll()`. This represents real-app usage where many coroutines hit KSafe in parallel and exercises the write-coalescer. The reported per-op time is amortised concurrent throughput, **not** sequential per-op latency — so it is not directly comparable to the Direct API's sequential numbers.
-- **`ENCRYPTED`-memory reads** decrypt on every read. Under 2.1.2 (Android) this is in-process AES-GCM against the cached DEK, so the decrypt-every-read figure is a fair apples-to-apples comparison against ESP/KVault (which also decrypt every read) — and KSafe now wins it.
+- **`ENCRYPTED`-memory reads** decrypt on every read. Since 2.1.2 (Android) this is in-process AES-GCM against the cached DEK, so the decrypt-every-read figure is a fair apples-to-apples comparison against ESP/KVault (which also decrypt every read) — and KSafe wins it.
+- **Scope of these Android figures.** Everything above is measured on Android (the S24 Ultra) against the Android competitors. The Apple (CryptoKit) and JVM (JCE) engines already held raw key bytes in memory and did userspace AES before the wrapped-DEK work, so they carry no equivalent per-read penalty and are not separately benchmarked here.
 - **Cold start** is reported as the median of several clear→reload cycles to remove single-sample GC/collector-thread noise.
 - **Total benchmark runtime is now ~4.6 s wall-clock** for 500 iterations across all cells (down from ~17–25 s before the 2.1.2 DEK fast path, which is where most of the old time went — the per-read TEE round-trips).
+
+### Key rotation cost
+
+Key rotation (3.0.0, `rotateKeys()`) does **not** appear in any of the tables above because it never runs on the read/write hot path.
+
+- **One-time and opt-in.** `rotateKeys()` re-encrypts each stored entry once under a fresh key generation — an **O(n) one-time pass** over the entries that exist when you call it. It is not a per-operation cost; steady-state `getDirect`/`putDirect`/`get`/`put` latency is unaffected before or after a rotation.
+- **Off the startup path.** The automatic `KSafeKeyRotationPolicy.MaxAge(...)` policy runs its age check **once per startup, in the background**. It never blocks startup or reads — a store that becomes due is rotated behind the scenes while normal reads keep serving, and a store that is not due does no work at all. The default policy is `Never`, so by default rotation costs nothing.
+- **No steady-state overhead from the v3 envelope.** After the first rotation, entries are written under an authenticated (AES-GCM AAD) v3 envelope. The additional authenticated data is a few bytes folded into the *same* GCM pass that already runs, so it adds no separately measurable per-operation cost; the hot-path numbers above hold for both un-rotated (v2) and rotated (v3) stores.
+
+See [KEY_ROTATION.md](KEY_ROTATION.md) for the full model (crash-safe, resumable, mixed-generation stores stay readable, values are preserved).
 
 ***

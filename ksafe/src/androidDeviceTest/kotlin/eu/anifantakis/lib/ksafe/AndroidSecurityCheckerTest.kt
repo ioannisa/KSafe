@@ -3,6 +3,7 @@ package eu.anifantakis.lib.ksafe
 import android.os.Build
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import eu.anifantakis.lib.ksafe.internal.SecurityChecker
+import eu.anifantakis.lib.ksafe.internal.isEmulatorBuild
 import eu.anifantakis.lib.ksafe.internal.isRootIndicatingBuild
 import org.junit.runner.RunWith
 import kotlin.test.Test
@@ -50,6 +51,59 @@ class AndroidSecurityCheckerTest {
                     "but isDeviceRooted() returned false"
             )
         }
+    }
+
+    @Test
+    fun physicalUserdebugTestKeysDeviceIsNotAnEmulator() {
+        // A physical engineering device (userdebug/test-keys retail hardware) is correctly
+        // flagged root-capable, but must not ALSO trip the emulator probe: build type and
+        // signing tags are root signals, not emulator signals.
+        assertFalse(
+            isEmulatorBuild(
+                fingerprint = "samsung/dm3qxxx/dm3q:14/UP1A.231005.007/S918BXXU3AWK7:userdebug/test-keys",
+                model = "SM-S918B",
+                manufacturer = "samsung",
+                brand = "samsung",
+                device = "dm3q",
+                product = "dm3qxxx",
+                hardware = "qcom",
+                board = "kalama",
+                id = "UP1A.231005.007",
+            ),
+            "a physical userdebug/test-keys build must not be classified as an emulator",
+        )
+    }
+
+    @Test
+    fun emulatorImagesAreStillDetectedByHardwareSignals() {
+        // Modern Google emulator (ranchu) and legacy goldfish images keep tripping the probe
+        // through hardware/product signals alone — no build-type/tag clause needed.
+        assertTrue(
+            isEmulatorBuild(
+                fingerprint = "google/sdk_gphone64_arm64/emu64a:14/UE1A.230829.036/11228894:user/dev-keys",
+                model = "sdk_gphone64_arm64",
+                manufacturer = "Google",
+                brand = "google",
+                device = "emu64a",
+                product = "sdk_gphone64_arm64",
+                hardware = "ranchu",
+                board = "goldfish_arm64",
+                id = "UE1A.230829.036",
+            ),
+        )
+        assertTrue(
+            isEmulatorBuild(
+                fingerprint = "generic/sdk/generic:4.4/KRT16/eng.build:eng/test-keys",
+                model = "sdk",
+                manufacturer = "unknown",
+                brand = "generic",
+                device = "generic",
+                product = "sdk",
+                hardware = "goldfish",
+                board = "unknown",
+                id = "KRT16",
+            ),
+        )
     }
 
     @Test

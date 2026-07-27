@@ -11,8 +11,6 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
 
 /** [KSafePlatformStorage] backed by a Jetpack `DataStore<Preferences>`. */
 @PublishedApi
@@ -20,24 +18,26 @@ internal class DataStoreStorage(
     @PublishedApi internal val dataStore: DataStore<Preferences>,
 ) : KSafePlatformStorage {
 
-    override suspend fun snapshot(): Map<String, StoredValue> =
-        toStoredMap(dataStore.data.first())
+    private val commits = DataStoreCommitRelay(dataStore, ::toStoredMap)
 
-    override fun snapshotFlow(): Flow<Map<String, StoredValue>> =
-        dataStore.data.map(::toStoredMap)
+    override suspend fun snapshot(): Map<String, StoredValue> = commits.snapshot()
+
+    override fun snapshotFlow(): Flow<Map<String, StoredValue>> = commits.snapshotFlow()
 
     override suspend fun applyBatch(ops: List<StorageOp>) {
         if (ops.isEmpty()) return
-        dataStore.edit { prefs ->
-            for (op in ops) when (op) {
-                is StorageOp.Put -> writeOne(prefs, op.rawKey, op.value)
-                is StorageOp.Delete -> removeByName(prefs, op.rawKey)
+        commits.publish(
+            dataStore.edit { prefs ->
+                for (op in ops) when (op) {
+                    is StorageOp.Put -> writeOne(prefs, op.rawKey, op.value)
+                    is StorageOp.Delete -> removeByName(prefs, op.rawKey)
+                }
             }
-        }
+        )
     }
 
     override suspend fun clear() {
-        dataStore.edit { it.clear() }
+        commits.publish(dataStore.edit { it.clear() })
     }
 
     private fun writeOne(prefs: MutablePreferences, rawKey: String, value: StoredValue) {
@@ -62,21 +62,27 @@ internal class DataStoreStorage(
         for (k in matches) prefs.remove(k as Preferences.Key<Any?>)
     }
 
-    private fun toStoredMap(prefs: Preferences): Map<String, StoredValue> {
-        val raw = prefs.asMap()
-        val out = HashMap<String, StoredValue>(raw.size)
-        for ((k, v) in raw) {
-            val sv: StoredValue = when (v) {
-                is Boolean -> StoredValue.BoolVal(v)
-                is Int -> StoredValue.IntVal(v)
-                is Long -> StoredValue.LongVal(v)
-                is Float -> StoredValue.FloatVal(v)
-                is Double -> StoredValue.DoubleVal(v)
-                is String -> StoredValue.Text(v)
-                else -> continue   // Set<String> or any other type KSafe doesn't emit
-            }
-            out[k.name] = sv
+}
+
+/**
+ * A DataStore [Preferences] snapshot as the core's storage-neutral map. Written once because both
+ * readers of a `Preferences` snapshot — this storage's own relay and the JVM test-support cache
+ * refresh — must agree on which entry types survive the conversion.
+ */
+internal fun toStoredMap(prefs: Preferences): Map<String, StoredValue> {
+    val raw = prefs.asMap()
+    val out = HashMap<String, StoredValue>(raw.size)
+    for ((k, v) in raw) {
+        val sv: StoredValue = when (v) {
+            is Boolean -> StoredValue.BoolVal(v)
+            is Int -> StoredValue.IntVal(v)
+            is Long -> StoredValue.LongVal(v)
+            is Float -> StoredValue.FloatVal(v)
+            is Double -> StoredValue.DoubleVal(v)
+            is String -> StoredValue.Text(v)
+            else -> continue   // Set<String> or any other type KSafe doesn't emit
         }
-        return out
+        out[k.name] = sv
     }
+    return out
 }

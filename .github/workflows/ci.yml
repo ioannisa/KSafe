@@ -40,6 +40,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Compile all :ksafe targets
         run: ./gradlew :ksafe:compileKotlinJvm :ksafe:compileKotlinJs :ksafe:compileKotlinWasmJs :ksafe:compileKotlinMetadata --stacktrace
+      # Public-ABI lock (kotlinx binary-compatibility-validator): fails if any module's
+      # public API drifts from the committed api/ dumps (JVM + klib). After an intentional
+      # API change run `./gradlew apiDump` and commit the diff.
+      - name: API compatibility check
+        run: ./gradlew apiCheck --stacktrace
       # Only the fast, feature-relevant JVM unit test. The full :ksafe:jvmTest
       # suite is run by the separate (non-blocking) jvm-full-suite job — it
       # contains pre-existing stress tests that livelock on a 2-vCPU runner
@@ -51,6 +56,36 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: jvm-fast-test-report
+          path: ksafe/build/reports/tests/jvmTest
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Randomized concurrency torture: 90s of random put/get/delete/clearAll/
+  # rotateKeys chaos from 8 workers on the starved 2-vCPU runner, with quiesced
+  # write→rotate→cold-reopen verification between phases (JvmTortureTest; the
+  # failure log prints the seed — reproduce with -PksafeTortureSeed=<seed>).
+  # Found and fixed three real data-loss races (clearAll/key-cache staleness,
+  # the fast-path stale hit, and the out-of-band datastore file delete). Now a
+  # BLOCKING gate — a failure here is a genuine rotation/clearAll regression.
+  # ---------------------------------------------------------------------------
+  torture:
+    name: Torture — randomized concurrency
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Randomized torture run (90s chaos)
+        run: ./gradlew :ksafe:jvmTest --tests "eu.anifantakis.lib.ksafe.JvmTortureTest" -PksafeTorture -PksafeTortureSeconds=90 -PksafeTestLog --stacktrace
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: torture-test-report
           path: ksafe/build/reports/tests/jvmTest
           if-no-files-found: ignore
 

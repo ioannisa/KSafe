@@ -12,12 +12,13 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Locks in: observeFromStorage's live/cold-start/warm-start lifecycle — external emissions reflect, the user-write guard suppresses stale echoes yet self-heals, and cold-start honors its timeout.
+ * Locks in: observeFromStorage's live/cold-start/warm-start lifecycle — external emissions reflect (even mid-echo-window), the user-write guard suppresses only the stale pre-write snapshot yet self-heals, and cold-start honors its timeout.
  */
 class ObserveFromStorageTest {
 
@@ -51,11 +52,11 @@ class ObserveFromStorageTest {
         advanceUntilIdle()
         assertEquals("second", state.value)
 
-        // After a user write, a stale disk echo must not revert it.
+        // After a user write, the racing pre-write snapshot ("second") must not revert it.
         state.value = "user_wrote"
-        flow.emit("stale_echo")
+        flow.emit("second")
         advanceUntilIdle()
-        assertEquals("user_wrote", state.value, "a stale flow emission must not clobber the user's write")
+        assertEquals("user_wrote", state.value, "the stale pre-write snapshot must not clobber the user's write")
 
         job.cancel()
     }
@@ -77,8 +78,8 @@ class ObserveFromStorageTest {
 
         state.value = "user_wrote"
 
-        // Stale pre-write echo: suppressed.
-        flow.emit("stale_echo")
+        // The stale pre-write snapshot ("initial"): suppressed.
+        flow.emit("initial")
         advanceUntilIdle()
         assertEquals("user_wrote", state.value)
 
@@ -100,6 +101,124 @@ class ObserveFromStorageTest {
         flow.emit("external_new")
         advanceUntilIdle()
         assertEquals("user_2", state.value, "a re-armed guard must suppress stale echoes again")
+
+        job.cancel()
+    }
+
+    // A user write whose echo never arrives (a persist that failed without a synchronous
+    // error, so storage never changes and getFlow never re-emits) must not freeze observation
+    // forever — a bounded-timeout backstop releases the write-echo latch once the window elapses.
+    @Test
+    fun observeFromStorage_liveMode_writeThatNeverEchoes_releasesLatchAfterTimeout() = runTest {
+        val state = newState("initial")
+        val flow = MutableSharedFlow<String>(replay = 0)
+        val timeout = 1_000L
+
+        val job = launch {
+            state.observeFromStorage(
+                flow = flow,
+                coldStart = false,
+                observeExternalChanges = true,
+                writeEchoTimeoutMs = timeout,
+            )
+        }
+        advanceUntilIdle()
+
+        // Arm the latch; no matching echo will ever arrive.
+        state.value = "user_wrote"
+
+        // Before the window elapses the latch still suppresses the pre-write snapshot.
+        flow.emit("initial")
+        runCurrent()
+        assertEquals("user_wrote", state.value, "the latch suppresses the pre-write snapshot before the window")
+
+        // Cross the timeout window: the backstop releases the latch.
+        advanceTimeBy(timeout + 1)
+        runCurrent()
+
+        // The pre-write value now applies — proof the TIMEOUT released the latch, since an
+        // armed latch would still suppress this exact value as the pre-write snapshot.
+        flow.emit("initial")
+        runCurrent()
+        assertEquals("initial", state.value, "after the window, even the pre-write value must reflect")
+
+        // A later external change reflects too — observation is not frozen.
+        flow.emit("external_after")
+        advanceUntilIdle()
+        assertEquals(
+            "external_after", state.value,
+            "a write whose echo never arrives must not freeze observation past the timeout window",
+        )
+
+        job.cancel()
+    }
+
+    // A durable external change that lands while the user's write-echo is still in flight is a
+    // value the source flow will never re-emit — it must apply immediately and clear the latch,
+    // not be dropped until the timeout backstop fires.
+    @Test
+    fun observeFromStorage_liveMode_externalChangeDuringEchoWindow_appliesImmediately() = runTest {
+        val state = newState("A")
+        val flow = MutableSharedFlow<String>(replay = 0)
+
+        val job = launch {
+            state.observeFromStorage(
+                flow = flow,
+                coldStart = false,
+                observeExternalChanges = true,
+            )
+        }
+        advanceUntilIdle()
+
+        state.value = "B" // arms the latch; the echo is still in flight
+
+        // Only runCurrent from here on (never advanceTimeBy/advanceUntilIdle): the value must
+        // come from the emission itself, not from the timeout backstop releasing the latch.
+        flow.emit("C")
+        runCurrent()
+        assertEquals("C", state.value, "a durable external change during the echo window must apply immediately")
+
+        flow.emit("D")
+        runCurrent()
+        assertEquals("D", state.value, "later external changes must keep reflecting")
+
+        job.cancel()
+    }
+
+    // Echo-after-external ordering: the external change C clears the latch, so the write's own
+    // echo B landing after it applies like any emission — state tracks disk-emission order.
+    @Test
+    fun observeFromStorage_liveMode_echoArrivingAfterExternalChange_stateTracksEmissionOrder() = runTest {
+        val state = newState("A")
+        val flow = MutableSharedFlow<String>(replay = 0)
+
+        val job = launch {
+            state.observeFromStorage(
+                flow = flow,
+                coldStart = false,
+                observeExternalChanges = true,
+            )
+        }
+        advanceUntilIdle()
+
+        state.value = "B"
+
+        flow.emit("C")
+        runCurrent()
+        assertEquals("C", state.value)
+
+        // B's write finally commits and echoes; the latch is already down, so it applies.
+        flow.emit("B")
+        runCurrent()
+        assertEquals(
+            "B", state.value,
+            "with the latch cleared by the external change, the late echo applies like any emission",
+        )
+
+        // Observation stays live afterwards.
+        flow.emit("E")
+        runCurrent()
+        assertEquals("E", state.value)
 
         job.cancel()
     }

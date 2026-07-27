@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Package visibility for SecurityChecker's root-management-app probe.
+
+    Since Android 11 (API 30), PackageManager.getPackageInfo only sees packages the
+    app declares in <queries>; without these entries the probe silently reports
+    "not installed" for every package. Manifest merging propagates this list from
+    the AAR into the consuming app's manifest. These are specific package names,
+    not QUERY_ALL_PACKAGES, so no Play policy declaration is required.
+
+    Must stay in sync with SecurityChecker.android.kt's rootPackages list.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <queries>
+        <package android:name="com.topjohnwu.magisk" />
+        <package android:name="com.koushikdutta.superuser" />
+        <package android:name="com.noshufou.android.su" />
+        <package android:name="com.thirdparty.superuser" />
+        <package android:name="eu.chainfire.supersu" />
+        <package android:name="com.yellowes.su" />
+        <package android:name="com.kingroot.kinguser" />
+        <package android:name="com.kingo.root" />
+        <package android:name="com.smedialink.oneclickroot" />
+        <package android:name="com.zhiqupk.root.global" />
+        <package android:name="de.robv.android.xposed.installer" />
+        <package android:name="org.lsposed.manager" />
+    </queries>
+
+</manifest>

@@ -10,9 +10,14 @@ it's recomputed on every access, so a JVM runtime degrade (e.g. a JNA call
 that fails mid-process with a `LinkageError` and flips to the software vault —
 see
 [`JVM_PROTECTION.md`](JVM_PROTECTION.md#compose-desktop-release-distributables-jdkunsupported))
-shows up on the next read without a process restart. Android, Apple, and
-Web custody can't change after construction, so their providers return
-captured snapshots — there is no per-access cost worth worrying about.
+shows up on the next read without a process restart. Android custody can't
+change after construction, so its provider returns a fixed snapshot. Apple and
+Web recompute cheaply on every access, because their custody *can* degrade later
+in the process — an iOS-Simulator Keychain fallback engages lazily on the first
+entitlement-blocked key op, and a browser's `crypto.subtle` availability tracks
+the page's security context — either can flip `effectiveLevel` to `SOFTWARE`
+after construction, and the per-access re-check surfaces it. All of these are
+cheap flag reads: there is no per-access cost worth worrying about.
 
 It complements the two pre-existing surfaces:
 
@@ -48,8 +53,10 @@ comparison.
 
 > **About data vs. key.** This scale describes the protection of the
 > encryption **key**, not the data. KSafe always encrypts payload data with
-> AES-256-GCM regardless of level. Even at the weakest rung (`SOFTWARE`) the
-> data on disk is still AES-256-GCM ciphertext — what varies across levels
+> AES-GCM — 256-bit by default, configurable to 128-bit via `KSafeConfig.keySize`
+> on Android/Apple/JVM (Web is always AES-256-GCM) — regardless of level. Even at
+> the weakest rung (`SOFTWARE`) the
+> data on disk is still AES-GCM ciphertext — what varies across levels
 > is how hard it is for an attacker to recover the **key** that decrypts
 > that ciphertext. (There is no instance-level "plaintext data" state;
 > per-write `KSafeWriteMode.Plain` is a per-value concept surfaced through
@@ -64,10 +71,10 @@ comparison.
 
 | Level | Threat it stops |
 |---|---|
-| `SOFTWARE` | (almost none — key bytes are recoverable from the DataStore file by anyone with disk read as the same OS user; backups and copies expose it intact) |
+| `SOFTWARE` | (almost none — key bytes are recoverable from the on-disk software key file by anyone with disk read as the same OS user; backups and copies expose it intact) |
 | `SANDBOX_PROTECTED` | Direct disk read of the key; stolen-disk theft; cross-sandbox access (other origin / other OS user); accidental backups. Same-sandbox code (same origin tab / same-OS-user process) can still ask the runtime for the key. |
 | `HARDWARE_BACKED` | Above, plus extraction of the *durable* key from disk, backups, or a powered-off device — it is wrapped by a non-exportable hardware key (TEE / Keychain / OS vault), so what's at rest is useless without the device. The working AES key is unwrapped into app memory for userspace crypto (the standard envelope model — Apple/JVM always, Android since 2.1.2), so a *live* process-memory compromise is **not** stopped at this rung — that's `HARDWARE_ISOLATED`. |
-| `HARDWARE_ISOLATED` | Above, plus side-channel attacks on the main SoC — key lives on a physically separate chip. |
+| `HARDWARE_ISOLATED` | Above, plus side-channel attacks on the main SoC — the key lives on a physically separate chip. On **Android StrongBox/TEE** the per-operation AES runs on-chip, so the key bytes never enter RAM and a live process-memory compromise is stopped here. On **Apple** only the EC wrapping key lives on the Secure Enclave (which is EC-only); the working AES DEK is still unwrapped into RAM and AES-GCM runs in CryptoKit, so this rung does *not* fully stop a live-memory compromise on Apple — only on Android StrongBox/TEE. |
 
 The `SANDBOX_PROTECTED` rung deliberately lumps two different sandbox
 mechanisms because they're peer-strength against the threats this scale
@@ -99,7 +106,11 @@ data class KSafeProtectionInfo(
     val custody: String,
     val notes: List<String>,
     val kSafeVersion: String,   // 2.1.1+: same as KSafe.VERSION, single source of truth in gradle.properties
-)
+) {
+    // Computed val (new in 3.0.0): true wherever encrypted ops actually work,
+    // including the weaker-but-working JVM-software and iOS-Simulator fallbacks.
+    val isEncryptionOperational: Boolean
+}
 ```
 
 | Field | Meaning |
@@ -107,12 +118,51 @@ data class KSafeProtectionInfo(
 | `intendedLevel` | Strongest level this platform's engine targets as its **baseline** at construction time. |
 | `effectiveLevel` | Level KSafe actually negotiated. The value to gate on for "is my protection good enough?". |
 | `custody` | Human-readable description of where keys actually live. **Display, never parse.** |
-| `notes` | Stable lowercase_snake codes describing how/why the effective level differs from intended. Empty when nothing notable. |
-| `kSafeVersion` | Published version of the linked KSafe artifact (e.g. `"2.1.1"`). Same value as the public [`KSafe.VERSION`] constant. Useful in demo / sample apps that load multiple KSafe versions side-by-side, in audit logs, and in crash telemetry. (Added in 2.1.1.) |
+| `notes` | Stable lowercase_snake codes on the negotiation outcome — how/why the effective level differs from intended, or a custody detail worth disclosing at the intended level. Empty when nothing is notable. |
+| `kSafeVersion` | Published version of the linked KSafe artifact (e.g. `"3.0.0"`). Same value as the public [`KSafe.VERSION`] constant. Useful in demo / sample apps that load multiple KSafe versions side-by-side, in audit logs, and in crash telemetry. (Added in 2.1.1.) |
+| `isEncryptionOperational` | **(New in 3.0.0.)** Computed `val` — the cross-platform *"will an encrypted write actually succeed?"* preflight, distinct from protection **strength**. `true` wherever encryption works, **including** the weaker JVM-software and iOS-Simulator sandbox fallbacks; `false` only when a `notes` code marks the engine non-operational (see below). |
 
 When `effectiveLevel == intendedLevel`, the engine got what it wanted. When
 `effectiveLevel < intendedLevel`, a runtime fallback happened — `notes`
-explains why.
+explains why. A fallback is **not** the same as a failure: use
+`isEncryptionOperational` (not the level inequality) to answer *"will encrypted
+ops succeed?"*.
+
+> **Note.** [Key rotation](KEY_ROTATION.md) (generation counter, the v3
+> authenticated envelope after the first `rotateKeys()`) changes neither
+> `effectiveLevel` nor `custody` — the key still lives in the same custody; only
+> the wrapping key and envelope binding change. `protectionInfo` reports custody
+> strength, independent of generation.
+
+> **Two different questions, two different gates — don't conflate them.**
+> `effectiveLevel < intendedLevel` answers *"is protection at its intended strength?"*
+> A fallback can still be fully **operational**: a JVM software vault and an
+> iOS-Simulator sandbox store both report `SOFTWARE` and encrypt/decrypt fine. To
+> answer *"will encrypted reads/writes actually succeed?"*, gate on
+> `isEncryptionOperational`, **not** the level. Using the level inequality for this
+> would wrongly reject every iOS-Simulator run and every headless desktop that fell
+> back to the software vault — all of which encrypt fine.
+>
+> ```kotlin
+> val info = ksafe.protectionInfo
+>
+> // "Will encrypted reads/writes actually SUCCEED?" — operational preflight.
+> if (!info.isEncryptionOperational) {
+>     // Non-operational: web served without crypto.subtle, or a JVM OS vault that
+>     // exists but is unreachable at startup. Encrypted ops will THROW here.
+> }
+>
+> // "Is protection at its intended STRENGTH?" — a different question.
+> // A software fallback is operational (isEncryptionOperational == true) yet weaker
+> // than intended (effectiveLevel < intendedLevel). Don't answer the first with this.
+> val degraded = info.effectiveLevel < info.intendedLevel
+> ```
+>
+> `isEncryptionOperational` is the convenience form of "no non-operational `notes`
+> code present," so consumers don't hardcode the code strings. There are exactly two
+> non-operational codes (`web_crypto_subtle_unavailable`, `jvm_os_vault_degraded`); it
+> stays `true` for every other outcome, including the weaker-but-working JVM-software
+> and iOS-Simulator fallbacks.
 
 ---
 
@@ -120,23 +170,26 @@ explains why.
 
 | Platform / outcome | `intendedLevel` | `effectiveLevel` | `custody` | `notes` |
 |---|---|---|---|---|
-| Android (TEE only) | `HARDWARE_BACKED` | `HARDWARE_BACKED` | `"Android Keystore (TEE)"` | `[]` |
-| Android (StrongBox capable) | `HARDWARE_BACKED` | `HARDWARE_BACKED` | `"Android Keystore (TEE; StrongBox available per-write)"` | `[]` |
+| Android (TEE only) | `HARDWARE_BACKED` | `HARDWARE_BACKED` | `"Android Keystore (TEE; relaxed DEFAULT values use a TEE-wrapped AES key held in memory)"` | `["android_strongbox_absent", "relaxed_default_uses_software_dek"]` |
+| Android (StrongBox capable) | `HARDWARE_BACKED` | `HARDWARE_BACKED` | `"Android Keystore (TEE; StrongBox available per-write; relaxed DEFAULT values use a TEE-wrapped AES key held in memory)"` | `["relaxed_default_uses_software_dek"]` |
 | iOS / macOS native (SE present) | `HARDWARE_BACKED` | `HARDWARE_BACKED` | `"Apple Keychain (Secure Enclave available per-write)"` | `[]` |
 | iOS / macOS native (no SE) | `HARDWARE_BACKED` | `HARDWARE_BACKED` | `"Apple Keychain"` | `["apple_secure_enclave_absent"]` |
 | iOS Simulator, Keychain entitlement missing | `HARDWARE_BACKED` | **`SOFTWARE`** | `"Sandbox file key store (iOS Simulator fallback — Keychain entitlement missing)"` | `["apple_keychain_entitlement_missing", "apple_secure_enclave_absent"]` |
 | JVM, Windows DPAPI healthy | `SANDBOX_PROTECTED` | `SANDBOX_PROTECTED` | `"Windows DPAPI (CryptProtectData, current-user)"` | `[]` |
 | JVM, macOS Keychain healthy | `SANDBOX_PROTECTED` | `SANDBOX_PROTECTED` | `"macOS Keychain (Security.framework, login keychain)"` | `[]` |
 | JVM, Linux Secret Service healthy | `SANDBOX_PROTECTED` | `SANDBOX_PROTECTED` | `"Linux Secret Service (libsecret, login keyring)"` | `[]` |
-| JVM, OS vault self-test failed | `SANDBOX_PROTECTED` | **`SOFTWARE`** | `"DataStore (software, plaintext — no OS protection)"` (refers to the key, not the data) | `["jvm_os_vault_unavailable"]` |
-| JVM, user opted out via `-D` / env | `SANDBOX_PROTECTED` | **`SOFTWARE`** | `"DataStore (software, plaintext — no OS protection)"` (refers to the key, not the data) | `["jvm_user_opted_out"]` |
-| Web (wasmJs + js) | `SANDBOX_PROTECTED` | `SANDBOX_PROTECTED` | `"WebCrypto non-extractable key in IndexedDB"` | `[]` |
+| JVM, no OS vault reachable (software fallback — **operational**) | `SANDBOX_PROTECTED` | **`SOFTWARE`** | `"DataStore (software, plaintext — no OS protection)"` (refers to the key, not the data) | `["jvm_os_vault_unavailable"]` |
+| JVM, OS vault exists but unreachable at startup (**non-operational** — encrypted ops throw) | `SANDBOX_PROTECTED` | **`SOFTWARE`** | `"DataStore (software, plaintext — no OS protection)"` — the store is held but KSafe refuses to mint a key into it | `["jvm_os_vault_degraded"]` |
+| JVM, user opted out via `-D` / env (software fallback — **operational**) | `SANDBOX_PROTECTED` | **`SOFTWARE`** | `"DataStore (software, plaintext — no OS protection)"` (refers to the key, not the data) | `["jvm_user_opted_out"]` |
+| Web (wasmJs + js), secure context | `SANDBOX_PROTECTED` | `SANDBOX_PROTECTED` | `"WebCrypto non-extractable key in IndexedDB"` | `[]` |
+| Web (wasmJs + js), non-secure context | `SANDBOX_PROTECTED` | **`SOFTWARE`** | `"WebCrypto (crypto.subtle) unavailable — not a secure context; encrypted reads/writes will fail. …"` | `["web_crypto_subtle_unavailable"]` |
 
 Observations:
 
 - **`HARDWARE_ISOLATED` never appears in this table** at the instance level. By design — it's a per-write upgrade, not a baseline.
 - **Android `intendedLevel` is `HARDWARE_BACKED` even on StrongBox devices.** StrongBox is available *per write*, not as a baseline. Use `deviceKeyStorages` to learn whether StrongBox is available.
 - **Web and JVM-vault both report `SANDBOX_PROTECTED`** because they're peer-strength: both protect against stolen-disk theft and cross-sandbox access, both are vulnerable to same-sandbox code.
+- **The JVM software-fallback `custody` string names the backend that holds the key.** It reads `"DataStore (software, …)"` on the DataStore backend, but `"JSON file (software, …)"` (`<base>.ksafe-keys.json`) on the jlink-trimmed no-`Unsafe` backend. Treat `custody` as display-only either way.
 
 ---
 
@@ -145,13 +198,20 @@ Observations:
 Codes are stable across minor versions. Consumers should ignore unknown codes
 rather than reject them (new codes may be added without a major version bump).
 
-| Code | Platform | Meaning |
-|---|---|---|
-| `jvm_os_vault_unavailable` | JVM | OS-vault self-test failed: no libsecret daemon, locked Keychain, JNA link error, etc. Falls back to `DataStoreKeyVault` (plaintext). |
-| `jvm_user_opted_out` | JVM | `-Dksafe.jvm.keyVault=software` or env `KSAFE_JVM_KEY_VAULT=software` set. Fallback was requested, not forced. |
-| `android_strongbox_absent` | Android | Device lacks StrongBox. Informational at instance level; only meaningful for per-write `HARDWARE_ISOLATED`. (Currently the Android factory does not emit this code at the instance level since baseline is unaffected — reserved for future use.) |
-| `apple_secure_enclave_absent` | Apple | Device lacks Secure Enclave (simulator, pre-T2 Intel Mac). Informational at instance level; only meaningful for per-write `HARDWARE_ISOLATED`. |
-| `apple_keychain_entitlement_missing` | Apple (iOS Simulator only) | The Keychain rejected the process with `errSecMissingEntitlement` (-34018) — the app has no signing team / Keychain Sharing capability, common on unsigned Simulator builds. Keys fall back to a sandbox file store so encrypted writes keep working; fix the Xcode signing setup to test real Keychain behavior. Never emitted on a real device — there a -34018 still fails loudly. |
+Exactly two codes are **non-operational** — they mean "encrypted ops will not
+succeed" and drive `isEncryptionOperational == false`: `web_crypto_subtle_unavailable`
+and `jvm_os_vault_degraded`. Every other code is a weaker-but-working state.
+
+| Code | Platform | Operational? | Meaning |
+|---|---|---|---|
+| `jvm_os_vault_unavailable` | JVM | **Yes** — software fallback works | No OS secret store is reachable on this host (no libsecret daemon, unsupported OS). Keys fall back to `DataStoreKeyVault` (plaintext key). Weaker than intended, but encrypted ops still succeed. |
+| `jvm_os_vault_degraded` | JVM | **No** — encrypted ops throw | An OS secret store **exists** but failed its startup self-test (locked Keychain/keyring, headless launch, JNA link error). To avoid overwriting the real OS key on a later healthy launch, KSafe refuses to mint keys, so encrypted reads/writes fail until the store is reachable. Retry once unlocked, or set `-Dksafe.jvm.keyVault=software` to accept the software fallback. |
+| `jvm_user_opted_out` | JVM | **Yes** — software fallback requested | `-Dksafe.jvm.keyVault=software` or env `KSAFE_JVM_KEY_VAULT=software` set. Fallback was requested, not forced. |
+| `android_strongbox_absent` | Android | Yes | Device lacks StrongBox; emitted by the Android factory whenever the probe comes back negative. Informational at instance level (the `HARDWARE_BACKED` baseline is unaffected); only meaningful for per-write `HARDWARE_ISOLATED`. |
+| `relaxed_default_uses_software_dek` | Android | Yes | Always present on Android. Relaxed `DEFAULT` encrypted values use an AES key that the non-exportable Keystore master key wraps but which is unwrapped into process memory after first use; `HARDWARE_ISOLATED` and `requireUnlockedDevice` writes keep the per-op TEE path. Custody stays hardware-rooted, so the level is unchanged — the note exists so `protectionInfo` discloses the in-memory key. |
+| `apple_secure_enclave_absent` | Apple | Yes | Device lacks Secure Enclave (simulator, pre-T2 Intel Mac). Informational at instance level; only meaningful for per-write `HARDWARE_ISOLATED`. |
+| `apple_keychain_entitlement_missing` | Apple (iOS Simulator only) | Yes — sandbox fallback works | The Keychain rejected the process with `errSecMissingEntitlement` (-34018) — the app has no signing team / Keychain Sharing capability, common on unsigned Simulator builds. Keys fall back to a sandbox file store so encrypted writes keep working; fix the Xcode signing setup to test real Keychain behavior. Never emitted on a real device — there a -34018 still fails loudly. |
+| `web_crypto_subtle_unavailable` | Web (wasmJs + js) | **No** — encrypted ops fail | The page is not a secure context, so `crypto.subtle` (WebCrypto) is absent and **every encrypted read/write fails** — encryption is non-operational here, not merely weak. Serve over HTTPS or from a `localhost` origin to restore it. |
 
 ---
 
@@ -248,7 +308,9 @@ at most once (an OS-vault failure is sticky). One read at startup is enough
 for most flows; bind it to UI / metrics if you want it to track a possible
 mid-process JVM degrade automatically.
 
-A few patterns this enables beyond the startup gate:
+Two representative patterns follow. For the wider catalogue — re-auth-window
+tightening, feature-gating a single high-trust flow, UX honesty banners — see
+[USAGE.md](USAGE.md).
 
 ### Refuse to persist at all
 
@@ -268,51 +330,6 @@ when {
     else -> {
         inMemoryOnly["biometric_template"] = template   // session-only; lost on process death
     }
-}
-```
-
-### Tighten the re-auth window
-
-Lower achieved protection → demand fresh authentication more often. The
-window shrinks as the trust surface widens:
-
-```kotlin
-val reAuthAfter = when (ksafe.protectionInfo.effectiveLevel) {
-    KSafeProtectionLevel.SOFTWARE           -> Duration.ZERO        // every sensitive op
-    KSafeProtectionLevel.SANDBOX_PROTECTED  -> 5.minutes
-    KSafeProtectionLevel.HARDWARE_BACKED    -> 30.minutes
-    KSafeProtectionLevel.HARDWARE_ISOLATED  -> 4.hours
-}
-```
-
-### Disable one feature, keep the rest working
-
-A banking app might keep the general UI live but disable a single high-trust
-feature when the device can't store its credentials safely — better than
-refusing to launch at all:
-
-```kotlin
-val canRememberCardDetails =
-    ksafe.protectionInfo.effectiveLevel >= KSafeProtectionLevel.HARDWARE_BACKED
-
-if (canRememberCardDetails) {
-    showRememberCardCheckbox()
-} else {
-    showNote("Card details cannot be remembered on this device.")
-}
-```
-
-### UX honesty banner
-
-When you do degrade gracefully, tell the user the truth instead of pretending
-nothing happened:
-
-```kotlin
-if (ksafe.protectionInfo.effectiveLevel == KSafeProtectionLevel.SOFTWARE) {
-    showBanner(
-        "Your device cannot store this securely. " +
-            "We'll keep it for this session only.",
-    )
 }
 ```
 
@@ -348,11 +365,10 @@ delta check for support escalation.
 
 ## How it relates to the other surfaces
 
-| Surface | Granularity | Question |
-|---|---|---|
-| `deviceKeyStorages: Set<KSafeKeyStorage>` | Device | "What CAN the device offer?" |
-| `protectionInfo: KSafeProtectionInfo` | Instance / process | "What is THIS engine running at right now?" |
-| `getKeyInfo(key)?.level: KSafeProtectionLevel` | Per-key | "What did THIS specific write end up using?" |
+The three surfaces — `deviceKeyStorages` (device capability), `protectionInfo`
+(this instance right now), and `getKeyInfo(key)` (per-key) — are compared in the
+[table at the top of this document](#protection-info). This section adds the
+per-key detail and the flow that combines all three.
 
 > **`KSafeKeyInfo` shares the same `KSafeProtectionLevel` scale.** As of 2.1
 > the per-key audit record returned by `getKeyInfo(key)` exposes a
@@ -385,5 +401,7 @@ A typical production flow uses all three:
 ## See also
 
 - **[SECURITY_MODEL.md](SECURITY_MODEL.md)** — the broader security model, threat model, encryption internals, and existing `KSafeKeyStorage` / `KSafeKeyInfo` APIs.
-- **[JVM_PROTECTION.md](JVM_PROTECTION.md)** — the per-platform deep dive on the JVM key vaults whose status `protectionInfo` reports.
+- **[JVM_PROTECTION.md](JVM_PROTECTION.md)** — the per-platform deep dive on the JVM key vaults whose status `protectionInfo` reports (including the `jvm_os_vault_degraded` fail-closed behaviour).
+- **[KEY_ROTATION.md](KEY_ROTATION.md)** — key generations and the v3 authenticated envelope, which change neither `effectiveLevel` nor `custody`.
+- **[USAGE.md](USAGE.md)** — the wider catalogue of runtime-gating patterns driven by `effectiveLevel`.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — where the new types fit in the module / Ring structure.

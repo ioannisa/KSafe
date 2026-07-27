@@ -2,6 +2,7 @@ package eu.anifantakis.lib.ksafe.internal
 
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.autoreleasepool
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.refTo
 import kotlinx.cinterop.usePinned
@@ -72,22 +73,28 @@ internal class FileSimulatorFallbackKeyStore(
     private fun filePath(account: String): String = "$dirPath/${sha256Hex(account)}.key"
 
     override fun read(account: String): ByteArray? =
-        NSData.dataWithContentsOfFile(filePath(account))?.toByteArray()
+        autoreleasepool {
+            NSData.dataWithContentsOfFile(filePath(account))?.toByteArray()
+        }
 
     @OptIn(ExperimentalForeignApi::class)
     override fun write(account: String, bytes: ByteArray) {
-        NSFileManager.defaultManager.createDirectoryAtPath(
-            dirPath,
-            withIntermediateDirectories = true,
-            attributes = null,
-            error = null,
-        )
-        val ok = memScoped {
-            val nsData = if (bytes.isEmpty()) NSData() else NSData.create(
-                bytes = bytes.refTo(0).getPointer(this),
-                length = bytes.size.toULong(),
+        val ok = autoreleasepool {
+            // Inside the pool: createDirectoryAtPath + filePath bridge Kotlin Strings to NSString,
+            // which would otherwise accumulate on the caller's pool during a tight write loop.
+            NSFileManager.defaultManager.createDirectoryAtPath(
+                dirPath,
+                withIntermediateDirectories = true,
+                attributes = null,
+                error = null,
             )
-            nsData.writeToFile(filePath(account), atomically = true)
+            memScoped {
+                val nsData = if (bytes.isEmpty()) NSData() else NSData.create(
+                    bytes = bytes.refTo(0).getPointer(this),
+                    length = bytes.size.toULong(),
+                )
+                nsData.writeToFile(filePath(account), atomically = true)
+            }
         }
         // Fail closed: a key that only exists in memory would make everything encrypted
         // under it unreadable after the next relaunch.
@@ -97,7 +104,10 @@ internal class FileSimulatorFallbackKeyStore(
     }
 
     override fun delete(account: String) {
-        NSFileManager.defaultManager.removeItemAtPath(filePath(account), error = null)
+        // Pool the bridged filePath NSString so a tight delete loop doesn't grow native memory.
+        autoreleasepool {
+            NSFileManager.defaultManager.removeItemAtPath(filePath(account), error = null)
+        }
     }
 
     @OptIn(ExperimentalForeignApi::class)
@@ -121,12 +131,6 @@ internal class FileSimulatorFallbackKeyStore(
                 }
             }
         }
-        val hexDigits = "0123456789abcdef"
-        val sb = StringBuilder(digest.size * 2)
-        for (b in digest) {
-            val v = b.toInt()
-            sb.append(hexDigits[v ushr 4]).append(hexDigits[v and 0x0f])
-        }
-        return sb.toString()
+        return ByteArray(digest.size) { digest[it].toByte() }.toLowercaseHex()
     }
 }

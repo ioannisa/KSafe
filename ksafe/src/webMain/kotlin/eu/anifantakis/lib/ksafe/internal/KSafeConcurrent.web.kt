@@ -19,6 +19,18 @@ internal actual class KSafeAtomicFlag actual constructor(initial: Boolean) {
 }
 
 @PublishedApi
+internal actual class KSafeAtomicInt actual constructor(initial: Int) {
+    private var value: Int = initial
+    actual fun get(): Int = value
+    actual fun set(value: Int) { this.value = value }
+    actual fun compareAndSet(expected: Int, new: Int): Boolean {
+        if (value != expected) return false
+        value = new
+        return true
+    }
+}
+
+@PublishedApi
 internal actual class KSafeConcurrentMap<V : Any> actual constructor() {
     private val map = HashMap<String, V>()
     actual operator fun get(key: String): V? = map[key]

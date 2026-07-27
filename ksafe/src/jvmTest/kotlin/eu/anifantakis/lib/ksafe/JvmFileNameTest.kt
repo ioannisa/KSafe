@@ -23,16 +23,6 @@ class JvmFileNameTest {
             return "fnrun${runId}test${numberToLetters(count.toLong())}"
         }
 
-        private fun numberToLetters(num: Long): String {
-            var n = num
-            val sb = StringBuilder()
-            while (n > 0) {
-                n-- // Adjust for 0-based indexing
-                sb.insert(0, ('a' + (n % 26).toInt()))
-                n /= 26
-            }
-            return if (sb.isEmpty()) "a" else sb.toString()
-        }
     }
 
     private fun newStore(): KSafe = KSafe(generateUniqueFileName())
@@ -64,17 +54,33 @@ class JvmFileNameTest {
     }
 
     @Test
-    fun baseDir_clearAll_removesFileFromProvidedDirectory() = runTest {
+    fun baseDir_clearAll_wipesAllDataInProvidedDirectory() = runTest {
         val tmpDir = Files.createTempDirectory("tmpKsafeClearTest").toFile()
         try {
             val name = "temporary_clear_ksafe"
             val safe = KSafe(fileName = name, baseDir = tmpDir)
             safe.put("k", "v")
-            val expected = java.io.File(tmpDir, "eu_anifantakis_ksafe_datastore_$name.preferences_pb")
-            assertTrue(expected.exists(), "Expected $expected to exist before clearAll()")
+            val storeFile = java.io.File(tmpDir, "eu_anifantakis_ksafe_datastore_$name.preferences_pb")
+            assertTrue(storeFile.exists(), "Expected $storeFile to exist before clearAll()")
 
             safe.clearAll()
-            assertFalse(expected.exists(), "Expected $expected to be deleted by clearAll()")
+
+            // clearAll() guarantees no RECOVERABLE data remains — not that the physical file is
+            // gone. The live DataStore file is intentionally NOT deleted out-of-band: a raw
+            // File.delete() on the caller thread races a concurrent consumer write (e.g. a key
+            // mint during a rotation) and can strand a just-persisted record, leaving an in-RAM-
+            // only key that is unreadable after restart. storage.clear() already emptied it; an
+            // empty preferences file holds no ciphertext and no key material.
+            assertEquals("default", safe.get("k", "default"), "the value must be wiped")
+            val reopened = KSafe(fileName = name, baseDir = tmpDir)
+            assertEquals("default", reopened.get("k", "default"), "the wipe must survive a cold reopen")
+            reopened.close()
+
+            // No user key material or ciphertext survives in the on-disk store.
+            val residue = if (storeFile.exists()) storeFile.readBytes().decodeToString() else ""
+            assertFalse(residue.contains("ksafe_key_"), "no key records may survive clearAll()")
+            assertFalse(residue.contains("__ksafe_value_"), "no encrypted values may survive clearAll()")
+            safe.close()
         } finally {
             tmpDir.deleteRecursively()
         }

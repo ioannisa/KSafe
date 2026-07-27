@@ -18,6 +18,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import java.io.File
+import eu.anifantakis.lib.ksafe.internal.KSafeCore
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.test.AfterTest
@@ -166,6 +167,155 @@ class JvmFallbackMigrationTest {
         assertFalse(jsonFallback.exists(), "source JSON should be renamed away")
         assertTrue(File(tmp, "data.ksafe.json.migrated").exists(), "source JSON should be archived")
         assertTrue(File(tmp, "data.ksafe-keys.json.migrated").exists(), "source keys should be archived")
+    }
+
+    // A strict-alias-variant entry ("sa":1, key under the strict per-entry alias — a 3.0.0
+    // strict HARDWARE_ISOLATED write during a fallback session) must migrate under that SAME
+    // alias formula; probing the bare alias would fail its decrypt and silently DROP it.
+    @Test
+    fun migrates_strictAliasVariantEntry_underTheVariantAlias() {
+        val jsonFallback = File(tmp, "strict.ksafe.json")
+        val keysFallback = File(tmp, "strict.ksafe-keys.json")
+        val config = KSafeConfig()
+        val userKey = "tokenStrict"
+        val strictAlias = KSafeCore.strictPerEntryAliasWithGeneration(keyAlias(userKey), 1, null, userKey)
+
+        val srcScope = newScope()
+        runBlocking {
+            val srcStorage = DataStoreJsonStorage(jsonFallback, srcScope)
+            val srcEngine = JvmSoftwareEncryption(
+                config = config,
+                vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFallback)),
+            )
+            val ct = srcEngine.encryptSuspend(
+                identifier = strictAlias,
+                data = "secret-strict".encodeToByteArray(),
+                hardwareIsolated = true,
+                requireUnlockedDevice = true,
+            )
+            srcStorage.applyBatch(
+                listOf(
+                    StorageOp.Put(KeySafeMetadataManager.valueRawKey(userKey), StoredValue.Text(Base64.encode(ct))),
+                    StorageOp.Put(
+                        KeySafeMetadataManager.metadataRawKey(userKey),
+                        StoredValue.Text(
+                            KeySafeMetadataManager.buildMetadataJson(
+                                KSafeProtection.HARDWARE_ISOLATED,
+                                accessPolicy = KeySafeMetadataManager.accessPolicyFor(true),
+                                strictAliasVariant = true,
+                            )
+                        ),
+                    ),
+                )
+            )
+        }
+        runBlocking { srcScope.coroutineContext[Job]!!.cancelAndJoin() }
+
+        val targetScope = newScope()
+        val target = DataStoreJsonStorage(File(tmp, "strict-target.json"), targetScope)
+        val targetEngine = JvmSoftwareEncryption(
+            config = config,
+            vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(File(tmp, "strict-target-keys.json"))),
+        )
+        migrateJsonFallbackToOsBacked(config, jsonFallback, keysFallback, target, targetEngine, keyAlias, masterAlias)
+
+        runBlocking {
+            val snap = target.snapshot()
+            val cipher = (snap[KeySafeMetadataManager.valueRawKey(userKey)] as? StoredValue.Text)?.value
+            assertTrue(cipher != null, "the strict-variant entry must not be dropped by the migration")
+            assertEquals(
+                "secret-strict",
+                targetEngine.decryptSuspend(strictAlias, Base64.decode(cipher)).decodeToString(),
+                "the migrated entry must decrypt under the strict variant alias",
+            )
+            assertTrue(
+                KeySafeMetadataManager.parseStrictAliasVariant(
+                    (snap[KeySafeMetadataManager.metadataRawKey(userKey)] as StoredValue.Text).value
+                ),
+                "the strict-variant marker must be preserved",
+            )
+        }
+        assertTrue(File(tmp, "strict.ksafe.json.migrated").exists(), "source JSON should be archived")
+    }
+
+    // A whole-vault SOURCE read outage (the key file exists but can't be read this pass) must be
+    // treated as transient — blocking archiving so a healthy launch retries — not miscounted as N
+    // permanent per-entry skips that archive the fallback into oblivion.
+    @Test
+    fun wholeVaultSourceReadOutage_blocksArchiving_soMigrationRetries() {
+        val jsonFallback = File(tmp, "outage.ksafe.json")
+        val keysFallback = File(tmp, "outage.ksafe-keys.json")
+        val config = KSafeConfig()
+
+        // Seed one DEFAULT-encrypted entry normally (writes both the ciphertext and its software key).
+        val srcScope = newScope()
+        runBlocking {
+            val srcStorage = DataStoreJsonStorage(jsonFallback, srcScope)
+            val srcEngine = JvmSoftwareEncryption(
+                config = config,
+                vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFallback)),
+            )
+            putEncrypted(srcStorage, srcEngine, "tokenDefault", "secret-default", KSafeProtection.DEFAULT)
+        }
+        runBlocking { srcScope.coroutineContext[Job]!!.cancelAndJoin() }
+        assertTrue(keysFallback.exists(), "precondition: the software key file exists")
+
+        // Simulate the outage: the key file exists but FileKeyVault.read() throws for it this pass
+        // (a corrupt/unparseable file; a transient readText IOException surfaces identically).
+        keysFallback.writeText("{ this is not valid json")
+
+        val targetScope = newScope()
+        val target = DataStoreJsonStorage(File(tmp, "outage-target.json"), targetScope)
+        val targetEngine = JvmSoftwareEncryption(
+            config = config,
+            vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(File(tmp, "outage-target-keys.json"))),
+        )
+        migrateJsonFallbackToOsBacked(config, jsonFallback, keysFallback, target, targetEngine, keyAlias, masterAlias)
+
+        // Nothing archived → the migration re-runs next launch instead of losing the entry.
+        assertTrue(jsonFallback.exists(), "source JSON must NOT be archived on a whole-vault source read outage")
+        assertTrue(keysFallback.exists(), "source keys must NOT be archived on a whole-vault source read outage")
+        assertFalse(File(tmp, "outage.ksafe.json.migrated").exists(), "no archive on a transient source outage")
+        assertFalse(File(tmp, "outage.ksafe-keys.json.migrated").exists(), "no archive on a transient source outage")
+    }
+
+    // A blank/zero-byte keys file is truncation, never a healthy empty vault (FileKeyVault
+    // always writes at least "{}"), so it must count as a whole-vault source outage exactly
+    // like an unparseable one — blocking archiving so a restored backup can still migrate.
+    @Test
+    fun blankKeysFile_countsAsSourceOutage_blocksArchiving_soMigrationRetries() {
+        val jsonFallback = File(tmp, "blankout.ksafe.json")
+        val keysFallback = File(tmp, "blankout.ksafe-keys.json")
+        val config = KSafeConfig()
+
+        val srcScope = newScope()
+        runBlocking {
+            val srcStorage = DataStoreJsonStorage(jsonFallback, srcScope)
+            val srcEngine = JvmSoftwareEncryption(
+                config = config,
+                vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFallback)),
+            )
+            putEncrypted(srcStorage, srcEngine, "tokenDefault", "secret-default", KSafeProtection.DEFAULT)
+        }
+        runBlocking { srcScope.coroutineContext[Job]!!.cancelAndJoin() }
+        assertTrue(keysFallback.exists(), "precondition: the software key file exists")
+
+        // Truncated to zero bytes (crash mid-write under an old release / external tampering).
+        keysFallback.writeText("")
+
+        val targetScope = newScope()
+        val target = DataStoreJsonStorage(File(tmp, "blankout-target.json"), targetScope)
+        val targetEngine = JvmSoftwareEncryption(
+            config = config,
+            vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(File(tmp, "blankout-target-keys.json"))),
+        )
+        migrateJsonFallbackToOsBacked(config, jsonFallback, keysFallback, target, targetEngine, keyAlias, masterAlias)
+
+        // Nothing archived → a restored keys file can still migrate the entry next launch.
+        assertTrue(jsonFallback.exists(), "source JSON must NOT be archived on a blank keys file")
+        assertTrue(keysFallback.exists(), "source keys must NOT be archived on a blank keys file")
+        assertFalse(File(tmp, "blankout.ksafe.json.migrated").exists(), "no archive on a truncated keys file")
+        assertFalse(File(tmp, "blankout.ksafe-keys.json.migrated").exists(), "no archive on a truncated keys file")
     }
 
     @Test
@@ -473,9 +623,9 @@ class JvmFallbackMigrationTest {
 
     /** Target engine whose every encrypt fails as if the OS vault were transiently down. */
     private class TransientFailTargetEngine : KSafeEncryption {
-        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray =
+        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?,    aad: ByteArray?,): ByteArray =
             throw IllegalStateException("KSafe: OS key vault is unavailable (test transient)")
-        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray =
+        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray =
             throw IllegalStateException("unused")
         override fun deleteKey(identifier: String) {}
     }
@@ -532,25 +682,8 @@ class JvmFallbackMigrationTest {
         val pendingFile = File(tmp, "rt.ksafe.json.migration-pending")
         val config = KSafeConfig()
 
-        // Fallback period: two keys live in the fallback store.
-        val srcScope = newScope()
-        runBlocking {
-            val src = DataStoreJsonStorage(jsonFallback, srcScope)
-            val srcEngine = JvmSoftwareEncryption(
-                config = config,
-                vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFallback)),
-            )
-            putEncrypted(src, srcEngine, "session", "fallback-session", KSafeProtection.DEFAULT)
-            putEncrypted(src, srcEngine, "theme", "fallback-theme", KSafeProtection.DEFAULT)
-        }
-        runBlocking { srcScope.coroutineContext[Job]!!.cancelAndJoin() }
-
-        val targetScope = newScope()
-        val target = DataStoreJsonStorage(targetFile, targetScope)
-        val goodTargetEngine = JvmSoftwareEncryption(
-            config = config,
-            vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(targetKeys)),
-        )
+        val (target, goodTargetEngine) =
+            seedFallbackAndOpenTarget(jsonFallback, keysFallback, targetFile, targetKeys, config)
 
         // Attempt 1: transient target failure → nothing applied, pending state recorded.
         migrateJsonFallbackToOsBacked(
@@ -605,25 +738,8 @@ class JvmFallbackMigrationTest {
         val pendingFile = File(tmp, "cp.ksafe.json.migration-pending")
         val config = KSafeConfig()
 
-        // Fallback period: two keys live in the fallback store.
-        val srcScope = newScope()
-        runBlocking {
-            val src = DataStoreJsonStorage(jsonFallback, srcScope)
-            val srcEngine = JvmSoftwareEncryption(
-                config = config,
-                vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFallback)),
-            )
-            putEncrypted(src, srcEngine, "session", "fallback-session", KSafeProtection.DEFAULT)
-            putEncrypted(src, srcEngine, "theme", "fallback-theme", KSafeProtection.DEFAULT)
-        }
-        runBlocking { srcScope.coroutineContext[Job]!!.cancelAndJoin() }
-
-        val targetScope = newScope()
-        val target = DataStoreJsonStorage(targetFile, targetScope)
-        val goodTargetEngine = JvmSoftwareEncryption(
-            config = config,
-            vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(targetKeys)),
-        )
+        val (target, goodTargetEngine) =
+            seedFallbackAndOpenTarget(jsonFallback, keysFallback, targetFile, targetKeys, config)
 
         // Attempt 1: transient target failure → nothing applied, pending state recorded.
         migrateJsonFallbackToOsBacked(
@@ -663,6 +779,78 @@ class JvmFallbackMigrationTest {
                 "a key the target lacks still migrates under the conservative retry",
             )
         }
+    }
+
+    @Test
+    fun pendingMarkerWriteFailure_stillLeavesASentinel_soARetryCannotRollBackNewerWrites() {
+        // The pending marker is the SOLE defense against a later launch re-running
+        // "fallback wins". If its content write fails (disk full, AV lock on the tmp path),
+        // a 0-byte sentinel must still be dropped: without it the next launch treats the
+        // stale fallback as authoritative and overwrites the newer target values the session
+        // wrote in the meantime.
+        val jsonFallback = File(tmp, "pw.ksafe.json")
+        val keysFallback = File(tmp, "pw.ksafe-keys.json")
+        val targetFile = File(tmp, "pw.target.json")
+        val targetKeys = File(tmp, "pw.target-keys.json")
+        val pendingFile = File(tmp, "pw.ksafe.json.migration-pending")
+        val config = KSafeConfig()
+
+        val srcScope = newScope()
+        runBlocking {
+            val src = DataStoreJsonStorage(jsonFallback, srcScope)
+            val srcEngine = JvmSoftwareEncryption(
+                config = config,
+                vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFallback)),
+            )
+            putEncrypted(src, srcEngine, "session", "fallback-session", KSafeProtection.DEFAULT)
+            putEncrypted(src, srcEngine, "theme", "fallback-theme", KSafeProtection.DEFAULT)
+        }
+        runBlocking { srcScope.coroutineContext[Job]!!.cancelAndJoin() }
+
+        val targetScope = newScope()
+        val target = DataStoreJsonStorage(targetFile, targetScope)
+        val goodTargetEngine = JvmSoftwareEncryption(
+            config = config,
+            vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(targetKeys)),
+        )
+
+        // Attempt 1: transient target failure AND the pending-state write itself fails.
+        migrateJsonFallbackToOsBacked(
+            config, jsonFallback, keysFallback, target,
+            targetEngine = TransientFailTargetEngine(),
+            keyAlias = keyAlias, masterAlias = masterAlias,
+            persistPendingState = { _, _ -> throw java.io.IOException("injected pending-write failure") },
+        )
+        assertTrue(pendingFile.exists(), "a failed pending write must still drop a sentinel marker")
+        assertEquals(0L, pendingFile.length(), "the last-resort sentinel is a 0-byte proof-of-attempt")
+
+        // The session proceeds on the target: the user overwrites "session".
+        runBlocking { putEncrypted(target, goodTargetEngine, "session", "user-fresh", KSafeProtection.DEFAULT) }
+
+        // Attempt 2 (next launch): vault healthy → the sentinel routes to the unknown-retry
+        // baseline (keep whatever the target holds; migrate only what it lacks).
+        migrateJsonFallbackToOsBacked(
+            config, jsonFallback, keysFallback, target,
+            targetEngine = goodTargetEngine,
+            keyAlias = keyAlias, masterAlias = masterAlias,
+        )
+
+        runBlocking {
+            val snap = target.snapshot()
+            val sessionCipher = (snap[KeySafeMetadataManager.valueRawKey("session")] as StoredValue.Text).value
+            assertEquals(
+                "user-fresh",
+                goodTargetEngine.decryptSuspend(masterAlias(false), Base64.decode(sessionCipher)).decodeToString(),
+                "the sentinel must keep the retry from rolling a newer target write back to stale fallback",
+            )
+            val themeCipher = (snap[KeySafeMetadataManager.valueRawKey("theme")] as StoredValue.Text).value
+            assertEquals(
+                "fallback-theme",
+                goodTargetEngine.decryptSuspend(masterAlias(false), Base64.decode(themeCipher)).decodeToString(),
+                "a key the target lacks still migrates under the conservative retry",
+            )
+        }
+        assertFalse(pendingFile.exists(), "successful migration must clear the sentinel")
     }
 
     @Test
@@ -770,4 +958,236 @@ class JvmFallbackMigrationTest {
             ksafe.close()
         }
     }
+
+    @Test
+    fun appNamespaceAdoption_carriesASecondFallbackPeriodForward() {
+        // A second fallback period (fresh .ksafe.json, older permanent .migrated marker)
+        // followed by FIRST-TIME appNamespace adoption: the copy-forward must preserve source
+        // mtimes so the namespaced mtime gate still sees the fallback as newer than the marker
+        // and drains it — copy-time mtimes would deterministically skip it and strand the data.
+        val baseDir = File(tmp, "nsadopt").apply { mkdirs() }
+        val base = "eu_anifantakis_ksafe_datastore_nsadopt"
+        val cfg = KSafeConfig()
+        val masterA = "nsadopt:__ksafe_master__"
+
+        val jsonFile = File(baseDir, "$base.ksafe.json")
+        val keysFile = File(baseDir, "$base.ksafe-keys.json")
+
+        // Second-period fallback data seeded as the no-Unsafe path would write it.
+        val seedScope = newScope()
+        runBlocking {
+            val storage = DataStoreJsonStorage(jsonFile, seedScope)
+            val engine = JvmSoftwareEncryption(
+                config = cfg,
+                vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFile)),
+            )
+            val ct = engine.encryptSuspend(masterA, "3333".encodeToByteArray())
+            storage.applyBatch(
+                listOf(
+                    StorageOp.Put(KeySafeMetadataManager.valueRawKey("count2"), StoredValue.Text(Base64.encode(ct))),
+                    StorageOp.Put(
+                        KeySafeMetadataManager.metadataRawKey("count2"),
+                        StoredValue.Text(KeySafeMetadataManager.buildMetadataJson(KSafeProtection.DEFAULT, accessPolicy = null)),
+                    ),
+                )
+            )
+        }
+        runBlocking { seedScope.coroutineContext[Job]!!.cancelAndJoin() }
+
+        // A leftover marker from a FIRST migration, older than the fresh second-period source.
+        val marker = File(baseDir, "$base.ksafe.json.migrated").apply { writeText("old-archive") }
+        val now = System.currentTimeMillis()
+        marker.setLastModified(now - 120_000)
+        jsonFile.setLastModified(now)
+        keysFile.setLastModified(now)
+
+        // First launch WITH an appNamespace: files are copied into the namespace subdir and
+        // the migration must run there against the copied files.
+        val ksafe = KSafe(fileName = "nsadopt", config = KSafeConfig(appNamespace = "nsadoptns"), baseDir = baseDir)
+        try {
+            runBlocking {
+                assertEquals(
+                    3333, ksafe.get("count2", 0),
+                    "appNamespace adoption must not strand a genuinely-newer fallback period",
+                )
+            }
+        } finally {
+            ksafe.close()
+        }
+        assertTrue(
+            File(File(baseDir, "nsadoptns"), "$base.ksafe.json.migrated").exists(),
+            "the namespaced migration must have run and archived its source",
+        )
+    }
+
+    // JSON->OS migration must carry ROTATED (v3 / generation >= 2) entries.
+
+    @Test
+    fun migrates_rotatedV3Entry_underItsGenerationAliasAndAad_notDropped() {
+        val jsonFallback = File(tmp, "rot.ksafe.json")
+        val keysFallback = File(tmp, "rot.ksafe-keys.json")
+        val targetFile = File(tmp, "rot.preferences.json")
+        val targetKeys = File(tmp, "rot.target-keys.json")
+        val config = KSafeConfig()
+        val storeIdentity = "rotstore"
+
+        // Fallback holds a rotated DEFAULT entry: encrypted under the ".g2" master alias with the
+        // v3 AAD, metadata stamped v3 / generation 2 — exactly what rotateKeys() would have left.
+        val srcScope = newScope()
+        runBlocking {
+            val srcStorage = DataStoreJsonStorage(jsonFallback, srcScope)
+            val srcEngine = JvmSoftwareEncryption(
+                config = config,
+                vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFallback)),
+            )
+            val g2Alias = KSafeCore.aliasWithGeneration(masterAlias(false), 2)
+            val aad = KeySafeMetadataManager.aadFor(storeIdentity, "rotKey", KSafeProtection.DEFAULT, false, 2)
+            val ct = srcEngine.encryptSuspend(g2Alias, "rotated-secret".encodeToByteArray(), aad = aad)
+            srcStorage.applyBatch(
+                listOf(
+                    StorageOp.Put(KeySafeMetadataManager.valueRawKey("rotKey"), StoredValue.Text(Base64.encode(ct))),
+                    StorageOp.Put(
+                        KeySafeMetadataManager.metadataRawKey("rotKey"),
+                        StoredValue.Text(
+                            KeySafeMetadataManager.buildMetadataJson(
+                                KSafeProtection.DEFAULT, accessPolicy = null,
+                                envelopeVersion = KeySafeMetadataManager.ENVELOPE_VERSION_V3, keyGeneration = 2,
+                            )
+                        ),
+                    ),
+                )
+            )
+        }
+        runBlocking { srcScope.coroutineContext[Job]!!.cancelAndJoin() }
+
+        val targetScope = newScope()
+        val target = DataStoreJsonStorage(targetFile, targetScope)
+        val targetEngine = JvmSoftwareEncryption(
+            config = config,
+            vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(targetKeys)),
+        )
+        migrateJsonFallbackToOsBacked(
+            config = config,
+            jsonFallback = jsonFallback,
+            keysFallback = keysFallback,
+            target = target,
+            targetEngine = targetEngine,
+            keyAlias = keyAlias,
+            masterAlias = masterAlias,
+            storeIdentity = storeIdentity,
+        )
+
+        // The rotated entry must be present in the target (pre-fix it was decrypted under the
+        // BASE alias, failed, and was silently dropped) and decrypt correctly under its own
+        // generation alias + AAD.
+        runBlocking {
+            val migratedCt = (target.snapshot()[KeySafeMetadataManager.valueRawKey("rotKey")] as? StoredValue.Text)?.value
+            assertTrue(migratedCt != null, "rotated v3 entry must survive the JSON->OS migration")
+            val g2Alias = KSafeCore.aliasWithGeneration(masterAlias(false), 2)
+            val aad = KeySafeMetadataManager.aadFor(storeIdentity, "rotKey", KSafeProtection.DEFAULT, false, 2)
+            val plain = targetEngine.decryptSuspend(g2Alias, Base64.decode(migratedCt!!), aad = aad).decodeToString()
+            assertEquals("rotated-secret", plain, "migrated rotated entry must decrypt under its generation alias + AAD")
+            targetScope.coroutineContext[Job]!!.cancelAndJoin()
+        }
+    }
+
+    // The migration must also carry the STORE-LEVEL key-generation record.
+
+    @Test
+    fun migration_carriesTheStoreKeyGeneration_withoutRollingANewerTargetBack() {
+        val keygenKey = KeySafeMetadataManager.KEYGEN_RAW_KEY
+
+        fun migrateWithSourceKeygen(name: String, seedTargetKeygen: String?): String? {
+            val jsonFallback = File(tmp, "$name.ksafe.json")
+            val keysFallback = File(tmp, "$name.ksafe-keys.json")
+            val srcScope = newScope()
+            runBlocking {
+                val srcStorage = DataStoreJsonStorage(jsonFallback, srcScope)
+                val srcEngine = JvmSoftwareEncryption(
+                    config = KSafeConfig(),
+                    vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFallback)),
+                )
+                putEncrypted(srcStorage, srcEngine, "k", "v", KSafeProtection.DEFAULT)
+                srcStorage.applyBatch(
+                    listOf(StorageOp.Put(keygenKey, StoredValue.Text("""{"g":2,"ts":123}""")))
+                )
+                srcScope.coroutineContext[Job]!!.cancelAndJoin()
+            }
+
+            val targetScope = newScope()
+            val target = DataStoreJsonStorage(File(tmp, "$name.preferences.json"), targetScope)
+            val targetEngine = JvmSoftwareEncryption(
+                config = KSafeConfig(),
+                vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(File(tmp, "$name.target-keys.json"))),
+            )
+            if (seedTargetKeygen != null) {
+                runBlocking {
+                    target.applyBatch(listOf(StorageOp.Put(keygenKey, StoredValue.Text(seedTargetKeygen))))
+                }
+            }
+            migrateJsonFallbackToOsBacked(
+                config = KSafeConfig(),
+                jsonFallback = jsonFallback,
+                keysFallback = keysFallback,
+                target = target,
+                targetEngine = targetEngine,
+                keyAlias = keyAlias,
+                masterAlias = masterAlias,
+            )
+            return runBlocking {
+                val raw = (target.snapshot()[keygenKey] as? StoredValue.Text)?.value
+                targetScope.coroutineContext[Job]!!.cancelAndJoin()
+                raw
+            }
+        }
+
+        // Fresh target: the rotated store's generation record migrates with its entries —
+        // without it the migrated store regresses to generation 1 and the NEXT write drops
+        // back to a v2 (no-AAD) envelope while rotation re-targets already-minted aliases.
+        assertEquals(
+            """{"g":2,"ts":123}""",
+            migrateWithSourceKeygen("keygen_fresh", seedTargetKeygen = null),
+            "the store key-generation record must migrate with the entry cohort",
+        )
+
+        // Target already rotated further: the newer record must win — stale fallback state
+        // must never roll the OS-side generation (or its MaxAge birth) back.
+        assertEquals(
+            """{"g":3,"ts":50}""",
+            migrateWithSourceKeygen("keygen_ahead", seedTargetKeygen = """{"g":3,"ts":50}"""),
+            "a newer target generation record must not be rolled back by the migration",
+        )
+    }
+
+    /**
+     * Runs one fallback PERIOD (two encrypted keys written through the JSON fallback, then its
+     * scope torn down) and opens the OS-backed target over the same config, returning the target
+     * storage and a healthy engine for it. The retry tests differ only in what they do AFTER this.
+     */
+    private fun seedFallbackAndOpenTarget(
+        jsonFallback: File,
+        keysFallback: File,
+        targetFile: File,
+        targetKeys: File,
+        config: KSafeConfig,
+    ): Pair<DataStoreJsonStorage, JvmSoftwareEncryption> {
+        val srcScope = newScope()
+        runBlocking {
+            val src = DataStoreJsonStorage(jsonFallback, srcScope)
+            val srcEngine = JvmSoftwareEncryption(
+                config = config,
+                vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFallback)),
+            )
+            putEncrypted(src, srcEngine, "session", "fallback-session", KSafeProtection.DEFAULT)
+            putEncrypted(src, srcEngine, "theme", "fallback-theme", KSafeProtection.DEFAULT)
+        }
+        runBlocking { srcScope.coroutineContext[Job]!!.cancelAndJoin() }
+
+        val targetScope = newScope()
+        return DataStoreJsonStorage(targetFile, targetScope) to JvmSoftwareEncryption(
+            config = config,
+            vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(targetKeys)),
+        )
+    }
+
 }

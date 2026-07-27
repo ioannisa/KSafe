@@ -16,3 +16,18 @@ internal class BiometricPromptGate {
     /** Runs [block] holding the single-prompt lock. */
     suspend fun <T> withSinglePrompt(block: suspend () -> T): T = mutex.withLock { block() }
 }
+
+/**
+ * Prompt text a platform can actually use, or null to fall back to its own default.
+ *
+ * Blank counts as absent. `null` already means "I have no text, choose for me", and a caller
+ * whose string resource or config field resolved to `""` means the same thing without knowing
+ * to send null — but Android's `PromptInfo` rejects an empty title, and that throw reaches the
+ * caller as a plain `false`, so every authentication would deny with nothing to debug.
+ *
+ * Applied at both doors into a prompt: [KSafeBiometrics.verifyBiometric], which every platform
+ * dispatches through, and Android's own public `BiometricHelper.authenticate`, which an app can
+ * call directly. Applying it only at the common one left Apple setting a blank
+ * `localizedCancelTitle` and the web naming a passkey `""`.
+ */
+internal fun promptTextOrNull(value: String?): String? = value?.takeIf { it.isNotBlank() }

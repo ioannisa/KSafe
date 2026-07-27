@@ -10,6 +10,51 @@ import kotlin.test.assertEquals
 class JvmMultiInstanceTest {
 
     @Test
+    fun writeAcknowledgedAfterSiblingClearAll_survivesColdReopen() = runTest {
+        // The engine's key store must have real lifecycle semantics: with the alias-derived
+        // FakeEncryption a wiped key still "decrypts", hiding exactly this loss.
+        val file = JvmKSafeTest.generateUniqueFileName()
+        val engine = StatefulFakeEncryption()
+        val a = KSafe(fileName = file, testEngine = engine)
+        val b = KSafe(fileName = file, testEngine = engine)
+        a.put("seed", "s")
+
+        a.clearAll()
+        b.put("after", "must-survive") // acknowledged after the wipe completed
+
+        a.close(); b.close()
+        val c = KSafe(fileName = file, testEngine = engine)
+        assertEquals(
+            "must-survive", c.get("after", ""),
+            "a write acknowledged after a sibling's clearAll must decrypt on a cold reopen",
+        )
+        c.close()
+    }
+
+    @Test
+    fun siblingWriteDuringRotation_survivesTheSweep_andColdReopen() = runTest {
+        val file = JvmKSafeTest.generateUniqueFileName()
+        val engine = StatefulFakeEncryption()
+        val a = KSafe(fileName = file, testEngine = engine)
+        val b = KSafe(fileName = file, testEngine = engine)
+        a.put("k1", "v1")
+        b.put("k2", "v2")
+
+        a.rotateKeys()
+        b.put("during", "sibling-write") // may land around the sweep; must never lose its key
+
+        assertEquals("v1", a.get("k1", ""))
+        assertEquals("v2", b.get("k2", ""))
+        a.close(); b.close()
+
+        val c = KSafe(fileName = file, testEngine = engine)
+        assertEquals("v1", c.get("k1", ""), "rotated entry must decrypt after reopen")
+        assertEquals("v2", c.get("k2", ""), "sibling's entry must decrypt after reopen")
+        assertEquals("sibling-write", c.get("during", ""), "a sibling write around rotation must stay decryptable")
+        c.close()
+    }
+
+    @Test
     fun twoLiveInstances_sameFile_bothWritesPersist() = runTest {
         val file = JvmKSafeTest.generateUniqueFileName()
         val a = KSafe(fileName = file, testEngine = FakeEncryption())

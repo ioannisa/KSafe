@@ -14,12 +14,12 @@ class JvmStrictOptimisticWindowTest {
     private class PinEncryptEngine : KSafeEncryption {
         val encryptEntered = CountDownLatch(1)
         val release = CountDownLatch(1)
-        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray {
+        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?,    aad: ByteArray?,): ByteArray {
             encryptEntered.countDown()
             release.await()
             return data
         }
-        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray = data
+        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray = data
         override fun deleteKey(identifier: String) {}
     }
 

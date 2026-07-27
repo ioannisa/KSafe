@@ -2,13 +2,15 @@
 
 | Feature | KSafe | EncryptedSharedPrefs | KVault | Multiplatform Settings | SQLCipher |
 |---------|-------|---------------------|--------|------------------------|-----------|
-| **KMP Support** | ✅ Android, iOS, JVM, WASM, JS | ❌ Android only | ✅ Android, iOS | ✅ Multi-platform | ⚠️ Limited |
+| **KMP Support** | ✅ Android, iOS, macOS, JVM Desktop, WASM, JS | ❌ Android only | ✅ Android, iOS | ✅ Multi-platform | ⚠️ Limited |
 | **Hardware-backed Keys** | ✅ Keystore/Keychain | ✅ Keystore | ✅ Keystore/Keychain | ❌ No encryption | ❌ Software |
 | **Zero Boilerplate** | ✅ `by ksafe(0)` | ❌ Verbose API | ⚠️ Moderate | ⚠️ Moderate | ❌ SQL required |
-| **Biometric Helper** | ✅ Optional `:ksafe-biometrics` module | ❌ Manual | ❌ Manual | ❌ Manual | ❌ Manual |
+| **Key Rotation** | ✅ `rotateKeys()` + `MaxAge` policy + authenticated v3 envelope | ❌ Manual | ❌ Manual | ❌ Manual | ⚠️ Manual re-key |
+| **Biometric Helper** | ✅ Real OS prompts on Android, iOS/macOS, JVM Desktop (Touch ID / Windows Hello) & web (WebAuthn) via `:ksafe-biometrics` | ❌ Manual | ❌ Manual | ❌ Manual | ❌ Manual |
 | **Compose State** | ✅ `mutableStateOf` | ❌ Manual | ❌ Manual | ❌ Manual | ❌ Manual |
 | **Type Safety** | ✅ Reified generics | ⚠️ Limited | ✅ Good | ✅ Good | ❌ SQL strings |
 | **Auth Caching** | ✅ Scoped sessions | ❌ No | ❌ No | ❌ No | ❌ No |
+| **Operational Preflight** | ✅ `isEncryptionOperational` — will an encrypted write actually succeed? | ❌ No | ❌ No | ❌ No | ❌ No |
 
 **When to choose KSafe:**
 - You want one single dependency that handles both blazing-fast plain-text preferences AND hardware-isolated secrets
@@ -16,9 +18,11 @@
 - You want property delegation (`by ksafe(x)`) for minimal boilerplate
 - You need integrated biometric authentication with smart caching
 - You're using Jetpack Compose and want reactive encrypted state
-- Performance is critical — KSafe encrypted reads are **faster than KVault even decrypting on every read (~2.6×)** and ~28× faster with cached memory, and encrypted writes are **~383× faster than KVault** (see [BENCHMARKS.md](BENCHMARKS.md) for the numbers)
+- You need periodic key rotation for compliance hygiene — `rotateKeys()` plus a `MaxAge` policy re-encrypts the whole store under a fresh key generation in the background, without ever blocking startup or reads
+- You want tamper-evident storage — once rotated, encrypted entries carry an authenticated envelope so they can't be copied, swapped, or relocated between keys; tampering that moves, swaps, or re-tiers an *encrypted* entry breaks the GCM tag, so the read fails closed to the caller's default instead of decrypting in the wrong context (rewriting an entry's metadata to plaintext instead reclassifies it as plaintext, so the read returns the stored bytes verbatim — undecipherable ciphertext, never the underlying secret)
+- Performance is critical — KSafe encrypted reads and writes are dramatically faster than KVault (see [BENCHMARKS.md](BENCHMARKS.md); figures measured on the 2.1.2 run and current for 3.0.0)
 
-**Browser support, specifically:** KSafe ships **two independent web artifacts** — a Kotlin/WASM build (requires WasmGC; Chrome 119+ / Firefox 120+ / Safari 18+) and a Kotlin/JS (IR) build for older browsers and pre-existing JS toolchains. Both use the same `localStorage` layout and AES-256-GCM via WebCrypto, so a project can switch between targets without losing data. Web is the only target where memory policy is forced to `PLAIN_TEXT` internally (WebCrypto is async-only, so the synchronous `getDirect` path can't decrypt on demand) — call `awaitCacheReady()` once at startup before the first encrypted read.
+**Browser support, specifically:** KSafe ships two independent web artifacts — a Kotlin/WASM build (WasmGC) and a Kotlin/JS build for older browsers — sharing one `localStorage` layout and AES-256-GCM via WebCrypto, so you can switch targets without losing data; call `awaitCacheReady()` once at startup before the first encrypted read. See [SETUP.md](SETUP.md) and [ARCHITECTURE.md](ARCHITECTURE.md) for details.
 
 **When to consider alternatives:**
 - You need complex queries → Consider SQLCipher or Room with encryption

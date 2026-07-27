@@ -10,7 +10,9 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.Serializable
 import kotlin.test.AfterTest
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -32,6 +34,37 @@ abstract class KSafeTest {
         tracked.clear()
     }
 
+    @Test
+    fun getOrCreateSecret_safeKeyFirst_specialCharSiblingDoesNotShareSecret() = runTest {
+        val ksafe = createKSafe()
+        // Safe key created FIRST owns "ksafe_secret_main_db"; the special-char sibling's legacy probe
+        // collapses to that SAME slot and must not adopt the safe key's live secret.
+        val safe = ksafe.getOrCreateSecret("main_db")
+        val special = ksafe.getOrCreateSecret("main.db")
+        assertFalse(
+            safe.contentEquals(special),
+            "a special-char key must not adopt a pre-existing safe sibling's secret from the collapsed slot",
+        )
+        assertContentEquals(safe, ksafe.getOrCreateSecret("main_db"))
+        assertContentEquals(special, ksafe.getOrCreateSecret("main.db"))
+    }
+
+    @Test
+    fun getOrCreateSecret_ownerMarkerWithoutSecret_bothSiblingsMintDistinctSecrets() = runTest {
+        val ksafe = createKSafe()
+        // A crash can persist a safe key's owner marker before its secret; from that state the
+        // special-char sibling must neither fail nor share — each key mints its own fresh secret.
+        ksafe.put("ksafe_secretowner_main_db", "1", KSafeWriteMode.Plain)
+        val special = ksafe.getOrCreateSecret("main.db")
+        val safe = ksafe.getOrCreateSecret("main_db")
+        assertFalse(
+            special.contentEquals(safe),
+            "a stale owner marker must not make colliding siblings share one secret",
+        )
+        assertContentEquals(special, ksafe.getOrCreateSecret("main.db"))
+        assertContentEquals(safe, ksafe.getOrCreateSecret("main_db"))
+    }
+
     // Serializers with a PRIMITIVE descriptor but non-primitive runtime values (Duration,
     // Uuid, datetime) are JSON-encoded on the plain path; reads must JSON-decode them,
     // else the caller's reified cast fails.
@@ -50,31 +83,23 @@ abstract class KSafeTest {
             Tag(decoder.decodeString())
     }
 
+    // One test for both modes: this class sits at the Kotlin/JS registration limit (note below),
+    // so the marker-recovery case above pays for its slot here.
     @Test
-    fun testDuration_roundTrips_inPlainMode() = runTest {
+    fun testDuration_roundTrips_inPlainAndEncryptedModes() = runTest {
         val ksafe = createKSafe()
         ksafe.put("dur_plain", 5.seconds, KSafeWriteMode.Plain)
         assertEquals(5.seconds, ksafe.get("dur_plain", kotlin.time.Duration.ZERO))
         assertEquals(5.seconds, ksafe.getDirect("dur_plain", kotlin.time.Duration.ZERO))
-    }
 
-    @Test
-    fun testDuration_roundTrips_encrypted() = runTest {
-        val ksafe = createKSafe()
         ksafe.put("dur_enc", 7.seconds)
         assertEquals(7.seconds, ksafe.get("dur_enc", kotlin.time.Duration.ZERO))
     }
 
-    @Test
-    fun testPlainString_equalToInternalNullMarker_roundTrips_notNull() = runTest {
-        val ksafe = createKSafe()
-        // A user value that is byte-for-byte the internal "stored null" marker must come back
-        // as the literal string, not as null (M8 — plaintext null-sentinel collision).
-        val collision = "__KSAFE_NULL_VALUE__"
-        ksafe.put("collision", collision, KSafeWriteMode.Plain)
-        assertEquals(collision, ksafe.get("collision", "fallback"))
-        assertEquals(collision, ksafe.getDirect("collision", "fallback"))
-    }
+    // NOTE: this class is AT the Kotlin/JS test-registration size limit — adding a @Test here
+    // makes Kotlin/JS silently drop the last one (verifyWebTestParity catches it as js<wasmJs).
+    // Add new shared cases to a smaller focused class instead (see KSafeNullableDefaultTest),
+    // or to a platform subclass when platform coverage suffices.
 
     @Test
     fun testCustomPrimitiveDescriptorSerializer_roundTrips_inPlainMode() = runTest {

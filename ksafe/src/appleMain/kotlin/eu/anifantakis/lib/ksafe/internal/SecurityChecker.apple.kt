@@ -4,18 +4,32 @@ import kotlin.experimental.ExperimentalNativeApi
 import kotlin.native.OsFamily
 import kotlin.native.Platform
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.IntVar
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.allocArray
+import kotlinx.cinterop.convert
+import kotlinx.cinterop.get
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.ptr
+import kotlinx.cinterop.set
+import kotlinx.cinterop.sizeOf
+import kotlinx.cinterop.value
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSProcessInfo
 import platform.Foundation.NSSelectorFromString
 import platform.Foundation.iOSAppOnMac
+import platform.darwin.CTL_KERN
+import platform.darwin.KERN_PROC
+import platform.darwin.KERN_PROC_PID
+import platform.darwin.P_TRACED
+import platform.darwin.kinfo_proc
+import platform.darwin.sysctl
+import platform.posix.getpid
+import platform.posix.size_tVar
 
 /**
- * Apple-platform security checker, shared by iOS and macOS.
- *
- * The jailbreak path probes only make sense on iOS — every Mac has `/bin/sh`, `/usr/bin/ssh`,
- * etc. — so [isDeviceRooted] short-circuits to `false` on macOS (and for an iOS binary on an
- * Apple Silicon Mac, which sees the same filesystem; see [isIosAppOnMac]). Callers wanting
- * stronger macOS guarantees can plug in their own [eu.anifantakis.lib.ksafe.KSafeSecurityPolicy].
+ * Apple-platform security checker, shared by iOS and macOS. Jailbreak probes match on every Mac,
+ * so [isDeviceRooted] short-circuits to `false` on macOS and for an iOS binary on Apple Silicon.
  */
 internal actual object SecurityChecker {
 
@@ -23,12 +37,9 @@ internal actual object SecurityChecker {
     private val isMacOs: Boolean = Platform.osFamily == OsFamily.MACOSX
 
     /**
-     * True when this iOS binary runs on an Apple Silicon Mac ("iOS app on Mac"). There the
-     * process sees the real macOS filesystem where the jailbreak probes trivially match, yet
-     * [isMacOs] is `false` (`Platform.osFamily` is the compile-time iosArm64 slice) — without
-     * this a clean Mac would classify as jailbroken and `KSafeSecurityPolicy.Strict` would
-     * throw at construction. The selector guard keeps pre-iOS-14 runtimes safe and the catch
-     * keeps the probe from ever crashing `KSafe(...)`.
+     * True when this iOS binary runs on an Apple Silicon Mac, where jailbreak probes match the
+     * real macOS filesystem yet [isMacOs] is `false` (compile-time iosArm64 slice). The selector
+     * guard keeps pre-iOS-14 runtimes safe.
      */
     @OptIn(ExperimentalForeignApi::class)
     private val isIosAppOnMac: Boolean = try {
@@ -68,36 +79,60 @@ internal actual object SecurityChecker {
         "/var/lib/apt",
         "/var/lib/cydia",
         "/bin/sh",
-        "/usr/bin/ssh"
+        "/usr/bin/ssh",
+        // Rootless-era jailbreaks (palera1n, Dopamine / Procursus) keep the system partition
+        // read-only and install under /var/jb, so the classic probes above never fire on them.
+        "/var/jb",
+        "/var/jb/Applications/Sileo.app",
+        "/var/jb/usr/bin/apt",
+        "/var/jb/Library/MobileSubstrate/MobileSubstrate.dylib",
+        "/var/binpack"
     )
 
-    /** True if the device is jailbroken; always `false` on macOS (the iOS heuristics fire on
-     *  every Mac and would otherwise block the whole library). */
+    /** True if the device is jailbroken; always `false` on macOS, where the iOS probes fire on
+     *  every Mac and would otherwise block the whole library. */
     actual fun isDeviceRooted(): Boolean {
         if (isMacOs) return false
-        // iOS slice on an Apple Silicon Mac: same filesystem, same false positives.
         if (isIosAppOnMac) return false
-        // Simulator has different paths; don't check.
         if (isEmulator()) return false
 
         return checkJailbreakPaths() || checkWritableSystemPaths()
     }
 
-    /** True if a debugger is attached (env-var heuristic; full sysctl detection needs C interop). */
+    /** True if a debugger is attached: kernel `P_TRACED` flag via `sysctl`, OR-ed with env-var
+     *  heuristics — the env vars also catch dylib injection, which `P_TRACED` does not. */
     actual fun isDebuggerAttached(): Boolean = try {
         val env = NSProcessInfo.processInfo.environment
-        env["_"] as? String == "lldb" ||
+        isProcessTraced() ||
+                env["_"] as? String == "lldb" ||
                 env.containsKey("DYLD_INSERT_LIBRARIES")
     } catch (_: Throwable) {
-        // Fail-open: a security probe must never crash KSafe(...) construction; "unknown" →
-        // not-attached is the safe-for-availability answer.
+        // Fail-open: a security probe must never crash KSafe(...) construction.
         false
     }
 
-    /**
-     * True if this looks like a debug build. iOS has no FLAG_DEBUGGABLE equivalent, so this
-     * combines heuristics: memory-debug env vars, Xcode debug env vars, simulator, debugger.
-     */
+    /** Kernel-level trace check: `kinfo_proc.kp_proc.p_flag & P_TRACED` for this pid. Catches a
+     *  debugger attached to an already-running process, which leaves no env marker. Fail-open. */
+    @OptIn(ExperimentalForeignApi::class)
+    private fun isProcessTraced(): Boolean = try {
+        memScoped {
+            val mib = allocArray<IntVar>(4)
+            mib[0] = CTL_KERN
+            mib[1] = KERN_PROC
+            mib[2] = KERN_PROC_PID
+            mib[3] = getpid()
+            val info = alloc<kinfo_proc>()
+            val size = alloc<size_tVar>()
+            size.value = sizeOf<kinfo_proc>().convert()
+            sysctl(mib, 4u, info.ptr, size.ptr, null, 0u) == 0 &&
+                    (info.kp_proc.p_flag and P_TRACED) != 0
+        }
+    } catch (_: Throwable) {
+        false
+    }
+
+    /** True if this looks like a debug build. iOS has no FLAG_DEBUGGABLE equivalent, so this
+     *  combines env-var, simulator, and debugger heuristics. */
     actual fun isDebugBuild(): Boolean {
         val env = NSProcessInfo.processInfo.environment
 
@@ -118,7 +153,6 @@ internal actual object SecurityChecker {
         return hasMemoryDebugging || hasXcodeDebugVars || isSimulator || hasDebugger
     }
 
-    /** True if running on the iOS Simulator. */
     actual fun isEmulator(): Boolean {
         val env = NSProcessInfo.processInfo.environment
         return env["SIMULATOR_MODEL_IDENTIFIER"] != null ||

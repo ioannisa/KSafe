@@ -29,6 +29,7 @@ object InstantSerializer : KSerializer<Instant> {
 ```kotlin
 val customJson = Json {
     ignoreUnknownKeys = true
+    allowSpecialFloatingPointValues = true   // keep the KSafe defaults (see note below)
     serializersModule = SerializersModule {
         contextual(UUIDSerializer)
         contextual(InstantSerializer)
@@ -36,6 +37,8 @@ val customJson = Json {
     }
 }
 ```
+
+> **Important:** A `Json` you pass **fully replaces** `KSafeDefaults.json` — it is not merged with it. Carry over **both** default flags: `ignoreUnknownKeys = true` (forward/backward compatibility) and `allowSpecialFloatingPointValues = true` (so `Double`/`Float` `NaN` and `±Infinity` round-trip through the default Encrypted write mode). Dropping the latter makes an encrypted `put()` of a special float throw, even though the plain path stores it fine.
 
 **3. Pass it via KSafeConfig — one setup, used everywhere**
 
@@ -71,6 +74,8 @@ val profileFlow: Flow<UserProfile> = ksafe.getFlow("profile", defaultProfile)
 var saved: UserProfile by ksafe(defaultProfile, "profile", KSafeWriteMode.Plain)
 ```
 
-> **Note:** If you don't need custom serializers, you don't need to configure anything — the default `Json { ignoreUnknownKeys = true }` is used automatically via `KSafeDefaults.json`.
+> **Note:** If you don't need custom serializers, you don't need to configure anything — the default `Json { ignoreUnknownKeys = true; allowSpecialFloatingPointValues = true }` is used automatically via `KSafeDefaults.json`.
+
+> **Scope:** The `Json` instance controls only how your **payload** is turned into bytes. It has no effect on KSafe's encryption — the key material, protection tier, and the authenticated (v3) envelope introduced by key rotation are handled entirely below serialization. Swapping `Json` never weakens or changes how values are encrypted or which key decrypts them.
 
 > **Warning:** Changing the `Json` configuration for an existing `fileName` namespace may make previously stored non-primitive values unreadable. Primitives (`String`, `Int`, `Boolean`, etc.) are unaffected.

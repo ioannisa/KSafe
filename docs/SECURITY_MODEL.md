@@ -107,62 +107,11 @@ fun getViolationDescription(violation: SecurityViolation): String {
 }
 ```
 
-### Collecting Violations for UI Display
-
-Since KSafe initializes before ViewModels, use a holder to bridge violations to your UI:
-
-```kotlin
-// 1. Create a holder to collect violations during initialization
-object SecurityViolationsHolder {
-    private val _violations = mutableListOf<SecurityViolation>()
-    val violations: List<SecurityViolation> get() = _violations.toList()
-
-    fun addViolation(violation: SecurityViolation) {
-        if (violation !in _violations) {
-            _violations.add(violation)
-        }
-    }
-}
-
-// 2. Configure KSafe to populate the holder
-val ksafe = KSafe(
-    context = context,
-    securityPolicy = KSafeSecurityPolicy.Strict.copy(
-        onViolation = { violation ->
-            SecurityViolationsHolder.addViolation(violation)
-        }
-    )
-)
-
-// 3. Read from the holder in your ViewModel
-class SecurityViewModel : ViewModel() {
-    val violations = mutableStateListOf<UiSecurityViolation>()
-
-    init {
-        SecurityViolationsHolder.violations.forEach { violation ->
-            violations.add(UiSecurityViolation(violation))
-        }
-    }
-}
-```
-
-### Compose Stability for SecurityViolation
-
-When using `SecurityViolation` in Jetpack Compose, the Compose compiler treats it as "unstable" because it resides in the core `ksafe` module. The `ksafe-compose` module provides `UiSecurityViolation`—a wrapper marked with `@Immutable`:
-
-```kotlin
-@Immutable
-data class UiSecurityViolation(
-    val violation: SecurityViolation
-)
-```
-
-| Type | Compose Stability |
-|------|------------------|
-| `ImmutableList<SecurityViolation>` | Unstable (causes recomposition) |
-| `ImmutableList<UiSecurityViolation>` | Stable (enables skipping) |
-
-The [KSafeDemo app](https://github.com/ioannisa/KSafeDemo) makes use of `UiSecurityViolation`—visit the demo application's source to see it in action.
+> **Surfacing violations in your UI.** Because KSafe initializes before your
+> ViewModels, bridge violations through a holder and (in Compose) wrap them in
+> the `@Immutable` `UiSecurityViolation` from `ksafe-compose` so lists stay
+> skippable. The full holder + `UiSecurityViolation` recipe lives in
+> [USAGE.md](USAGE.md).
 
 ### Root Detection Methods (Android)
 
@@ -176,10 +125,11 @@ The [KSafeDemo app](https://github.com/ioannisa/KSafeDemo) makes use of `UiSecur
 ### Jailbreak Detection Methods (iOS)
 
 - Cydia, Sileo, and other jailbreak app paths
+- Rootless-era jailbreak paths (`/var/jb` — palera1n, Dopamine / Procursus)
 - System write access test (fails on non-jailbroken devices)
 - Common jailbreak tool paths (`/bin/bash`, `/usr/sbin/sshd`, etc.)
 
-> **Limitation:** Sophisticated root-hiding tools (Magisk DenyList, Shamiko, Zygisk) can bypass most client-side detection methods.
+> **Limitation:** All root, jailbreak, and debugger checks are best-effort, fail-open heuristics — sophisticated hiding tools (Magisk DenyList, Shamiko, Zygisk) can bypass most client-side detection methods. On Android 11+ the root-management-app probe depends on package visibility; the library ships the required `<queries>` declarations in its manifest (merged into the consuming app), and other signals (build type, system properties, filesystem paths) do not need them. For high-assurance integrity decisions, pair these heuristics with server-verified attestation: Play Integrity on Android, App Attest / DeviceCheck on Apple platforms.
 
 ***
 
@@ -199,18 +149,22 @@ KSafe provides enterprise-grade encrypted persistence using DataStore Preference
 | **Kotlin/WASM (Browser)** | AES-256-GCM via WebCrypto | Non-extractable `CryptoKey` in **IndexedDB**; values in `localStorage` | Raw key bytes never exposed to JS. Scoped per origin, ~5-10 MB limit. Requires WasmGC (Chrome 119+ / Firefox 120+ / Safari 18+) |
 | **Kotlin/JS (Browser)** | AES-256-GCM via WebCrypto | Non-extractable `CryptoKey` in **IndexedDB**; values in `localStorage` | Raw key bytes never exposed to JS. Scoped per origin. Same origin/IndexedDB as wasmJs — data readable by either target; legacy ≤2.0 localStorage keys migrate on first access |
 
+> **Cipher note:** the AES key size defaults to 256-bit and is configurable to 128-bit via `KSafeConfig.keySize` on Android/Apple/JVM; the Web target is fixed at AES-256-GCM.
+
 ### Encryption Flow
 
 1. **Serialize value → plaintext bytes** using kotlinx.serialization
-2. **Load (or generate) a random 256-bit AES key** from the platform key store — Android Keystore / Apple Keychain / JVM OS secret store (DPAPI·Keychain·libsecret) / non-extractable WebCrypto `CryptoKey` in IndexedDB (unique per preference key)
+2. **Load (or generate) a random AES key** (256-bit by default, 128-bit if configured via `KSafeConfig.keySize` on Android/Apple/JVM; Web is always 256-bit) from the platform key store — Android Keystore / Apple Keychain / JVM OS secret store (DPAPI·Keychain·libsecret) / non-extractable WebCrypto `CryptoKey` in IndexedDB (a shared per-store master key since 2.0; the WebCrypto `CryptoKey` stays non-extractable)
 3. **Encrypt with AES-GCM** (nonce + auth-tag included)
 4. **Persist value** in DataStore/localStorage under `__ksafe_value_<key>`
    (encrypted writes store Base64 ciphertext, plaintext writes keep native type where supported)
 5. **Persist metadata** under `__ksafe_meta_<key>__` as compact JSON
-   (for example: `{"v":2,"p":"DEFAULT"}` or `{"v":2,"p":"DEFAULT","u":"unlocked"}` — `v:2` since 2.0; entries from pre-2.0 builds still read `v:1`)
-6. **Keys managed by platform** - never stored in DataStore
+   (for example: `{"v":2,"p":"DEFAULT"}` or `{"v":2,"p":"DEFAULT","u":"unlocked"}` — `v:2` since 2.0 and for an un-rotated 3.0.0 store; entries from pre-2.0 builds still read `v:1`. After the first [`rotateKeys()`](KEY_ROTATION.md) the entry re-encrypts to `v:3` and gains a generation marker `"g":<n>`)
+6. **Key material managed by the platform key store** — no raw key is ever written to DataStore; on Android's relaxed `DEFAULT` tier a KEK-wrapped DEK (useless without the non-exportable Keystore KEK) is persisted alongside the values
 
 **What is GCM?** GCM (Galois/Counter Mode) is an authenticated encryption mode that provides both confidentiality and integrity. The authentication tag detects any tampering—if someone modifies even a single bit of the ciphertext, decryption will fail.
+
+**Envelope versions (v1/v2/v3).** `v1` is the pre-2.x legacy shape (per-entry alias, bare-literal metadata). `v2` is the 2.0–2.2.x format and the shape an un-rotated 3.0.0 generation-1 store still writes byte-for-byte, so upgrading to 3.0.0 is a drop-in. The first [`rotateKeys()`](KEY_ROTATION.md) bumps the store to generation ≥ 2, and from then on entries are written as the **authenticated `v3` envelope**: the same routing as v2 plus AES-GCM *associated data* (AAD) that binds each ciphertext to the store identity, user key, protection tier, unlock policy, and key generation. Once rotated, an encrypted entry can no longer be copied, swapped, or relocated between keys — such tampering breaks the GCM tag, so the read fails closed to the caller's default rather than decrypting in the wrong context. (Rewriting an entry's metadata to plaintext, `p:"NONE"`, instead reclassifies it as plaintext: the read then returns the stored bytes verbatim — undecipherable ciphertext, never the underlying secret.) See [KEY_ROTATION.md](KEY_ROTATION.md) and [ARCHITECTURE.md](ARCHITECTURE.md) for the envelope/AAD detail.
 
 ### Security Boundaries & Threat Model
 
@@ -219,7 +173,8 @@ KSafe provides enterprise-grade encrypted persistence using DataStore Preference
 - ✅ Data extraction from unrooted device backups
 - ✅ App data access by other apps (Android/iOS: OS sandboxing + encryption). **JVM/Desktop caveat:** the OS secret store is per-OS-user and shared across that user's processes — set a unique `KSafeConfig.appNamespace` so a different desktop app run by the same user can't collide with or overwrite this app's keys (Web is isolated per origin by the browser).
 - ✅ Reinstall data leakage (automatic cleanup)
-- ✅ Tampering detection (GCM authentication tag)
+- ✅ Tampering detection (GCM authentication tag). **Once a store has been rotated (`v3` envelope):** the tag also authenticates the routing metadata, so an entry can't be relocated, swapped, or re-tiered between keys — such tampering breaks the GCM tag and fails closed to the default rather than decrypting (rewriting the metadata to plaintext instead reclassifies the entry, returning the stored bytes verbatim as undecipherable ciphertext, never the underlying secret)
+- ✅ Key ageing / compromise window (opt-in [key rotation](KEY_ROTATION.md) re-encrypts every entry under a fresh key generation)
 - ✅ Rooted/jailbroken devices (detection with configurable WARN/BLOCK)
 - ✅ Debugger attachment (detection with configurable WARN/BLOCK)
 - ✅ Emulator/simulator usage (detection with configurable WARN/BLOCK)
@@ -234,11 +189,32 @@ KSafe provides enterprise-grade encrypted persistence using DataStore Preference
 - Use `KSafeSecurityPolicy.Strict` for high-security apps (Banking, Medical, Enterprise)
 - Use `KSafeMemoryPolicy.ENCRYPTED` for highly sensitive data (tokens, passwords) — the default `LAZY_PLAIN_TEXT` keeps plaintext in RAM permanently for any key that's been read at least once
 - Use `KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE` for encrypted data accessed frequently during UI rendering (Compose recomposition, SwiftUI re-render) where you want plaintext evicted after a window
-- Combine with biometric verification for critical operations
+- Gate critical operations behind a biometric prompt. `ksafe-biometrics` is a standalone, process-wide gate with **real OS prompts on every target** — Android (BiometricPrompt), iOS/macOS (LocalAuthentication), JVM Desktop (macOS Touch ID / Windows Hello), and web (WebAuthn platform authenticators). See [BIOMETRICS.md](BIOMETRICS.md)
+- For long-lived secrets, enable [key rotation](KEY_ROTATION.md) so a key that ages or is suspected compromised is retired without data loss
 - Never store master secrets client-side; prefer server-derived tokens
 - Consider certificate pinning for API communications
 
-**A note on hardware security models:** By default (`DEFAULT` protection), Android generates the per-datastore master key in the TEE (Trusted Execution Environment) as a **non-exportable** key — it never leaves the chip. As of **2.1.2**, that master key (the KEK) wraps a data-encryption key (DEK) that KSafe unwraps **once** into app memory and uses for userspace AES-GCM. So the *durable* key custody stays hardware-backed (disk theft and backups yield only ciphertext and a TEE-wrapped DEK), while the working DEK lives in process memory after first use — the same envelope model as EncryptedSharedPreferences/Tink and KSafe's own Apple and JVM engines. (Before 2.1.2 the master key stayed in the TEE for *every* operation, so no key entered app memory — at the cost of a hardware round-trip per read, ~8 ms on a modern device; see [BENCHMARKS.md](BENCHMARKS.md).) If you need the working key to never enter app memory, use `HARDWARE_ISOLATED` (below) or `requireUnlockedDevice = true`, both of which keep the per-operation on-chip path. With `mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED)`, KSafe targets a physically separate security chip (StrongBox on Android, Secure Enclave on iOS) with automatic fallback to default hardware. On iOS, `HARDWARE_ISOLATED` uses **envelope encryption**: an EC P-256 key pair in the Secure Enclave wraps/unwraps the AES symmetric key via ECIES, so the AES key material is hardware-protected even though AES-GCM itself runs in CryptoKit. Without hardware isolation, AES keys are stored as Keychain items — still encrypted by the OS and protected by the device passcode.
+### Key Rotation & Key Lifetime
+
+By default KSafe never rotates keys (`KSafeKeyRotationPolicy.Never`) — the safest default, since rotation only pays off against a *specific* threat (a key that has aged out of a compliance window, or that you suspect is compromised) and every store stays byte-compatible with pre-3.0.0 until you opt in. When you want it:
+
+```kotlin
+// Manual, whole-store rotation
+val result: KSafeRotationResult = ksafe.rotateKeys()
+//   result.rotated / .skipped / .failed / .keyGeneration
+
+// Or automatic: check age once per startup, in the background, never blocking startup or reads
+val ksafe = KSafe(
+    context = context,
+    config = KSafeConfig(
+        keyRotationPolicy = KSafeKeyRotationPolicy.MaxAge(90.days)
+    )
+)
+```
+
+`rotateKeys()` is **whole-store** — there is no per-key rotation. It bumps a store-wide key *generation* counter, then re-encrypts each entry under a fresh generation via a per-entry compare-and-set serialized on the write consumer. Old-generation keys are retained until nothing references them, then swept. The process is crash-safe and resumable **without a journal**: a mixed-generation store stays fully readable, concurrent writes always win, and stored **values are sacred** — a `getOrCreateSecret` secret keeps its exact value; only the wrapping key changes. Strict (`requireUnlockedDevice`) entries rotate only while the device is unlocked (otherwise counted `skipped`), and a transient key-store outage counts an entry `skipped`, not `failed`. Full model, guarantees, and the "what *deleted* means" cryptographic-erasure discussion: **[KEY_ROTATION.md](KEY_ROTATION.md)**.
+
+**A note on hardware security models:** By default (`DEFAULT` protection), Android generates the per-datastore master key in the TEE (Trusted Execution Environment) as a **non-exportable** key — it never leaves the chip. That master key (the KEK) wraps a data-encryption key (DEK) that KSafe unwraps **once** into app memory and uses for userspace AES-GCM, so the *durable* key custody stays hardware-backed (disk theft and backups yield only ciphertext and a TEE-wrapped DEK) while the working DEK lives in process memory after first use — the same envelope model as EncryptedSharedPreferences/Tink and KSafe's own Apple and JVM engines. If you need the working key to never enter app memory, use `HARDWARE_ISOLATED` (below) or `requireUnlockedDevice = true`. This holds fully only on Android (StrongBox/TEE), where the per-operation AES runs on-chip and the key bytes never enter RAM; on iOS/macOS the Secure Enclave is EC-only, so `HARDWARE_ISOLATED` keeps the EC *wrapping* key on-chip while the AES DEK is still unwrapped into RAM for CryptoKit. With `mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED)`, KSafe targets a physically separate security chip (StrongBox on Android, Secure Enclave on iOS) with automatic fallback to default hardware. On iOS, `HARDWARE_ISOLATED` uses **envelope encryption**: an EC P-256 key pair in the Secure Enclave wraps/unwraps the AES symmetric key via ECIES, so the AES key material is hardware-protected even though AES-GCM itself runs in CryptoKit. Without hardware isolation, AES keys are stored as Keychain items — still encrypted by the OS and protected by the device passcode. The full per-platform KEK/DEK envelope breakdown lives in **[ARCHITECTURE.md](ARCHITECTURE.md)**; latency figures (the TEE round-trip cost of the pre-DEK design, etc.) are in **[BENCHMARKS.md](BENCHMARKS.md)**.
 
 **Hardware isolation (per-property):**
 ```kotlin
@@ -257,8 +233,10 @@ Hardware isolation provides the highest security level — keys live on a dedica
 **Migrating existing keys to hardware isolation:** Using `HARDWARE_ISOLATED` only affects *new* key generation. Existing keys continue working from wherever they were originally generated. To migrate existing data to hardware-isolated keys, delete the KSafe data (or the specific keys) and reinitialize.
 
 **Per-key metadata (single entry):** Each key stores one metadata entry (`__ksafe_meta_{key}__`) that includes:
+- `v` → envelope version of **that entry**, not of the store: `2` for an entry written at generation 1, `3` for one written at generation ≥ 2. A rotated store is expected to hold a **mix** — an entry skipped or failed by a rotation keeps decrypting under its recorded generation until a later pass rewrites it. See [ENCRYPTION_PROOF.md](ENCRYPTION_PROOF.md#what-lands-on-disk).
 - `p` → protection-tier *literal string* (`"NONE"`, `"DEFAULT"`, `"HARDWARE_ISOLATED"`). The `KSafeProtection` enum itself only has `DEFAULT` and `HARDWARE_ISOLATED`; the literal `"NONE"` is what's persisted for plaintext entries (it surfaces as `KSafeProtection? = null` through `getKeyInfo().protection`).
 - optional `u` → unlock policy (`"unlocked"` when `requireUnlockedDevice=true`)
+- optional `g` → key generation, written only once the entry has been rotated to generation ≥ 2 (absent means generation 1)
 
 This metadata is used for read auto-detection and `getKeyInfo()`.
 Legacy metadata (`__ksafe_prot_{key}__`) is still read for backward compatibility and cleaned on next write/delete.
@@ -274,10 +252,14 @@ val ksafe = KSafe(context)
 ksafe.deviceKeyStorages  // e.g. {HARDWARE_BACKED, HARDWARE_ISOLATED}
 ksafe.deviceKeyStorages.max()  // HARDWARE_ISOLATED (highest available)
 
-// Per-key: what protection was used and where is the key stored?
+// Per-key: what protection was used, where the key lives, and which generation decrypts it
 val info = ksafe.getKeyInfo("auth_token")
-// info?.protection  → KSafeProtection.DEFAULT        (encrypted tier, null if plaintext)
-// info?.storage     → KSafeKeyStorage.HARDWARE_BACKED (where the key lives)
+// info?.protection    → KSafeProtection.DEFAULT          (encrypted tier, null if plaintext)
+// info?.level         → KSafeProtectionLevel.HARDWARE_BACKED (where the key lives)
+// info?.keyGeneration → 1 until the entry has been rotated
+
+// Instance-level: will an encrypted write actually succeed right now?
+ksafe.protectionInfo.isEncryptionOperational
 ```
 
 `getKeyInfo` returns a `KSafeKeyInfo` data class:
@@ -285,81 +267,31 @@ val info = ksafe.getKeyInfo("auth_token")
 ```kotlin
 data class KSafeKeyInfo(
     val protection: KSafeProtection?,    // null, DEFAULT, or HARDWARE_ISOLATED — what the write asked for
-    val storage: KSafeKeyStorage,        // legacy 3-value: SOFTWARE, HARDWARE_BACKED, HARDWARE_ISOLATED  (DEPRECATED, use level)
+    val storage: KSafeKeyStorage,        // legacy 3-value scale (DEPRECATED, use level)
     val level: KSafeProtectionLevel,     // 4-value universal scale: SOFTWARE < SANDBOX_PROTECTED < HARDWARE_BACKED < HARDWARE_ISOLATED
+    val keyGeneration: Int = 1,          // 1 for a never-rotated entry, higher after rotateKeys(); always 1 for plaintext
 )
 ```
 
-> **Prefer `level` over `storage`.** `level` uses the same universally-ordered
-> [`KSafeProtectionLevel`](PROTECTION_INFO.md) scale as
-> [`KSafe.protectionInfo`](PROTECTION_INFO.md), and additionally distinguishes
-> JVM OS-vault keys (`SANDBOX_PROTECTED`) from the plaintext-in-file fallback
-> (`SOFTWARE`), plus Web browser-origin keys (`SANDBOX_PROTECTED`) from raw
-> software (`SOFTWARE`). `storage` is kept for KSafe ≤ 2.0 compatibility and
-> will be removed in a future major version.
+> **Prefer `level` over `storage`.** `level` distinguishes JVM OS-vault keys and
+> Web browser-origin keys (`SANDBOX_PROTECTED`) from a raw software fallback
+> (`SOFTWARE`); `storage` collapses both to `SOFTWARE` and is kept only for
+> KSafe ≤ 2.0 compatibility.
 
-The `KSafeKeyStorage` enum has three levels with natural ordinal ordering:
+Three surfaces answer three different questions, all detailed in **[PROTECTION_INFO.md](PROTECTION_INFO.md)**:
 
-| Level | Meaning | Platforms |
-|-------|---------|-----------|
-| `SOFTWARE` | No TEE/SE isolation. JVM: key in the OS secret store (DPAPI/Keychain/libsecret) with a file fallback. Web: non-extractable WebCrypto `CryptoKey` in IndexedDB | JVM, Kotlin/WASM, Kotlin/JS |
-| `HARDWARE_BACKED` | On-chip hardware (TEE / Keychain) | Android, iOS |
-| `HARDWARE_ISOLATED` | Dedicated security chip (StrongBox / Secure Enclave) | Android (if available), iOS (real devices) |
+- **`ksafe.deviceKeyStorages`** — what the *device* can do (e.g. `{HARDWARE_BACKED, HARDWARE_ISOLATED}` on a StrongBox/SE device; `{SOFTWARE}` on JVM and web).
+- **`ksafe.getKeyInfo(key)`** — the tier, storage `level`, and `keyGeneration` of a *specific* key (returns `null` if the key doesn't exist).
+- **`ksafe.protectionInfo`** — what *this instance* is running at right now, including `intendedLevel` vs `effectiveLevel` (protection *strength*) and `isEncryptionOperational` (see below).
 
-#### `deviceKeyStorages` — Device Capabilities
+#### `isEncryptionOperational` — startup preflight
 
-Query what hardware security levels the device supports:
+`protectionInfo.isEncryptionOperational` is the cross-platform "will an encrypted write actually persist?" gate, distinct from protection *strength*. It is `true` wherever encryption works — **including the weaker-but-working JVM software-vault fallback and the iOS-Simulator sandbox fallback**. It is `false` only in the two non-operational states, where every encrypted read/write throws:
 
-| Platform | `deviceKeyStorages` |
-|----------|---------------------|
-| **Android** | Always `{HARDWARE_BACKED}`. Adds `HARDWARE_ISOLATED` if `PackageManager.FEATURE_STRONGBOX_KEYSTORE` is present (API 28+). |
-| **iOS** | Always `{HARDWARE_BACKED}`. Adds `HARDWARE_ISOLATED` on real devices (not simulator). |
-| **JVM** | `{SOFTWARE}` |
-| **Kotlin/WASM** | `{SOFTWARE}` |
-| **Kotlin/JS** | `{SOFTWARE}` |
+- **`web_crypto_subtle_unavailable`** — the page is served outside a secure context, so `crypto.subtle` is absent (serve over HTTPS or a `localhost` origin to restore it).
+- **`jvm_os_vault_degraded`** — an OS vault *exists* but is unreachable at startup (locked Keychain/keyring, headless launch), so KSafe refuses to mint keys rather than overwrite the real OS key on a later healthy launch.
 
-#### `getKeyInfo(key)` — Per-Key Protection and Storage
-
-Query the protection tier and storage location of a specific key:
-
-```kotlin
-ksafe.getKeyInfo("auth_token")    // KSafeKeyInfo(DEFAULT, HARDWARE_BACKED) on Android/iOS
-ksafe.getKeyInfo("theme")         // KSafeKeyInfo(null, SOFTWARE) if unencrypted
-ksafe.getKeyInfo("nonexistent")   // null (key doesn't exist)
-```
-
-| Scenario | `protection` | `storage` (legacy) | `level` (preferred) |
-|----------|--------------|--------------------|--------------------|
-| Key not found | (returns `null`) | | |
-| Unencrypted (Plain mode) | `null` | `SOFTWARE` | `SOFTWARE` |
-| Encrypted DEFAULT, Android / Apple | `DEFAULT` | `HARDWARE_BACKED` | `HARDWARE_BACKED` |
-| Encrypted, JVM with OS vault healthy | `DEFAULT` | `SOFTWARE` | `SANDBOX_PROTECTED` |
-| Encrypted, JVM fallback / opt-out | `DEFAULT` | `SOFTWARE` | `SOFTWARE` |
-| Encrypted, Web | `DEFAULT` | `SOFTWARE` | `SANDBOX_PROTECTED` |
-| `HARDWARE_ISOLATED` with StrongBox / SE | `HARDWARE_ISOLATED` | `HARDWARE_ISOLATED` | `HARDWARE_ISOLATED` |
-| `HARDWARE_ISOLATED` demoted (no hardware) | `HARDWARE_ISOLATED` | `HARDWARE_BACKED` | `HARDWARE_BACKED` |
-
-**Use cases:**
-- Display a security badge in your UI based on device capabilities
-- Verify that a specific key is stored at the expected hardware level
-- Choose the appropriate `KSafeEncryptedProtection` level based on what the device supports
-- Log/report the security posture of the device for compliance
-
-```kotlin
-// Adaptive protection based on device capabilities
-val protection = if (KSafeKeyStorage.HARDWARE_ISOLATED in ksafe.deviceKeyStorages)
-    KSafeEncryptedProtection.HARDWARE_ISOLATED
-else
-    KSafeEncryptedProtection.DEFAULT
-
-var secret by ksafe("", mode = KSafeWriteMode.Encrypted(protection))
-
-// Verify a key's actual storage level after writing
-ksafe.putDirect("secret", "value", mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED))
-val info = ksafe.getKeyInfo("secret")
-// info?.protection == HARDWARE_ISOLATED (always matches what was requested)
-// info?.storage == HARDWARE_ISOLATED on devices with StrongBox/SE, HARDWARE_BACKED otherwise
-```
+A JVM host with *no* OS vault at all (`jvm_os_vault_unavailable`) is operational — it simply runs on the software fallback. Gate app startup on `isEncryptionOperational` when your data must be encrypted; the full note-code model lives in [PROTECTION_INFO.md](PROTECTION_INFO.md).
 
 ### Legacy Key Migration (v1.6.x → v1.7.0 canonical keys)
 
@@ -397,6 +329,7 @@ Migration is lazy and safe:
 * **Effectively device-local** — encryption keys never leave the device, so even if the DataStore file is included in an iCloud Backup, the ciphertext is undecryptable on a restored device. KSafe does not set `NSURLIsExcludedFromBackupKey` because DataStore's atomic-write strategy (write-to-temp + rename) clobbers the xattr on every flush; the security guarantee already comes from key locality. Apps that need device-portable preferences should use `UserDefaults`.
 * DataStore stored under `NSApplicationSupportDirectory` (the Apple-recommended location for invisible app data) since 2.0; pre-2.0 used `NSDocumentDirectory` and is auto-migrated on first 2.0 launch.
 * Automatic cleanup of orphaned keys on first app use after reinstall
+* **iOS Simulator fallback:** an entitlement-less Simulator can have the Keychain reject the process (`errSecMissingEntitlement` / error `-34018`); KSafe then falls back to a sandbox file store and reports `SOFTWARE` (note `apple_keychain_entitlement_missing`) with `isEncryptionOperational == true`. **Real devices are unaffected** — this never fires on device.
 
 #### JVM/Desktop
 * AES-256-GCM encryption via standard javax.crypto
@@ -413,6 +346,7 @@ Migration is lazy and safe:
 * The AES key is a **non-extractable `CryptoKey`** (`extractable = false`) whose live key object is persisted in **IndexedDB** — the raw key bytes are never exposed to JS. Values are stored in `localStorage`. Both targets share the same origin/IndexedDB, so data written from one reads back from the other; a legacy ≤2.0 `localStorage` key is imported as non-extractable and the `localStorage` entry deleted on first access
 * Scoped per origin (~5-10 MB storage limit)
 * Memory policy always `PLAIN_TEXT` internally (WebCrypto is async-only)
+* **Requires a secure context.** `crypto.subtle` is only exposed over HTTPS or a `localhost` origin. Served from a plain-HTTP non-localhost origin, WebCrypto is absent: `protectionInfo.effectiveLevel` degrades to `SOFTWARE`, the note `web_crypto_subtle_unavailable` is set, `isEncryptionOperational` is `false`, and every encrypted read/write fails. A healthy secure-context web key otherwise reports `SANDBOX_PROTECTED` (browser origin isolation), not raw `SOFTWARE`.
 * Kotlin/WASM requires WasmGC (Chrome 119+, Firefox 120+, Safari 18+); Kotlin/JS runs on any modern browser
 
 ### Hardware Verified
@@ -426,7 +360,7 @@ KSafe's hardware-backed encryption has been tested and verified on real devices:
 
 ### Error Handling
 
-If decryption fails (e.g., corrupted data or missing key), KSafe gracefully returns the default value, ensuring your app continues to function.
+If decryption fails **permanently** (e.g., corrupted data or a missing key), KSafe gracefully returns the default value on every read path, ensuring your app continues to function. On a **transient** failure (such as a locked device), behaviour depends on the read API: only the suspend `get()` surfaces the failure as an exception so you can await unlock and retry, while `getDirect()` / property delegates return the default and `getFlow()` skips that emission (keeping its last value until the next decryptable snapshot).
 
 **Exception:** When `requireUnlockedDevice = true` and the device is locked, KSafe throws `IllegalStateException` instead of returning the default value. This allows your app to detect and handle the locked state explicitly (e.g., showing a "device is locked" message).
 
@@ -441,94 +375,35 @@ KSafe ensures clean reinstalls on all platforms:
 
 ### iOS Keychain Cleanup Mechanism
 
-* **Installation ID:** Each app install gets a unique ID stored in DataStore
-* **First Access:** On first get/put operation after install, cleanup runs
-* **Orphan Detection:** Compares Keychain entries with DataStore entries
-* **Automatic Removal:** Deletes any Keychain keys without matching DataStore data
+* **Snapshot-based:** on first data load KSafe reads the current DataStore snapshot and derives the live key-ID set from the value/metadata entries
+* **Orphan Detection:** scans app-scoped Keychain generic-password items and Secure Enclave EC keys against that set (master-key sentinels preserved; in-flight writes excluded)
+* **Automatic Removal:** deletes library-written Keychain/SE entries whose DataStore counterpart is gone
+* **Scope & fail-safe:** skipped on macOS (shared per-user login Keychain) and when the snapshot is empty but scoped Keychain entries exist
 
 ### Orphaned Ciphertext Cleanup (All Platforms)
 
 On startup, KSafe probes each encrypted DataStore entry by attempting decryption:
-* **Permanent failure** (key gone, invalidated, wrong key): entry removed from DataStore
+* **Missing-key failure** (encryption key gone/absent): entry removed from DataStore. Other decryption failures (a wrong or invalidated key surfacing as a GCM bad-tag error) are treated as a graceful default-return and are **not** deleted
 * **Temporary failure** (device locked): skipped, retried on next launch
-* Runs once per startup, after migration and before the DataStore collector begins
+* Runs once per startup, after the access-policy migration and only once the collector's first snapshot has populated the cache — sweeping an empty pre-load snapshot would reap every live key. Under `lazyLoad`, where no collector runs, the first access triggers it off-thread instead
 
 ### Known Limitations
 
-* **iOS:** Keychain access may require device to be unlocked depending on `requireUnlockedDevice` setting (default: accessible after first unlock)
-* **Android:** Some devices may not have hardware-backed keystore; `setUnlockedDeviceRequired` requires API 28+
-* **JVM:** No TEE/HSM. The key is held by the OS secret store (DPAPI / macOS Keychain / libsecret), bound to the OS user login; the no-keyring fallback relies on OS file permissions (0700). A key migrated into the OS store becomes unrecoverable if that store is later lost (different OS account, keyring/keychain reset) — inherent to OS-bound storage
-* **Web (wasmJs + js):** No hardware security. The AES key is a non-extractable WebCrypto `CryptoKey` in IndexedDB (not exportable by JS); values are in `localStorage`. Both IndexedDB and `localStorage` can be cleared by the user. Security checks (root, debugger, emulator) are no-ops on both targets
-* **All Platforms:** Encrypted data is lost if encryption keys are deleted (by design for security)
+* **iOS:** Keychain access may require device to be unlocked depending on `requireUnlockedDevice` setting (default: accessible after first unlock). The **Simulator** may fall back to a sandbox file store (`SOFTWARE`) when it has no entitlement; real devices are unaffected
+* **Android:** Some devices may not have hardware-backed keystore; `setUnlockedDeviceRequired` requires API 28+. Before Android 15 (API 35) the platform's `setUnlockedDeviceRequired(true)` additionally had documented bugs on API 28-34: removing the lock screen can silently delete such keys (the affected values then self-heal to their defaults via the missing-key sweep), and key generation/use can fail while no secure lock screen is configured. KSafe applies the flag only when `requireUnlockedDevice = true` is explicitly requested (default is `false`) and does not gate it by API level — an explicitly requested policy is honored as asked; weigh the caveat before enabling it broadly on pre-35 fleets
+* **JVM:** No TEE/HSM. The key is held by the OS secret store (DPAPI / macOS Keychain / libsecret), bound to the OS user login; the no-keyring fallback relies on OS file permissions (0700). A key migrated into the OS store becomes unrecoverable if that store is later lost (different OS account, keyring/keychain reset) — inherent to OS-bound storage. If an OS vault exists but is unreachable at startup, KSafe fails closed (`jvm_os_vault_degraded`, `isEncryptionOperational == false`) rather than silently downgrading
+* **Web (wasmJs + js):** No hardware security. The AES key is a non-extractable WebCrypto `CryptoKey` in IndexedDB (not exportable by JS); values are in `localStorage`. Both IndexedDB and `localStorage` can be cleared by the user. Outside a secure context there is no `crypto.subtle`, so encrypted ops fail (`web_crypto_subtle_unavailable`). Security checks (root, debugger, emulator) are no-ops on both targets
+* **All Platforms:** Encrypted data is lost if encryption keys are deleted (by design for security — see [KEY_ROTATION.md](KEY_ROTATION.md) on what "deleted" means as cryptographic erasure)
 
 ***
 
 ## Cryptographic Utilities
 
-### Secure Random Bytes
+KSafe exposes two crypto primitives that back its own internals:
 
-KSafe exposes a cross-platform cryptographically secure random byte generator:
+- **`secureRandomBytes(size)`** — a cross-platform CSPRNG delegating to each platform's strongest source (`SecureRandom` on JVM/Android, `SecRandomCopyBytes` on Apple, `crypto.getRandomValues()` on web). This is the same primitive KSafe uses internally for IVs and key generation.
+- **`getOrCreateSecret(key, …)`** — generates a cryptographically secure random secret on first call and returns the same one thereafter, stored under KSafe's encryption. Defaults: `size = 32` bytes (256-bit), `protection = HARDWARE_ISOLATED`, `requireUnlockedDevice = false`. It **refuses to overwrite** a secret it can't read back (locked vault, invalidated key) rather than silently minting a new one and orphaning data (e.g. a SQLCipher database). Under [key rotation](KEY_ROTATION.md) the secret's **value is preserved** — only the wrapping key changes.
 
-```kotlin
-val nonce = secureRandomBytes(16)       // 128-bit nonce
-val aesKey = secureRandomBytes(32)      // 256-bit key
-val salt = secureRandomBytes(64)        // 512-bit salt
-```
-
-Each platform delegates to its strongest available CSPRNG:
-
-| Platform | Source |
-|----------|--------|
-| Android  | `java.security.SecureRandom` |
-| JVM      | `java.security.SecureRandom` |
-| iOS / macOS | `SecRandomCopyBytes` (Security framework CSPRNG) |
-| Kotlin/WASM | `crypto.getRandomValues()` (WebCrypto API), via `@JsFun` + Base64 round-trip |
-| Kotlin/JS | `crypto.getRandomValues()` (WebCrypto API), direct `Uint8Array → ByteArray` |
-
-This is the same primitive KSafe uses internally for IV and encryption key generation.
-
-### Secret Generation
-
-`getOrCreateSecret` generates a cryptographically secure random secret on first call and retrieves it on subsequent calls. The secret is stored with KSafe's hardware-backed encryption.
-
-```kotlin
-// Database encryption passphrase — one line
-val passphrase = ksafe.getOrCreateSecret("main.db")
-
-// API signing key with custom size
-val signingKey = ksafe.getOrCreateSecret("api_signing_key", size = 64)
-
-// HMAC key
-val hmacKey = ksafe.getOrCreateSecret("hmac_auth")
-```
-
-By default, secrets are 32 bytes (256-bit) and stored with `HARDWARE_ISOLATED` protection (StrongBox on Android, Secure Enclave on iOS). You can customize this:
-
-```kotlin
-val secret = ksafe.getOrCreateSecret(
-    key = "my_secret",
-    size = 32,                                              // bytes (default)
-    protection = KSafeEncryptedProtection.HARDWARE_ISOLATED, // default
-    requireUnlockedDevice = false                            // default
-)
-```
-
-#### Example: Room + SQLCipher
-
-```kotlin
-val passphrase = ksafe.getOrCreateSecret("main.db")
-val factory = SupportFactory(passphrase)
-
-Room.databaseBuilder(context, AppDatabase::class.java, "main.db")
-    .openHelperFactory(factory)
-    .build()
-```
-
-#### Example: SQLDelight (cross-platform)
-
-```kotlin
-val passphrase = ksafe.getOrCreateSecret("app.db")
-// Pass to your platform-specific driver configuration
-```
+Custom sizes and the Room + SQLCipher / SQLDelight passphrase recipes are in **[USAGE.md](USAGE.md)**.
 
 ***

@@ -18,8 +18,47 @@ package eu.anifantakis.lib.ksafe.biometrics
 object KSafeBiometrics {
 
     /**
-     * Suspends until the biometric prompt completes, returning `true` on success and `false`
-     * on failure or cancellation.
+     * App/service name shown to the user, and the default for [verifyBiometric]'s `title`.
+     * Set it once at startup.
+     *
+     * Consumed per platform: Android uses it as the prompt title; the web uses it to NAME THE
+     * PASSKEY (its `rp.name`, `user.name` and `user.displayName`), which is what a password
+     * manager lists. Apple and JVM prompts have no title — they show only the reason — so they
+     * ignore it. `null` keeps each platform's own default.
+     *
+     * **Web caveat:** the passkey's name is written ONCE, during the first registration
+     * ceremony. Changing this later does not rename an existing passkey — that needs
+     * `KSafeBiometricsWeb.resetRegistration()` (and removing the stale passkey OS-side). So set
+     * it BEFORE the first [verifyBiometric] call, next to `awaitCacheReady()`.
+     */
+    var defaultTitle: String? = null
+
+    /**
+     * Default `reason` for [verifyBiometric] / [verifyBiometricDirect] — why authentication is
+     * being asked. Shown as the Android subtitle, Apple's `localizedReason`, and the JVM
+     * Windows-Hello / macOS message. Ignored on the web (the browser owns that dialog's text).
+     * Set it at startup so the built-in English string never reaches a localized app.
+     */
+    var defaultReason: String = "Authenticate to continue"
+
+    /**
+     * Default label for the prompt's cancel/negative button. `null` (default) uses the
+     * platform's own LOCALIZED string — Android's `android.R.string.cancel`, Apple's system
+     * default — so leave it null unless you deliberately want different wording; a hardcoded
+     * value here would ship one language to every locale.
+     *
+     * **Android only applies this when `allowDeviceCredentialFallback = false`.** With the
+     * fallback on (the default) the platform forbids a negative button entirely — the slot is
+     * occupied by its own "use PIN/pattern/password" affordance — so there is no button to
+     * relabel and this value is ignored. Blank is treated as unset on every platform.
+     */
+    var defaultCancelLabel: String? = null
+
+    /**
+     * Suspends until the biometric prompt completes: `true` on success, `false` on failed or
+     * denied authentication (including the user dismissing the prompt). Cancelling the calling
+     * coroutine does NOT return `false` — the call is cancelled (`CancellationException`
+     * propagates) and any pending native prompt is dismissed/aborted.
      *
      * @param authorizationDuration When set, a successful authentication is cached for the
      *        given duration/scope and calls within it skip the prompt; `null` always prompts.
@@ -29,27 +68,45 @@ object KSafeBiometrics {
      *        JVM-Windows the Hello PIN counts as Hello itself, so `false` cannot exclude
      *        it (it still keys the authorization cache strictly and refuses when Hello
      *        is absent).
+     * @param title Per-call override of [defaultTitle] — Android prompt title / web passkey
+     *        name; ignored on Apple and JVM. See [defaultTitle] for the web's write-once caveat.
+     * @param cancelLabel Per-call override of [defaultCancelLabel]; `null` or blank keeps the
+     *        platform's localized default. Android applies it only when
+     *        [allowDeviceCredentialFallback] is `false` — see [defaultCancelLabel].
      */
     suspend fun verifyBiometric(
-        reason: String = "Authenticate to continue",
+        reason: String = defaultReason,
         authorizationDuration: BiometricAuthorizationDuration? = null,
         allowDeviceCredentialFallback: Boolean = true,
-    ): Boolean = platformVerifyBiometric(reason, authorizationDuration, allowDeviceCredentialFallback)
+        title: String? = defaultTitle,
+        cancelLabel: String? = defaultCancelLabel,
+    ): Boolean = platformVerifyBiometric(
+        reason, authorizationDuration, allowDeviceCredentialFallback,
+        promptTextOrNull(title), promptTextOrNull(cancelLabel),
+    )
 
     /**
      * Non-blocking variant of [verifyBiometric]; delivers the result via [onResult].
      */
     fun verifyBiometricDirect(
-        reason: String = "Authenticate to continue",
+        reason: String = defaultReason,
         authorizationDuration: BiometricAuthorizationDuration? = null,
         allowDeviceCredentialFallback: Boolean = true,
+        title: String? = defaultTitle,
+        cancelLabel: String? = defaultCancelLabel,
         onResult: (Boolean) -> Unit,
-    ) = platformVerifyBiometricDirect(reason, authorizationDuration, allowDeviceCredentialFallback, onResult)
+    ) = platformVerifyBiometricDirect(
+        reason, authorizationDuration, allowDeviceCredentialFallback,
+        promptTextOrNull(title), promptTextOrNull(cancelLabel), onResult,
+    )
 
     /**
      * Clears cached biometric authorization for [scope], or all scopes when `null`.
+     * Also revokes prompts already on screen: if one completes successfully after this
+     * call, its caller still gets `true`, but the success cannot re-seed the cache —
+     * the next protected call prompts again.
      */
-    fun clearBiometricAuth(scope: String? = null) = platformClearBiometricAuth(scope)
+    fun clearBiometricAuth(scope: String? = null) = BiometricSessionStore.clear(scope)
 
     /**
      * Whether [verifyBiometric] would show a REAL authentication prompt here — `false`
@@ -84,22 +141,24 @@ object KSafeBiometrics {
     ) = platformBiometricsAvailableDirect(allowDeviceCredentialFallback, onResult)
 }
 
-// Per-platform implementations backing [KSafeBiometrics]; each platform owns its cache state.
+// The per-platform actuals below share an authorization cache; it lives in BiometricSessionStore.
 
 internal expect suspend fun platformVerifyBiometric(
     reason: String,
     authorizationDuration: BiometricAuthorizationDuration?,
     allowDeviceCredentialFallback: Boolean,
+    title: String?,
+    cancelLabel: String?,
 ): Boolean
 
 internal expect fun platformVerifyBiometricDirect(
     reason: String,
     authorizationDuration: BiometricAuthorizationDuration?,
     allowDeviceCredentialFallback: Boolean,
+    title: String?,
+    cancelLabel: String?,
     onResult: (Boolean) -> Unit,
 )
-
-internal expect fun platformClearBiometricAuth(scope: String?)
 
 internal expect suspend fun platformBiometricsAvailable(allowDeviceCredentialFallback: Boolean): Boolean
 

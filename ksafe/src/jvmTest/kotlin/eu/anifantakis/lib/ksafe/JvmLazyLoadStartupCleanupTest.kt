@@ -14,8 +14,8 @@ class JvmLazyLoadStartupCleanupTest {
 
     private class RecordingEngine : KSafeEncryption {
         val legacySweepCalled = CompletableDeferred<Unit>()
-        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray = data
-        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray = data
+        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?,    aad: ByteArray?,): ByteArray = data
+        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray = data
         override fun deleteKey(identifier: String) {}
         override suspend fun migrateLegacyKeysSuspend() { legacySweepCalled.complete(Unit) }
     }

@@ -178,7 +178,7 @@ class IosStorageLocationTest {
                 testEngine = FakeEncryption(),
             )
             v1Like.put("plain_key", "plain_value")
-            v1Like.put("encrypted_key", "encrypted_value", KSafeWriteMode.Encrypted())
+            v1Like.put("secretKey", "encrypted_value", KSafeWriteMode.Encrypted())
             v1Like.close()
 
             // Durability barrier: close() does not flush DataStore, so poll the
@@ -200,7 +200,7 @@ class IosStorageLocationTest {
                         testEngine = FakeEncryption(),
                     )
                     probe.get("plain_key", "∅") == "plain_value" &&
-                        probe.get("encrypted_key", "∅") == "encrypted_value"
+                        probe.get("secretKey", "∅") == "encrypted_value"
                 } catch (t: Throwable) {
                     false   // CorruptionException / multiple-DataStores race → not durable yet
                 } finally {
@@ -223,7 +223,7 @@ class IosStorageLocationTest {
                 assertTrue(fileExists(newPath), "File should now live at NSApplicationSupportDirectory")
 
                 assertEquals("plain_value", migrated.get("plain_key", "DEFAULT"))
-                assertEquals("encrypted_value", migrated.get("encrypted_key", "DEFAULT"))
+                assertEquals("encrypted_value", migrated.get("secretKey", "DEFAULT"))
             } finally {
                 migrated.close()
             }

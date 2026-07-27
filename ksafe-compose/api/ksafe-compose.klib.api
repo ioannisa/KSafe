@@ -1,0 +1,73 @@
+// Klib ABI Dump
+// Targets: [iosArm64, iosSimulatorArm64, iosX64, js, macosArm64, macosX64, wasmJs]
+// Rendering settings:
+// - Signature version: 2
+// - Show manifest properties: true
+// - Show declarations: true
+
+// Library unique name: <eu.anifantakis:ksafe-compose>
+final class <#A: kotlin/Any?> eu.anifantakis.lib.ksafe.compose/KSafeComposeState : androidx.compose.runtime/MutableState<#A>, kotlin.properties/ReadWriteProperty<kotlin/Any?, #A> { // eu.anifantakis.lib.ksafe.compose/KSafeComposeState|null[0]
+    constructor <init>(#A, kotlin/Function1<#A, kotlin/Unit>, androidx.compose.runtime/SnapshotMutationPolicy<#A>) // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.<init>|<init>(1:0;kotlin.Function1<1:0,kotlin.Unit>;androidx.compose.runtime.SnapshotMutationPolicy<1:0>){}[0]
+
+    final val lastSyncedValue // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.lastSyncedValue|{}lastSyncedValue[0]
+        final fun <get-lastSyncedValue>(): #A // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.lastSyncedValue.<get-lastSyncedValue>|<get-lastSyncedValue>(){}[0]
+
+    final var betweenCheckAndPublishForTest // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.betweenCheckAndPublishForTest|{}betweenCheckAndPublishForTest[0]
+        final fun <get-betweenCheckAndPublishForTest>(): kotlin/Function0<kotlin/Unit>? // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.betweenCheckAndPublishForTest.<get-betweenCheckAndPublishForTest>|<get-betweenCheckAndPublishForTest>(){}[0]
+        final fun <set-betweenCheckAndPublishForTest>(kotlin/Function0<kotlin/Unit>?) // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.betweenCheckAndPublishForTest.<set-betweenCheckAndPublishForTest>|<set-betweenCheckAndPublishForTest>(kotlin.Function0<kotlin.Unit>?){}[0]
+    final var value // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.value|{}value[0]
+        final fun <get-value>(): #A // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.value.<get-value>|<get-value>(){}[0]
+        final fun <set-value>(#A) // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.value.<set-value>|<set-value>(1:0){}[0]
+
+    final fun attachWriteEchoTimeout(kotlinx.coroutines/CoroutineScope, kotlin/Long) // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.attachWriteEchoTimeout|attachWriteEchoTimeout(kotlinx.coroutines.CoroutineScope;kotlin.Long){}[0]
+    final fun component1(): #A // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.component1|component1(){}[0]
+    final fun component2(): kotlin/Function1<#A, kotlin/Unit> // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.component2|component2(){}[0]
+    final fun detachWriteEchoTimeout() // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.detachWriteEchoTimeout|detachWriteEchoTimeout(){}[0]
+    final fun getValue(kotlin/Any?, kotlin.reflect/KProperty<*>): #A // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.getValue|getValue(kotlin.Any?;kotlin.reflect.KProperty<*>){}[0]
+    final fun reconcileAfterFailedPersist(kotlin/Long, #A) // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.reconcileAfterFailedPersist|reconcileAfterFailedPersist(kotlin.Long;1:0){}[0]
+    final fun setValue(kotlin/Any?, kotlin.reflect/KProperty<*>, #A) // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.setValue|setValue(kotlin.Any?;kotlin.reflect.KProperty<*>;1:0){}[0]
+    final fun simulateStaleClobberForTest(#A) // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.simulateStaleClobberForTest|simulateStaleClobberForTest(1:0){}[0]
+    final fun updateFromFlow(#A) // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.updateFromFlow|updateFromFlow(1:0){}[0]
+    final fun updateFromStorage(#A) // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.updateFromStorage|updateFromStorage(1:0){}[0]
+    final fun writeTokenInFlight(): kotlin/Long // eu.anifantakis.lib.ksafe.compose/KSafeComposeState.writeTokenInFlight|writeTokenInFlight(){}[0]
+}
+
+final class <#A: kotlin/Any?> eu.anifantakis.lib.ksafe.compose/KSafeComposeStateProvider { // eu.anifantakis.lib.ksafe.compose/KSafeComposeStateProvider|null[0]
+    constructor <init>(kotlin/String?, #A, kotlin/Boolean, androidx.compose.runtime/SnapshotMutationPolicy<#A>, kotlin/Any?, kotlin/Any?, kotlin/Function1<kotlin/String, #A>, kotlin/Function2<kotlin/String, #A, kotlin/Unit>, kotlin/Function1<kotlin/String, kotlinx.coroutines.flow/Flow<#A>>) // eu.anifantakis.lib.ksafe.compose/KSafeComposeStateProvider.<init>|<init>(kotlin.String?;1:0;kotlin.Boolean;androidx.compose.runtime.SnapshotMutationPolicy<1:0>;kotlin.Any?;kotlin.Any?;kotlin.Function1<kotlin.String,1:0>;kotlin.Function2<kotlin.String,1:0,kotlin.Unit>;kotlin.Function1<kotlin.String,kotlinx.coroutines.flow.Flow<1:0>>){}[0]
+    constructor <init>(kotlin/String?, #A, kotlin/Boolean, androidx.compose.runtime/SnapshotMutationPolicy<#A>, kotlin/Any?, kotlin/Any?, kotlin/Function1<kotlin/String, #A>, kotlin/Function3<kotlin/String, #A, kotlin/Function1<kotlin/Throwable, kotlin/Unit>, kotlin/Unit>, kotlin/Function1<kotlin/String, kotlinx.coroutines.flow/Flow<#A>>) // eu.anifantakis.lib.ksafe.compose/KSafeComposeStateProvider.<init>|<init>(kotlin.String?;1:0;kotlin.Boolean;androidx.compose.runtime.SnapshotMutationPolicy<1:0>;kotlin.Any?;kotlin.Any?;kotlin.Function1<kotlin.String,1:0>;kotlin.Function3<kotlin.String,1:0,kotlin.Function1<kotlin.Throwable,kotlin.Unit>,kotlin.Unit>;kotlin.Function1<kotlin.String,kotlinx.coroutines.flow.Flow<1:0>>){}[0]
+
+    final fun provideDelegate(kotlin/Any?, kotlin.reflect/KProperty<*>, androidx.compose.runtime/Composer?, kotlin/Int): eu.anifantakis.lib.ksafe.compose/KSafeComposeState<#A> // eu.anifantakis.lib.ksafe.compose/KSafeComposeStateProvider.provideDelegate|provideDelegate(kotlin.Any?;kotlin.reflect.KProperty<*>;androidx.compose.runtime.Composer?;kotlin.Int){}[0]
+}
+
+final class eu.anifantakis.lib.ksafe.compose/UiSecurityViolation { // eu.anifantakis.lib.ksafe.compose/UiSecurityViolation|null[0]
+    constructor <init>(eu.anifantakis.lib.ksafe/SecurityViolation) // eu.anifantakis.lib.ksafe.compose/UiSecurityViolation.<init>|<init>(eu.anifantakis.lib.ksafe.SecurityViolation){}[0]
+
+    final val violation // eu.anifantakis.lib.ksafe.compose/UiSecurityViolation.violation|{}violation[0]
+        final fun <get-violation>(): eu.anifantakis.lib.ksafe/SecurityViolation // eu.anifantakis.lib.ksafe.compose/UiSecurityViolation.violation.<get-violation>|<get-violation>(){}[0]
+
+    final fun component1(): eu.anifantakis.lib.ksafe/SecurityViolation // eu.anifantakis.lib.ksafe.compose/UiSecurityViolation.component1|component1(){}[0]
+    final fun copy(eu.anifantakis.lib.ksafe/SecurityViolation = ...): eu.anifantakis.lib.ksafe.compose/UiSecurityViolation // eu.anifantakis.lib.ksafe.compose/UiSecurityViolation.copy|copy(eu.anifantakis.lib.ksafe.SecurityViolation){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // eu.anifantakis.lib.ksafe.compose/UiSecurityViolation.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // eu.anifantakis.lib.ksafe.compose/UiSecurityViolation.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // eu.anifantakis.lib.ksafe.compose/UiSecurityViolation.toString|toString(){}[0]
+}
+
+final const val eu.anifantakis.lib.ksafe.compose/SELF_HEAL_TIMEOUT_MS // eu.anifantakis.lib.ksafe.compose/SELF_HEAL_TIMEOUT_MS|{}SELF_HEAL_TIMEOUT_MS[0]
+    final fun <get-SELF_HEAL_TIMEOUT_MS>(): kotlin/Long // eu.anifantakis.lib.ksafe.compose/SELF_HEAL_TIMEOUT_MS.<get-SELF_HEAL_TIMEOUT_MS>|<get-SELF_HEAL_TIMEOUT_MS>(){}[0]
+final const val eu.anifantakis.lib.ksafe.compose/WRITE_ECHO_TIMEOUT_MS // eu.anifantakis.lib.ksafe.compose/WRITE_ECHO_TIMEOUT_MS|{}WRITE_ECHO_TIMEOUT_MS[0]
+    final fun <get-WRITE_ECHO_TIMEOUT_MS>(): kotlin/Long // eu.anifantakis.lib.ksafe.compose/WRITE_ECHO_TIMEOUT_MS.<get-WRITE_ECHO_TIMEOUT_MS>|<get-WRITE_ECHO_TIMEOUT_MS>(){}[0]
+
+final val eu.anifantakis.lib.ksafe.compose/eu_anifantakis_lib_ksafe_compose_KSafeComposeState$stableprop // eu.anifantakis.lib.ksafe.compose/eu_anifantakis_lib_ksafe_compose_KSafeComposeState$stableprop|#static{}eu_anifantakis_lib_ksafe_compose_KSafeComposeState$stableprop[0]
+final val eu.anifantakis.lib.ksafe.compose/eu_anifantakis_lib_ksafe_compose_KSafeComposeStateProvider$stableprop // eu.anifantakis.lib.ksafe.compose/eu_anifantakis_lib_ksafe_compose_KSafeComposeStateProvider$stableprop|#static{}eu_anifantakis_lib_ksafe_compose_KSafeComposeStateProvider$stableprop[0]
+final val eu.anifantakis.lib.ksafe.compose/eu_anifantakis_lib_ksafe_compose_UiSecurityViolation$stableprop // eu.anifantakis.lib.ksafe.compose/eu_anifantakis_lib_ksafe_compose_UiSecurityViolation$stableprop|#static{}eu_anifantakis_lib_ksafe_compose_UiSecurityViolation$stableprop[0]
+
+final fun <#A: kotlin/Any?> eu.anifantakis.lib.ksafe.compose/rememberKSafeStateImpl(kotlin/String, kotlin/Any?, kotlin/Any?, #A, kotlin/Boolean, androidx.compose.runtime/SnapshotMutationPolicy<#A>, kotlin/Function0<#A>, kotlin/Function2<#A, kotlin/Function1<kotlin/Throwable, kotlin/Unit>, kotlin/Unit>, kotlin/Function0<kotlinx.coroutines.flow/Flow<#A>>, androidx.compose.runtime/Composer?, kotlin/Int): eu.anifantakis.lib.ksafe.compose/KSafeComposeState<#A> // eu.anifantakis.lib.ksafe.compose/rememberKSafeStateImpl|rememberKSafeStateImpl(kotlin.String;kotlin.Any?;kotlin.Any?;0:0;kotlin.Boolean;androidx.compose.runtime.SnapshotMutationPolicy<0:0>;kotlin.Function0<0:0>;kotlin.Function2<0:0,kotlin.Function1<kotlin.Throwable,kotlin.Unit>,kotlin.Unit>;kotlin.Function0<kotlinx.coroutines.flow.Flow<0:0>>;androidx.compose.runtime.Composer?;kotlin.Int){0§<kotlin.Any?>}[0]
+final fun eu.anifantakis.lib.ksafe.compose/eu_anifantakis_lib_ksafe_compose_KSafeComposeState$stableprop_getter(): kotlin/Int // eu.anifantakis.lib.ksafe.compose/eu_anifantakis_lib_ksafe_compose_KSafeComposeState$stableprop_getter|eu_anifantakis_lib_ksafe_compose_KSafeComposeState$stableprop_getter(){}[0]
+final fun eu.anifantakis.lib.ksafe.compose/eu_anifantakis_lib_ksafe_compose_KSafeComposeStateProvider$stableprop_getter(): kotlin/Int // eu.anifantakis.lib.ksafe.compose/eu_anifantakis_lib_ksafe_compose_KSafeComposeStateProvider$stableprop_getter|eu_anifantakis_lib_ksafe_compose_KSafeComposeStateProvider$stableprop_getter(){}[0]
+final fun eu.anifantakis.lib.ksafe.compose/eu_anifantakis_lib_ksafe_compose_UiSecurityViolation$stableprop_getter(): kotlin/Int // eu.anifantakis.lib.ksafe.compose/eu_anifantakis_lib_ksafe_compose_UiSecurityViolation$stableprop_getter|eu_anifantakis_lib_ksafe_compose_UiSecurityViolation$stableprop_getter(){}[0]
+final inline fun <#A: reified kotlin/Any?> (eu.anifantakis.lib.ksafe/KSafe).eu.anifantakis.lib.ksafe.compose/mutableStateOf(#A, kotlin/String? = ..., eu.anifantakis.lib.ksafe/KSafeWriteMode = ..., kotlinx.coroutines/CoroutineScope? = ...): kotlin.properties/PropertyDelegateProvider<kotlin/Any?, kotlin.properties/ReadWriteProperty<kotlin/Any?, #A>> // eu.anifantakis.lib.ksafe.compose/mutableStateOf|mutableStateOf@eu.anifantakis.lib.ksafe.KSafe(0:0;kotlin.String?;eu.anifantakis.lib.ksafe.KSafeWriteMode;kotlinx.coroutines.CoroutineScope?){0§<kotlin.Any?>}[0]
+final inline fun <#A: reified kotlin/Any?> (eu.anifantakis.lib.ksafe/KSafe).eu.anifantakis.lib.ksafe.compose/mutableStateOf(#A, kotlin/String? = ..., eu.anifantakis.lib.ksafe/KSafeWriteMode = ..., kotlinx.coroutines/CoroutineScope? = ..., androidx.compose.runtime/SnapshotMutationPolicy<#A>): kotlin.properties/PropertyDelegateProvider<kotlin/Any?, kotlin.properties/ReadWriteProperty<kotlin/Any?, #A>> // eu.anifantakis.lib.ksafe.compose/mutableStateOf|mutableStateOf@eu.anifantakis.lib.ksafe.KSafe(0:0;kotlin.String?;eu.anifantakis.lib.ksafe.KSafeWriteMode;kotlinx.coroutines.CoroutineScope?;androidx.compose.runtime.SnapshotMutationPolicy<0:0>){0§<kotlin.Any?>}[0]
+final inline fun <#A: reified kotlin/Any?> (eu.anifantakis.lib.ksafe/KSafe).eu.anifantakis.lib.ksafe.compose/mutableStateOf(#A, kotlin/String? = ..., kotlin/Boolean): kotlin.properties/PropertyDelegateProvider<kotlin/Any?, kotlin.properties/ReadWriteProperty<kotlin/Any?, #A>> // eu.anifantakis.lib.ksafe.compose/mutableStateOf|mutableStateOf@eu.anifantakis.lib.ksafe.KSafe(0:0;kotlin.String?;kotlin.Boolean){0§<kotlin.Any?>}[0]
+final inline fun <#A: reified kotlin/Any?> (eu.anifantakis.lib.ksafe/KSafe).eu.anifantakis.lib.ksafe.compose/mutableStateOf(#A, kotlin/String? = ..., kotlin/Boolean, androidx.compose.runtime/SnapshotMutationPolicy<#A>): kotlin.properties/PropertyDelegateProvider<kotlin/Any?, kotlin.properties/ReadWriteProperty<kotlin/Any?, #A>> // eu.anifantakis.lib.ksafe.compose/mutableStateOf|mutableStateOf@eu.anifantakis.lib.ksafe.KSafe(0:0;kotlin.String?;kotlin.Boolean;androidx.compose.runtime.SnapshotMutationPolicy<0:0>){0§<kotlin.Any?>}[0]
+final inline fun <#A: reified kotlin/Any?> (eu.anifantakis.lib.ksafe/KSafe).eu.anifantakis.lib.ksafe.compose/rememberKSafeState(#A, kotlin/String? = ..., eu.anifantakis.lib.ksafe/KSafeWriteMode = ..., kotlin/Boolean = ..., androidx.compose.runtime/SnapshotMutationPolicy<#A> = ...): eu.anifantakis.lib.ksafe.compose/KSafeComposeStateProvider<#A> // eu.anifantakis.lib.ksafe.compose/rememberKSafeState|rememberKSafeState@eu.anifantakis.lib.ksafe.KSafe(0:0;kotlin.String?;eu.anifantakis.lib.ksafe.KSafeWriteMode;kotlin.Boolean;androidx.compose.runtime.SnapshotMutationPolicy<0:0>){0§<kotlin.Any?>}[0]
+final suspend fun <#A: kotlin/Any?> (eu.anifantakis.lib.ksafe.compose/KSafeComposeState<#A>).eu.anifantakis.lib.ksafe.compose/observeFromStorage(kotlinx.coroutines.flow/Flow<#A>, kotlin/Boolean, kotlin/Boolean, kotlin/Long = ..., kotlin/Long = ...) // eu.anifantakis.lib.ksafe.compose/observeFromStorage|observeFromStorage@eu.anifantakis.lib.ksafe.compose.KSafeComposeState<0:0>(kotlinx.coroutines.flow.Flow<0:0>;kotlin.Boolean;kotlin.Boolean;kotlin.Long;kotlin.Long){0§<kotlin.Any?>}[0]

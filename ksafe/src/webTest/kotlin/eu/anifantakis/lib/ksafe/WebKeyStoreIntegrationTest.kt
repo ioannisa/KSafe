@@ -248,4 +248,74 @@ class WebKeyStoreIntegrationTest {
             localStorageRemove(legacyLsKey(prefix, alias))
         }
     }
+
+    /**
+     * A pre-2.1.0 legacy raw key in localStorage is ONE shared source for every namespace of a
+     * fileName, and it is scrubbed on first import. When an appNamespaced instance is the FIRST
+     * to consume it, the key must also land durably in the shared un-namespaced IndexedDB record —
+     * otherwise a co-existing no-namespace sibling (or a later second namespace) holding a
+     * migrated copy of the legacy ciphertext can never obtain its key: reads fail "web key
+     * missing" and the data is permanently unreadable, purely because of first-touch order.
+     */
+    @Test
+    fun legacyKeyConsumedByNamespacedInstanceFirst_staysAvailableToSiblings() = runTest {
+        val prefix = uniquePrefix()
+        val alias = "tok"
+        localStorageSet(legacyLsKey(prefix, alias), Base64.encode(ByteArray(32) { (it * 7 + 3).toByte() }))
+
+        // The namespaced instance touches first: imports the legacy key, scrubs the shared source.
+        val nsA = WebSoftwareEncryption(KSafeConfig(appNamespace = "com.example.a"), prefix)
+        val ct = nsA.encryptSuspend(alias, "shared-legacy-secret".encodeToByteArray())
+        assertNull(
+            localStorageGet(legacyLsKey(prefix, alias)),
+            "legacy raw key must be scrubbed after the namespaced import",
+        )
+
+        // The no-namespace sibling must still obtain the key from the shared un-namespaced record.
+        val noNs = WebSoftwareEncryption(storagePrefix = prefix)
+        assertEquals(
+            "shared-legacy-secret",
+            noNs.decryptSuspend(alias, ct).decodeToString(),
+            "a no-namespace sibling must still get the legacy key after a namespaced instance consumed it first",
+        )
+
+        // A second namespace must also obtain it (shared record migrates forward per namespace).
+        val nsB = WebSoftwareEncryption(KSafeConfig(appNamespace = "com.example.b"), prefix)
+        assertEquals(
+            "shared-legacy-secret",
+            nsB.decryptSuspend(alias, ct).decodeToString(),
+            "a second namespace must still get the legacy key after the first namespace consumed the localStorage source",
+        )
+
+        nsA.deleteKeySuspend(alias)
+        nsB.deleteKeySuspend(alias)
+        noNs.deleteKeySuspend(alias)
+    }
+
+    /**
+     * A write racing a still-in-flight key delete must never silently commit ciphertext under the
+     * deleted key: whatever the interleaving, the returned ciphertext must be decryptable by a
+     * fresh instance (i.e. its key is durably in IndexedDB). The encrypt path re-verifies the key
+     * record after encrypting and retries under a fresh key when it lost the race. Single-context
+     * analogue of a cross-tab clearAll racing a sibling tab's write.
+     */
+    @Test
+    fun writeRacingUnawaitedKeyDelete_neverCommitsUnderDeletedKey() = runTest {
+        val prefix = uniquePrefix()
+        val alias = "tok"
+        val engine = WebSoftwareEncryption(storagePrefix = prefix)
+        engine.encryptSuspend(alias, "seed".encodeToByteArray())
+
+        // Fire-and-forget delete (IDB delete still in flight), then write immediately.
+        engine.deleteKey(alias)
+        val ct = engine.encryptSuspend(alias, "raced-write".encodeToByteArray())
+
+        val fresh = WebSoftwareEncryption(storagePrefix = prefix)
+        assertEquals(
+            "raced-write",
+            fresh.decryptSuspend(alias, ct).decodeToString(),
+            "ciphertext returned by a write racing a key delete must be decryptable from a fresh instance",
+        )
+        fresh.deleteKeySuspend(alias)
+    }
 }

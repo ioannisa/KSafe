@@ -14,13 +14,6 @@ import kotlin.time.Duration.Companion.seconds
  */
 class JvmSideCacheExternalChangeTest {
 
-    /** Identity engine: ciphertext == plaintext bytes, so a snapshot's Text decrypts to exactly the value it encodes. */
-    private class IdentityEngine : KSafeEncryption {
-        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray = data
-        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray = data
-        override fun deleteKey(identifier: String) {}
-    }
-
     /** The on-disk StoredValue for an encrypted String `value` under the identity engine. */
     private fun cipherFor(value: String): StoredValue.Text =
         StoredValue.Text(encodeBase64("\"$value\"".encodeToByteArray()))

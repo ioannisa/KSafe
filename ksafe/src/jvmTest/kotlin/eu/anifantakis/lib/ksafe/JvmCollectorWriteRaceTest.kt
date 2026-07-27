@@ -12,18 +12,6 @@ import kotlin.test.assertEquals
  */
 class JvmCollectorWriteRaceTest {
 
-    /** Engine whose `decrypt` runs [onDecrypt] (the racing write) before returning a fixed "old" plaintext. */
-    private class RaceEngine : KSafeEncryption {
-        @Volatile var onDecrypt: (() -> Unit)? = null
-        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray = data
-        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
-            onDecrypt?.invoke()
-            onDecrypt = null // race only the first (seeded) decrypt
-            return "\"old\"".encodeToByteArray() // JSON for String "old"
-        }
-        override fun deleteKey(identifier: String) {}
-    }
-
     @Test
     fun updateCache_doesNotClobber_aWriteThatLandsDuringDecrypt() {
         val engine = RaceEngine()

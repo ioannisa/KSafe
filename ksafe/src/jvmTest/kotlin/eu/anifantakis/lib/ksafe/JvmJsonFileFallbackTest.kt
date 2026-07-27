@@ -1,9 +1,11 @@
 package eu.anifantakis.lib.ksafe
 
 import eu.anifantakis.lib.ksafe.internal.DataStoreJsonStorage
+import eu.anifantakis.lib.ksafe.internal.JvmSoftwareEncryption
 import eu.anifantakis.lib.ksafe.internal.StorageOp
 import eu.anifantakis.lib.ksafe.internal.StoredValue
 import eu.anifantakis.lib.ksafe.internal.keyvault.FileKeyVault
+import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVaultProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -163,6 +165,67 @@ class JvmJsonFileFallbackTest {
     @Test
     fun fileKeyVault_absentFile_isEmptyNotError() {
         assertNull(FileKeyVault(File(tmp, "nope.json")).get("anything"))
+    }
+
+    @Test
+    fun fileKeyVault_blankFile_throwsRatherThanReportingEmpty() {
+        // write() always emits at least "{}" and clearAll() deletes the file, so an existing
+        // blank file is truncation — reading it as "no keys yet" would let the orphan sweep
+        // delete recoverable ciphertext.
+        val file = File(tmp, "blankkeys.json")
+        file.writeText("")
+        val ex = assertFailsWith<IllegalStateException> { FileKeyVault(file).get("anything") }
+        val msg = ex.message.orEmpty()
+        assertFalse(
+            msg.contains("No encryption key found", ignoreCase = true) ||
+                msg.contains("key not found", ignoreCase = true),
+            "a blank key file must not use the orphan-sweep delete wording; was: $msg",
+        )
+
+        file.writeText("   \n")
+        assertFailsWith<IllegalStateException> { FileKeyVault(file).get("anything") }
+    }
+
+    @Test
+    fun fileKeyVault_emptyJsonMapFile_isAHealthyEmptyVault() {
+        // "{}" is the legitimate no-keys-yet state write() produces — a plain miss, no error.
+        val file = File(tmp, "emptykeys.json")
+        file.writeText("{}")
+        assertNull(FileKeyVault(file).get("anything"))
+    }
+
+    @Test
+    fun blankKeyVaultFile_decryptFailsClosed_andRecoversOnceTheFileIsRestored() {
+        val keysFile = File(tmp, "live-keys.json")
+        val ciphertext = JvmSoftwareEncryption(
+            vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFile)),
+        ).encrypt("alias", "secret".toByteArray())
+        val backup = keysFile.readBytes()
+
+        // Truncated key file (crash mid-write under an old release / external tampering).
+        keysFile.writeText("")
+
+        // A FRESH engine (no in-memory key cache) must fail closed — not report the
+        // key-absent wording the orphan sweep deletes ciphertext on.
+        val cold = JvmSoftwareEncryption(
+            vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFile)),
+        )
+        val ex = assertFailsWith<IllegalStateException> { cold.decrypt("alias", ciphertext) }
+        val msg = ex.message.orEmpty()
+        assertFalse(
+            msg.contains("No encryption key found", ignoreCase = true) ||
+                msg.contains("key not found", ignoreCase = true),
+            "a blank key vault must not be reported as key-absent; was: $msg",
+        )
+
+        // Restoring the key file (e.g. from a backup) recovers the data — nothing was deleted.
+        keysFile.writeBytes(backup)
+        assertContentEquals(
+            "secret".toByteArray(),
+            JvmSoftwareEncryption(
+                vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFile)),
+            ).decrypt("alias", ciphertext),
+        )
     }
 
     @Test

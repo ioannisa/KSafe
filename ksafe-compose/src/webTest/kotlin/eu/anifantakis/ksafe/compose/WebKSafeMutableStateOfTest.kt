@@ -43,16 +43,16 @@ class WebKSafeMutableStateOfTest {
         val flowed = reader.getFlow(key, default).first()
         assertEquals(stored, flowed)
 
-        // End-to-end self-heal: the delegate boots with the default, then a coroutine on
-        // Dispatchers.Default updates it via getFlow().first(). Repeated yield() lets the browser
-        // event loop run those microtasks without real wall-clock time (which runTest virtualises away).
         var value by reader.mutableStateOf(
             defaultValue = default,
             key = key,
             mode = KSafeWriteMode.Plain,
         )
         assertEquals(default, value, "cold-start initial read returns default")
-        repeat(50) { yield() }
+        // The self-heal runs on a real Dispatchers.Default scope; yield() drives the browser event
+        // loop. Poll with an early exit rather than a fixed yield count, which flakes on a slow loop.
+        var polls = 0
+        while (value != stored && polls < 2_000) { yield(); polls++ }
         assertEquals(stored, value, "self-heal must update Compose state to the persisted value")
 
         reader.clearAll()
@@ -61,7 +61,7 @@ class WebKSafeMutableStateOfTest {
     @Test
     fun coldStart_encrypted_getFlowFirstEmissionContainsDecryptedValue() = runTest {
         val fileName = uniqueFileName()
-        val key = "encrypted_value"
+        val key = "secretKey"
         val stored = "persisted-encrypted"
         val default = "default-encrypted"
 
@@ -84,7 +84,9 @@ class WebKSafeMutableStateOfTest {
             mode = KSafeWriteMode.Encrypted(),
         )
         assertEquals(default, value, "cold-start initial read returns default")
-        repeat(50) { yield() }
+        // See the plain twin: poll the self-heal with an early exit instead of a fixed yield count.
+        var polls = 0
+        while (value != stored && polls < 2_000) { yield(); polls++ }
         assertEquals(stored, value, "self-heal must update Compose state to the persisted value")
 
         reader.clearAll()

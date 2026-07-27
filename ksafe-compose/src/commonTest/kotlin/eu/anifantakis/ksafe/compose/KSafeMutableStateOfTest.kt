@@ -82,15 +82,15 @@ abstract class KSafeMutableStateOfTest {
     fun mutableStateOf_encryptsByDefault() {
         val ksafe = createKSafe()
 
-        val provider = ksafe.mutableStateOf("SecretValue", key = "encrypted_key")
+        val provider = ksafe.mutableStateOf("SecretValue", key = "secretKey")
         val delegate = provider.provideDelegate(null, ::testProperty)
 
         delegate.setValue(null, ::testProperty, "SecretData")
 
-        assertEquals("SecretData", ksafe.getDirect("encrypted_key", "fallback"))
+        assertEquals("SecretData", ksafe.getDirect("secretKey", "fallback"))
 
         // Encryption-by-default is observable via metadata: getKeyInfo must report a non-null protection tier.
-        val keyInfo = ksafe.getKeyInfo("encrypted_key")
+        val keyInfo = ksafe.getKeyInfo("secretKey")
         assertNotNull(keyInfo, "Key info should exist for stored value")
         assertNotNull(
             keyInfo.protection,
@@ -222,6 +222,28 @@ abstract class KSafeMutableStateOfTest {
 
         delegate.setValue(null, ::testProperty, "End")
         assertEquals("End", delegate.getValue(null, ::testProperty))
+    }
+
+    /**
+     * A persist that fails must not leave the Compose state showing a value that never
+     * reached disk. Keys in KSafe's reserved namespace are readable (they return the
+     * default) but writes are rejected synchronously on every platform, giving a
+     * deterministic persist failure without engine seams.
+     */
+    @Test
+    fun mutableStateOf_failedPersist_rollsBackTheOptimisticValue() {
+        val ksafe = createKSafe()
+
+        val provider = ksafe.mutableStateOf("durable_default", key = "__ksafe_reserved_probe")
+        val delegate = provider.provideDelegate(null, ::testProperty)
+
+        delegate.setValue(null, ::testProperty, "phantom")
+
+        assertEquals(
+            "durable_default",
+            delegate.getValue(null, ::testProperty),
+            "a failed persist must roll the optimistic state back to the durable value",
+        )
     }
 
     @Test

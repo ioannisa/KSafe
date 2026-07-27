@@ -28,6 +28,11 @@ private external fun _localStorageKey(index: Int): String?
 @JsFun("() => { return BigInt(Date.now()); }")
 private external fun _currentTimeMillis(): Long
 
+private const val SUBTLE_AVAILABLE_FN_JS: String = "() => { return $WEB_SUBTLE_AVAILABLE_JS; }"
+
+@JsFun(SUBTLE_AVAILABLE_FN_JS)
+private external fun _webCryptoSubtleAvailable(): Boolean
+
 @PublishedApi
 internal actual fun localStorageGet(key: String): String? = _localStorageGet(key)
 
@@ -45,3 +50,6 @@ internal actual fun localStorageKey(index: Int): String? = _localStorageKey(inde
 
 @PublishedApi
 internal actual fun currentTimeMillisWeb(): Long = _currentTimeMillis()
+
+@PublishedApi
+internal actual fun webCryptoSubtleAvailable(): Boolean = _webCryptoSubtleAvailable()

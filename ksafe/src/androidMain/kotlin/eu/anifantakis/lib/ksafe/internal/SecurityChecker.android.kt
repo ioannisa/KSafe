@@ -6,14 +6,11 @@ import android.os.Debug
 import java.io.File
 
 /**
- * Android security checks. Root detection is best-effort — hiding tools (Magisk
- * DenyList, Shamiko) can bypass it; use Play Integrity for high-security needs.
- *
- * The app sandbox often defeats the file/package probes (SELinux denies `untrusted_app`
- * access to `su`, so `File.exists` reads false even when present). The build-signal checks
- * survive the sandbox: a `userdebug`/`eng` type or `test-keys` signing indicates an image
- * that ships `su` by construction. The build *type*, not the signing tag, is decisive —
- * `user`-build emulators are `dev-keys`-signed yet not rooted.
+ * Android root detection, best-effort — hiding tools (Magisk DenyList, Shamiko) can bypass it;
+ * use Play Integrity for high-security needs. The app sandbox defeats file/package probes
+ * (SELinux denies `untrusted_app` access to `su`, so `File.exists` reads false even when
+ * present); the build-signal checks survive it. The build *type* (`userdebug`/`eng`), not the
+ * signing tag, is decisive — `user`-build emulators are `dev-keys`-signed yet not rooted.
  */
 internal actual object SecurityChecker {
 
@@ -61,6 +58,10 @@ internal actual object SecurityChecker {
         "/data/user_de/0/de.robv.android.xposed.installer"
     )
 
+    // Root PROVIDERS/managers and root-requiring frameworks only. Detection-only apps
+    // (e.g. Root Checker) are deliberately excluded: they sit on plenty of stock devices
+    // and prove nothing — flagging them is a pure false positive. Must stay in sync with
+    // the <queries> list in androidMain/AndroidManifest.xml.
     private val rootPackages = listOf(
         "com.topjohnwu.magisk",
         "com.koushikdutta.superuser",
@@ -73,8 +74,7 @@ internal actual object SecurityChecker {
         "com.smedialink.oneclickroot",
         "com.zhiqupk.root.global",
         "de.robv.android.xposed.installer",
-        "org.lsposed.manager",
-        "com.joeykrim.rootcheck"
+        "org.lsposed.manager"
     )
 
     private val dangerousProps = mapOf(
@@ -110,64 +110,35 @@ internal actual object SecurityChecker {
         }
     }
 
-    actual fun isEmulator(): Boolean {
-        return (Build.FINGERPRINT.startsWith("generic") ||
-                Build.FINGERPRINT.startsWith("unknown") ||
-                Build.MODEL.contains("google_sdk") ||
-                Build.MODEL.contains("Emulator") ||
-                Build.MODEL.contains("Android SDK built for x86") ||
-                Build.MANUFACTURER.contains("Genymotion") ||
-                Build.BRAND.startsWith("generic") ||
-                Build.DEVICE.startsWith("generic") ||
-                Build.PRODUCT.contains("sdk") ||
-                Build.PRODUCT.contains("emulator") ||
-                Build.HARDWARE.contains("goldfish") ||
-                Build.HARDWARE.contains("ranchu") ||
-                Build.BOARD.contains("unknown") ||
-                Build.ID.contains("FRF91") ||
-                Build.MANUFACTURER.contains("unknown") ||
-                Build.TAGS.contains("test-keys") ||
-                Build.TYPE.contains("userdebug"))
-    }
+    actual fun isEmulator(): Boolean = isEmulatorBuild(
+        fingerprint = Build.FINGERPRINT,
+        model = Build.MODEL,
+        manufacturer = Build.MANUFACTURER,
+        brand = Build.BRAND,
+        device = Build.DEVICE,
+        product = Build.PRODUCT,
+        hardware = Build.HARDWARE,
+        board = Build.BOARD,
+        id = Build.ID,
+    )
 
-    private fun checkRootPaths(): Boolean {
-        return suPaths.any { path ->
-            try {
-                File(path).exists()
-            } catch (_: Exception) {
-                false
-            }
+    /** Whether any of [paths] is present; an unreadable path is not evidence, so it reads false. */
+    private fun anyPathExists(paths: List<String>): Boolean = paths.any { path ->
+        try {
+            File(path).exists()
+        } catch (_: Exception) {
+            false
         }
     }
 
-    private fun checkMagiskPaths(): Boolean {
-        return magiskPaths.any { path ->
-            try {
-                File(path).exists()
-            } catch (_: Exception) {
-                false
-            }
-        }
-    }
+    private fun checkRootPaths(): Boolean = anyPathExists(suPaths)
 
-    private fun checkBusyBox(): Boolean {
-        return busyBoxPaths.any { path ->
-            try {
-                File(path).exists()
-            } catch (_: Exception) {
-                false
-            }
-        }
-    }
+    private fun checkMagiskPaths(): Boolean = anyPathExists(magiskPaths)
+
+    private fun checkBusyBox(): Boolean = anyPathExists(busyBoxPaths)
 
     private fun checkXposed(): Boolean {
-        val xposedFilesExist = xposedPaths.any { path ->
-            try {
-                File(path).exists()
-            } catch (_: Exception) {
-                false
-            }
-        }
+        val xposedFilesExist = anyPathExists(xposedPaths)
 
         // Xposed hooks leave frames in stack traces.
         val xposedInStack = try {
@@ -196,8 +167,7 @@ internal actual object SecurityChecker {
         }
     }
 
-    // Treats `userdebug`/`eng` builds (and `test-keys` signing) as rooted-capable. Reads only
-    // the public [Build] fields, so — unlike the file probes — it survives the app sandbox.
+    // Reads only public [Build] fields, so — unlike the file probes — it survives the app sandbox.
     private fun checkRootIndicatingBuild(): Boolean =
         isRootIndicatingBuild(Build.TYPE, Build.TAGS)
 
@@ -207,9 +177,8 @@ internal actual object SecurityChecker {
         }
     }
 
-    // Reads a system property via reflected `android.os.SystemProperties.get`, which hits the
-    // native property area directly and works from the sandbox (unlike `Runtime.exec("getprop")`,
-    // which SELinux denies to `untrusted_app`). Returns null on any failure so callers fail safe.
+    // Reflected `SystemProperties.get` hits the native property area directly and works from the
+    // sandbox, unlike `Runtime.exec("getprop")` which SELinux denies to `untrusted_app`. Null on failure.
     @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
     private fun readSystemProperty(name: String): String? = try {
         val clazz = Class.forName("android.os.SystemProperties")
@@ -221,14 +190,47 @@ internal actual object SecurityChecker {
 }
 
 /**
- * Does this build's type/tags indicate a rooted-capable image? The reliable signal is the
- * build *type*: `userdebug`/`eng` ship `su` and allow `adb root` by construction; `test-keys`
- * signing is a secondary indicator. Deliberately ignores `dev-keys` — modern Google emulator
- * images are `dev-keys`-signed for both `user` and `userdebug`, so the tag says nothing about
- * root and a `user`-build emulator must not be flagged.
+ * The reliable root signal is the build *type*: `userdebug`/`eng` ship `su` by construction;
+ * `test-keys` signing is secondary. Deliberately ignores `dev-keys` — modern Google emulator
+ * images are `dev-keys`-signed for both `user` and `userdebug`, so a `user`-build emulator must
+ * not be flagged.
  */
 internal fun isRootIndicatingBuild(buildType: String?, buildTags: String?): Boolean {
     val dangerousType = buildType == "userdebug" || buildType == "eng"
     val dangerousTags = buildTags != null && buildTags.contains("test-keys")
     return dangerousType || dangerousTags
+}
+
+/**
+ * Emulator detection from hardware/product/fingerprint signals ONLY. Build type and signing
+ * tags (`userdebug`/`test-keys`) deliberately do NOT count: they mark a root-capable image —
+ * [isRootIndicatingBuild]'s job — and a physical engineering device carrying them is not an
+ * emulator; flagging it here would trip an emulator-BLOCK policy for the wrong violation.
+ */
+internal fun isEmulatorBuild(
+    fingerprint: String?,
+    model: String?,
+    manufacturer: String?,
+    brand: String?,
+    device: String?,
+    product: String?,
+    hardware: String?,
+    board: String?,
+    id: String?,
+): Boolean {
+    return (fingerprint?.startsWith("generic") == true ||
+            fingerprint?.startsWith("unknown") == true ||
+            model?.contains("google_sdk") == true ||
+            model?.contains("Emulator") == true ||
+            model?.contains("Android SDK built for x86") == true ||
+            manufacturer?.contains("Genymotion") == true ||
+            brand?.startsWith("generic") == true ||
+            device?.startsWith("generic") == true ||
+            product?.contains("sdk") == true ||
+            product?.contains("emulator") == true ||
+            hardware?.contains("goldfish") == true ||
+            hardware?.contains("ranchu") == true ||
+            board?.contains("unknown") == true ||
+            id?.contains("FRF91") == true ||
+            manufacturer?.contains("unknown") == true)
 }

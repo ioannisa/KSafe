@@ -347,4 +347,69 @@ class KSafeComposeStateTest {
 
         assertEquals("New", state.value)
     }
+
+    /**
+     * A fire-and-forget persist that fails leaves the state showing a value that never became
+     * durable: storage never changed, so no echo can arrive to correct it. The failure
+     * reconcile must revert to the durable value and release the write-echo latch.
+     */
+    @Test
+    fun composeState_reconcileAfterFailedPersist_revertsThePhantomToTheDurableValue() {
+        val tokens = mutableListOf<Long>()
+        lateinit var state: KSafeComposeState<String>
+        state = KSafeComposeState(
+            initialValue = "A",
+            valueSaver = { tokens += state.writeTokenInFlight() },
+            policy = structuralEqualityPolicy()
+        )
+
+        state.value = "B" // optimistic write whose persist fails
+        assertEquals("B", state.value)
+
+        state.reconcileAfterFailedPersist(tokens.last(), durableValue = "A")
+
+        assertEquals("A", state.value, "a failed persist must revert the state to the durable value")
+
+        // The latch must have been released: external emissions reflect again.
+        state.updateFromFlow("external")
+        assertEquals("external", state.value, "external changes must keep reflecting after the reconcile")
+    }
+
+    /** A newer user write owns the state; a stale failure of an older write must not clobber it. */
+    @Test
+    fun composeState_reconcileAfterFailedPersist_isANoOp_whenANewerWriteOwnsTheState() {
+        val tokens = mutableListOf<Long>()
+        lateinit var state: KSafeComposeState<String>
+        state = KSafeComposeState(
+            initialValue = "A",
+            valueSaver = { tokens += state.writeTokenInFlight() },
+            policy = structuralEqualityPolicy()
+        )
+
+        state.value = "B"
+        state.value = "C" // supersedes B before B's failure lands
+
+        state.reconcileAfterFailedPersist(tokens.first(), durableValue = "A")
+
+        assertEquals("C", state.value, "an older write's failure must not revert a newer in-flight write")
+    }
+
+    /** Reconciling without an armed latch (write already echoed/settled) must not disturb the state. */
+    @Test
+    fun composeState_reconcileAfterFailedPersist_isANoOp_afterTheEchoSettledTheWrite() {
+        val tokens = mutableListOf<Long>()
+        lateinit var state: KSafeComposeState<String>
+        state = KSafeComposeState(
+            initialValue = "A",
+            valueSaver = { tokens += state.writeTokenInFlight() },
+            policy = structuralEqualityPolicy()
+        )
+
+        state.value = "B"
+        state.updateFromFlow("B") // the write's own echo clears the latch
+
+        state.reconcileAfterFailedPersist(tokens.last(), durableValue = "A")
+
+        assertEquals("B", state.value, "a spurious late failure must not revert an already-settled write")
+    }
 }

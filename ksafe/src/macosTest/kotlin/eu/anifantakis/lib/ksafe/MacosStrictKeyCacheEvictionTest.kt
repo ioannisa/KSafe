@@ -16,13 +16,6 @@ import kotlin.test.assertNull
  */
 class MacosStrictKeyCacheEvictionTest {
 
-    private class FakeKeychainStore : AppleKeychainStore {
-        val map = KSafeConcurrentMap<ByteArray>()
-        override fun readBytes(account: String): ByteArray? = map[account]
-        override fun store(account: String, bytes: ByteArray, requireUnlocked: Boolean) { map[account] = bytes }
-        override fun delete(account: String) { map.remove(account) }
-    }
-
     @Test
     fun strictRewrite_evictsLingeringNonStrictPlaintextKeyBytes() {
         val engine = AppleKeychainEncryption(keychainStore = FakeKeychainStore())

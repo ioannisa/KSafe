@@ -3,9 +3,8 @@ package eu.anifantakis.lib.ksafe.biometrics
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * JVM implementation of [KSafeBiometrics] — real desktop prompts since 2.2.0:
@@ -24,18 +23,17 @@ import java.util.concurrent.ConcurrentHashMap
  * the migration path for desktop apps that relied on the old pass-through.
  */
 
-private val biometricAuthSessions = ConcurrentHashMap<String, Long>()
-
-// Monotonic TTL clock (System.nanoTime never goes backward): a wall-clock jump must
-// not extend a cached authorization.
-private fun monotonicNowMs(): Long = System.nanoTime() / 1_000_000
-
 private val directCallbackScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-/** Test seam: replaces the OS prompt so unit tests never show real dialogs. */
+// Serializes desktop prompts like Android and the web: two overlapping OS ceremonies stack
+// dialogs (or the loser fails as DeviceBusy on Windows); queued callers re-check the cache
+// once the gate is held so a just-authenticated sibling spares them a redundant prompt.
+private val promptGate = BiometricPromptGate()
+
+/** Test seam: replaces the OS prompt. */
 internal var desktopPromptOverrideForTest: ((reason: String, allowFallback: Boolean) -> Boolean)? = null
 
-/** Test seam: replaces the OS availability probe (its real answer is machine-dependent). */
+/** Test seam: replaces the OS availability probe. */
 internal var desktopAvailabilityOverrideForTest: ((allowFallback: Boolean) -> Boolean)? = null
 
 private enum class DesktopOs { MAC, WINDOWS, OTHER }
@@ -65,8 +63,9 @@ private suspend fun runDesktopPrompt(reason: String, allowFallback: Boolean): Bo
             MacLocalAuthentication.evaluate(reason, allowFallback)
         } else null
         DesktopOs.WINDOWS -> if (WindowsHello.isAvailable) {
-            // Blocking COM + poll loop — keep it off the caller's dispatcher.
-            withContext(Dispatchers.IO) { WindowsHello.evaluate(reason, allowFallback) }
+            // Blocking COM + poll loop — keep it off the caller's dispatcher. Interruptible so
+            // coroutine cancellation reaches the poll loop, which cancels the native ceremony.
+            runInterruptible(Dispatchers.IO) { WindowsHello.evaluate(reason, allowFallback) }
         } else null
         DesktopOs.OTHER -> null
     }
@@ -76,28 +75,31 @@ internal actual suspend fun platformVerifyBiometric(
     reason: String,
     authorizationDuration: BiometricAuthorizationDuration?,
     allowDeviceCredentialFallback: Boolean,
+    title: String?,
+    cancelLabel: String?,
 ): Boolean {
-    if (BiometricAuthSession.shouldCache(authorizationDuration)) {
-        val scope = BiometricAuthSession.sessionKey(authorizationDuration!!.scope, requireStrict = !allowDeviceCredentialFallback)
-        val lastAuth = biometricAuthSessions[scope] ?: 0L
-        val now = monotonicNowMs()
-        if (lastAuth > 0 && (now - lastAuth) < authorizationDuration.duration) {
-            return true
+    val attempt = beginBiometricAttempt(authorizationDuration, allowDeviceCredentialFallback)
+        ?: return true
+
+    // Re-check the cache INSIDE the gate: a caller we queued behind may have just seeded this
+    // scope, so skip a redundant prompt (skip → authorized, but no re-seed, so the window
+    // cannot extend).
+    var skippedAsFreshlyAuthorized = false
+    val prompted = promptGate.withSinglePrompt {
+        if (attempt.isFresh()) {
+            skippedAsFreshlyAuthorized = true
+            null
+        } else {
+            runDesktopPrompt(reason, allowDeviceCredentialFallback)
         }
     }
+    if (skippedAsFreshlyAuthorized) return true
 
-    val prompted = runDesktopPrompt(reason, allowDeviceCredentialFallback)
     val success = prompted ?: true // legacy pass-through where no prompt path exists
 
-    if (success && BiometricAuthSession.shouldCache(authorizationDuration)) {
-        // A success arriving for a cancelled caller must not grant a later call a
-        // prompt-free pass.
-        seedBiometricSessionIfActive {
-            biometricAuthSessions[
-                BiometricAuthSession.sessionKey(authorizationDuration!!.scope, requireStrict = !allowDeviceCredentialFallback)
-            ] = monotonicNowMs()
-        }
-    }
+    // A success arriving for a cancelled caller — or after clearBiometricAuth() revoked the
+    // scope mid-prompt — must not grant a later call a prompt-free pass.
+    if (success) attempt.seedIfActive()
     return success
 }
 
@@ -105,38 +107,26 @@ internal actual fun platformVerifyBiometricDirect(
     reason: String,
     authorizationDuration: BiometricAuthorizationDuration?,
     allowDeviceCredentialFallback: Boolean,
+    title: String?,
+    cancelLabel: String?,
     onResult: (Boolean) -> Unit,
 ) {
-    // The JVM has no main thread to converge on (unlike Android/Apple): the callback
-    // is delivered on a background dispatcher thread.
-    directCallbackScope.launch {
-        val result = runCatching {
-            platformVerifyBiometric(reason, authorizationDuration, allowDeviceCredentialFallback)
-        }.getOrDefault(false)
-        onResult(result)
+    // The JVM has no main thread to converge on: the callback runs on a background dispatcher thread.
+    directCallbackScope.deliverBiometricResult(onResult) {
+        platformVerifyBiometric(reason, authorizationDuration, allowDeviceCredentialFallback, title, cancelLabel)
     }
-}
-
-internal actual fun platformClearBiometricAuth(scope: String?) {
-    if (scope == null) {
-        biometricAuthSessions.clear()
-        return
-    }
-    // Clear BOTH the permissive and strict slots for this scope (see BiometricAuthSession).
-    biometricAuthSessions.remove(BiometricAuthSession.sessionKey(scope, requireStrict = false))
-    biometricAuthSessions.remove(BiometricAuthSession.sessionKey(scope, requireStrict = true))
 }
 
 internal actual suspend fun platformBiometricsAvailable(allowDeviceCredentialFallback: Boolean): Boolean {
     desktopAvailabilityOverrideForTest?.let { return it(allowDeviceCredentialFallback) }
-    if (desktopPromptsDisabled()) return false // opted out → verify is a pass-through, no real prompt
+    if (desktopPromptsDisabled()) return false
     return when (desktopOs) {
         DesktopOs.MAC -> MacLocalAuthentication.isAvailable &&
             MacLocalAuthentication.canEvaluate(allowDeviceCredentialFallback)
         // Blocking COM round-trip (prompt-free) — keep it off the caller's dispatcher.
         DesktopOs.WINDOWS -> WindowsHello.isAvailable &&
             withContext(Dispatchers.IO) { WindowsHello.checkAvailability() }
-        DesktopOs.OTHER -> false // no portable prompt API (Linux) → verify passes through
+        DesktopOs.OTHER -> false
     }
 }
 
@@ -144,10 +134,7 @@ internal actual fun platformBiometricsAvailableDirect(
     allowDeviceCredentialFallback: Boolean,
     onResult: (Boolean) -> Unit,
 ) {
-    directCallbackScope.launch {
-        val result = runCatching {
-            platformBiometricsAvailable(allowDeviceCredentialFallback)
-        }.getOrDefault(false)
-        onResult(result)
+    directCallbackScope.deliverBiometricResult(onResult) {
+        platformBiometricsAvailable(allowDeviceCredentialFallback)
     }
 }

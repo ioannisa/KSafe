@@ -20,7 +20,7 @@ DataStore preferences file as the ciphertext it was meant to protect:
 
 ```
 <user.home>/.eu_anifantakis_ksafe/
-└── ksafe.preferences_pb     ← ciphertext AND Base64(key) side by side
+└── eu_anifantakis_ksafe_datastore.preferences_pb   ← ciphertext AND Base64(key) side by side
 ```
 
 Anyone who could read that one file as the same user could decrypt every
@@ -38,30 +38,55 @@ KSafe → JvmKeyVault (selected per-OS) → OS secret store
 Implementation: `ksafe/src/jvmMain/.../internal/keyvault/`. Selection happens
 once per engine instance in `JvmKeyVaultProvider.pick()`.
 
+> **Key rotation.** After `rotateKeys()`, each generation's master key is
+> custodied through this *same* per-OS vault under a generation-suffixed alias
+> (`__ksafe_master__.g<N>`); old generations are retired via the ordinary
+> per-alias `delete`, and everything the store owns is dropped with it on
+> `clearAll`. See [`KEY_ROTATION.md`](KEY_ROTATION.md).
+
 ---
 
 ## Selection flow
 
 ```
-                            ┌─ os.name contains "win"      → WindowsDpapiKeyVault
+                            ┌─ os.name contains "win"          → WindowsDpapiKeyVault ─┐
+JvmKeyVaultProvider.pick()──┼─ os.name contains "mac"|"darwin" → MacosKeychainKeyVault ─┼─► selfTest
+                            │                                                           │   (canary
+                            ├─ os.name "nux"|"nix"|"aix"       → LinuxSecretServiceKeyVault ─┘   put/get/delete)
+                            │                                                               │
+                            │                                                     pass ─────┴─► use the OS vault
+                            │                                                     fail ─────────► FAIL-CLOSED (keep legacy,
+                            │                                                                     but refuse to mint keys)
                             │
-JvmKeyVaultProvider.pick()──┼─ os.name contains "mac"|"darwin" → MacosKeychainKeyVault
-                            │
-                            ├─ os.name contains "nux"|"nix"|"aix" → LinuxSecretServiceKeyVault
-                            │
-                            └─ anything else, or JNA/link failure → null
+                            └─ anything else, or construction / JNA-link failure → null
                                                                        │
                                                                        ▼
-                                          selfTest(canary put/get/delete) ── pass ──► use it
-                                                                       │
-                                                                      fail ──► DataStoreKeyVault (warn once)
+                                              DataStoreKeyVault (working software fallback, warn once)
 ```
 
 Every OS-backed vault runs a **self-test** before being accepted: it stores a
-5-byte canary (`"KSafe"`), reads it back, and deletes it. If anything in that
-round-trip fails (no daemon running, locked keychain, missing library, broken
-JNA link), selection silently falls back to `DataStoreKeyVault` and prints
-one warning per process to `System.err`.
+canary (`"KSafe"`, under a UUID alias so two concurrent self-tests can't
+interleave), reads it back, and deletes it. There are **two very different
+outcomes when an OS vault isn't usable**, and they are not the same tier:
+
+- **No OS vault could be constructed** (the host OS isn't one of the three, or
+  JNA can't link the native library, so `buildOsVault` returns `null`). There is
+  no OS key that a software store could clobber, so KSafe selects
+  `DataStoreKeyVault` and keeps working. `protectionInfo` reports
+  `effectiveLevel = SOFTWARE`, note `jvm_os_vault_unavailable`, and
+  `isEncryptionOperational = true`. One `warnFallbackOnce` per process.
+- **An OS vault was constructed but its self-test failed** (a locked Keychain, a
+  login keyring not yet on D-Bus, a headless/SSH launch). The real keys almost
+  certainly live in that OS store and it will be reachable on a healthy launch,
+  so falling back to the software store would destroy them: a fresh key minted
+  into the legacy migration source overwrites the OS key on the next launch, and
+  a null lookup is ambiguous (`hasDegraded`), so the orphan sweep could delete
+  recoverable OS-only ciphertext. KSafe therefore **fails closed** — it holds the
+  legacy store but refuses to mint keys through it. `protectionInfo` reports note
+  `jvm_os_vault_degraded` and `isEncryptionOperational = false`: encrypted reads
+  return their defaults and encrypted writes throw until the OS store is reachable
+  again. One `warnOsVaultUnavailableOnce` per process. See
+  [`PROTECTION_INFO.md`](PROTECTION_INFO.md) for `isEncryptionOperational`.
 
 ---
 
@@ -88,8 +113,8 @@ the same machine can later unprotect.
 
 Storing the wrapped blob in a file is safe because the blob is cryptographically
 useless to anyone who is not logged in as that specific Windows user on that
-specific machine. Copying `ksafe.preferences_pb` to a different account or a
-different PC does not get you the key.
+specific machine. Copying that `.preferences_pb` file to a different account or
+a different PC does not get you the key.
 
 **What it defends against:**
 
@@ -237,10 +262,14 @@ and KSafe falls back to the legacy plaintext store with a one-time warning.
 ## The fallback: `DataStoreKeyVault`
 
 **Class:** `DataStoreKeyVault`
-**Used when:** the host OS isn't one of the three above; OR JNA cannot link
-the native library; OR no Secret Service daemon is reachable; OR the Keychain
-is locked; OR the self-test fails for any reason; OR the user explicitly
-opts out (see below).
+**Used when:** the host OS isn't one of the three above; OR JNA cannot link /
+construct the native vault (`buildOsVault` returns `null`); OR the user
+explicitly opts out (see below).
+
+> Note: a *constructed* OS vault whose self-test fails (a locked Keychain, a
+> keyring not yet on D-Bus) does **not** land here. That path fails closed
+> (`jvm_os_vault_degraded`, `isEncryptionOperational = false`) rather than
+> silently downgrading to plaintext key storage — see **Selection flow** above.
 
 **What it does.** Identical to KSafe ≤ 2.0: the raw AES key is Base64-encoded
 and written into the DataStore file under the prefix `ksafe_key_`.
@@ -267,6 +296,29 @@ triggers:
 > can read that file as this user. Install/enable a keyring (Linux:
 > gnome-keyring/ksecretservice) or run on a host with DPAPI (Windows) /
 > Keychain (macOS) for OS-backed key protection.
+
+There are two other one-time `System.err` warnings, each printed at most once
+per JVM process (they guard distinct, non-fallback conditions):
+
+- **`warnOsVaultUnavailableOnce`** — an OS vault exists but failed its
+  construction-time self-test (locked Keychain, keyring not yet on D-Bus, an
+  SSH/headless launch). This is the **fail-closed** path, not a fallback: KSafe
+  will *not* store keys in plaintext this session because that could destroy
+  keys already held in the OS store. Encrypted reads return their defaults and
+  encrypted writes fail until the OS store is reachable again
+  (`jvm_os_vault_degraded`, `isEncryptionOperational = false`). The message
+  points at `-Dksafe.jvm.keyVault=software` for deliberately choosing software
+  storage instead.
+- **`warnRuntimeDegrade`** — the OS vault came up healthy at construction but a
+  later get/put/delete threw a `LinkageError` / `ExceptionInInitializerError`
+  (typically a jlink-trimmed runtime missing `jdk.unsupported` →
+  `NoClassDefFoundError: sun/misc/Unsafe`). `degradeToLegacy` then routes to the
+  software vault for the rest of the process. Because the OS vault is dead
+  in-process there is no reachable OS key to overwrite, so persisting to the
+  legacy store is safe here. The message stresses that the same
+  `jdk.unsupported` module is also required by DataStore itself — see
+  [`jdk.unsupported`](#compose-desktop-release-distributables-jdkunsupported)
+  below.
 
 ---
 
@@ -312,21 +364,72 @@ KSafe folds an app namespace into the OS-vault destination only:
 | Linux Secret Service | Attribute value: `<ns>/<alias>` |
 | Legacy `DataStoreKeyVault` | **Not namespaced** — its `ksafe_key_` layout is the frozen 2.0 on-disk format and the migration source |
 
-Resolution priority for the namespace (first non-blank wins):
+Resolution priority for the namespace — `resolveJvmAppNamespace`, first
+non-blank wins (**four tiers**):
 
 1. `KSafeConfig.appNamespace` set in code.
 2. `-Dksafe.appNamespace` JVM system property.
 3. `KSAFE_APP_NAMESPACE` environment variable.
-4. Best-effort auto-derivation from `sun.java.command` (main class name or
-   jar basename).
-5. Literal `"shared"` (impossible to be blank).
+4. Literal `"shared"` (`DEFAULT_JVM_NAMESPACE`, impossible to be blank).
 
-The resolved value is sanitised to `[A-Za-z0-9._-]` and truncated to 120
-characters so it is safe as a Keychain service name, DataStore key, and
-Secret Service attribute value. Production apps should set
-`KSafeConfig.appNamespace` explicitly — the auto-derivation favours stability
-(launcher names are stable across runs) over uniqueness (two apps with the
-same main class would still collide).
+The resolved value goes through one normalisation (`canonicalNamespaceToken`):
+surrounding whitespace and leading dots are stripped, anything outside
+`[A-Za-z0-9._-]` becomes `_`, and the result is capped at 120 characters — so it
+is safe as a Keychain service name, DataStore key, and Secret Service attribute
+value. When that rewrite actually changed something, the token carries a
+`-<16 hex>` FNV-1a digest of the pre-sanitisation value, so two different
+configured namespaces can't collapse onto one identity; an already-clean
+namespace is left exactly as written.
+
+> **No `sun.java.command` derivation.** Earlier builds had a fifth live tier
+> that auto-derived a namespace from the launcher (main-class name or jar
+> basename). It was removed: the launcher token changes between runs and
+> releases, so a moving default would silently orphan every key on upgrade,
+> hide the data, and let the orphan sweep delete it. That derivation now
+> survives **only as a read-side migration source** — `legacyDerivedJvmNamespace`
+> reproduces the old byte-for-byte derivation so a key stored under it can be
+> recovered on read (see **Legacy-namespace recovery** below). Nothing writes
+> new keys there. Because there is no auto-uniqueness anymore, production apps
+> that share a per-user store with other KSafe apps should set
+> `KSafeConfig.appNamespace` explicitly.
+
+---
+
+## Legacy-namespace recovery
+
+Because the namespace no longer auto-derives (tier 4 above), a key an older
+release stored under a *different* namespace would become invisible after an
+upgrade — every decrypt would fail and the orphan sweep would delete the
+ciphertext. `JvmKeyVaultProvider` guards against this with a read-side recovery
+path, active only when the picked vault is OS-backed:
+
+- **What it probes.** `recoverFromLegacyNamespace(alias)` runs when a lookup
+  under the current namespace misses. It builds OS-vault *twins* for the legacy
+  fallback namespaces — `legacyFallbackNamespaces` returns, in probe order, the
+  namespace an older release resolved from this same configuration before the
+  token was canonicalised (`legacyResolvedJvmAppNamespace`; absent when the two
+  agree), then `derived`, then `"shared"`, minus whichever equals the current
+  one. `derived` is `legacyDerivedJvmNamespace()`, reproducing the removed
+  `sun.java.command` derivation byte-for-byte. Twins are built lazily and only
+  in production wiring.
+- **Forward migration on a hit.** When a twin has the key, KSafe writes it into
+  the active vault, then read-back-verifies. The recovered bytes are always
+  returned so this session decrypts even if the copy hiccups (the migration just
+  retries next time).
+- **Never delete from `"shared"`.** The old entry is reclaimed (deleted from the
+  twin) *only* for a genuine derived legacy namespace with no live owner. The
+  stable `"shared"` default (`DEFAULT_JVM_NAMESPACE`) is **never** deleted — a
+  co-existing no-namespace instance may still own that key, and moving it would
+  orphan that instance's ciphertext. The pre-canonicalization namespace is
+  protected the same way, since a not-yet-upgraded sibling of this same app may
+  still be reading it. `deleteFromLegacyNamespace` follows that rule too, and
+  where it therefore has to leave the old entry standing it records a tombstone
+  in the active vault instead, so a delete-then-recreate can't resurrect a
+  pre-upgrade key.
+- **Outage is not absence.** OS vaults *throw* "vault unavailable" (never return
+  `null`) when unreachable; recovery propagates that so the caller reports
+  "unavailable" (non-deletable to the orphan sweep) instead of collapsing to a
+  deletable null.
 
 ---
 
@@ -352,25 +455,29 @@ diagnostic [`KSafe.protectionInfo`](PROTECTION_INFO.md):
 
 ```kotlin
 val info = ksafe.protectionInfo
-// JVM-vault healthy:    effectiveLevel = SANDBOX_PROTECTED, custody = "Linux Secret Service (...)", notes = []
-// JVM fallback:         effectiveLevel = SOFTWARE,          custody = "DataStore (software, ...)",  notes = ["jvm_os_vault_unavailable"]
-// JVM user opted out:   effectiveLevel = SOFTWARE,          custody = "DataStore (software, ...)",  notes = ["jvm_user_opted_out"]
+// JVM-vault healthy:  effectiveLevel = SANDBOX_PROTECTED, custody = "Linux Secret Service (...)", notes = []
+// JVM fallback:       effectiveLevel = SOFTWARE, custody = "DataStore (software, ...)", notes = ["jvm_os_vault_unavailable"], isEncryptionOperational = true
+// JVM fail-closed:    effectiveLevel = SOFTWARE, custody = "DataStore (software, ...)", notes = ["jvm_os_vault_degraded"],    isEncryptionOperational = false
+// JVM user opted out: effectiveLevel = SOFTWARE, custody = "DataStore (software, ...)", notes = ["jvm_user_opted_out"]
 ```
 
-Use that API in production code (gating, telemetry, UI badges). The internal
-engine accessors below are kept for tests only — they're not part of the public
-API surface.
+`jvm_os_vault_unavailable` (no OS store, software works) and
+`jvm_os_vault_degraded` (an OS store exists but is unreachable) both report
+`SOFTWARE`, but only the latter is **non-operational** — gate on
+[`isEncryptionOperational`](PROTECTION_INFO.md), not on `effectiveLevel`, to tell
+"weaker but working" from "encrypted ops will throw".
 
-The active vault's `name` and `isOsBacked` properties are surfaced for
-diagnostics on the engine (not part of KSafe's public API — they are
-internal-visible for tests). Possible `name` values:
+Use that API in production code (gating, telemetry, UI badges). The active
+vault's `name` / `isOsBacked` are also surfaced on the engine for tests
+(internal-visible, not public API). Possible `name` values:
 
 - `Windows DPAPI (CryptProtectData, current-user)`
 - `macOS Keychain (Security.framework, login keychain)`
 - `Linux Secret Service (libsecret, login keyring)`
-- `DataStore (software, plaintext — no OS protection)` ← fallback
+- `DataStore (software, plaintext — no OS protection)` ← DataStore fallback / opt-out
+- `JSON file (software, plaintext — no OS protection)` ← `FileKeyVault`, the no-`Unsafe` JSON-file path
 
-If you see the last one in production on a host that should have an OS
+If you see one of the software names in production on a host that should have an OS
 keyring, check:
 
 - The fallback warning will be in your process stderr on first key access.

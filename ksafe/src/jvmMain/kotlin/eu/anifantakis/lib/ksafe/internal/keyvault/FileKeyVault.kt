@@ -1,5 +1,7 @@
 package eu.anifantakis.lib.ksafe.internal.keyvault
 
+import eu.anifantakis.lib.ksafe.decodeBase64
+import eu.anifantakis.lib.ksafe.encodeBase64
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
@@ -7,8 +9,6 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermissions
-import kotlin.io.encoding.Base64
-import kotlin.io.encoding.ExperimentalEncodingApi
 
 /**
  * Software [JvmKeyVault] storing AES keys Base64-encoded in a plain JSON file —
@@ -20,13 +20,11 @@ import kotlin.io.encoding.ExperimentalEncodingApi
  * ciphertext), so `isOsBacked = false`. Writes are atomic (temp file +
  * `ATOMIC_MOVE`) in the same `0700` directory as the data.
  */
-@OptIn(ExperimentalEncodingApi::class)
 internal class FileKeyVault(
     private val file: File,
     /**
-     * fsyncs the given directory so a preceding atomic rename into it is durable.
-     * Injectable for tests; best-effort (a no-op where a directory can't be opened
-     * as a channel, e.g. Windows).
+     * fsyncs the directory so a preceding atomic rename is durable. Injectable for
+     * tests; best-effort no-op where a directory can't be opened as a channel (Windows).
      */
     private val syncDir: (File) -> Unit = ::fsyncDirectory,
 ) : JvmKeyVault {
@@ -39,16 +37,20 @@ internal class FileKeyVault(
 
     @Synchronized
     private fun read(): MutableMap<String, String> {
-        // A missing file means "no keys yet" — empty is correct.
         if (!file.exists()) return mutableMapOf()
-        // But a file that EXISTS yet can't be read/parsed must throw, not read as empty:
-        // every key would look absent and the orphan sweep would delete recoverable ciphertext.
+        // Fail closed: an existing-but-unreadable file must throw, not read as empty —
+        // else every key looks absent and the orphan sweep deletes recoverable ciphertext.
         val text = try {
             file.readText()
         } catch (e: Throwable) {
             throw IllegalStateException("KSafe: key vault file unreadable: ${file.name}", e)
         }
-        if (text.isBlank()) return mutableMapOf()
+        // An existing-but-blank file is truncation, never a fresh store — write() always emits
+        // at least "{}" and clearAll() deletes the file — so it must fail closed like the
+        // unreadable/corrupt branches, not read as "no keys yet".
+        if (text.isBlank()) {
+            throw IllegalStateException("KSafe: key vault file is blank (truncated?): ${file.name}")
+        }
         return try {
             json.decodeFromString(ser, text).toMutableMap()
         } catch (e: Throwable) {
@@ -60,20 +62,15 @@ internal class FileKeyVault(
     private fun write(map: Map<String, String>) {
         val parent = file.parentFile
         if (parent != null && !parent.exists()) parent.mkdirs()
-        // Sweep temp files a previously crashed write left behind BEFORE creating a new one:
-        // each holds the FULL plaintext key map, and a process killed between the data-fsync and
-        // the atomic move below can't run its own cleanup. Doing it here bounds the on-disk
-        // exposure to the single in-flight write and survives clearAll-less lifecycles.
+        // Sweep crash-leftover temp files first: each holds the full plaintext key map.
         deleteStaleTempFiles(parent)
-        // Temp file created owner-only (rw-------) so the plaintext AES key is never briefly
-        // group/world-readable; ATOMIC_MOVE carries those perms onto the destination.
-        // Non-POSIX filesystems (Windows) rely on the 0700 parent dir instead.
+        // Owner-only (rw-------) so the plaintext AES key is never group/world-readable;
+        // ATOMIC_MOVE carries the perms to the destination. Windows relies on the 0700 dir.
         val tmp = createOwnerOnlyTempFile(parent)
         try {
-            // fsync the data BEFORE the rename: a journaling FS may persist the rename ahead
-            // of the temp file's blocks, leaving a zero-length destination on a crash. This
-            // holds the only copy of the master key, and a blank file reads as "no keys yet"
-            // — the orphan sweep would then delete every entry.
+            // fsync data BEFORE the rename: a journaling FS can persist the rename ahead of the
+            // temp file's blocks, leaving a zero-length destination that reads as "no keys yet"
+            // — the orphan sweep then deletes every entry.
             java.io.FileOutputStream(tmp).use { out ->
                 out.write(json.encodeToString(ser, map).encodeToByteArray())
                 out.flush()
@@ -85,10 +82,8 @@ internal class FileKeyVault(
                 StandardCopyOption.ATOMIC_MOVE,
                 StandardCopyOption.REPLACE_EXISTING,
             )
-            // fsync the PARENT DIRECTORY too, so the rename (a directory-entry change) is
-            // durable. The data fsync above persists only the temp file's blocks; without
-            // this, a crash after the move can lose the rename and leave the key file missing
-            // — which reads as "no keys yet" and the orphan sweep deletes every entry.
+            // fsync the parent dir too, so the rename itself is durable — else a crash can lose
+            // it and leave the key file missing, which reads as "no keys yet" and gets swept.
             val dir = file.absoluteFile.parentFile
             if (dir != null) syncDir(dir)
         } catch (e: Throwable) {
@@ -98,15 +93,14 @@ internal class FileKeyVault(
     }
 
     /**
-     * Deletes leftover `<file.name>*.tmp` files from a write whose process died before the
-     * atomic move. Each such orphan is a full plaintext copy of the key map. Best-effort;
-     * never deletes the destination key file itself.
+     * Deletes `<file.name>*.tmp` orphans from a write that died before the atomic move — each
+     * is a full plaintext copy of the key map. Best-effort; never deletes the key file itself.
      */
     private fun deleteStaleTempFiles(parent: File?) {
         val dir = parent ?: file.absoluteFile.parentFile ?: return
         runCatching {
             dir.listFiles()?.forEach { f ->
-                if (f.name != file.name && f.name.startsWith(file.name) && f.name.endsWith(".tmp")) {
+                if (f.name != file.name && f.name.startsWith(file.name) && f.name.endsWith(KEY_VAULT_TEMP_SUFFIX)) {
                     runCatching { f.delete() }
                 }
             }
@@ -119,20 +113,19 @@ internal class FileKeyVault(
             Files.createTempFile(
                 dir.toPath(),
                 file.name,
-                ".tmp",
+                KEY_VAULT_TEMP_SUFFIX,
                 PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")),
             ).toFile()
         } catch (_: UnsupportedOperationException) {
             // Non-POSIX filesystem (Windows): no perm-on-create; the 0700 parent dir protects it.
-            File.createTempFile(file.name, ".tmp", parent)
+            File.createTempFile(file.name, KEY_VAULT_TEMP_SUFFIX, parent)
         }
     }
 
     private companion object {
         /**
-         * Best-effort fsync of [dir] so a preceding atomic rename into it survives a crash.
-         * Opening a directory as a channel is POSIX-only; swallowed on Windows, where the
-         * data fsync + atomic move are the durability guarantee.
+         * Best-effort fsync of [dir] so a preceding atomic rename survives a crash. Opening a
+         * directory as a channel is POSIX-only; swallowed on Windows.
          */
         fun fsyncDirectory(dir: File) {
             runCatching {
@@ -143,12 +136,12 @@ internal class FileKeyVault(
     }
 
     @Synchronized
-    override fun get(alias: String): ByteArray? = read()[alias]?.let { Base64.decode(it) }
+    override fun get(alias: String): ByteArray? = read()[alias]?.let { decodeBase64(it) }
 
     @Synchronized
     override fun put(alias: String, keyBytes: ByteArray) {
         val map = read()
-        map[alias] = Base64.encode(keyBytes)
+        map[alias] = encodeBase64(keyBytes)
         write(map)
     }
 
@@ -157,4 +150,25 @@ internal class FileKeyVault(
         val map = read()
         if (map.remove(alias) != null) write(map)
     }
+
+    /**
+     * Wipes EVERY key (this file is a per-store plaintext key map, so removing it in whole is
+     * safe and is the only way to reclaim keys the per-alias deletes miss — orphans and
+     * `getOrCreateSecret` slots). Deleting the physical file + its crash-leftover temp copies
+     * leaves no plaintext key material behind. Called on the write consumer, so it never races
+     * a concurrent write; a subsequent write re-creates the file with the fresh key.
+     */
+    @Synchronized
+    override fun clearAll() {
+        deleteStaleTempFiles(file.parentFile)
+        runCatching { file.delete() }
+    }
 }
+
+/**
+ * Suffix of [FileKeyVault]'s atomic-write staging files. Each is a full plaintext copy of the AES
+ * key map, so the store's own crash-leftover sweep and `clearAll`'s residue sweep — in a different
+ * file — must recognise exactly the same name. (`JvmFallbackMigration`'s pending-state temp shares
+ * the spelling by coincidence, not by contract, and deliberately does not use this.)
+ */
+internal const val KEY_VAULT_TEMP_SUFFIX: String = ".tmp"

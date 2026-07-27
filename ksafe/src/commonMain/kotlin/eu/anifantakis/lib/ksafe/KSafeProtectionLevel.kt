@@ -20,6 +20,13 @@ enum class KSafeProtectionLevel {
      * stolen disks expose the AES key intact. The JVM fallback when no OS secret
      * store is available or the user opts out via `-Dksafe.jvm.keyVault=software`
      * / env `KSAFE_JVM_KEY_VAULT=software`.
+     *
+     * On web this level doubles as the non-secure-context signal: when
+     * `crypto.subtle` is unavailable there is no key at all and every encrypted op
+     * fails, so `effectiveLevel` drops here. Tell that non-operational case apart from a
+     * working software key ONLY by the [KSafeProtectionInfo.notes] code
+     * `web_crypto_subtle_unavailable` — not by the level, which a working JVM or
+     * iOS-Simulator fallback also reports as SOFTWARE.
      */
     SOFTWARE,
 

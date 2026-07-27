@@ -16,10 +16,6 @@ plugins {
 }
 
 // Set the same group and version as your main library
-group = "eu.anifantakis"
-// Single source of truth — see `ksafe.version` in the root gradle.properties.
-version = providers.gradleProperty("ksafe.version").get()
-
 kotlin {
     android {
         namespace = "eu.anifantakis.lib.ksafe.compose"
@@ -43,32 +39,14 @@ kotlin {
 
     val xcfName = "ksafe-composeKit"
 
-    iosX64 {
-        binaries.framework {
-            baseName = xcfName
-        }
-    }
-
-    iosArm64 {
-        binaries.framework {
-            baseName = xcfName
-        }
-    }
-
-    iosSimulatorArm64 {
-        binaries.framework {
-            baseName = xcfName
-        }
-    }
-
-    macosX64 {
-        binaries.framework {
-            baseName = xcfName
-        }
-    }
-
-    macosArm64 {
-        binaries.framework {
+    listOf(
+        iosX64(),
+        iosArm64(),
+        iosSimulatorArm64(),
+        macosX64(),
+        macosArm64(),
+    ).forEach {
+        it.binaries.framework {
             baseName = xcfName
         }
     }
@@ -158,41 +136,11 @@ kotlin {
 //}
 
 // Add the same publishing configuration as your main library
+// Coordinates, licence, developer and SCM metadata come from the root build script.
 mavenPublishing {
-    publishToMavenCentral()
-
-    // See note in :ksafe/build.gradle.kts.
-    if (!project.hasProperty("ksafe.skipSign")) signAllPublications()
-    coordinates(
-        groupId = group.toString(),
-        artifactId = "ksafe-compose",  // Different artifactId
-        version = version.toString()
-    )
-
     pom {
         name = "KSafe Compose - Jetpack Compose Extensions"
         description = "Jetpack Compose extensions for KSafe MultiPlatform Encrypted Persistence library"
-        inceptionYear = "2025"
-        url = "https://github.com/ioannisa/ksafe"
-        licenses {
-            license {
-                name = "Apache-2.0"
-                url = "https://www.apache.org/licenses/LICENSE-2.0"
-            }
-        }
-        developers {
-            developer {
-                id = "ioannis-anifantakis"
-                name = "Ioannis Anifantakis"
-                url = "https://anifantakis.eu"
-                email = "ioannisanif@gmail.com"
-            }
-        }
-        scm {
-            url = "https://github.com/ioannisa/ksafe"
-            connection = "scm:git:https://github.com/ioannisa/ksafe.git"
-            developerConnection = "scm:git:ssh://git@github.com/ioannisa/ksafe.git"
-        }
     }
 }
 

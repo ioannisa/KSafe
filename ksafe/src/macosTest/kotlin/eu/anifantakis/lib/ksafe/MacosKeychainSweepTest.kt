@@ -40,7 +40,6 @@ class MacosKeychainSweepTest {
             storage = spy,
             engine = FakeEncryption(),
             serviceName = "eu.anifantakis.ksafe",
-            keyPrefix = "eu.anifantakis.ksafe",
             fileName = null,
             legacyEncryptedPrefix = "__ksafe_encrypted_",
             seKeyTagPrefix = "se.",

@@ -42,17 +42,6 @@ class JvmKSafeTest : KSafeTest() {
             return "run${runId}test${numberToLetters(count.toLong())}"
         }
 
-        /** Encodes a number as base-26 lowercase letters (1→"a", 27→"aa"). */
-        private fun numberToLetters(num: Long): String {
-            var n = num
-            val sb = StringBuilder()
-            while (n > 0) {
-                n-- // Adjust for 0-based indexing (a=0, not a=1)
-                sb.insert(0, ('a' + (n % 26).toInt()))
-                n /= 26
-            }
-            return if (sb.isEmpty()) "a" else sb.toString()
-        }
     }
 
     override fun newKSafe(fileName: String?): KSafe {
@@ -258,10 +247,11 @@ class JvmKSafeTest : KSafeTest() {
                 identifier: String,
                 data: ByteArray,
                 hardwareIsolated: Boolean,
-                requireUnlockedDevice: Boolean?
+                requireUnlockedDevice: Boolean?,
+                aad: ByteArray?,
             ): ByteArray = delegate.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
 
-            override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
+            override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray {
                 if (failOnDecrypt) throw IllegalStateException("No encryption key found")
                 return delegate.decrypt(identifier, data)
             }
@@ -310,10 +300,11 @@ class JvmKSafeTest : KSafeTest() {
                 identifier: String,
                 data: ByteArray,
                 hardwareIsolated: Boolean,
-                requireUnlockedDevice: Boolean?
+                requireUnlockedDevice: Boolean?,
+                aad: ByteArray?,
             ): ByteArray = delegate.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
 
-            override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
+            override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray {
                 if (failOnDecrypt) throw IllegalStateException("No encryption key found")
                 return delegate.decrypt(identifier, data)
             }
@@ -525,4 +516,17 @@ class JvmKSafeTest : KSafeTest() {
         assertEquals("legacy_v2", ksafe.getDirect(key, "DEFAULT"), "Updated value should be readable after migration")
     }
 
+    // Lives here (not the shared KSafeTest) because that class sits AT the Kotlin/JS
+    // test-registration limit; the escape logic itself is commonMain and cross-platform
+    // covered by KSafeCoreResilienceTest — this is the black-box round-trip.
+    @Test
+    fun plainString_equalToInternalNullMarker_roundTrips_notNull() = runTest {
+        val ksafe = createKSafe()
+        // A user value byte-for-byte equal to the internal "stored null" marker must come back
+        // as the literal string, not as null.
+        val collision = "__KSAFE_NULL_VALUE__"
+        ksafe.put("collision", collision, KSafeWriteMode.Plain)
+        assertEquals(collision, ksafe.get("collision", "fallback"))
+        assertEquals(collision, ksafe.getDirect("collision", "fallback"))
+    }
 }

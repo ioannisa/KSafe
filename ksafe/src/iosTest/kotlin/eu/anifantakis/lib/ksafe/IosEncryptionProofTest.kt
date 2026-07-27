@@ -52,12 +52,7 @@ class IosEncryptionProofTest {
         val data: NSData = NSData.dataWithContentsOfURL(NSURL.fileURLWithPath(path))
             ?: return null
 
-        val length = data.length.toInt()
-        if (length == 0) return ByteArray(0)
-        val ptr = data.bytes!!.reinterpret<UByteVar>()
-        val out = ByteArray(length)
-        for (i in 0 until length) out[i] = ptr[i].toByte()
-        return out
+        return data.toTestByteArray()
     }
 
     @Test

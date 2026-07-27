@@ -1,5 +1,29 @@
 # Migration Guide
 
+### From v2.2 to v2.3
+
+**No breaking changes, no code changes.** 2.3 adds **key rotation** on every platform. An un-rotated store's existing entries stay byte-identical to 2.2.x — bump the dependency, ship, done — and existing data keeps working without migration. (A new or rewritten strict `HARDWARE_ISOLATED` entry keys under 3.0.0's strict alias variant, with the same downgrade consequence as rotated entries — see the caveat below.)
+
+The on-disk model gains a store-wide **key generation** counter. A freshly upgraded store is *generation 1* and uses the exact key names and envelope (v2) that 2.2.x wrote, so upgrading (and even downgrading again, before any rotation or strict write) is free. (One exception: an `appNamespace` whose token doesn't survive sanitization intact — characters outside `[A-Za-z0-9._-]`, or more than 120 of them — is relocated under a collision-safe digested identity on the first 3.0.0 launch; a downgraded 2.2.x binary then sees the retained pre-upgrade copy, and interim writes are not carried back on re-upgrade. Use a clean, short token to keep downgrade free.)
+
+Rotation is **opt-in**. Nothing rotates until you ask:
+
+```kotlin
+// Manual — re-encrypt every entry under a fresh key generation, sweep the old keys.
+val result = ksafe.rotateKeys()   // KSafeRotationResult(rotated, skipped, failed, keyGeneration)
+
+// Or declarative — a once-per-startup background check, never blocking startup or reads.
+val ksafe = KSafe(
+    config = KSafeConfig(keyRotationPolicy = KSafeKeyRotationPolicy.MaxAge(90.days))
+)
+```
+
+The default policy is `KSafeKeyRotationPolicy.Never` — key material is hardware/OS-protected and doesn't expire, so automatic rotation is an opt-in hygiene/compliance control. Rotation is crash-safe and resumable without a journal (an interrupted pass leaves a mixed-generation store that stays fully readable), concurrent writes always win, and values are sacred — `getOrCreateSecret` secrets keep their value; only the wrapping key changes. Strict (`requireUnlockedDevice`) entries rotate only while the device is unlocked, and a transient key-store outage counts as `skipped`, never `failed`. There is no per-key rotate — `rotateKeys()` is whole-store.
+
+**One migration caveat, and it only applies after you rotate.** The first `rotateKeys()` upgrades the store to *generation ≥ 2*, which switches encrypted entries to an authenticated **v3 envelope** (AES-GCM whose associated data binds each ciphertext to store identity, user key, protection tier, unlock policy, and key generation). Once rotated, **downgrading to a pre-3.0.0 binary must be treated as destructive for the rotated entries** (the same applies to strict `HARDWARE_ISOLATED` entries written by 3.0.0): the older binary can't resolve their keys, and its startup orphan sweep permanently deletes the rows and metadata it can't decrypt — typically on the first launch. Upgrading back restores access only if that sweep never ran. So finish rolling out 2.3 before you call `rotateKeys()` in production, and back up before any planned downgrade.
+
+Full walkthrough, per-platform behavior, and the cryptographic-erasure notes: [docs/KEY_ROTATION.md](KEY_ROTATION.md).
+
 ### From v2.0 to v2.1
 
 **No breaking changes, no code changes.** 2.1 changes *where the AES key lives* on two targets; the on-disk value format, the public API, and the AES-256-GCM scheme are unchanged, so previously written data still decrypts.
@@ -31,7 +55,7 @@ ksafe.clearBiometricAuth()
 ```kotlin
 // After — biometrics is a static API in :ksafe-biometrics
 // build.gradle.kts:
-//   implementation("eu.anifantakis:ksafe-biometrics:2.2.1")
+//   implementation("eu.anifantakis:ksafe-biometrics:3.0.0")
 
 import eu.anifantakis.lib.ksafe.biometrics.KSafeBiometrics
 import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration
@@ -41,7 +65,7 @@ KSafeBiometrics.verifyBiometric(reason)
 KSafeBiometrics.clearBiometricAuth()
 ```
 
-Method names (`verifyBiometric`, `verifyBiometricDirect`, `clearBiometricAuth`) and signatures are preserved — only the receiver and import paths change. `BiometricHelper.confirmationRequired` and `BiometricHelper.promptTitle` continue to work the same way, just imported from `eu.anifantakis.lib.ksafe.biometrics`.
+Method names (`verifyBiometric`, `verifyBiometricDirect`, `clearBiometricAuth`) and signatures are preserved — only the receiver and import paths change. `BiometricHelper.confirmationRequired` continues to work the same way, just imported from `eu.anifantakis.lib.ksafe.biometrics`. (`BiometricHelper.promptTitle`/`promptSubtitle` were removed in 3.0.0 — use `KSafeBiometrics.defaultTitle`, which also names the web passkey, and `KSafeBiometrics.defaultReason`.)
 
 **No DI wiring needed.** `KSafeBiometrics` is a Kotlin `object` — call it directly from anywhere. There's no instance to construct, no `Context` parameter, no Koin / Hilt / manual injection. On Android the library bootstraps itself via a `ContentProvider` declared in its merged manifest (the same pattern WorkManager / Firebase / AppCompat use), so your `Application.onCreate()` doesn't need any biometric init either. iOS / JVM / web have no init at all.
 
@@ -148,7 +172,7 @@ This eliminates the common mistake of mismatching protection levels between put 
 The public API surface (`get`, `put`, `getDirect`, `putDirect`) remains backward compatible.
 
 #### Behavior Changes
-- **Initialization is now eager by default.** If you relied on KSafe doing absolutely nothing until the first call, pass `lazyLoad = true`.
+- **Initialization is now eager by default.** Pass `lazyLoad = true` to defer the background snapshot preload (and its startup orphan sweep) until the first call. Note the write consumer and master-key prewarm still start eagerly, so `lazyLoad` defers the on-disk preload, not literally all startup work.
 - **Nullable values now work correctly.** No code changes needed, but you can now safely store `null` values.
 
 #### Compose Module Import Fix

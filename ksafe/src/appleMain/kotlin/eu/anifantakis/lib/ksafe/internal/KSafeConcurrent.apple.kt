@@ -13,9 +13,8 @@ internal actual fun <T> runBlockingOnPlatform(block: suspend () -> T): T = runBl
 @PublishedApi
 internal actual val decryptFlowContext: CoroutineContext = Dispatchers.Default
 
-// Kotlin/Native has no object-monitor `synchronized`, so back each delegate's init lock with
-// its own NSRecursiveLock: a real OS parking lock (waiters block, no spin), per-instance so
-// unrelated delegates don't serialize, reentrant so a nested first-access can't deadlock.
+// Kotlin/Native has no `synchronized`; back each init lock with a per-instance, reentrant
+// NSRecursiveLock so a nested first-access can't deadlock.
 @PublishedApi
 internal actual class KSafeInitLock actual constructor() {
     private val lock = NSRecursiveLock()
@@ -29,9 +28,8 @@ internal actual class KSafeInitLock actual constructor() {
     }
 }
 
-// Uses AtomicInt (0/1) rather than AtomicReference<Boolean>: AtomicReference uses
-// identity equality, and boxed Booleans don't have guaranteed stable identity on
-// Kotlin/Native, which would break compareAndSet.
+// AtomicInt (0/1) not AtomicReference<Boolean>: boxed Booleans lack stable identity on
+// Kotlin/Native, which breaks AtomicReference's identity-based compareAndSet.
 @PublishedApi
 internal actual class KSafeAtomicFlag actual constructor(initial: Boolean) {
     private val ref = AtomicInt(if (initial) 1 else 0)
@@ -41,11 +39,17 @@ internal actual class KSafeAtomicFlag actual constructor(initial: Boolean) {
         ref.compareAndSet(if (expected) 1 else 0, if (new) 1 else 0)
 }
 
+@PublishedApi
+internal actual class KSafeAtomicInt actual constructor(initial: Int) {
+    private val ref = AtomicInt(initial)
+    actual fun get(): Int = ref.value
+    actual fun set(value: Int) { ref.value = value }
+    actual fun compareAndSet(expected: Int, new: Int): Boolean = ref.compareAndSet(expected, new)
+}
+
 /**
- * Copy-on-write concurrent map — Kotlin/Native lacks a stdlib `ConcurrentHashMap`,
- * so mutation rebuilds the map and CAS-swaps an [AtomicReference].
- *
- * Reads are lock-free and see a consistent snapshot. Writes are retry-on-conflict.
+ * Copy-on-write concurrent map (Kotlin/Native lacks `ConcurrentHashMap`): reads are lock-free
+ * snapshots, writes rebuild the map and CAS-retry on conflict.
  */
 @PublishedApi
 internal actual class KSafeConcurrentMap<V : Any> actual constructor() {
@@ -74,8 +78,7 @@ internal actual class KSafeConcurrentMap<V : Any> actual constructor() {
     actual fun containsKey(key: String): Boolean = ref.value.containsKey(key)
 
     actual fun clear() {
-        // CAS loop so `clear()` can't be undone by a concurrent mutation retrying against the
-        // pre-clear snapshot.
+        // CAS loop so a concurrent mutation can't undo the clear by retrying against the pre-clear snapshot.
         while (true) {
             val current = ref.value
             if (ref.compareAndSet(current, emptyMap())) return

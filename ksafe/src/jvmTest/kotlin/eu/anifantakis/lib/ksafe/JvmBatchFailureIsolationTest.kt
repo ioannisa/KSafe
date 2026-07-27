@@ -1,11 +1,16 @@
 package eu.anifantakis.lib.ksafe
 
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import java.util.concurrent.CountDownLatch
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -14,31 +19,6 @@ import kotlin.test.assertTrue
 
 /** Locks in: a failing encrypt in a coalesced batch is isolated — unrelated writes survive and the failed write's optimistic value is rolled back. */
 class JvmBatchFailureIsolationTest {
-
-    /**
-     * XOR [FakeEncryption] whose `encrypt` throws when the plaintext contains [failMarker].
-     * Keying failure off the payload (not the alias) fails one DEFAULT key while its
-     * master-alias siblings still succeed.
-     */
-    private class MarkerFailEncryption(private val failMarker: String) : KSafeEncryption {
-        private val xor = FakeEncryption()
-        override fun encrypt(
-            identifier: String,
-            data: ByteArray,
-            hardwareIsolated: Boolean,
-            requireUnlockedDevice: Boolean?,
-        ): ByteArray {
-            if (data.decodeToString().contains(failMarker)) {
-                throw IllegalStateException("KSafe: Cannot access Keystore key - device is locked. (test)")
-            }
-            return xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
-        }
-
-        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray =
-            xor.decrypt(identifier, data)
-
-        override fun deleteKey(identifier: String) { /* no-op */ }
-    }
 
     @Test
     fun failedEncryptedWrite_isRolledBack_readReturnsDefaultNotPhantom() = runTest {
@@ -139,6 +119,50 @@ class JvmBatchFailureIsolationTest {
         ksafe.close()
     }
 
+    private class TokenFlowHolder(ksafe: KSafe, scope: CoroutineScope) {
+        val tokenFlow by ksafe.asMutableStateFlow("none", scope, key = "token", mode = KSafeWriteMode.Encrypted())
+    }
+
+    @Test
+    fun failedFireAndForgetPersist_revertsTheMutableStateFlowToTheDurableValue() {
+        val ksafe = KSafe(
+            fileName = JvmKSafeTest.generateUniqueFileName(),
+            memoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+            testEngine = MarkerFailEncryption("BAD"),
+        )
+        val scope = CoroutineScope(SupervisorJob())
+        try {
+            runBlocking {
+                ksafe.put("token", "good_secret", KSafeWriteMode.Encrypted())
+
+                val flow = TokenFlowHolder(ksafe, scope).tokenFlow
+                assertEquals("good_secret", flow.value)
+
+                // Optimistic fire-and-forget persist that fails in the write consumer.
+                flow.value = "BAD_phantom"
+
+                // An awaited write is processed after (or within) the failing write's batch,
+                // and the failure reconcile runs inside that processing — so it has completed
+                // by the time this put returns.
+                ksafe.put("flush", "x", KSafeWriteMode.Encrypted())
+
+                assertEquals(
+                    "good_secret", flow.value,
+                    "a failed fire-and-forget persist must revert the StateFlow to the durable " +
+                        "value every other read path already serves, not keep the phantom",
+                )
+                assertEquals("good_secret", ksafe.get("token", "none"))
+
+                // The latch must not stay armed either: a later durable external write reflects.
+                ksafe.put("token", "recovered", KSafeWriteMode.Encrypted())
+                withTimeout(10_000) { flow.first { it == "recovered" } }
+            }
+        } finally {
+            scope.cancel()
+            ksafe.close()
+        }
+    }
+
     @Test
     fun oneFailingEncrypt_doesNotDropUnrelatedKeysInTheSameBatch() = runTest {
         val fileName = JvmKSafeTest.generateUniqueFileName()
@@ -174,23 +198,25 @@ class JvmBatchFailureIsolationTest {
         private val xor = FakeEncryption()
         val decoyPinned = CountDownLatch(1)
         val releaseGate = CountDownLatch(1)
-        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray {
+        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?,    aad: ByteArray?,): ByteArray {
             val s = data.decodeToString()
             if (s.contains("DECOY")) { decoyPinned.countDown(); releaseGate.await() }
             else if (s.contains("BAD")) throw IllegalStateException("KSafe: Cannot access Keystore key - device is locked. (test)")
             return xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
         }
-        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray =
+        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray =
             xor.decrypt(identifier, data)
         override fun deleteKey(identifier: String) { /* no-op */ }
     }
 
     @Test
-    fun failingEncryptedWrite_doesNotContaminate_aSupersededSameKeyDeleteAwaiter() {
-        // A batch coalesces same-key ops to the LAST write. When an earlier delete("token")
-        // is superseded by a later encrypted put that fails to encrypt, only the failing
-        // op's awaiter gets the keystore exception; the superseded delete did no encryption,
-        // so its awaiter must complete normally, not be cross-contaminated.
+    fun failingEncryptedWrite_failsASupersededSameKeyDeleteAwaiter() {
+        // A batch coalesces same-key ops to the LAST write. When an earlier delete("token") is
+        // superseded by a later encrypted put that fails to encrypt, NO storage op is committed for
+        // the key, so the pre-batch value survives on disk. The delete therefore never became
+        // durable — its awaiter must be FAILED, not acknowledged with success (which would falsely
+        // report "the key is gone" while the old value survives), consistent with how a superseded
+        // value write is failed.
         val engine = PinFailEncryption()
         val ksafe = KSafe(
             fileName = JvmKSafeTest.generateUniqueFileName(),
@@ -221,16 +247,59 @@ class JvmBatchFailureIsolationTest {
         }
 
         assertTrue(
-            deleteResult!!.isSuccess,
-            "a delete superseded by a failing same-key encrypted put must NOT be failed with the " +
-                "encryption exception; was: ${deleteResult!!.exceptionOrNull()?.message}",
+            deleteResult!!.isFailure,
+            "a delete superseded by a failing same-key encrypted put must ALSO be failed: no storage " +
+                "op removed the key so the old value survives — acknowledging the delete would falsely " +
+                "report it gone. Was success.",
         )
         assertTrue(putResult!!.isFailure, "the genuinely-failing encrypted put's awaiter must still receive the exception")
         assertTrue(
             putResult!!.exceptionOrNull()?.message?.contains("device is locked", ignoreCase = true) == true,
             "the failing op's awaiter gets the keystore exception; was: ${putResult!!.exceptionOrNull()?.message}",
         )
-        // Both token ops no-op'd (delete superseded, failing put rolled back) → prior value survives.
+        // Neither token op became durable (delete superseded, failing put rolled back) → prior value survives.
+        assertEquals("original", runBlocking { ksafe.get("token", "none") }, "the prior persisted value must survive")
+
+        ksafe.close()
+    }
+
+    @Test
+    fun failingEncryptedWrite_failsASupersededSameKeyWriteAwaiter() {
+        // Twin of the delete case, opposite outcome: when an earlier put("token", ...) is coalesced
+        // away by a later same-key encrypted put that FAILS to encrypt, the earlier put's value was
+        // rolled back and never persisted — so its awaiter must ALSO fail, not be completed with
+        // Unit, or a concurrent caller believes its value is durable when it is gone.
+        val engine = PinFailEncryption()
+        val ksafe = KSafe(
+            fileName = JvmKSafeTest.generateUniqueFileName(),
+            memoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+            testEngine = engine,
+        )
+
+        var earlyResult: Result<Unit>? = null
+        var lateResult: Result<Unit>? = null
+        runBlocking {
+            ksafe.put("token", "original", KSafeWriteMode.Encrypted())
+            assertEquals("original", ksafe.get("token", "none"))
+
+            val decoyJob = launch(Dispatchers.IO) { runCatching { ksafe.put("decoy", "DECOY_v", KSafeWriteMode.Encrypted()) } }
+            engine.decoyPinned.await()
+
+            // early put sends first, the failing late put sends second → same parked batch,
+            // coalesced to the late failing op (the early value is never encrypted).
+            val earlyJob = launch(Dispatchers.Unconfined) { earlyResult = runCatching { ksafe.put("token", "superseded_value", KSafeWriteMode.Encrypted()) } }
+            val lateJob = launch(Dispatchers.Unconfined) { lateResult = runCatching { ksafe.put("token", "BAD_secret", KSafeWriteMode.Encrypted()) } }
+
+            engine.releaseGate.countDown()
+            decoyJob.join(); earlyJob.join(); lateJob.join()
+        }
+
+        assertTrue(
+            earlyResult!!.isFailure,
+            "a value-write coalesced away by a failing same-key encrypted put must ALSO be failed " +
+                "(its value was rolled back, never persisted); was success",
+        )
+        assertTrue(lateResult!!.isFailure, "the genuinely-failing encrypted put's awaiter must receive the exception")
         assertEquals("original", runBlocking { ksafe.get("token", "none") }, "the prior persisted value must survive")
 
         ksafe.close()
@@ -251,6 +320,7 @@ class JvmBatchFailureIsolationTest {
             data: ByteArray,
             hardwareIsolated: Boolean,
             requireUnlockedDevice: Boolean?,
+            aad: ByteArray?,
         ): ByteArray {
             if (data.decodeToString().contains(failMarker)) {
                 onMarkerFailure?.invoke()
@@ -261,7 +331,7 @@ class JvmBatchFailureIsolationTest {
             return xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
         }
 
-        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray =
+        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray =
             xor.decrypt(identifier, data)
 
         override fun deleteKey(identifier: String) { /* no-op */ }

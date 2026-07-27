@@ -4,12 +4,14 @@ import eu.anifantakis.lib.ksafe.*
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
+import kotlinx.cinterop.autoreleasepool
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.usePinned
 import kotlinx.cinterop.value
 import platform.CoreFoundation.CFDictionaryCreateMutable
 import platform.CoreFoundation.CFDictionarySetValue
+import platform.CoreFoundation.CFMutableDictionaryRef
 import platform.CoreFoundation.CFRelease
 import platform.CoreFoundation.CFTypeRef
 import platform.CoreFoundation.CFTypeRefVar
@@ -61,7 +63,6 @@ internal suspend fun cleanupOrphanedKeychainEntries(
     storage: KSafePlatformStorage,
     engine: KSafeEncryption,
     serviceName: String,
-    keyPrefix: String,
     fileName: String?,
     legacyEncryptedPrefix: String,
     seKeyTagPrefix: String,
@@ -69,137 +70,117 @@ internal suspend fun cleanupOrphanedKeychainEntries(
     /** A key for a not-yet-committed write must not be reaped as an orphan. */
     isInFlight: (String) -> Boolean = { false },
 ) {
-    // Bail before touching storage or the Keychain so nothing below can run on macOS.
     if (!keychainOrphanSweepEnabled(Platform.osFamily)) return
 
     val snapshot = storage.snapshot()
 
-    val protectionByKey = mutableMapOf<String, KSafeProtection>()
-    for ((rawKey, storedValue) in snapshot) {
-        val text = (storedValue as? StoredValue.Text)?.value ?: continue
-        KeySafeMetadataManager.tryExtractCanonicalMetadataKey(rawKey)?.let { userKey ->
-            KeySafeMetadataManager.parseProtection(text)?.let { protectionByKey[userKey] = it }
-            return@let
-        }
-        KeySafeMetadataManager.tryExtractLegacyProtectionKey(rawKey)?.let { userKey ->
-            if (!protectionByKey.containsKey(userKey)) {
-                KeySafeMetadataManager.parseProtection(text)?.let { protectionByKey[userKey] = it }
-            }
-        }
-    }
+    val validKeys = keychainSweepValidKeys(snapshot, legacyEncryptedPrefix)
 
-    // The user-keys that still have a live DataStore entry.
-    val validKeys = mutableSetOf<String>()
-    for ((rawKey, _) in snapshot) {
-        when {
-            rawKey.startsWith(legacyEncryptedPrefix) ->
-                validKeys.add(rawKey.removePrefix(legacyEncryptedPrefix))
-
-            rawKey.startsWith(KeySafeMetadataManager.VALUE_PREFIX) -> {
-                val userKey = rawKey.removePrefix(KeySafeMetadataManager.VALUE_PREFIX)
-                if (protectionByKey[userKey] != null) validKeys.add(userKey)
-            }
-        }
-    }
-
-    val basePrefix = listOfNotNull(keyPrefix, fileName).joinToString(".")
-    val prefixWithDelimiter = "$basePrefix."
+    // Same producer the factory's aliases come from — a sweep that derived the base itself would
+    // reap live keys the moment the two spellings drifted.
+    val prefixWithDelimiter = "${KSafeAliasFormat.dottedBase(fileName)}."
     val sePrefixWithDelimiter = "$seKeyTagPrefix$prefixWithDelimiter"
 
-    val orphanedKeyIds = mutableSetOf<String>()
+    val orphanedKeyIds = mutableSetOf<KeychainOrphan>()
 
-    // Scan generic-password items (plain keys + SE-wrapped keys).
-    memScoped {
-        // The dict's null value-callbacks mean it does not retain its values: hold the bridged
-        // +1 across SecItemCopyMatching, then CFRelease, or every probe leaks a CFString.
-        val serviceRef = CFBridgingRetain(serviceName)
-        val query = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, null, null).apply {
-            CFDictionarySetValue(this, kSecClass, kSecClassGenericPassword)
-            CFDictionarySetValue(this, kSecAttrService, serviceRef)
-            CFDictionarySetValue(this, kSecReturnAttributes, kCFBooleanTrue)
-            CFDictionarySetValue(this, kSecMatchLimit, kSecMatchLimitAll)
+    // Null value-callbacks: the dict won't retain values, so hold the bridged +1 across
+    // SecItemCopyMatching then CFRelease, or every probe leaks a CFString.
+    val serviceRef = CFBridgingRetain(serviceName)
+    try {
+        forEachKeychainAttributeDict({ query ->
+            CFDictionarySetValue(query, kSecClass, kSecClassGenericPassword)
+            CFDictionarySetValue(query, kSecAttrService, serviceRef)
+        }) { dict ->
+            val account = dict.objectForKey(kSecAttrAccount as Any) as? String
+            if (account != null) {
+                // ownedKeyIds = validKeys: never reap a root key with a byte-identical dotted
+                // account. Deliberate consequence: a NAMED store's orphans (whose owner is by
+                // definition absent from validKeys) are never reaped — including strict-variant
+                // orphans — and remain safe litter; only the root sweep reclaims orphans.
+                val orphan =
+                    keychainOrphanKeyId(account, prefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight, ownedKeyIds = validKeys)
+                        ?: keychainOrphanKeyId(account, sePrefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight, ownedKeyIds = validKeys)
+                if (orphan != null) orphanedKeyIds.add(orphan)
+            }
         }
-        val resultRef = alloc<CFTypeRefVar>()
-        val status = SecItemCopyMatching(query, resultRef.ptr)
-        CFRelease(query as CFTypeRef?)
+    } finally {
         CFRelease(serviceRef)
+    }
 
-        if (status == errSecSuccess) {
-            (CFBridgingRelease(resultRef.value) as? NSArray)?.let { array ->
-                for (i in 0 until array.count.toInt()) {
-                    val dict = array.objectAtIndex(i.toULong()) as? NSDictionary ?: continue
-                    val account = dict.objectForKey(kSecAttrAccount as Any) as? String ?: continue
-
-                    // ownedKeyIds = validKeys: a named instance reaps only keys it can prove
-                    // are its own, never a root key with a byte-identical dotted account.
-                    val orphan =
-                        keychainOrphanKeyId(account, prefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight, ownedKeyIds = validKeys)
-                            ?: keychainOrphanKeyId(account, sePrefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight, ownedKeyIds = validKeys)
-                    if (orphan != null) orphanedKeyIds.add(orphan)
+    // Scan SE-held kSecClassKey EC keys: catches keys orphaned by a crash between SE key
+    // creation and wrapped-key storage (no matching generic-password item).
+    forEachKeychainAttributeDict({ query ->
+        CFDictionarySetValue(query, kSecClass, kSecClassKey)
+        CFDictionarySetValue(query, kSecAttrKeyType, kSecAttrKeyTypeECSECPrimeRandom)
+    }) { dict ->
+        // SE EC keys use `applicationTag` (NSData) rather than `account` (NSString).
+        val tagData = dict.objectForKey(kSecAttrApplicationTag as Any) as? NSData
+        if (tagData != null) {
+            val tagBytes = ByteArray(tagData.length.toInt())
+            if (tagBytes.isNotEmpty()) {
+                tagBytes.usePinned { pinned ->
+                    platform.posix.memcpy(pinned.addressOf(0), tagData.bytes, tagData.length)
                 }
             }
+            val tag = tagBytes.decodeToString()
+
+            // SE tags: "se.{prefix}.{keyId}". ownedKeyIds = validKeys (see above).
+            keychainOrphanKeyId(tag, sePrefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight, ownedKeyIds = validKeys)
+                ?.let { orphanedKeyIds.add(it) }
         }
     }
 
-    // Scan SE-held kSecClassKey EC keys — catches keys left without a matching generic-password
-    // item by a crash between SE key creation and wrapped-key storage.
-    memScoped {
-        val query = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, null, null).apply {
-            CFDictionarySetValue(this, kSecClass, kSecClassKey)
-            CFDictionarySetValue(this, kSecAttrKeyType, kSecAttrKeyTypeECSECPrimeRandom)
-            CFDictionarySetValue(this, kSecReturnAttributes, kCFBooleanTrue)
-            CFDictionarySetValue(this, kSecMatchLimit, kSecMatchLimitAll)
-        }
-        val resultRef = alloc<CFTypeRefVar>()
-        val status = SecItemCopyMatching(query, resultRef.ptr)
-        CFRelease(query as CFTypeRef?)
-
-        if (status == errSecSuccess) {
-            (CFBridgingRelease(resultRef.value) as? NSArray)?.let { array ->
-                for (i in 0 until array.count.toInt()) {
-                    val dict = array.objectAtIndex(i.toULong()) as? NSDictionary ?: continue
-                    // SE EC keys use `applicationTag` (NSData) rather than `account` (NSString).
-                    val tagData = dict.objectForKey(kSecAttrApplicationTag as Any) as? NSData ?: continue
-
-                    val tagBytes = ByteArray(tagData.length.toInt())
-                    if (tagBytes.isNotEmpty()) {
-                        tagBytes.usePinned { pinned ->
-                            platform.posix.memcpy(pinned.addressOf(0), tagData.bytes, tagData.length)
-                        }
-                    }
-                    val tag = tagBytes.decodeToString()
-
-                    // SE tags: "se.{prefix}.{keyId}". ownedKeyIds = validKeys (see above).
-                    keychainOrphanKeyId(tag, sePrefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight, ownedKeyIds = validKeys)
-                        ?.let { orphanedKeyIds.add(it) }
-                }
-            }
-        }
-    }
-
-    // An EMPTY DataStore snapshot alongside Keychain entries scoped to this service + prefix
-    // almost certainly means a partial view of storage (a failed 1.x → 2.0 migration, a store
-    // reinitialised empty, or app data wiped while the per-device Keychain survived), not a
-    // legitimate post-clearAll state. Deleting here would destroy irrecoverable Secure Enclave
-    // keys, so bail.
-    if (snapshot.isEmpty() && orphanedKeyIds.isNotEmpty()) {
+    if (keychainOrphanSweepBlocked(validKeys, orphanedKeyIds.size)) {
         println(
-            "KSafe: Keychain orphan sweep skipped — DataStore is empty but " +
-                "${orphanedKeyIds.size} scoped Keychain entries exist. " +
-                "This usually indicates a 1.x → 2.0 migration where the " +
-                "DataStore file failed to move; deleting the Keychain " +
-                "entries would destroy data permanently. If you intended " +
+            "KSafe: Keychain orphan sweep skipped — the DataStore holds no encrypted " +
+                "entry but ${orphanedKeyIds.size} scoped Keychain entries exist. " +
+                "This usually indicates a partial storage view (a 1.x → 2.0 migration " +
+                "where the DataStore file failed to move, a quarantined-corrupt store, " +
+                "or a restore that recovered the Keychain but not the store); deleting " +
+                "the Keychain entries would destroy data permanently. If you intended " +
                 "to clear KSafe, call KSafe.clearAll() instead."
         )
         return
     }
 
-    // Re-check the in-flight guard at DELETE time, not just at classify time: the sweep and
-    // writes run genuinely parallel on Native, so a `put` that committed ciphertext and
-    // re-used a key AFTER classify but BEFORE this loop would otherwise have its live key
-    // destroyed, orphaning the just-written value. A write marks its key in-flight before its
-    // commit lands, so filtering now-in-flight ids here closes that window.
+    // Re-check the in-flight guard at DELETE time, not just at classify: sweep and writes run
+    // parallel on Native, so a `put` that re-used a key after classify but before this loop
+    // would lose its live key. Writes mark in-flight before commit, closing that window.
     for (keyId in keychainOrphansToDelete(orphanedKeyIds, isInFlight)) {
         engine.deleteKeySuspend("$prefixWithDelimiter$keyId")
+    }
+}
+
+/**
+ * Enumerates every Keychain item matching the query [configure] completes, handing each item's
+ * attribute dictionary to [onItem]. Written once because the mechanics between the two scans are
+ * manual CoreFoundation refcounting — the query's own +1 and the result array's — and that is
+ * exactly where a duplicated release becomes a leak or a double free. The caller keeps ownership
+ * of anything it bridges into the query inside [configure].
+ */
+@OptIn(ExperimentalForeignApi::class)
+private inline fun forEachKeychainAttributeDict(
+    configure: (CFMutableDictionaryRef?) -> Unit,
+    onItem: (NSDictionary) -> Unit,
+) {
+    autoreleasepool {
+        memScoped {
+            val query = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, null, null).apply {
+                configure(this)
+                CFDictionarySetValue(this, kSecReturnAttributes, kCFBooleanTrue)
+                CFDictionarySetValue(this, kSecMatchLimit, kSecMatchLimitAll)
+            }
+            val resultRef = alloc<CFTypeRefVar>()
+            val status = SecItemCopyMatching(query, resultRef.ptr)
+            CFRelease(query as CFTypeRef?)
+            if (status != errSecSuccess) return@memScoped
+
+            (CFBridgingRelease(resultRef.value) as? NSArray)?.let { array ->
+                for (i in 0 until array.count.toInt()) {
+                    val dict = array.objectAtIndex(i.toULong()) as? NSDictionary ?: continue
+                    onItem(dict)
+                }
+            }
+        }
     }
 }

@@ -20,21 +20,16 @@ internal expect object SecurityChecker {
 internal fun validateSecurityPolicy(policy: KSafeSecurityPolicy) {
     val violations = mutableListOf<Pair<SecurityViolation, SecurityAction>>()
 
-    if (policy.rootedDevice != SecurityAction.IGNORE && SecurityChecker.isDeviceRooted()) {
-        violations.add(SecurityViolation.RootedDevice to policy.rootedDevice)
+    // `detect` stays a lambda so an IGNOREd check never runs its probe — root and emulator
+    // detection touch the filesystem and the PackageManager.
+    fun check(action: SecurityAction, violation: SecurityViolation, detect: () -> Boolean) {
+        if (action != SecurityAction.IGNORE && detect()) violations.add(violation to action)
     }
 
-    if (policy.debuggerAttached != SecurityAction.IGNORE && SecurityChecker.isDebuggerAttached()) {
-        violations.add(SecurityViolation.DebuggerAttached to policy.debuggerAttached)
-    }
-
-    if (policy.debugBuild != SecurityAction.IGNORE && SecurityChecker.isDebugBuild()) {
-        violations.add(SecurityViolation.DebugBuild to policy.debugBuild)
-    }
-
-    if (policy.emulator != SecurityAction.IGNORE && SecurityChecker.isEmulator()) {
-        violations.add(SecurityViolation.Emulator to policy.emulator)
-    }
+    check(policy.rootedDevice, SecurityViolation.RootedDevice, SecurityChecker::isDeviceRooted)
+    check(policy.debuggerAttached, SecurityViolation.DebuggerAttached, SecurityChecker::isDebuggerAttached)
+    check(policy.debugBuild, SecurityViolation.DebugBuild, SecurityChecker::isDebugBuild)
+    check(policy.emulator, SecurityViolation.Emulator, SecurityChecker::isEmulator)
 
     var shouldBlock = false
     var firstBlockingViolation: SecurityViolation? = null

@@ -1,0 +1,55 @@
+// Klib ABI Dump
+// Targets: [iosArm64, iosSimulatorArm64, iosX64, js, macosArm64, macosX64, wasmJs]
+// Rendering settings:
+// - Signature version: 2
+// - Show manifest properties: true
+// - Show declarations: true
+
+// Library unique name: <eu.anifantakis:ksafe-biometrics>
+final class eu.anifantakis.lib.ksafe.biometrics/BiometricAuthorizationDuration { // eu.anifantakis.lib.ksafe.biometrics/BiometricAuthorizationDuration|null[0]
+    constructor <init>(kotlin/Long, kotlin/String? = ...) // eu.anifantakis.lib.ksafe.biometrics/BiometricAuthorizationDuration.<init>|<init>(kotlin.Long;kotlin.String?){}[0]
+
+    final val duration // eu.anifantakis.lib.ksafe.biometrics/BiometricAuthorizationDuration.duration|{}duration[0]
+        final fun <get-duration>(): kotlin/Long // eu.anifantakis.lib.ksafe.biometrics/BiometricAuthorizationDuration.duration.<get-duration>|<get-duration>(){}[0]
+    final val scope // eu.anifantakis.lib.ksafe.biometrics/BiometricAuthorizationDuration.scope|{}scope[0]
+        final fun <get-scope>(): kotlin/String? // eu.anifantakis.lib.ksafe.biometrics/BiometricAuthorizationDuration.scope.<get-scope>|<get-scope>(){}[0]
+
+    final fun component1(): kotlin/Long // eu.anifantakis.lib.ksafe.biometrics/BiometricAuthorizationDuration.component1|component1(){}[0]
+    final fun component2(): kotlin/String? // eu.anifantakis.lib.ksafe.biometrics/BiometricAuthorizationDuration.component2|component2(){}[0]
+    final fun copy(kotlin/Long = ..., kotlin/String? = ...): eu.anifantakis.lib.ksafe.biometrics/BiometricAuthorizationDuration // eu.anifantakis.lib.ksafe.biometrics/BiometricAuthorizationDuration.copy|copy(kotlin.Long;kotlin.String?){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // eu.anifantakis.lib.ksafe.biometrics/BiometricAuthorizationDuration.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // eu.anifantakis.lib.ksafe.biometrics/BiometricAuthorizationDuration.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // eu.anifantakis.lib.ksafe.biometrics/BiometricAuthorizationDuration.toString|toString(){}[0]
+}
+
+final object eu.anifantakis.lib.ksafe.biometrics/KSafeBiometrics { // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometrics|null[0]
+    final var defaultCancelLabel // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometrics.defaultCancelLabel|{}defaultCancelLabel[0]
+        final fun <get-defaultCancelLabel>(): kotlin/String? // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometrics.defaultCancelLabel.<get-defaultCancelLabel>|<get-defaultCancelLabel>(){}[0]
+        final fun <set-defaultCancelLabel>(kotlin/String?) // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometrics.defaultCancelLabel.<set-defaultCancelLabel>|<set-defaultCancelLabel>(kotlin.String?){}[0]
+    final var defaultReason // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometrics.defaultReason|{}defaultReason[0]
+        final fun <get-defaultReason>(): kotlin/String // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometrics.defaultReason.<get-defaultReason>|<get-defaultReason>(){}[0]
+        final fun <set-defaultReason>(kotlin/String) // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometrics.defaultReason.<set-defaultReason>|<set-defaultReason>(kotlin.String){}[0]
+    final var defaultTitle // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometrics.defaultTitle|{}defaultTitle[0]
+        final fun <get-defaultTitle>(): kotlin/String? // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometrics.defaultTitle.<get-defaultTitle>|<get-defaultTitle>(){}[0]
+        final fun <set-defaultTitle>(kotlin/String?) // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometrics.defaultTitle.<set-defaultTitle>|<set-defaultTitle>(kotlin.String?){}[0]
+
+    final fun biometricsAvailableDirect(kotlin/Boolean = ..., kotlin/Function1<kotlin/Boolean, kotlin/Unit>) // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometrics.biometricsAvailableDirect|biometricsAvailableDirect(kotlin.Boolean;kotlin.Function1<kotlin.Boolean,kotlin.Unit>){}[0]
+    final fun clearBiometricAuth(kotlin/String? = ...) // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometrics.clearBiometricAuth|clearBiometricAuth(kotlin.String?){}[0]
+    final fun verifyBiometricDirect(kotlin/String = ..., eu.anifantakis.lib.ksafe.biometrics/BiometricAuthorizationDuration? = ..., kotlin/Boolean = ..., kotlin/String? = ..., kotlin/String? = ..., kotlin/Function1<kotlin/Boolean, kotlin/Unit>) // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometrics.verifyBiometricDirect|verifyBiometricDirect(kotlin.String;eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration?;kotlin.Boolean;kotlin.String?;kotlin.String?;kotlin.Function1<kotlin.Boolean,kotlin.Unit>){}[0]
+    final suspend fun biometricsAvailable(kotlin/Boolean = ...): kotlin/Boolean // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometrics.biometricsAvailable|biometricsAvailable(kotlin.Boolean){}[0]
+    final suspend fun verifyBiometric(kotlin/String = ..., eu.anifantakis.lib.ksafe.biometrics/BiometricAuthorizationDuration? = ..., kotlin/Boolean = ..., kotlin/String? = ..., kotlin/String? = ...): kotlin/Boolean // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometrics.verifyBiometric|verifyBiometric(kotlin.String;eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration?;kotlin.Boolean;kotlin.String?;kotlin.String?){}[0]
+}
+
+// Targets: [js, wasmJs]
+final object eu.anifantakis.lib.ksafe.biometrics/KSafeBiometricsWeb { // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometricsWeb|null[0]
+    final val isRegistered // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometricsWeb.isRegistered|{}isRegistered[0]
+        final fun <get-isRegistered>(): kotlin/Boolean // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometricsWeb.isRegistered.<get-isRegistered>|<get-isRegistered>(){}[0]
+    final val registeredTitle // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometricsWeb.registeredTitle|{}registeredTitle[0]
+        final fun <get-registeredTitle>(): kotlin/String? // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometricsWeb.registeredTitle.<get-registeredTitle>|<get-registeredTitle>(){}[0]
+
+    final var promptsEnabled // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometricsWeb.promptsEnabled|{}promptsEnabled[0]
+        final fun <get-promptsEnabled>(): kotlin/Boolean // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometricsWeb.promptsEnabled.<get-promptsEnabled>|<get-promptsEnabled>(){}[0]
+        final fun <set-promptsEnabled>(kotlin/Boolean) // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometricsWeb.promptsEnabled.<set-promptsEnabled>|<set-promptsEnabled>(kotlin.Boolean){}[0]
+
+    final fun resetRegistration() // eu.anifantakis.lib.ksafe.biometrics/KSafeBiometricsWeb.resetRegistration|resetRegistration(){}[0]
+}

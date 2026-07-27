@@ -23,9 +23,10 @@ class JvmGetOrCreateSecretTest {
             data: ByteArray,
             hardwareIsolated: Boolean,
             requireUnlockedDevice: Boolean?,
+            aad: ByteArray?,
         ): ByteArray = xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
 
-        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray {
+        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray {
             if (failDecrypt) {
                 throw IllegalStateException("KSafe: simulated ciphertext corruption (AEAD tag mismatch)")
             }
@@ -99,6 +100,48 @@ class JvmGetOrCreateSecretTest {
         ksafe.close()
     }
 
+    @Test
+    fun malformedBase64InTheSecretSlot_throwsTheDocumentedIse_andIsNotOverwritten() = runTest {
+        val fileName = JvmKSafeTest.generateUniqueFileName()
+        val ksafe = KSafe(fileName = fileName, testEngine = FakeEncryption())
+
+        // The reserved slot decrypts fine but holds junk that is not Base64 (app misuse of the
+        // slot or exotic corruption). The contract reserves IllegalArgumentException for caller
+        // input validation; an existing-but-unreadable secret must surface as ISE.
+        ksafe.put("ksafe_secret_main_db", "not base64!!", KSafeWriteMode.Encrypted())
+
+        val ex = assertFailsWith<IllegalStateException> { ksafe.getOrCreateSecret("main_db") }
+        assertTrue(
+            ex.message?.contains("not valid Base64") == true,
+            "must surface the malformed slot as the documented unreadable-secret failure; was: ${ex.message}",
+        )
+        assertEquals(
+            "not base64!!", ksafe.get("ksafe_secret_main_db", ""),
+            "the malformed slot must be preserved for inspection, never overwritten",
+        )
+
+        ksafe.close()
+    }
+
+    @Test
+    fun malformedLegacySecret_isNeverCopiedForwardToTheCanonicalSlot() = runTest {
+        val fileName = JvmKSafeTest.generateUniqueFileName()
+        val ksafe = KSafe(fileName = fileName, testEngine = FakeEncryption())
+
+        // A special-char key routes through the legacy '_'-collapsed slot on first read.
+        ksafe.put("ksafe_secret_my_db", "@@definitely-not-base64@@", KSafeWriteMode.Encrypted())
+
+        assertFailsWith<IllegalStateException> { ksafe.getOrCreateSecret("my.db") }
+        val canonicalSlot = "ksafe_secretx_" + "my.db".encodeToByteArray()
+            .joinToString("") { b -> ((b.toInt() and 0xff).toString(16).padStart(2, '0')) }
+        assertEquals(
+            "", ksafe.get(canonicalSlot, ""),
+            "a malformed legacy value must not be migrated into the canonical slot",
+        )
+
+        ksafe.close()
+    }
+
     /** XOR engine whose `decrypt` always throws — as if the backing key were invalidated on a later cold start. */
     private class AlwaysFailDecryptEngine : KSafeEncryption {
         private val xor = FakeEncryption()
@@ -107,9 +150,10 @@ class JvmGetOrCreateSecretTest {
             data: ByteArray,
             hardwareIsolated: Boolean,
             requireUnlockedDevice: Boolean?,
+            aad: ByteArray?,
         ): ByteArray = xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
 
-        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray =
+        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray =
             throw IllegalStateException("KSafe: simulated unreadable secret (key invalidated)")
 
         override fun deleteKey(identifier: String) { /* no-op */ }

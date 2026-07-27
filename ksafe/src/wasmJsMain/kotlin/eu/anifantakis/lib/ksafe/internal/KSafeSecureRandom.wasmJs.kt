@@ -2,23 +2,16 @@
 
 package eu.anifantakis.lib.ksafe.internal
 
-import kotlin.io.encoding.Base64
-import kotlin.io.encoding.ExperimentalEncodingApi
+import eu.anifantakis.lib.ksafe.KSafeBase64
 
 /**
- * Generates [size] random bytes via WebCrypto and returns them as a Base64 string.
- * We round-trip through Base64 because Kotlin/WASM cannot return a ByteArray
- * directly from a JS external function.
+ * Generates [size] random bytes via WebCrypto and returns them as a Base64 string. We round-trip
+ * through Base64 because Kotlin/WASM cannot return a ByteArray directly from a JS external function.
  */
 @JsFun(
     """(size) => {
     const arr = new Uint8Array(size);
-    // WebCrypto's getRandomValues rejects a view longer than 65536 bytes (QuotaExceededError),
-    // so fill in 64KB chunks to allow generating a large secret.
-    const CHUNK = 65536;
-    for (let off = 0; off < size; off += CHUNK) {
-        crypto.getRandomValues(arr.subarray(off, Math.min(off + CHUNK, size)));
-    }
+    crypto.getRandomValues(arr);
     let binary = '';
     for (let i = 0; i < arr.length; i++) {
         binary += String.fromCharCode(arr[i]);
@@ -28,8 +21,6 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 )
 private external fun _cryptoRandomBase64(size: Int): String
 
-@OptIn(ExperimentalEncodingApi::class)
-actual fun secureRandomBytes(size: Int): ByteArray {
-    require(size > 0) { "size must be positive" }
-    return Base64.decode(_cryptoRandomBase64(size))
+internal actual fun fillSecureRandomChunk(out: ByteArray, offset: Int, length: Int) {
+    KSafeBase64.decode(_cryptoRandomBase64(length)).copyInto(out, offset)
 }

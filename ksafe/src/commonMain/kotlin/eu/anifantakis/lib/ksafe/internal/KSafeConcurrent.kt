@@ -1,5 +1,8 @@
 package eu.anifantakis.lib.ksafe.internal
 
+import kotlin.concurrent.Volatile
+import kotlin.concurrent.atomics.AtomicLong
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.CoroutineContext
 
 // Thread-safe primitives for [KSafeCore]. Each target provides an `actual` tuned to
@@ -11,6 +14,13 @@ internal expect class KSafeAtomicFlag(initial: Boolean) {
     fun get(): Boolean
     fun set(value: Boolean)
     fun compareAndSet(expected: Boolean, new: Boolean): Boolean
+}
+
+@PublishedApi
+internal expect class KSafeAtomicInt(initial: Int) {
+    fun get(): Int
+    fun set(value: Int)
+    fun compareAndSet(expected: Int, new: Int): Boolean
 }
 
 /** Concurrent `String`-keyed map; callers use `remove` rather than storing `null`. */
@@ -80,4 +90,51 @@ internal expect val decryptFlowContext: CoroutineContext
 @PublishedApi
 internal expect class KSafeInitLock() {
     fun <R> withLock(block: () -> R): R
+}
+
+/**
+ * One double-checked lazily-built value, held in a private field. Every delegate that must hand
+ * out a single canonical instance needs this exact shape — a lock-free fast path plus a build
+ * under [KSafeInitLock] — and each one that hand-writes it is a chance for a concurrent first
+ * access to build a second instance and, with it, leak the coroutine that instance launched.
+ *
+ * Composition rather than a shared supertype: the delegates are `@PublishedApi internal` and
+ * their supertypes are recorded in the committed ABI dumps, while a private field is not.
+ */
+internal class KSafeLazyRef<T : Any> {
+    @Volatile private var value: T? = null
+    private val initLock = KSafeInitLock()
+
+    fun getOrPut(create: () -> T): T {
+        value?.let { return it }
+        return initLock.withLock {
+            value ?: create().also { value = it }
+        }
+    }
+}
+
+/**
+ * Inserts [value] into a key cache guarded by the purge fence [epoch], which a wipe bumps BEFORE
+ * removing the persisted records the cache mirrors.
+ *
+ * [epochAtRead] must be captured BEFORE the read/mint that produced [value] — capturing it here
+ * would miss a wipe that completed in between. The insert is skipped if a wipe raced that read,
+ * and undone if one lands between the check and the put; the undo is conditional on [value] still
+ * being the mapping, so it can never strip a newer legitimate re-mint.
+ *
+ * Written once because getting it wrong on one engine is silent: the cache would keep serving
+ * key material whose persisted record is gone — readable for the rest of the session, gone after
+ * relaunch, taking everything written under it.
+ */
+@OptIn(ExperimentalAtomicApi::class)
+internal fun <V : Any> insertUnderPurgeFence(
+    cache: KSafeConcurrentMap<V>,
+    epoch: AtomicLong,
+    key: String,
+    value: V,
+    epochAtRead: Long,
+) {
+    if (epoch.load() != epochAtRead) return
+    cache[key] = value
+    if (epoch.load() != epochAtRead) cache.removeIf(key, value)
 }

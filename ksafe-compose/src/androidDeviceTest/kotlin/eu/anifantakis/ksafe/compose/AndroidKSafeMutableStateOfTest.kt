@@ -24,16 +24,6 @@ class AndroidKSafeMutableStateOfTest : KSafeMutableStateOfTest() {
             return "composeandroid${runId}test${numberToLetters(count.toLong())}"
         }
 
-        private fun numberToLetters(num: Long): String {
-            var n = num
-            val sb = StringBuilder()
-            while (n > 0) {
-                n--
-                sb.insert(0, ('a' + (n % 26).toInt()))
-                n /= 26
-            }
-            return if (sb.isEmpty()) "a" else sb.toString()
-        }
     }
 
     /** Skipped on Android: DataStore doesn't allow multiple instances on the same file in one process. */

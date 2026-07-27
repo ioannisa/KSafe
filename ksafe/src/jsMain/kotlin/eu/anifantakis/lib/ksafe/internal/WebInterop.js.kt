@@ -26,3 +26,6 @@ internal actual fun localStorageKey(index: Int): String? = localStorage.key(inde
 
 @PublishedApi
 internal actual fun currentTimeMillisWeb(): Long = Date.now().toLong()
+
+@PublishedApi
+internal actual fun webCryptoSubtleAvailable(): Boolean = js(WEB_SUBTLE_AVAILABLE_JS) as Boolean

@@ -7,7 +7,10 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
- * Locks in: shouldCache treats `duration <= 0` as non-caching, and sessionKey keeps the global (null) scope, every caller scope, and the strict/permissive strengths in distinct, non-forgeable slots.
+ * Locks in: shouldCache treats `duration <= 0` as non-caching, sessionKey keeps the global (null)
+ * scope, every caller scope, and the strict/permissive strengths in distinct, non-forgeable slots,
+ * and the revocation epochs give clearBiometricAuth() per-scope and global stamps that in-flight
+ * prompts can be checked against at seed time.
  */
 class BiometricAuthSessionTest {
 
@@ -78,5 +81,61 @@ class BiometricAuthSessionTest {
         // full key can never land in a different (scope, strength) slot.
         assertNotEquals(strict("vault"), permissive("S ksafe-global-scope"))
         assertNotEquals(strict(null), permissive("Sscope: ksafe-global-scope"))
+    }
+
+    // ---- revocation epochs (the seed-time guard against clear-during-prompt) ----
+    // Epoch state is process-global and only ever grows, so these assert relative
+    // changes from captured values, never absolute ones.
+
+    @Test
+    fun markRevoked_changesTheRevokedKeysEpoch_only() {
+        val revoked = permissive("epoch-vault")
+        val strictSibling = strict("epoch-vault")
+        val unrelated = permissive("epoch-other")
+        val revokedBefore = BiometricAuthSession.revocationEpoch(revoked)
+        val siblingBefore = BiometricAuthSession.revocationEpoch(strictSibling)
+        val unrelatedBefore = BiometricAuthSession.revocationEpoch(unrelated)
+
+        BiometricAuthSession.markRevoked(revoked)
+
+        assertNotEquals(
+            revokedBefore, BiometricAuthSession.revocationEpoch(revoked),
+            "revoking a key must change its epoch, or an in-flight prompt could still re-seed it",
+        )
+        // Per-scope granularity: each (scope, strength) key is revoked individually.
+        assertEquals(siblingBefore, BiometricAuthSession.revocationEpoch(strictSibling))
+        assertEquals(unrelatedBefore, BiometricAuthSession.revocationEpoch(unrelated))
+    }
+
+    @Test
+    fun markAllRevoked_changesEveryKeysEpoch() {
+        val scoped = permissive("epoch-global-test")
+        val strictScoped = strict("epoch-global-test")
+        val globalSlot = permissive(null)
+        val scopedBefore = BiometricAuthSession.revocationEpoch(scoped)
+        val strictBefore = BiometricAuthSession.revocationEpoch(strictScoped)
+        val globalBefore = BiometricAuthSession.revocationEpoch(globalSlot)
+
+        BiometricAuthSession.markAllRevoked()
+
+        assertNotEquals(scopedBefore, BiometricAuthSession.revocationEpoch(scoped))
+        assertNotEquals(strictBefore, BiometricAuthSession.revocationEpoch(strictScoped))
+        assertNotEquals(globalBefore, BiometricAuthSession.revocationEpoch(globalSlot))
+    }
+
+    @Test
+    fun revocationEpoch_neverRevisitsACapturedValue() {
+        // A global bump after scoped bumps (or any mix) must never bring a key's epoch back
+        // to a value an in-flight prompt may have captured — that would undo the revocation.
+        val key = permissive("epoch-aba")
+        val seen = mutableSetOf(BiometricAuthSession.revocationEpoch(key))
+        repeat(3) {
+            BiometricAuthSession.markRevoked(key)
+            assertTrue(seen.add(BiometricAuthSession.revocationEpoch(key)), "scoped bump must produce a fresh epoch")
+        }
+        BiometricAuthSession.markAllRevoked()
+        assertTrue(seen.add(BiometricAuthSession.revocationEpoch(key)), "global bump must produce a fresh epoch")
+        BiometricAuthSession.markRevoked(key)
+        assertTrue(seen.add(BiometricAuthSession.revocationEpoch(key)), "scoped bump after a global one must produce a fresh epoch")
     }
 }

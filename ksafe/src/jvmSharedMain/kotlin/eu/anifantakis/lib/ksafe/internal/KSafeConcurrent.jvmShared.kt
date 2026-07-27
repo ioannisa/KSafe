@@ -1,9 +1,15 @@
+// Pinned to the facade name this file had while it lived in jvmMain: the top-level members
+// below are @PublishedApi, so the class name is part of the published JVM ABI and a rename
+// on the source-set move would break already-compiled callers for no gain.
+@file:JvmName("KSafeConcurrent_jvmKt")
+
 package eu.anifantakis.lib.ksafe.internal
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.coroutines.CoroutineContext
 
@@ -32,6 +38,14 @@ internal actual class KSafeAtomicFlag actual constructor(initial: Boolean) {
     actual fun get(): Boolean = ref.get()
     actual fun set(value: Boolean) { ref.set(value) }
     actual fun compareAndSet(expected: Boolean, new: Boolean): Boolean = ref.compareAndSet(expected, new)
+}
+
+@PublishedApi
+internal actual class KSafeAtomicInt actual constructor(initial: Int) {
+    private val ref = AtomicInteger(initial)
+    actual fun get(): Int = ref.get()
+    actual fun set(value: Int) { ref.set(value) }
+    actual fun compareAndSet(expected: Int, new: Int): Boolean = ref.compareAndSet(expected, new)
 }
 
 @PublishedApi

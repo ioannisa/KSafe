@@ -1,6 +1,11 @@
 package eu.anifantakis.lib.ksafe.biometrics
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -90,6 +95,92 @@ class DesktopBiometricsTest {
         KSafeBiometrics.clearBiometricAuth(scope = "vault")
         assertTrue(KSafeBiometrics.verifyBiometric("Auth", duration))
         assertEquals(2, prompts, "clearBiometricAuth must force the next call back to a prompt")
+    }
+
+    @Test
+    fun clearDuringAnInFlightPrompt_isNotUndoneByItsSuccess() = runBlocking {
+        var prompts = 0
+        desktopPromptOverrideForTest = { _, _ ->
+            prompts++
+            // Logout raced the open prompt: revocation lands before the user completes it.
+            if (prompts == 1) KSafeBiometrics.clearBiometricAuth()
+            true
+        }
+        val duration = BiometricAuthorizationDuration(60_000L, scope = "vault")
+
+        assertTrue(KSafeBiometrics.verifyBiometric("Auth", duration), "the in-flight caller still gets its result")
+        assertTrue(KSafeBiometrics.verifyBiometric("Auth", duration))
+        assertEquals(2, prompts, "a success landing after clearBiometricAuth must not re-seed the window")
+    }
+
+    @Test
+    fun scopedClearDuringAnInFlightPrompt_revokesThatScope() = runBlocking {
+        var prompts = 0
+        desktopPromptOverrideForTest = { _, _ ->
+            prompts++
+            if (prompts == 1) KSafeBiometrics.clearBiometricAuth(scope = "vault")
+            true
+        }
+        val duration = BiometricAuthorizationDuration(60_000L, scope = "vault")
+
+        assertTrue(KSafeBiometrics.verifyBiometric("Auth", duration))
+        assertTrue(KSafeBiometrics.verifyBiometric("Auth", duration))
+        assertEquals(2, prompts, "a scoped clear during the prompt must keep the next call prompting")
+    }
+
+    @Test
+    fun scopedClearOfAnUnrelatedScope_doesNotRevokeTheInFlightPrompt() = runBlocking {
+        var prompts = 0
+        desktopPromptOverrideForTest = { _, _ ->
+            prompts++
+            if (prompts == 1) KSafeBiometrics.clearBiometricAuth(scope = "other")
+            true
+        }
+        val duration = BiometricAuthorizationDuration(60_000L, scope = "vault")
+
+        assertTrue(KSafeBiometrics.verifyBiometric("Auth", duration))
+        assertTrue(KSafeBiometrics.verifyBiometric("Auth", duration))
+        assertEquals(1, prompts, "revoking an unrelated scope must not cost this scope its seeded window")
+    }
+
+    @Test
+    fun concurrentCalls_areSerialized_neverTwoPromptsInFlight() = runBlocking(Dispatchers.Default) {
+        val active = AtomicInteger(0)
+        val maxActive = AtomicInteger(0)
+        desktopPromptOverrideForTest = { _, _ ->
+            val now = active.incrementAndGet()
+            maxActive.getAndUpdate { m -> maxOf(m, now) }
+            Thread.sleep(20) // hold the "prompt" open
+            active.decrementAndGet()
+            true
+        }
+
+        (0 until 6).map {
+            async { KSafeBiometrics.verifyBiometric("Auth") }
+        }.awaitAll()
+
+        assertEquals(1, maxActive.get(), "desktop prompts must be serialized — never two OS dialogs at once")
+    }
+
+    @Test
+    fun queuedCaller_skipsThePrompt_whenTheHolderJustAuthorizedItsScope() = runBlocking(Dispatchers.Default) {
+        val prompts = AtomicInteger(0)
+        val firstPromptShowing = CompletableDeferred<Unit>()
+        desktopPromptOverrideForTest = { _, _ ->
+            prompts.incrementAndGet()
+            firstPromptShowing.complete(Unit)
+            Thread.sleep(30) // keep the prompt open so the second caller queues behind the gate
+            true
+        }
+        val duration = BiometricAuthorizationDuration(60_000L, scope = "vault")
+
+        val first = async { KSafeBiometrics.verifyBiometric("Auth", duration) }
+        firstPromptShowing.await()
+        val second = async { KSafeBiometrics.verifyBiometric("Auth", duration) }
+
+        assertTrue(first.await())
+        assertTrue(second.await())
+        assertEquals(1, prompts.get(), "a caller queued behind a successful same-scope prompt must not re-prompt")
     }
 
     @Test
@@ -186,6 +277,20 @@ class DesktopBiometricsTest {
         assertFalse(WindowsHello.classifyResult(2, allowDeviceCredentialFallback = false), "NotConfigured + strict → refuse")
         assertFalse(WindowsHello.classifyResult(1, allowDeviceCredentialFallback = false), "DeviceNotPresent + strict → refuse")
         assertTrue(WindowsHello.classifyResult(3, allowDeviceCredentialFallback = true), "DisabledByPolicy + permissive → pass")
+    }
+
+    @Test
+    fun vtableOffsets_scaleWithTheNativePointerSize() {
+        // COM vtable entries are pointer-sized: 8-byte stride on 64-bit, 4 on a 32-bit JVM.
+        // A literal stride would fetch the wrong function pointer on 32-bit and crash natively;
+        // true 32-bit runtime verification needs a Windows x86 JRE this CI does not have, so
+        // this pins the arithmetic to the pointer size instead.
+        assertEquals(0L, WindowsHello.vtableByteOffset(0))
+        assertEquals(6L * com.sun.jna.Native.POINTER_SIZE, WindowsHello.vtableByteOffset(6))
+        assertEquals(8L * com.sun.jna.Native.POINTER_SIZE, WindowsHello.vtableByteOffset(8))
+        if (com.sun.jna.Native.POINTER_SIZE == 8) {
+            assertEquals(48L, WindowsHello.vtableByteOffset(6), "64-bit host: slot 6 must sit at byte 48")
+        }
     }
 
     @Test

@@ -6,8 +6,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.Foundation.NSProcessInfo
-import kotlin.time.TimeSource
-import kotlin.concurrent.AtomicReference
 import kotlin.experimental.ExperimentalNativeApi
 import kotlin.native.OsFamily
 import kotlin.native.Platform
@@ -19,60 +17,49 @@ import kotlin.native.Platform
  * macOS: `LAPolicyDeviceOwnerAuthentication` — Touch ID, password, or Apple Watch unlock.
  */
 
-private val biometricAuthSessions = AtomicReference<Map<String, Long>>(emptyMap())
-
-// Monotonic TTL clock: a backward wall-clock jump (NTP or manual change) must NOT extend a
-// cached authorization. TimeSource.Monotonic never goes backward.
-private val biometricClockOrigin = TimeSource.Monotonic.markNow()
-private fun monotonicNowMs(): Long = biometricClockOrigin.elapsedNow().inWholeMilliseconds
-
 @OptIn(ExperimentalForeignApi::class)
 private fun isSimulator(): Boolean =
     NSProcessInfo.processInfo.environment["SIMULATOR_UDID"] != null
 
-private fun updateBiometricSession(scope: String, timestamp: Long) {
-    while (true) {
-        val current = biometricAuthSessions.value
-        val updated = current + (scope to timestamp)
-        if (biometricAuthSessions.compareAndSet(current, updated)) break
+// macOS defaults to DeviceOwnerAuthentication (many Macs lack Touch ID); iOS is biometrics-only.
+// Fallback is opt-in. The prompt and the availability probe must ask about the SAME policy.
+private fun laPolicy(allowDeviceCredentialFallback: Boolean) =
+    if (allowDeviceCredentialFallback) {
+        platform.LocalAuthentication.LAPolicyDeviceOwnerAuthentication
+    } else {
+        platform.LocalAuthentication.LAPolicyDeviceOwnerAuthenticationWithBiometrics
     }
-}
 
 internal actual suspend fun platformVerifyBiometric(
     reason: String,
     authorizationDuration: BiometricAuthorizationDuration?,
     allowDeviceCredentialFallback: Boolean,
+    title: String?,
+    cancelLabel: String?,
 ): Boolean {
-    if (BiometricAuthSession.shouldCache(authorizationDuration)) {
-        val scope = BiometricAuthSession.sessionKey(authorizationDuration!!.scope, requireStrict = !allowDeviceCredentialFallback)
-        val lastAuth = biometricAuthSessions.value[scope] ?: 0L
-        val now = monotonicNowMs()
-        if (lastAuth > 0 && (now - lastAuth) < authorizationDuration.duration) {
-            return true
-        }
-    }
+    val attempt = beginBiometricAttempt(authorizationDuration, allowDeviceCredentialFallback)
+        ?: return true
 
     if (isSimulator()) {
-        if (BiometricAuthSession.shouldCache(authorizationDuration)) {
-            seedBiometricSessionIfActive {
-                updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope, requireStrict = !allowDeviceCredentialFallback), monotonicNowMs())
-            }
-        }
+        attempt.seedIfActive()
         return true
     }
 
     return suspendCancellableCoroutine { continuation ->
-        // Own the LAContext so a cancelled coroutine can invalidate() the pending prompt, and guard
-        // resume so a late or repeated callback can't resume an already-resumed continuation.
+        // Own the LAContext so a cancelled coroutine can invalidate() the pending prompt; guard resume against a late/repeat callback.
         val context = platform.LocalAuthentication.LAContext()
         continuation.invokeOnCancellation { runCatching { context.invalidate() } }
         CoroutineScope(Dispatchers.Main).launch {
-            runLAContextEvaluate(context, reason, allowDeviceCredentialFallback) { success ->
-                // Seed only if the continuation is still active: a success arriving after the caller
-                // cancelled must NOT seed the cache, or a later call gets a prompt-free pass off an
-                // authorization never received.
-                if (success && BiometricAuthSession.shouldCache(authorizationDuration) && continuation.isActive) {
-                    updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope, requireStrict = !allowDeviceCredentialFallback), monotonicNowMs())
+            runLAContextEvaluate(context, reason, allowDeviceCredentialFallback, cancelLabel) { success ->
+                // A success arriving after the caller cancelled — or after clearBiometricAuth()
+                // revoked the scope while the prompt was up — must NOT seed the cache. Not
+                // attempt.seedIfActive(): this callback is not the caller's coroutine, so the
+                // liveness check is the continuation's, and the epoch compare is explicit.
+                val cacheKey = attempt.cacheKey
+                if (success && cacheKey != null && continuation.isActive &&
+                    BiometricAuthSession.revocationEpoch(cacheKey) == attempt.epochAtPromptStart
+                ) {
+                    BiometricSessionStore.seedThenRecheckRevocation(cacheKey, attempt.epochAtPromptStart)
                 }
                 if (continuation.isActive) continuation.resumeWith(Result.success(success))
             }
@@ -84,46 +71,17 @@ internal actual fun platformVerifyBiometricDirect(
     reason: String,
     authorizationDuration: BiometricAuthorizationDuration?,
     allowDeviceCredentialFallback: Boolean,
+    title: String?,
+    cancelLabel: String?,
     onResult: (Boolean) -> Unit,
 ) {
+    // Main, like every Apple callback here: the suspending twin owns the cache and prompt logic.
     CoroutineScope(Dispatchers.Main).launch {
-        if (BiometricAuthSession.shouldCache(authorizationDuration)) {
-            val scope = BiometricAuthSession.sessionKey(authorizationDuration!!.scope, requireStrict = !allowDeviceCredentialFallback)
-            val lastAuth = biometricAuthSessions.value[scope] ?: 0L
-            val now = monotonicNowMs()
-            if (lastAuth > 0 && (now - lastAuth) < authorizationDuration.duration) {
-                onResult(true)
-                return@launch
-            }
-        }
-        if (isSimulator()) {
-            if (BiometricAuthSession.shouldCache(authorizationDuration)) {
-                updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope, requireStrict = !allowDeviceCredentialFallback), monotonicNowMs())
-            }
-            onResult(true)
-            return@launch
-        }
-        runLAContextEvaluate(platform.LocalAuthentication.LAContext(), reason, allowDeviceCredentialFallback) { success ->
-            if (success && BiometricAuthSession.shouldCache(authorizationDuration)) {
-                updateBiometricSession(BiometricAuthSession.sessionKey(authorizationDuration!!.scope, requireStrict = !allowDeviceCredentialFallback), monotonicNowMs())
-            }
-            onResult(success)
-        }
-    }
-}
-
-internal actual fun platformClearBiometricAuth(scope: String?) {
-    if (scope == null) {
-        biometricAuthSessions.value = emptyMap()
-        return
-    }
-    // Clear BOTH the permissive and strict slots for this scope (see BiometricAuthSession).
-    val permissiveKey = BiometricAuthSession.sessionKey(scope, requireStrict = false)
-    val strictKey = BiometricAuthSession.sessionKey(scope, requireStrict = true)
-    while (true) {
-        val current = biometricAuthSessions.value
-        val updated = current - permissiveKey - strictKey
-        if (biometricAuthSessions.compareAndSet(current, updated)) break
+        onResult(
+            platformVerifyBiometric(
+                reason, authorizationDuration, allowDeviceCredentialFallback, title, cancelLabel,
+            )
+        )
     }
 }
 
@@ -132,32 +90,24 @@ private fun runLAContextEvaluate(
     context: platform.LocalAuthentication.LAContext,
     reason: String,
     allowDeviceCredentialFallback: Boolean,
+    cancelLabel: String?,
     onResult: (Boolean) -> Unit,
 ) {
-    // macOS defaults to DeviceOwnerAuthentication (Touch ID + password + Apple Watch) since many
-    // Macs lack Touch ID; iOS defaults to biometrics-only. Credential fallback is opt-in on both.
-    val policy = if (allowDeviceCredentialFallback) {
-        platform.LocalAuthentication.LAPolicyDeviceOwnerAuthentication
-    } else {
-        platform.LocalAuthentication.LAPolicyDeviceOwnerAuthenticationWithBiometrics
-    }
-    context.evaluatePolicy(policy, localizedReason = reason) { success, _ ->
+    // Left unset when null so the system supplies its own LOCALIZED cancel title; overriding
+    // with a fixed string would ship one language to every locale. LAContext has no title/
+    // subtitle — only the reason — so `title` has no Apple counterpart and is ignored.
+    if (cancelLabel != null) context.localizedCancelTitle = cancelLabel
+    context.evaluatePolicy(laPolicy(allowDeviceCredentialFallback), localizedReason = reason) { success, _ ->
         CoroutineScope(Dispatchers.Main).launch { onResult(success) }
     }
 }
 
-/** Synchronous platform check backing both `biometricsAvailable` variants. */
 @OptIn(ExperimentalForeignApi::class)
 private fun appleBiometricsAvailability(allowDeviceCredentialFallback: Boolean): Boolean {
-    // The Simulator verify path is a pass-through (no real gate), so availability reports
-    // false — the API's contract is "will verifyBiometric show a REAL prompt".
+    // Simulator verify is a pass-through, so availability reports false: the contract is "will verify show a REAL prompt".
     if (isSimulator()) return false
-    val policy = if (allowDeviceCredentialFallback) {
-        platform.LocalAuthentication.LAPolicyDeviceOwnerAuthentication
-    } else {
-        platform.LocalAuthentication.LAPolicyDeviceOwnerAuthenticationWithBiometrics
-    }
-    return platform.LocalAuthentication.LAContext().canEvaluatePolicy(policy, error = null)
+    return platform.LocalAuthentication.LAContext()
+        .canEvaluatePolicy(laPolicy(allowDeviceCredentialFallback), error = null)
 }
 
 internal actual suspend fun platformBiometricsAvailable(allowDeviceCredentialFallback: Boolean): Boolean =
@@ -168,6 +118,5 @@ internal actual fun platformBiometricsAvailableDirect(
     onResult: (Boolean) -> Unit,
 ) {
     val result = appleBiometricsAvailability(allowDeviceCredentialFallback)
-    // Main-thread delivery, like the other Apple callbacks.
     CoroutineScope(Dispatchers.Main).launch { onResult(result) }
 }

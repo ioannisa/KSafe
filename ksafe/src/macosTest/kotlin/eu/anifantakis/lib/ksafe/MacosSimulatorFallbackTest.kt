@@ -33,13 +33,6 @@ class MacosSimulatorFallbackTest {
         override fun delete(account: String) {}
     }
 
-    private class FakeKeychainStore : AppleKeychainStore {
-        val map = KSafeConcurrentMap<ByteArray>()
-        override fun readBytes(account: String): ByteArray? = map[account]
-        override fun store(account: String, bytes: ByteArray, requireUnlocked: Boolean) { map[account] = bytes }
-        override fun delete(account: String) { map.remove(account) }
-    }
-
     private class InMemoryFallbackStore : SimulatorFallbackKeyStore {
         val map = KSafeConcurrentMap<ByteArray>()
         var writes = 0

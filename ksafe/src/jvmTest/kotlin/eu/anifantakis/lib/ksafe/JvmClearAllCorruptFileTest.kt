@@ -21,12 +21,6 @@ class JvmClearAllCorruptFileTest {
         tmp.deleteRecursively()
     }
 
-    private class IdentityEngine : KSafeEncryption {
-        override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?): ByteArray = data
-        override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?): ByteArray = data
-        override fun deleteKey(identifier: String) {}
-    }
-
     @Test
     fun clearAll_deletesProtobufCorruptQuarantineCopies_butNotSiblingSafes() {
         val base = "eu_anifantakis_ksafe_datastore_wipe"

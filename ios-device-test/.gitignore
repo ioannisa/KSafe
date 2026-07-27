@@ -1,0 +1,5 @@
+build/
+xcode/KSafeDeviceTest.xcodeproj/
+*.log
+profile.plist
+ent.plist

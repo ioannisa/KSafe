@@ -23,15 +23,6 @@ class IosKeychainConcurrencyTest {
 
     // In-memory Keychain stand-in: thread-safe (CAS) but last-write-wins, like the real
     // delete-then-add SecItemAdd under a race.
-    private class FakeKeychainStore : AppleKeychainStore {
-        val map = KSafeConcurrentMap<ByteArray>()
-        override fun readBytes(account: String): ByteArray? = map[account]
-        override fun store(account: String, bytes: ByteArray, requireUnlocked: Boolean) {
-            map[account] = bytes
-        }
-        override fun delete(account: String) { map.remove(account) }
-    }
-
     @Test
     fun concurrentMasterKeyCreation_resolvesToExactlyOneKey() {
         val store = FakeKeychainStore()

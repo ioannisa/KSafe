@@ -21,16 +21,6 @@ class Jvm160FixesTest {
             return "run${runId}fix${numberToLetters(count.toLong())}"
         }
 
-        private fun numberToLetters(num: Long): String {
-            var n = num
-            val sb = StringBuilder()
-            while (n > 0) {
-                n--
-                sb.insert(0, ('a' + (n % 26).toInt()))
-                n /= 26
-            }
-            return if (sb.isEmpty()) "a" else sb.toString()
-        }
     }
 
     /** Concurrent encrypted writes to the SAME key must all use one key, so any thread's data stays readable. */

@@ -23,3 +23,13 @@ internal expect fun localStorageKey(index: Int): String?
 /** Current epoch time in milliseconds. */
 @PublishedApi
 internal expect fun currentTimeMillisWeb(): Long
+
+/**
+ * Whether `crypto.subtle` (WebCrypto) is exposed on this page. Browsers withhold it outside a
+ * SECURE CONTEXT (HTTPS, or a localhost/127.0.0.1 origin), where every encrypted operation fails.
+ */
+@PublishedApi
+internal expect fun webCryptoSubtleAvailable(): Boolean
+
+/** The secure-context probe itself, so both bindings evaluate the same predicate. */
+internal const val WEB_SUBTLE_AVAILABLE_JS: String = "!!(globalThis.crypto && globalThis.crypto.subtle)"

@@ -25,16 +25,6 @@ class JvmKSafeMutableStateOfTest : KSafeMutableStateOfTest() {
             return "composerun${runId}test${numberToLetters(count.toLong())}"
         }
 
-        private fun numberToLetters(num: Long): String {
-            var n = num
-            val sb = StringBuilder()
-            while (n > 0) {
-                n--
-                sb.insert(0, ('a' + (n % 26).toInt()))
-                n /= 26
-            }
-            return if (sb.isEmpty()) "a" else sb.toString()
-        }
     }
 
     override fun newKSafe(fileName: String?): KSafe {
