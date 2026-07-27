@@ -37,7 +37,7 @@ jobs:
             17
             21
             24
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@v5
       - name: Compile all :ksafe targets
         run: ./gradlew :ksafe:compileKotlinJvm :ksafe:compileKotlinJs :ksafe:compileKotlinWasmJs :ksafe:compileKotlinMetadata --stacktrace
       # Public-ABI lock (kotlinx binary-compatibility-validator): fails if any module's
@@ -78,7 +78,7 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@v5
       - name: Randomized torture run (90s chaos)
         run: ./gradlew :ksafe:jvmTest --tests "eu.anifantakis.lib.ksafe.JvmTortureTest" -PksafeTorture -PksafeTortureSeconds=90 -PksafeTestLog --stacktrace
       - name: Upload test report
@@ -111,7 +111,7 @@ jobs:
         with:
           distribution: temurin
           java-version: ${{ matrix.java }}
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@v5
       # -PksafeTestLog kept ON: scaling the stress magnitude alone did NOT
       # stop the 2-vCPU hang, so a specific test deadlocks (not a throughput
       # drain). The per-test "STARTED/PASSED" events make the job log name the
@@ -141,7 +141,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@v5
       - name: Install Chrome
         id: setup-chrome
         uses: browser-actions/setup-chrome@v2
@@ -177,7 +177,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@v5
       - name: Install Chrome
         id: setup-chrome
         uses: browser-actions/setup-chrome@v2
@@ -215,7 +215,7 @@ jobs:
         with:
           distribution: temurin
           java-version: ${{ matrix.java }}
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@v5
       - name: Install gnome-keyring + libsecret
         run: |
           sudo apt-get update
@@ -267,7 +267,7 @@ jobs:
         with:
           distribution: temurin
           java-version: ${{ matrix.java }}
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@v5
       - name: Key vault integration test (DPAPI)
         run: ./gradlew :ksafe:jvmTest --tests 'eu.anifantakis.lib.ksafe.JvmKeyVaultIntegrationTest' --tests 'eu.anifantakis.lib.ksafe.Jvm200To210FixtureTest' --tests 'eu.anifantakis.lib.ksafe.JvmKeyVaultMigrationTest' --no-daemon --no-configuration-cache --stacktrace
       - name: Upload test report
@@ -298,7 +298,7 @@ jobs:
         with:
           distribution: temurin
           java-version: ${{ matrix.java }}
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@v5
       - name: Create + unlock a dedicated keychain
         run: |
           security create-keychain -p "" build.keychain
@@ -333,7 +333,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@v5
       - name: Native Apple tests (all 3 modules)
         run: >
           ./gradlew
@@ -400,7 +400,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@v5
         if: steps.ftl.outputs.enabled == 'true'
       - name: Assemble instrumentation test APK
         if: steps.ftl.outputs.enabled == 'true'
