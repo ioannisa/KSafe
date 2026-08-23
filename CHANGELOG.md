@@ -51,7 +51,7 @@ All notable changes to KSafe will be documented in this file.
   `asStateFlow`/`asMutableStateFlow`/`getStateFlow`, and — via `:ksafe-compose` — `mutableStateOf`
   and `rememberKSafeState`), and forward the nullable `key` untouched so key-from-property-name
   derivation behaves exactly as on `KSafe`. All views over one instance share the same file, key
-  namespace and cache, so a single store keeps serving mixed-mode entries; in Koin the types
+  namespace and cache, so a single store keeps serving mixed-mode ezntries; in Koin the types
   replace stringly `named(...)` qualifiers (`single { KSafePlain(get()) }`), and
   `ksafe.plain` / `ksafe.encrypted` / `ksafe.hardwareIsolated` offer the same views as one-line
   accessors. `KSafeEncrypted`/`KSafeHardwareIsolated` also freeze the unlock policy: their
