@@ -120,6 +120,95 @@ class KSafeKeyGenerationTest {
         assertEquals(null, KeySafeMetadataManager.parseKeyGenerationTimestamp("garbage"))
     }
 
+    @Test
+    fun keyGenerationState_rotationLifecycle_distinguishes30_completed_andInProgress() {
+        val legacy30 = """{"g":2,"ts":123}"""
+        assertEquals(null, KeySafeMetadataManager.parseKeyRotationLifecycle(legacy30))
+        assertFalse(KeySafeMetadataManager.hasKeyRotationLifecycle(legacy30))
+        assertTrue(KeySafeMetadataManager.isLegacy30KeyGenerationState(legacy30))
+        assertFalse(KeySafeMetadataManager.parseKeyRotationInProgress(legacy30))
+
+        val active = KeySafeMetadataManager.buildKeyGenerationState(
+            generation = 2,
+            timestampMillis = 123L,
+            rotationInProgress = true,
+        )
+        assertEquals("""{"g":2,"ts":123,"r":1}""", active)
+        assertTrue(KeySafeMetadataManager.hasKeyRotationLifecycle(active))
+        assertFalse(KeySafeMetadataManager.isLegacy30KeyGenerationState(active))
+        assertEquals(1, KeySafeMetadataManager.parseKeyRotationLifecycle(active))
+        assertTrue(KeySafeMetadataManager.parseKeyRotationInProgress(active))
+
+        val completed = KeySafeMetadataManager.buildKeyGenerationState(
+            generation = 2,
+            timestampMillis = 123L,
+        )
+        assertEquals("""{"g":2,"ts":123,"r":0}""", completed)
+        assertTrue(KeySafeMetadataManager.hasKeyRotationLifecycle(completed))
+        assertFalse(KeySafeMetadataManager.isLegacy30KeyGenerationState(completed))
+        assertEquals(0, KeySafeMetadataManager.parseKeyRotationLifecycle(completed))
+        assertFalse(KeySafeMetadataManager.parseKeyRotationInProgress(completed))
+
+        val retryPending = KeySafeMetadataManager.buildKeyGenerationState(
+            generation = 2,
+            timestampMillis = 123L,
+            retryAttemptsRemaining = 3,
+        )
+        assertEquals("""{"g":2,"ts":123,"r":0,"rp":3}""", retryPending)
+        assertTrue(KeySafeMetadataManager.hasKeyRotationRetryPending(retryPending))
+        assertEquals(3, KeySafeMetadataManager.parseKeyRotationRetryAttempts(retryPending))
+        assertTrue(KeySafeMetadataManager.hasSupportedKeyRotationRetryState(retryPending))
+        assertFalse(KeySafeMetadataManager.hasKeyRotationRetryPending(completed))
+        assertEquals(null, KeySafeMetadataManager.parseKeyRotationRetryAttempts(completed))
+        assertTrue(
+            KeySafeMetadataManager.hasKeyRotationRetryPending(
+                """{"g":2,"ts":123,"r":0,"rp":"future"}"""
+            )
+        )
+        assertEquals(
+            null,
+            KeySafeMetadataManager.parseKeyRotationRetryAttempts(
+                """{"g":2,"ts":123,"r":0,"rp":"future"}"""
+            ),
+        )
+        assertFalse(
+            KeySafeMetadataManager.hasSupportedKeyRotationRetryState(
+                """{"g":2,"ts":123,"r":0,"rp":"future"}"""
+            )
+        )
+        assertFalse(
+            KeySafeMetadataManager.hasSupportedKeyRotationRetryState(
+                """{"g":2,"ts":123,"r":0,"rp":0}"""
+            )
+        )
+        assertTrue(
+            KeySafeMetadataManager.hasSupportedKeyRotationRetryState(
+                """{"g":2,"ts":123,"r":1,"rp":0}"""
+            ),
+            "rp:0 is the crash-recovery state of the final claimed attempt",
+        )
+
+        assertEquals(2, KeySafeMetadataManager.parseKeyRotationLifecycle("""{"g":2,"r":2}"""))
+        assertTrue(KeySafeMetadataManager.hasKeyRotationLifecycle("""{"g":2,"r":"future"}"""))
+        assertEquals(
+            null,
+            KeySafeMetadataManager.parseKeyRotationLifecycle("""{"g":2,"r":"future"}"""),
+        )
+        assertFalse(KeySafeMetadataManager.isLegacy30KeyGenerationState("garbage"))
+        assertFalse(KeySafeMetadataManager.isLegacy30KeyGenerationState("""{"g":2}"""))
+        assertFalse(KeySafeMetadataManager.isLegacy30KeyGenerationState("""{"g":10001,"ts":123}"""))
+        assertFalse(
+            KeySafeMetadataManager.isLegacy30KeyGenerationState(
+                """{"g":2,"ts":123,"future":true}"""
+            )
+        )
+        assertFalse(KeySafeMetadataManager.parseKeyRotationInProgress(null))
+        assertFalse(KeySafeMetadataManager.parseKeyRotationInProgress("garbage"))
+        assertFalse(
+            KeySafeMetadataManager.parseKeyRotationInProgress("""{"g":2,"ts":123,"r":0}""")
+        )
+    }
+
     // ---- alias derivation ----------------------------------------------------------------
 
     @Test

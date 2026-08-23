@@ -2,6 +2,148 @@
 
 All notable changes to KSafe will be documented in this file.
 
+## [3.1.0] - 2026-08-06
+
+### Added
+
+- **KSafe now owns its Apple CryptoKit integration.** A small bundled Swift/C bridge calls
+  `CryptoKit.AES.GCM` directly on iOS and macOS, while Kotlin owns validation and the frozen
+  `12-byte nonce || ciphertext || 16-byte tag` envelope. NIST AES-128/AES-256 vectors, an
+  independent AAD vector, and tamper tests pin the bridge's output and compatibility.
+- **AES key strength is typed and works on every platform.** Configure
+  `KSafeConfig(aesKeySize = KSafeAesKeySize.BITS_128)` or keep the default `BITS_256`.
+  WebCrypto now honors the same choice when minting a new non-extractable key; existing keys on
+  every platform retain their inherent size until `rotateKeys()` creates a new generation.
+- **Interrupted key rotations resume automatically at the same generation on the next KSafe
+  instance.** A 3.1.0 rotation writes `"r":1` atomically with its generation bump, before it
+  touches any entry, and changes that lifecycle state to `"r":0` only after the entry pass and
+  superseded-master sweep finish. A process death therefore leaves a readable mixed-generation
+  store that the next instance repairs idempotently at the same generation, even under
+  `KSafeKeyRotationPolicy.Never`; this is one lifecycle bit, not a per-entry journal.
+
+  **3.0.0 compatibility is deliberately conservative.** The released 3.0.0 generation record
+  has no `r` field, so absence cannot distinguish a completed rotation from one interrupted by
+  a crash. On its first 3.1.0 startup, KSafe treats every such record as a completed 3.0.0
+  rotation, adds `"r":0`, preserves its generation/timestamp, and performs no resume, generation
+  bump, entry rewrite, key sweep, or same-launch `MaxAge` rotation. Normal policy resumes on the
+  following launch. Thus upgrading can never make 3.1.0 guess wrong and disturb an already
+  shipped 3.0.0 store; if 3.0.0 really did leave entries behind, they remain readable under
+  their recorded old key and a later explicit `rotateKeys()` (or due `MaxAge` pass) moves them
+  normally. Unknown future lifecycle values are preserved and rejected fail-closed.
+
+- **A normally completed rotation no longer loses retryable work.** If a pass returns with
+  `skipped` entries — most importantly a strict `requireUnlockedDevice` entry while the device
+  is locked — KSafe records `"r":0` plus `"rp":N`, a bounded next-instance retry budget.
+  `KSafeConfig.keyRotationRetryAttempts` controls the initial count (3 by default; 0 disables
+  this retry path). The current instance starts no timer and performs no same-run retry. Each
+  **new KSafe instance** consumes at most one attempt and retries the same generation, without
+  minting another key or resetting the generation-birth `"ts"` clock; this lifecycle completion
+  also runs under `Never`. The claim durably changes `r:0,rp:N` to `r:1,rp:N-1` before work, so
+  a crash cannot refill the budget; `r:1,rp:0` can recover only the final already-claimed
+  attempt. If `MaxAge` is already due, its fresh-generation rotation takes precedence.
+  `failed` alone never arms retry because it denotes a definitive, not retryable, problem.
+
+- **Mode-typed views: `KSafePlain`, `KSafeEncrypted`, `KSafeHardwareIsolated`.** Thin wrappers
+  over an existing `KSafe` instance that freeze the write mode at construction — no member of
+  these types takes a `mode` parameter, so a call site can never accidentally encrypt a
+  preference or store a secret in plaintext by picking the wrong argument. They cover the full
+  write surface (`put`/`putDirect`, the `by view(...)` delegate, `asFlow`/`asWritableFlow`/
+  `asStateFlow`/`asMutableStateFlow`/`getStateFlow`, and — via `:ksafe-compose` — `mutableStateOf`
+  and `rememberKSafeState`), and forward the nullable `key` untouched so key-from-property-name
+  derivation behaves exactly as on `KSafe`. All views over one instance share the same file, key
+  namespace and cache, so a single store keeps serving mixed-mode entries; in Koin the types
+  replace stringly `named(...)` qualifiers (`single { KSafePlain(get()) }`), and
+  `ksafe.plain` / `ksafe.encrypted` / `ksafe.hardwareIsolated` offer the same views as one-line
+  accessors. `KSafeEncrypted`/`KSafeHardwareIsolated` also freeze the unlock policy: their
+  constructors take `requireUnlockedDevice`, defaulting to the instance's configured policy
+  (`KSafe.defaultWriteMode`), so a default-constructed view writes exactly like a modeless
+  `ksafe.put`. The guarantee is deliberately write-side only — reads stay mode-free and
+  auto-detect each entry's protection — and `HARDWARE_ISOLATED` remains a request that can
+  degrade with the usual reporting. Store-scoped operations (`rotateKeys`, `clearAll`, `close`,
+  `protectionInfo`, `getKeyInfo`, `awaitCacheReady`, `getOrCreateSecret`) are deliberately
+  absent from the views; each exposes its underlying instance as `val ksafe` for those.
+
+### Fixed
+
+- **An encrypt in flight across a `clearAll()` no longer resurrects the wiped key.** On JVM and
+  Android — the two platforms whose key material lives inside the store the wipe empties — an
+  encrypt that had already resolved its key when a sibling instance's `clearAll()` landed used to
+  repair itself by re-persisting that key, so the write stayed readable at the cost of undoing the
+  wipe: a pre-wipe backup of the store file became decryptable again. The repair now re-encrypts
+  instead — the raced write is retried under whatever legitimately owns the key slot afterwards, a
+  concurrent winner's key or freshly minted material — so the acknowledged write stays readable
+  *and* the destroyed key stays destroyed. Cryptographic erasure holds even against an in-flight
+  writer. The interleaving is forced deterministically in tests on both platforms; in the
+  pathological tail of repeated back-to-back wipes the failure direction is now uniformly toward
+  erasure, never against it. Apple and web are untouched: their keys live outside the store
+  (Keychain, IndexedDB), so `clearAll()` never created this window there.
+
+- **Apple joins the other platforms in serializing concurrent biometric prompts.** Android, JVM
+  Desktop and web queued a second concurrent `verifyBiometric` behind the first and let it skip its
+  prompt when the holder had just authorized the same scope; Apple ran straight to its own
+  `LAContext`, so two simultaneous calls always produced two ceremonies. It now takes the same gate
+  and re-checks the cache when the gate changes hands. Apple never had the ordering defect fixed
+  below — its authorization is recorded inside the callback, before the caller resumes, which is
+  already inside the gate. Sequential calls are unchanged on every platform: the cached
+  authorization already spared them.
+
+- **A second caller queued behind a biometric prompt no longer gets a redundant prompt of its own.**
+  The authorization was recorded *after* the single-prompt gate was released, while a queued caller
+  re-checks the cache the instant the gate changes hands — so it could read a cache the holder had
+  not written yet and prompt again. Nightly CI caught it as a once-in-fifteen-runs failure on an
+  unchanged commit; the window is a few instructions wide and only opens under scheduling pressure.
+  The recording now happens while the gate is still held, on Android, JVM Desktop and web alike.
+  Never a bypass — the failure mode was an extra prompt, never a skipped one — but it defeated
+  exactly the de-duplication the gate exists for. `BiometricHelper.authenticate` (Android's own
+  public entry point) gained an optional `onAuthorized` hook for this; existing call sites are
+  unaffected. Apple is untouched: its prompt path does not use the gate at all, so it never had
+  this window — and, separately, it also has no queued-caller de-duplication to lose.
+
+- **A write interrupted by process death on web can no longer read back as the wrong value.**
+  `localStorage` has no transaction API, so an entry's value and metadata records are two separate
+  writes and a tab that dies between them commits half of the pair. The surviving half used to be
+  the new metadata over the *previous* entry's bytes — and because a reader treats an explicit
+  `"p":"NONE"` as plaintext, switching a key from encrypted to plain and crashing mid-write handed
+  the old ciphertext back to the caller as its value, base64 and all. The mirror direction stranded
+  readable plaintext under metadata claiming encryption. Web batches now clear the value slot they
+  are about to rewrite before committing the new metadata, so a tear leaves the entry with no value
+  — reads return the caller's default — instead of one whose bytes and metadata disagree. The
+  ordering is asserted over *every* prefix of a batch, not just its final state, so the property
+  survives a future reshuffle. Other platforms were never affected: their backends commit a batch
+  atomically.
+
+- **Rotation retires superseded master keys that a torn write used to pin forever.** A metadata
+  record left without its value was counted as a live reference by the superseded-master sweep,
+  while being invisible to everything that could ever release it — rotation needs a ciphertext to
+  build a candidate, and the orphan sweep enumerates value records. One such record therefore kept
+  its generation's master alive for the lifetime of the store, so `rotateKeys()` reported success
+  and returned a rising generation while never destroying the old key material that still decrypts
+  copies of the old ciphertext. The sweep now ignores a metadata record with no value under any
+  layout, and the startup cleanup deletes it outright — under the commit mutex, and skipping any key
+  with a write in flight, since "metadata without a value" is also the transient shape of a healthy
+  write on a backend that commits metadata first.
+
+### Deprecated
+
+- **`KSafeConfig.keySize` — replaced by `aesKeySize`, and removed in 4.0.0.** Write
+  `KSafeConfig(aesKeySize = KSafeAesKeySize.BITS_128)`; an `Int` could not express that only
+  two values were ever legal. The old spelling keeps working meanwhile: the constructor, the
+  `keySize` property and `copy(keySize = …)` are all still there, still reject anything but
+  128/256 with the same message, and still resolve to the same bytes. The cipher remains
+  deliberately fixed to authenticated AES-GCM — this selects key strength, not an AES mode.
+
+  Only `KSafeConfig`'s generated `component1()` changed shape, because a data class derives it
+  from the primary constructor and Kotlin cannot carry two of them. That affects destructuring
+  a config (`val (size, …) = config`) and nothing else.
+
+### Removed
+
+- **The Apple-only `obtainAesGcm()` is gone**, along with the `dev.whyoleg.cryptography`
+  dependency whose type it returned — which is why it could not be kept as a deprecation: the
+  return type no longer exists. Anyone actually calling it already depends on that library to
+  consume the result, so the replacement is the same one-liner in their own code
+  (`CryptographyProvider.CryptoKit.get(AES.GCM)`). AES-GCM setup is now internal to KSafe.
+
 ## [3.0.0] - 2026-07-26
 
 Major release: **key rotation** on every platform.

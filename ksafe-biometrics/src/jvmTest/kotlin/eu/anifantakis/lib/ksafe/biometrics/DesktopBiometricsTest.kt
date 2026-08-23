@@ -183,6 +183,41 @@ class DesktopBiometricsTest {
         assertEquals(1, prompts.get(), "a caller queued behind a successful same-scope prompt must not re-prompt")
     }
 
+    /**
+     * The single-shot version above only catches the redundant prompt when the scheduler happens to
+     * expose it — it is the test that fails on a loaded CI runner roughly once in fifteen runs.
+     * Repeating the handoff turns that into a reliable signal: the queued caller must observe the
+     * holder's authorization the instant it takes the gate, on every one of these iterations.
+     */
+    @Test
+    fun queuedCaller_neverRePrompts_acrossRepeatedHandoffs() = runBlocking(Dispatchers.Default) {
+        repeat(400) { iteration ->
+            KSafeBiometrics.clearBiometricAuth()
+            val prompts = AtomicInteger(0)
+            val firstPromptShowing = CompletableDeferred<Unit>()
+            desktopPromptOverrideForTest = { _, _ ->
+                prompts.incrementAndGet()
+                firstPromptShowing.complete(Unit)
+                Thread.sleep(1) // hold the gate just long enough for the second caller to queue
+                true
+            }
+            val duration = BiometricAuthorizationDuration(60_000L, scope = "vault-$iteration")
+
+            val first = async { KSafeBiometrics.verifyBiometric("Auth", duration) }
+            firstPromptShowing.await()
+            val second = async { KSafeBiometrics.verifyBiometric("Auth", duration) }
+
+            assertTrue(first.await())
+            assertTrue(second.await())
+            assertEquals(
+                1,
+                prompts.get(),
+                "iteration $iteration: the queued caller re-prompted — the holder's authorization " +
+                    "was not visible when the gate changed hands",
+            )
+        }
+    }
+
     @Test
     fun optOutProperty_restoresLegacyPassThrough() = runBlocking {
         // No seam here: the property short-circuits before any OS bridge is touched.

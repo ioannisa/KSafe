@@ -21,6 +21,14 @@ import kotlin.native.Platform
 private fun isSimulator(): Boolean =
     NSProcessInfo.processInfo.environment["SIMULATOR_UDID"] != null
 
+/**
+ * Serializes prompt presentation, as on Android / JVM / web. Apple has no shared callback to
+ * strand (each caller owns its own [platform.LocalAuthentication.LAContext]), so this is here for
+ * the other half of the gate's job: a caller queued behind one that just authorized the same scope
+ * re-checks the cache when the gate changes hands and skips a redundant ceremony.
+ */
+private val promptGate = BiometricPromptGate()
+
 // macOS defaults to DeviceOwnerAuthentication (many Macs lack Touch ID); iOS is biometrics-only.
 // Fallback is opt-in. The prompt and the availability probe must ask about the SAME policy.
 private fun laPolicy(allowDeviceCredentialFallback: Boolean) =
@@ -45,23 +53,32 @@ internal actual suspend fun platformVerifyBiometric(
         return true
     }
 
-    return suspendCancellableCoroutine { continuation ->
-        // Own the LAContext so a cancelled coroutine can invalidate() the pending prompt; guard resume against a late/repeat callback.
-        val context = platform.LocalAuthentication.LAContext()
-        continuation.invokeOnCancellation { runCatching { context.invalidate() } }
-        CoroutineScope(Dispatchers.Main).launch {
-            runLAContextEvaluate(context, reason, allowDeviceCredentialFallback, cancelLabel) { success ->
-                // A success arriving after the caller cancelled — or after clearBiometricAuth()
-                // revoked the scope while the prompt was up — must NOT seed the cache. Not
-                // attempt.seedIfActive(): this callback is not the caller's coroutine, so the
-                // liveness check is the continuation's, and the epoch compare is explicit.
-                val cacheKey = attempt.cacheKey
-                if (success && cacheKey != null && continuation.isActive &&
-                    BiometricAuthSession.revocationEpoch(cacheKey) == attempt.epochAtPromptStart
-                ) {
-                    BiometricSessionStore.seedThenRecheckRevocation(cacheKey, attempt.epochAtPromptStart)
+    return promptGate.withSinglePrompt {
+        // Re-check the cache INSIDE the gate: the caller we queued behind may have just authorized
+        // this scope, so skip a redundant ceremony. A skip authorizes but does not re-seed, so the
+        // window cannot extend. The seed for a REAL success happens in the callback below, before
+        // it resumes the continuation — so it lands while this gate is still held, and the next
+        // caller's re-check can actually see it.
+        if (attempt.isFresh()) return@withSinglePrompt true
+
+        suspendCancellableCoroutine { continuation ->
+            // Own the LAContext so a cancelled coroutine can invalidate() the pending prompt; guard resume against a late/repeat callback.
+            val context = platform.LocalAuthentication.LAContext()
+            continuation.invokeOnCancellation { runCatching { context.invalidate() } }
+            CoroutineScope(Dispatchers.Main).launch {
+                runLAContextEvaluate(context, reason, allowDeviceCredentialFallback, cancelLabel) { success ->
+                    // A success arriving after the caller cancelled — or after clearBiometricAuth()
+                    // revoked the scope while the prompt was up — must NOT seed the cache. Not
+                    // attempt.seedIfActive(): this callback is not the caller's coroutine, so the
+                    // liveness check is the continuation's, and the epoch compare is explicit.
+                    val cacheKey = attempt.cacheKey
+                    if (success && cacheKey != null && continuation.isActive &&
+                        BiometricAuthSession.revocationEpoch(cacheKey) == attempt.epochAtPromptStart
+                    ) {
+                        BiometricSessionStore.seedThenRecheckRevocation(cacheKey, attempt.epochAtPromptStart)
+                    }
+                    if (continuation.isActive) continuation.resumeWith(Result.success(success))
                 }
-                if (continuation.isActive) continuation.resumeWith(Result.success(success))
             }
         }
     }

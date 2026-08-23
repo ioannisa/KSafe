@@ -415,6 +415,62 @@ No-mode writes (`put`/`putDirect` without `mode`) use encrypted defaults and pic
 
 > To check up front whether an encrypted write will actually succeed on the current device — as opposed to how *strong* the protection is — read `protectionInfo.isEncryptionOperational`. See **[docs/PROTECTION_INFO.md](PROTECTION_INFO.md)**.
 
+## Mode-Typed Views (3.1.0+) — `KSafePlain` / `KSafeEncrypted` / `KSafeHardwareIsolated`
+
+When one store holds both preferences and secrets, the per-call `mode =` argument is a
+convention — and one forgotten argument silently writes with the wrong protection. The three
+view types turn the convention into a compiler rule: each wraps an **existing** `KSafe`
+instance and freezes the write mode at construction, so no member of the type takes a `mode`
+parameter at all.
+
+```kotlin
+val prefs = KSafePlain(ksafe)            // or: ksafe.plain
+val vault = KSafeHardwareIsolated(ksafe) // or: ksafe.hardwareIsolated
+
+prefs.putDirect("theme", "dark")         // always Plain — nothing to forget
+vault.put("master_key", secret)          // always requests StrongBox / Secure Enclave
+
+var theme by prefs("dark")               // delegate: key = property name, writes Plain
+val pin by vault.asWritableFlow("", key = "pin")   // .set() writes hardware-isolated
+```
+
+The full write surface is covered — `put`/`putDirect`, the `by view(...)` delegate,
+`asFlow`/`asWritableFlow`/`asStateFlow`/`asMutableStateFlow`/`getStateFlow`, and (via
+`:ksafe-compose`) `mutableStateOf` and `rememberKSafeState` — so the type guarantee has no
+gap where writes actually happen.
+
+**In Koin, the types replace stringly qualifiers.** One store, three injectable views:
+
+```kotlin
+single { KSafe(context = androidApplication(), fileName = "app") }
+single { KSafePlain(get()) }
+single { KSafeHardwareIsolated(get()) }
+
+class SettingsRepository(private val prefs: KSafePlain)          // writes are always Plain
+class AuthRepository(private val vault: KSafeHardwareIsolated)   // writes always request SE/StrongBox
+```
+
+Every view shares the underlying store — same file, same key namespace, same cache, one
+`awaitCacheReady()` on web — so mixed-mode entries in one store keep working, and a value
+written through one view is immediately visible through any other.
+
+Three honest boundaries:
+
+- **The guarantee is write-side only.** Reads carry no mode (protection is auto-detected per
+  entry), so `KSafePlain.get()` happily reads a value some other handle wrote encrypted.
+- **`KSafeHardwareIsolated` requests, it does not guarantee.** Without StrongBox / Secure
+  Enclave the write degrades to the documented next-best custody and reports it via
+  `protectionInfo` / `getKeyInfo`.
+- **Store-scoped operations are deliberately absent** (`rotateKeys`, `clearAll`, `close`,
+  `protectionInfo`, `getKeyInfo`, `awaitCacheReady`, `getOrCreateSecret`) — they concern the
+  whole store, not a mode view. Call them on the underlying instance, exposed as `view.ksafe`.
+
+`KSafeEncrypted` and `KSafeHardwareIsolated` also freeze the unlock policy:
+`KSafeEncrypted(ksafe, requireUnlockedDevice = true)` makes every write through that view
+strict, while the default constructor inherits the instance's configured policy
+(`KSafe.defaultWriteMode`) — a default-constructed `KSafeEncrypted(ksafe)` writes exactly
+like a modeless `ksafe.put`.
+
 ## Isolating an app's keys (`KSafeConfig.appNamespace`)
 
 On **Android and iOS** the OS sandboxes each app's keystore, so different apps can never see each other's keys. On **JVM/Desktop** the OS secret store (macOS Keychain / Linux Secret Service) is **per-OS-user and shared by every process**, and on **Web** IndexedDB/localStorage is shared within a browser origin. Two different apps (or two KSafe setups) that use the same `fileName` would therefore collide on — and could overwrite — each other's encryption keys.
@@ -521,11 +577,21 @@ val result: KSafeRotationResult = ksafe.rotateKeys()
 // result.rotated / result.skipped / result.failed / result.keyGeneration
 ```
 
-It is crash-safe, resumable, never blocks startup or reads, and can also run automatically in the background via a policy:
+It is crash-safe and never blocks startup or reads. Since 3.1.0, if the process dies
+mid-pass, the next KSafe instance automatically resumes the same generation — also under the
+default `Never` policy. A 3.0.0 generation record has no lifecycle marker, so the first 3.1.0
+startup safely labels it completed and does no rotation work rather than guessing. A policy
+can additionally start **new** rotations in the background. A normally completed pass that
+leaves retryable `skipped` entries writes `rp:N`, a bounded next-instance retry count (3 by
+default). The current instance stops; each new KSafe instance consumes at most one attempt and
+retries the same generation. The count is decremented durably before work, so a crash cannot
+refill it. If `MaxAge` is already due on that next run, the normal fresh-generation rotation
+takes precedence:
 
 ```kotlin
 val ksafe = KSafe(config = KSafeConfig(
-    keyRotationPolicy = KSafeKeyRotationPolicy.MaxAge(90.days)  // rotate once the keys turn 90 days old
+    keyRotationPolicy = KSafeKeyRotationPolicy.MaxAge(90.days),
+    keyRotationRetryAttempts = 3, // default; set 0 to disable next-instance retries
 ))
 ```
 

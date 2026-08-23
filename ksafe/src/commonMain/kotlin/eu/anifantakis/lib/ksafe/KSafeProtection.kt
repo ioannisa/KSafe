@@ -5,7 +5,7 @@ package eu.anifantakis.lib.ksafe
  * writes, use [KSafeWriteMode] ([KSafeWriteMode.Plain] / [KSafeWriteMode.Encrypted]).
  */
 enum class KSafeProtection {
-    /** Platform-default AES-256-GCM (Android TEE, iOS Keychain, JVM software, WASM WebCrypto). */
+    /** Platform-default AES-GCM (256-bit key by default; see [KSafeConfig.aesKeySize]). */
     DEFAULT,
 
     /**

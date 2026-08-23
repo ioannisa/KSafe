@@ -214,12 +214,21 @@ internal actual suspend fun platformVerifyBiometric(
     // Re-check the cache INSIDE the gate: a caller we queued behind may have just seeded this scope,
     // so skip a redundant prompt (null → authorized, but don't re-seed, so the window can't extend).
     val result = promptGate.withSinglePrompt {
-        if (attempt.isFresh()) null else runWebAuthnGate(allowDeviceCredentialFallback, title)
+        if (attempt.isFresh()) {
+            null
+        } else {
+            val outcome = runWebAuthnGate(allowDeviceCredentialFallback, title)
+            // Seed while the gate is still HELD: a caller queued behind us re-checks freshness the
+            // instant the gate changes hands, and seeding after the release leaves a window in
+            // which it reads a cache we have not written yet and runs a second ceremony.
+            // Seed only a REAL ceremony success — never a pass-through, a cache re-hit, nor a
+            // success that landed after clearBiometricAuth()/resetRegistration() revoked the
+            // scope mid-prompt.
+            if (outcome == WebAuthnGateResult.AUTHENTICATED) attempt.seedIfActive()
+            outcome
+        }
     }
 
-    // Seed only a REAL ceremony success — never a pass-through, a cache re-hit, nor a success
-    // that landed after clearBiometricAuth()/resetRegistration() revoked the scope mid-prompt.
-    if (result == WebAuthnGateResult.AUTHENTICATED) attempt.seedIfActive()
     return result != WebAuthnGateResult.DENIED
 }
 

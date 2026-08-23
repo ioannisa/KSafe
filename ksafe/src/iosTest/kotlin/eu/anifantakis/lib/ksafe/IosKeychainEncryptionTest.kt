@@ -1,6 +1,7 @@
 package eu.anifantakis.lib.ksafe
 
 import eu.anifantakis.lib.ksafe.internal.AppleKeychainEncryption
+import eu.anifantakis.lib.ksafe.internal.SecurityChecker
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -27,43 +28,65 @@ class IosKeychainEncryptionTest {
     private fun uniqueKeyId(): String = "test_${Uuid.random().toString().take(8)}"
 
     /**
-     * Without Keychain entitlements, encrypt must throw rather than silently
-     * create a new key. Expected error: errSecMissingEntitlement (-25291).
+     * The Keychain is unreachable in the Kotlin/Native simulator test runner (no entitlements, so
+     * every call returns -25291) and fully functional in the signed app the on-device harness
+     * builds. The four tests below therefore assert what each environment is supposed to do, rather
+     * than being written for one and listed as "expected failures" in the other — an
+     * expected-failure list is where a real regression goes to hide.
+     */
+    private val keychainUsable: Boolean get() = !SecurityChecker.isEmulator()
+
+    private fun assertKeychainRefusal(exception: IllegalStateException) {
+        assertTrue(
+            exception.message?.contains("Keychain error") == true ||
+                exception.message?.contains("Cannot access Keychain") == true,
+            "Expected Keychain error message, got: ${exception.message}",
+        )
+    }
+
+    /**
+     * Without Keychain entitlements, encrypt must throw rather than silently create a new key —
+     * silently minting would read back as data loss. Where the Keychain works, the same call must
+     * round-trip.
      */
     @Test
-    fun testThrowsOnKeychainErrorInTestEnvironment() {
+    fun testEncryptThrowsWithoutEntitlements_andRoundTripsWithThem() {
         val encryption = AppleKeychainEncryption()
         val keyId = uniqueKeyId()
         val plaintext = "test data".encodeToByteArray()
 
-        val exception = assertFailsWith<IllegalStateException> {
-            encryption.encrypt(keyId, plaintext)
+        if (keychainUsable) {
+            val ciphertext = encryption.encrypt(keyId, plaintext)
+            assertEquals(
+                plaintext.decodeToString(),
+                encryption.decrypt(keyId, ciphertext).decodeToString(),
+                "an entitled Keychain must round-trip the payload",
+            )
+            encryption.deleteKey(keyId)
+        } else {
+            assertKeychainRefusal(
+                assertFailsWith { encryption.encrypt(keyId, plaintext) }
+            )
         }
-
-        assertTrue(
-            exception.message?.contains("Keychain error") == true ||
-            exception.message?.contains("Cannot access Keychain") == true,
-            "Expected Keychain error message, got: ${exception.message}"
-        )
     }
 
-    /** Decrypt also throws on Keychain errors (does not silently fail). */
+    /**
+     * Decrypt never silently succeeds on bytes it cannot authenticate — it throws in BOTH
+     * environments. Only the reason differs: no entitlements where the Keychain is unreachable,
+     * an unknown key / failed authentication where it works.
+     */
     @Test
-    fun testDecryptThrowsOnKeychainError() {
+    fun testDecryptThrowsOnGarbage() {
         val encryption = AppleKeychainEncryption()
         val keyId = uniqueKeyId()
-        // Fake ciphertext — the call fails before decryption anyway.
+        // Fake ciphertext for a key that was never minted.
         val fakeCiphertext = ByteArray(48) { it.toByte() }
 
         val exception = assertFailsWith<IllegalStateException> {
             encryption.decrypt(keyId, fakeCiphertext)
         }
 
-        assertTrue(
-            exception.message?.contains("Keychain error") == true ||
-            exception.message?.contains("Cannot access Keychain") == true,
-            "Expected Keychain error message, got: ${exception.message}"
-        )
+        if (!keychainUsable) assertKeychainRefusal(exception)
     }
 
     /**
@@ -79,25 +102,29 @@ class IosKeychainEncryptionTest {
         encryption.deleteKey(keyId) // Multiple deletes should be safe
     }
 
-    /**
-     * Custom configurations are accepted at construction time.
-     * (Actual encryption with them requires entitlements.)
-     */
+    /** Both AES key sizes are accepted at construction and behave identically at use. */
     @Test
     fun testCustomConfigIsAccepted() {
-        val config128 = KSafeConfig(keySize = 128)
-        val config256 = KSafeConfig(keySize = 256)
+        val encryptions = listOf(
+            AppleKeychainEncryption(config = KSafeConfig(aesKeySize = KSafeAesKeySize.BITS_128)),
+            AppleKeychainEncryption(config = KSafeConfig(aesKeySize = KSafeAesKeySize.BITS_256)),
+        )
 
-        val encryption128 = AppleKeychainEncryption(config = config128)
-        val encryption256 = AppleKeychainEncryption(config = config256)
-
-        // Both still throw on encrypt (no entitlements), regardless of config.
-        val keyId = uniqueKeyId()
-        assertFailsWith<IllegalStateException> {
-            encryption128.encrypt(keyId, "test".encodeToByteArray())
-        }
-        assertFailsWith<IllegalStateException> {
-            encryption256.encrypt(keyId, "test".encodeToByteArray())
+        for (encryption in encryptions) {
+            val keyId = uniqueKeyId()
+            val plaintext = "test".encodeToByteArray()
+            if (keychainUsable) {
+                val ciphertext = encryption.encrypt(keyId, plaintext)
+                assertEquals(
+                    plaintext.decodeToString(),
+                    encryption.decrypt(keyId, ciphertext).decodeToString(),
+                    "both key sizes must round-trip on an entitled Keychain",
+                )
+                encryption.deleteKey(keyId)
+            } else {
+                // Without entitlements the refusal is the same regardless of configured key size.
+                assertFailsWith<IllegalStateException> { encryption.encrypt(keyId, plaintext) }
+            }
         }
     }
 
@@ -122,27 +149,36 @@ class IosKeychainEncryptionTest {
     }
 
     /**
-     * With no entitlements and no SE hardware, the SE path falls back to plain
-     * Keychain — which also fails with errSecMissingEntitlement and must throw.
+     * With no entitlements and no SE hardware the SE path falls back to the plain Keychain, which
+     * also fails with errSecMissingEntitlement and must throw. On real hardware the same request
+     * must instead produce a Secure-Enclave-wrapped payload that round-trips.
      */
     @Test
-    fun testSecureEnclaveThrowsInTestEnvironment() {
+    fun testSecureEnclaveThrowsWithoutEntitlements_andRoundTripsOnHardware() {
         val encryption = AppleKeychainEncryption()
         val keyId = uniqueKeyId()
         val plaintext = "test data".encodeToByteArray()
 
-        val exception = assertFailsWith<IllegalStateException> {
-            encryption.encrypt(keyId, plaintext, hardwareIsolated = true)
+        if (keychainUsable) {
+            val ciphertext = encryption.encrypt(keyId, plaintext, hardwareIsolated = true)
+            assertEquals(
+                plaintext.decodeToString(),
+                encryption.decrypt(keyId, ciphertext).decodeToString(),
+                "a hardware-isolated payload must round-trip on a device with a real Keychain",
+            )
+            encryption.deleteKey(keyId)
+        } else {
+            val exception = assertFailsWith<IllegalStateException> {
+                encryption.encrypt(keyId, plaintext, hardwareIsolated = true)
+            }
+            assertTrue(
+                exception.message?.contains("Keychain error") == true ||
+                    exception.message?.contains("Cannot access Keychain") == true ||
+                    exception.message?.contains("Secure Enclave") == true ||
+                    exception.message?.contains("Failed to store key") == true,
+                "Expected Keychain or SE error message, got: ${exception.message}",
+            )
         }
-
-        // After SE fallback, a Keychain error is expected (same as non-SE in test env).
-        assertTrue(
-            exception.message?.contains("Keychain error") == true ||
-            exception.message?.contains("Cannot access Keychain") == true ||
-            exception.message?.contains("Secure Enclave") == true ||
-            exception.message?.contains("Failed to store key") == true,
-            "Expected Keychain or SE error message, got: ${exception.message}"
-        )
     }
 
     /**

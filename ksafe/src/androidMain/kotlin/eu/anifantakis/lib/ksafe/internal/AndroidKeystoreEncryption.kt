@@ -167,33 +167,70 @@ internal class AndroidKeystoreEncryption(
     }
 
     private fun encryptWithDek(alias: String, data: ByteArray, aad: ByteArray? = null): ByteArray {
-        // Snapshot the teardown epoch before capturing the DEK: if a sibling clearAll bumps it
-        // mid-encrypt, the DEK we hold may already be wiped from the store even when the shared
-        // cache was transiently re-populated by a concurrent mint — the re-persist below catches it.
-        val epochBefore = dekCacheEpoch.load()
-        val dek = try {
-            getOrCreateDek(alias)
-        } catch (e: KeyPermanentlyInvalidatedException) {
-            // KEK permanently invalid: recreate the whole pair (ciphertext under it is lost anyway).
-            regenerateDek(alias, deleteKek = true, requireUnlockedDevice = null)
-        } catch (e: javax.crypto.AEADBadTagException) {
-            // Corrupt wrapped DEK, healthy KEK: mint a fresh DEK under the SAME KEK — deleting
-            // the KEK would destroy legacy TEE ciphertext still encrypted directly under it.
-            regenerateDek(alias, deleteKek = false, requireUnlockedDevice = null)
-        } catch (e: IllegalArgumentException) {
-            regenerateDek(alias, deleteKek = false, requireUnlockedDevice = null)
-        } catch (e: IndexOutOfBoundsException) {
-            regenerateDek(alias, deleteKek = false, requireUnlockedDevice = null)
-        } catch (e: IllegalStateException) {
-            // Wrapped DEK present but KEK absent (e.g. Auto Backup restore onto an empty Keystore):
-            // mint a fresh DEK. A transient "device is locked" ISE must NOT trigger destructive
-            // regen — rethrow so the write retries with data intact.
-            if (e.message?.contains(KSafeEngineMessage.NO_KEY, ignoreCase = true) == true) {
-                regenerateDek(alias, deleteKek = false, requireUnlockedDevice = null)
-            } else {
-                throw e
+        // Bounded retry around a sibling clearAll racing this encrypt — the same shape and
+        // reasoning as the JVM twin (JvmSoftwareEncryption.encrypt). The DEK this attempt used
+        // is never re-persisted: it is exactly the material `clearAll()` promised to destroy,
+        // and re-inserting it would make a pre-wipe backup of the store decryptable again. The
+        // acknowledged write stays readable by RE-ENCRYPTING under whatever legitimately owns
+        // the slot afterwards — a concurrent winner's DEK, or fresh post-wipe material.
+        repeat(2) {
+            // Snapshot the teardown epoch before capturing the DEK: if a sibling clearAll bumps
+            // it mid-encrypt, the DEK we hold may already be wiped from the store even when the
+            // shared cache was transiently re-populated by a concurrent mint.
+            val epochBefore = dekCacheEpoch.load()
+            val dek = resolveDekHealing(alias)
+            val out = sealWithDek(dek, data, aad)
+            // A null cache entry OR a bumped teardown epoch signals a concurrent sibling
+            // clearAll wiped the persisted DEK during this encrypt.
+            if (dekCache[alias] != null && dekCacheEpoch.load() == epochBefore) return out
+            synchronized(aliasLocks.forAlias(alias)) {
+                val epochAtRead = dekCacheEpoch.load()
+                val stored = try { dekStore.load(alias) } catch (_: Throwable) { null }
+                if (stored != null) {
+                    val existing = try { unwrapDek(alias, stored) } catch (_: Throwable) { null }
+                    // Our DEK still owns the slot (e.g. a concurrent re-mint of identical
+                    // bytes) — the ciphertext is readable exactly as persisted, keep it.
+                    if (existing != null && existing.contentEquals(dek)) {
+                        cacheDek(alias, dek, epochAtRead)
+                        return out
+                    }
+                }
+                // Slot wiped, or a different DEK won it — fall through and re-encrypt.
             }
         }
+        // Two consecutive teardowns raced this write; seal under the current resolution and
+        // stop re-checking. The pathological tail fails toward erasure — never toward undoing
+        // a wipe.
+        return sealWithDek(resolveDekHealing(alias), data, aad)
+    }
+
+    /** The DEK to encrypt under, healing every definitively-broken state resolution can surface. */
+    private fun resolveDekHealing(alias: String): ByteArray = try {
+        getOrCreateDek(alias)
+    } catch (e: KeyPermanentlyInvalidatedException) {
+        // KEK permanently invalid: recreate the whole pair (ciphertext under it is lost anyway).
+        regenerateDek(alias, deleteKek = true, requireUnlockedDevice = null)
+    } catch (e: javax.crypto.AEADBadTagException) {
+        // Corrupt wrapped DEK, healthy KEK: mint a fresh DEK under the SAME KEK — deleting
+        // the KEK would destroy legacy TEE ciphertext still encrypted directly under it.
+        regenerateDek(alias, deleteKek = false, requireUnlockedDevice = null)
+    } catch (e: IllegalArgumentException) {
+        regenerateDek(alias, deleteKek = false, requireUnlockedDevice = null)
+    } catch (e: IndexOutOfBoundsException) {
+        regenerateDek(alias, deleteKek = false, requireUnlockedDevice = null)
+    } catch (e: IllegalStateException) {
+        // Wrapped DEK present but KEK absent (e.g. Auto Backup restore onto an empty Keystore):
+        // mint a fresh DEK. A transient "device is locked" ISE must NOT trigger destructive
+        // regen — rethrow so the write retries with data intact.
+        if (e.message?.contains(KSafeEngineMessage.NO_KEY, ignoreCase = true) == true) {
+            regenerateDek(alias, deleteKek = false, requireUnlockedDevice = null)
+        } else {
+            throw e
+        }
+    }
+
+    /** One AES-GCM seal of [data] under [dek], framed as `MAGIC||VERSION||IV||ct+tag`. */
+    private fun sealWithDek(dek: ByteArray, data: ByteArray, aad: ByteArray?): ByteArray {
         val cipher = Cipher.getInstance(JvmAesGcm.TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(dek, KEY_ALGORITHM))
         if (aad != null) cipher.updateAAD(aad)
@@ -204,36 +241,7 @@ internal class AndroidKeystoreEncryption(
         out[DEK_MAGIC.size] = DEK_VERSION
         System.arraycopy(iv, 0, out, DEK_HEADER_LEN, JvmAesGcm.IV_LENGTH_BYTES)
         System.arraycopy(ct, 0, out, DEK_HEADER_LEN + JvmAesGcm.IV_LENGTH_BYTES, ct.size)
-        // A null cache entry OR a bumped teardown epoch signals a concurrent sibling clearAll wiped
-        // the persisted DEK during this encrypt; re-persist so this acknowledged write stays
-        // decryptable. The epoch check also catches a teardown masked by a concurrent re-populate.
-        if (dekCache[alias] == null || dekCacheEpoch.load() != epochBefore) {
-            ensureDekPersisted(alias, dek)
-        }
         return out
-    }
-
-    /**
-     * Best-effort repair after a concurrent teardown: re-wraps and persists the DEK just encrypted
-     * under — unless a different valid DEK already owns the single per-safe slot (a concurrent
-     * fresh mint wins).
-     */
-    private fun ensureDekPersisted(alias: String, dek: ByteArray) {
-        synchronized(aliasLocks.forAlias(alias)) {
-            val epochAtRead = dekCacheEpoch.load()
-            val stored = try { dekStore.load(alias) } catch (_: Throwable) { null }
-            if (stored != null) {
-                val existing = try { unwrapDek(alias, stored) } catch (_: Throwable) { null }
-                if (existing != null) {
-                    // Ours → repopulate the cache; a different DEK owns the slot → don't clobber.
-                    if (existing.contentEquals(dek)) cacheDek(alias, dek, epochAtRead)
-                    return
-                }
-            }
-            val wrapped = wrapDek(alias, dek)
-            dekStore.save(alias, wrapped)
-            cacheDek(alias, dek, epochAtRead)
-        }
     }
 
     override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray {
@@ -415,7 +423,7 @@ internal class AndroidKeystoreEncryption(
         )
             .setBlockModes(BLOCK_MODE)
             .setEncryptionPaddings(ENCRYPTION_PADDING)
-            .setKeySize(config.keySize)
+            .setKeySize(config.aesKeySize.bits)
 
         val resolvedRequireUnlockedDevice = config.resolveRequireUnlockedDevice(requireUnlockedDevice)
         if (resolvedRequireUnlockedDevice && android.os.Build.VERSION.SDK_INT >= 28) {
@@ -471,7 +479,7 @@ internal class AndroidKeystoreEncryption(
      */
     private fun getOrCreateDek(alias: String, requireUnlockedDevice: Boolean? = null): ByteArray =
         dekFromCacheOrStore(alias, requireUnlockedDevice) {
-            val dek = secureRandomBytes(config.keySize / 8)
+            val dek = secureRandomBytes(config.aesKeySize.bytes)
             val wrapped = wrapDek(alias, dek)
             // Persist synchronously BEFORE returning: a crash before the wrapped DEK is durable
             // would strand an in-RAM-only DEK and orphan the ciphertext about to be written.

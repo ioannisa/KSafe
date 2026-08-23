@@ -36,9 +36,13 @@ internal class LocalStorageStorage(
     override suspend fun applyBatch(ops: List<StorageOp>) {
         if (ops.isEmpty()) return
         // localStorage has no transaction API. A synchronous mid-batch failure (usually
-        // QuotaExceededError) is rolled back below. Writes are ordered metadata-before-value so a
-        // crash leaves metadata without its value (reads fall back to the default via
-        // classifyStorageEntry, never raw ciphertext) rather than a value without metadata.
+        // QuotaExceededError) is rolled back below, but a process death commits whatever prefix
+        // already ran. Ordering therefore picks which half survives: the value slot being
+        // rewritten is cleared first, then metadata, then the new value — so a tear leaves an
+        // entry with no value (reads return the caller's default) rather than one whose metadata
+        // describes a different protection than the bytes still sitting in the slot, which reads
+        // back as the wrong value entirely. The metadata it leaves behind is reaped by the
+        // startup cleanup and ignored by the superseded-master sweep.
         val ordered = orderMetaBeforeValue(ops)
         val priors = HashMap<String, String?>()
         for (op in ordered) {
@@ -70,8 +74,8 @@ internal class LocalStorageStorage(
 
     // Deletes first, then metadata Puts, then value Puts, so a process death mid-batch can't leave a
     // value persisted ahead of its metadata. Stable within each group.
-    private fun orderMetaBeforeValue(ops: List<StorageOp>): List<StorageOp> =
-        ops.sortedBy { op ->
+    internal fun orderMetaBeforeValue(ops: List<StorageOp>): List<StorageOp> =
+        withValueSlotsCleared(ops).sortedBy { op ->
             when {
                 op is StorageOp.Delete -> 0
                 op is StorageOp.Put &&
@@ -79,6 +83,22 @@ internal class LocalStorageStorage(
                 else -> 1
             }
         }
+
+    /**
+     * Prepends a removal of every canonical value slot this batch is about to rewrite, so the
+     * surviving half of a tear is "no value" rather than "the PREVIOUS value under the NEW
+     * metadata". Without it a plain write over an encrypted entry can commit `p:NONE` while the
+     * old ciphertext is still in the slot, and the reader — which treats an explicit NONE as
+     * plaintext — hands that ciphertext back to the caller as its value.
+     */
+    private fun withValueSlotsCleared(ops: List<StorageOp>): List<StorageOp> {
+        val rewritten = ops.mapNotNullTo(mutableSetOf()) { op ->
+            (op as? StorageOp.Put)?.rawKey
+                ?.takeIf { KeySafeMetadataManager.tryExtractCanonicalValueKey(it) != null }
+        }
+        if (rewritten.isEmpty()) return ops
+        return rewritten.map { StorageOp.Delete(it) } + ops
+    }
 
     private fun safeLocalStorageSet(key: String, value: String) {
         try {

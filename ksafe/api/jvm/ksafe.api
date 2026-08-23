@@ -20,21 +20,37 @@ public final class eu/anifantakis/lib/ksafe/KSafe$Companion {
 	public final fun getVERSION ()Ljava/lang/String;
 }
 
+public final class eu/anifantakis/lib/ksafe/KSafeAesKeySize : java/lang/Enum {
+	public static final field BITS_128 Leu/anifantakis/lib/ksafe/KSafeAesKeySize;
+	public static final field BITS_256 Leu/anifantakis/lib/ksafe/KSafeAesKeySize;
+	public final fun getBits ()I
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Leu/anifantakis/lib/ksafe/KSafeAesKeySize;
+	public static fun values ()[Leu/anifantakis/lib/ksafe/KSafeAesKeySize;
+}
+
 public final class eu/anifantakis/lib/ksafe/KSafeConfig {
 	public fun <init> ()V
 	public fun <init> (IZLkotlinx/serialization/json/Json;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;)V
 	public synthetic fun <init> (IZLkotlinx/serialization/json/Json;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public final fun component1 ()I
+	public fun <init> (Leu/anifantakis/lib/ksafe/KSafeAesKeySize;ZLkotlinx/serialization/json/Json;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;I)V
+	public synthetic fun <init> (Leu/anifantakis/lib/ksafe/KSafeAesKeySize;ZLkotlinx/serialization/json/Json;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;IILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Leu/anifantakis/lib/ksafe/KSafeAesKeySize;
 	public final fun component2 ()Z
 	public final fun component3 ()Lkotlinx/serialization/json/Json;
 	public final fun component4 ()Ljava/lang/String;
 	public final fun component5 ()Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;
+	public final fun component6 ()I
 	public final fun copy (IZLkotlinx/serialization/json/Json;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;)Leu/anifantakis/lib/ksafe/KSafeConfig;
+	public final fun copy (Leu/anifantakis/lib/ksafe/KSafeAesKeySize;ZLkotlinx/serialization/json/Json;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;I)Leu/anifantakis/lib/ksafe/KSafeConfig;
 	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/KSafeConfig;IZLkotlinx/serialization/json/Json;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;ILjava/lang/Object;)Leu/anifantakis/lib/ksafe/KSafeConfig;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/KSafeConfig;Leu/anifantakis/lib/ksafe/KSafeAesKeySize;ZLkotlinx/serialization/json/Json;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;IILjava/lang/Object;)Leu/anifantakis/lib/ksafe/KSafeConfig;
 	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAesKeySize ()Leu/anifantakis/lib/ksafe/KSafeAesKeySize;
 	public final fun getAppNamespace ()Ljava/lang/String;
 	public final fun getJson ()Lkotlinx/serialization/json/Json;
 	public final fun getKeyRotationPolicy ()Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;
+	public final fun getKeyRotationRetryAttempts ()I
 	public final fun getKeySize ()I
 	public final fun getRequireUnlockedDevice ()Z
 	public fun hashCode ()I
@@ -52,6 +68,15 @@ public final class eu/anifantakis/lib/ksafe/KSafeDelegate : kotlin/properties/Re
 	public fun setValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;Ljava/lang/Object;)V
 }
 
+public final class eu/anifantakis/lib/ksafe/KSafeEncrypted {
+	public fun <init> (Leu/anifantakis/lib/ksafe/KSafe;Z)V
+	public synthetic fun <init> (Leu/anifantakis/lib/ksafe/KSafe;ZILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun delete (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun deleteDirect (Ljava/lang/String;)V
+	public final fun getKsafe ()Leu/anifantakis/lib/ksafe/KSafe;
+	public final fun getMode ()Leu/anifantakis/lib/ksafe/KSafeWriteMode;
+}
+
 public final class eu/anifantakis/lib/ksafe/KSafeEncryptedProtection : java/lang/Enum {
 	public static final field DEFAULT Leu/anifantakis/lib/ksafe/KSafeEncryptedProtection;
 	public static final field HARDWARE_ISOLATED Leu/anifantakis/lib/ksafe/KSafeEncryptedProtection;
@@ -64,6 +89,15 @@ public final class eu/anifantakis/lib/ksafe/KSafeFlowDelegate : kotlin/propertie
 	public fun <init> (Leu/anifantakis/lib/ksafe/KSafe;Lkotlinx/serialization/KSerializer;Ljava/lang/Object;Ljava/lang/String;)V
 	public synthetic fun getValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;)Ljava/lang/Object;
 	public fun getValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;)Lkotlinx/coroutines/flow/Flow;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeHardwareIsolated {
+	public fun <init> (Leu/anifantakis/lib/ksafe/KSafe;Z)V
+	public synthetic fun <init> (Leu/anifantakis/lib/ksafe/KSafe;ZILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun delete (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun deleteDirect (Ljava/lang/String;)V
+	public final fun getKsafe ()Leu/anifantakis/lib/ksafe/KSafe;
+	public final fun getMode ()Leu/anifantakis/lib/ksafe/KSafeWriteMode;
 }
 
 public final class eu/anifantakis/lib/ksafe/KSafeKeyInfo {
@@ -128,6 +162,12 @@ public final class eu/anifantakis/lib/ksafe/KSafeMemoryPolicy : java/lang/Enum {
 	public static fun values ()[Leu/anifantakis/lib/ksafe/KSafeMemoryPolicy;
 }
 
+public final class eu/anifantakis/lib/ksafe/KSafeModeViewsKt {
+	public static final fun getEncrypted (Leu/anifantakis/lib/ksafe/KSafe;)Leu/anifantakis/lib/ksafe/KSafeEncrypted;
+	public static final fun getHardwareIsolated (Leu/anifantakis/lib/ksafe/KSafe;)Leu/anifantakis/lib/ksafe/KSafeHardwareIsolated;
+	public static final fun getPlain (Leu/anifantakis/lib/ksafe/KSafe;)Leu/anifantakis/lib/ksafe/KSafePlain;
+}
+
 public final class eu/anifantakis/lib/ksafe/KSafeMutableStateFlow : kotlinx/coroutines/flow/MutableStateFlow {
 	public fun <init> (Ljava/lang/Object;Lkotlin/jvm/functions/Function1;)V
 	public fun collect (Lkotlinx/coroutines/flow/FlowCollector;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
@@ -148,6 +188,14 @@ public final class eu/anifantakis/lib/ksafe/KSafeMutableStateFlowDelegate : kotl
 	public fun <init> (Leu/anifantakis/lib/ksafe/KSafe;Lkotlinx/serialization/KSerializer;Ljava/lang/Object;Ljava/lang/String;Lkotlinx/coroutines/CoroutineScope;Leu/anifantakis/lib/ksafe/KSafeWriteMode;)V
 	public synthetic fun getValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;)Ljava/lang/Object;
 	public fun getValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;)Lkotlinx/coroutines/flow/MutableStateFlow;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafePlain {
+	public fun <init> (Leu/anifantakis/lib/ksafe/KSafe;)V
+	public final fun delete (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun deleteDirect (Ljava/lang/String;)V
+	public final fun getKsafe ()Leu/anifantakis/lib/ksafe/KSafe;
+	public final fun getMode ()Leu/anifantakis/lib/ksafe/KSafeWriteMode;
 }
 
 public final class eu/anifantakis/lib/ksafe/KSafeProtection : java/lang/Enum {

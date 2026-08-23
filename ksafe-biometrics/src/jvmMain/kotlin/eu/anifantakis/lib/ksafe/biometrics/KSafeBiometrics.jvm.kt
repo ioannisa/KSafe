@@ -90,17 +90,20 @@ internal actual suspend fun platformVerifyBiometric(
             skippedAsFreshlyAuthorized = true
             null
         } else {
-            runDesktopPrompt(reason, allowDeviceCredentialFallback)
+            val outcome = runDesktopPrompt(reason, allowDeviceCredentialFallback)
+            // Seed while the gate is still HELD. A caller queued behind us re-checks freshness
+            // the instant the gate changes hands; seeding after the release leaves a window in
+            // which it reads a cache we have not written yet and prompts a second time.
+            // A success arriving for a cancelled caller — or after clearBiometricAuth() revoked
+            // the scope mid-prompt — must not grant a later call a prompt-free pass, which is
+            // what seedIfActive checks.
+            if (outcome ?: true) attempt.seedIfActive()
+            outcome
         }
     }
     if (skippedAsFreshlyAuthorized) return true
 
-    val success = prompted ?: true // legacy pass-through where no prompt path exists
-
-    // A success arriving for a cancelled caller — or after clearBiometricAuth() revoked the
-    // scope mid-prompt — must not grant a later call a prompt-free pass.
-    if (success) attempt.seedIfActive()
-    return success
+    return prompted ?: true // legacy pass-through where no prompt path exists
 }
 
 internal actual fun platformVerifyBiometricDirect(

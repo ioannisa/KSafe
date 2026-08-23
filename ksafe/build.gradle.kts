@@ -1,3 +1,4 @@
+import org.gradle.api.tasks.Exec
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -15,6 +16,41 @@ plugins {
     // flakes (pass on retry) from real regressions (fail every attempt).
     alias(libs.plugins.gradle.test.retry)
 }
+
+data class AppleSwiftBridgeTarget(
+    val sdk: String,
+    val targetTriple: String,
+)
+
+val appleSwiftBridgeTargets = mapOf(
+    "iosArm64" to AppleSwiftBridgeTarget(
+        sdk = "iphoneos",
+        targetTriple = "arm64-apple-ios13.0",
+    ),
+    "iosX64" to AppleSwiftBridgeTarget(
+        sdk = "iphonesimulator",
+        targetTriple = "x86_64-apple-ios13.0-simulator",
+    ),
+    "iosSimulatorArm64" to AppleSwiftBridgeTarget(
+        sdk = "iphonesimulator",
+        targetTriple = "arm64-apple-ios13.0-simulator",
+    ),
+    "macosX64" to AppleSwiftBridgeTarget(
+        sdk = "macosx",
+        targetTriple = "x86_64-apple-macos11.0",
+    ),
+    "macosArm64" to AppleSwiftBridgeTarget(
+        sdk = "macosx",
+        targetTriple = "arm64-apple-macos11.0",
+    ),
+)
+
+val swiftBridgeSource =
+    layout.projectDirectory.file("src/appleMain/swift/KSafeCryptoKitBridge.swift")
+val swiftBridgeDefinition =
+    layout.projectDirectory.file("src/nativeInterop/cinterop/KSafeCryptoKitBridge.def")
+val swiftBridgeHeaders =
+    layout.projectDirectory.dir("src/nativeInterop/cinterop")
 
 kotlin {
     android {
@@ -37,16 +73,83 @@ kotlin {
             instrumentationRunnerArguments["clearPackageData"] = "true"
         }
     }
-    listOf(
+    val appleTargets = listOf(
         iosX64(),
         iosArm64(),
         iosSimulatorArm64(),
         macosX64(),
         macosArm64(),
-    ).forEach {
-        it.binaries.framework {
+    )
+    appleTargets.forEach { target ->
+        target.binaries.framework {
             baseName = "ksafe"
             isStatic = true
+        }
+
+        val bridgeTarget = checkNotNull(appleSwiftBridgeTargets[target.name]) {
+            "Missing Swift CryptoKit bridge configuration for ${target.name}"
+        }
+        val bridgeOutputDirectory =
+            layout.buildDirectory.dir("generated/ksafe-cryptokit/${target.name}")
+        val bridgeLibrary = bridgeOutputDirectory.map {
+            it.file("libKSafeCryptoKitBridge.a")
+        }
+        val bridgeModuleCache = bridgeOutputDirectory.map {
+            it.dir("module-cache")
+        }
+        val swiftCompilerVersion = providers.exec {
+            commandLine("/usr/bin/xcrun", "--sdk", bridgeTarget.sdk, "swiftc", "--version")
+        }.standardOutput.asText.map(String::trim)
+        val compileBridge = tasks.register<Exec>(
+            "compile${target.name.replaceFirstChar(Char::uppercase)}KSafeCryptoKitBridge"
+        ) {
+            group = "build"
+            description = "Compiles KSafe's CryptoKit bridge for ${target.name}"
+            inputs.file(swiftBridgeSource)
+            inputs.property("sdk", bridgeTarget.sdk)
+            inputs.property("targetTriple", bridgeTarget.targetTriple)
+            inputs.property("swiftCompilerVersion", swiftCompilerVersion)
+            inputs.property("bridgeCompilerFlagsVersion", 1)
+            outputs.file(bridgeLibrary)
+            doFirst {
+                bridgeOutputDirectory.get().asFile.mkdirs()
+            }
+            commandLine(
+                "/usr/bin/xcrun",
+                "--sdk",
+                bridgeTarget.sdk,
+                "swiftc",
+                "-module-cache-path",
+                bridgeModuleCache.get().asFile.absolutePath,
+                "-parse-as-library",
+                "-O",
+                "-whole-module-optimization",
+                "-emit-library",
+                "-static",
+                // The deployment baselines already ship the Swift 5 runtime. Avoid embedding
+                // producer-machine Xcode paths just to satisfy unused compatibility shims.
+                "-disable-autolinking-runtime-compatibility",
+                "-disable-autolinking-runtime-compatibility-concurrency",
+                "-disable-autolinking-runtime-compatibility-dynamic-replacements",
+                "-module-name",
+                "KSafeCryptoKitBridge",
+                "-target",
+                bridgeTarget.targetTriple,
+                "-o",
+                bridgeLibrary.get().asFile.absolutePath,
+                swiftBridgeSource.asFile.absolutePath,
+            )
+        }
+
+        val bridgeInterop = target.compilations.getByName("main").cinterops.create(
+            "kSafeCryptoKitBridge"
+        ) {
+            definitionFile.set(swiftBridgeDefinition)
+            includeDirs(swiftBridgeHeaders)
+            extraOpts("-libraryPath", bridgeOutputDirectory.get().asFile.absolutePath)
+        }
+        tasks.named(bridgeInterop.interopProcessingTaskName).configure {
+            dependsOn(compileBridge)
         }
     }
 
@@ -134,11 +237,6 @@ kotlin {
         // The default hierarchy template (applyDefaultHierarchyTemplate above) wires it up.
         appleMain {
             dependsOn(datastoreMain)
-            dependencies {
-                implementation(libs.cryptography.core)
-                implementation(libs.cryptography.provider.base)
-                implementation(libs.cryptography.provider.cryptokit)
-            }
         }
 
         // Dependencies for the JVM target

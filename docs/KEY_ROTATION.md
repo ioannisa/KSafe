@@ -1,6 +1,8 @@
 # Key Rotation
 
-*Requires KSafe 3.0.0+. Available on every platform: Android, iOS/macOS, JVM Desktop, JS/WasmJS.*
+*Rotation requires KSafe 3.0.0+. Automatic same-generation crash resume and persisted
+retry of temporarily skipped entries require 3.1.0+. Available on every platform:
+Android, iOS/macOS, JVM Desktop, JS/WasmJS.*
 
 KSafe can re-encrypt everything it stores under fresh key material — on demand with one call, or automatically under a declarative policy. Values never change and nothing needs migration; only the keys and each entry's encryption envelope do.
 
@@ -15,7 +17,13 @@ KSafe can re-encrypt everything it stores under fresh key material — on demand
 
 ## Why rotate (and why it's off by default)
 
-On every KSafe platform the key material is hardware- or OS-protected and does not expire, so rotation is **not** a security necessity — it is a hygiene/compliance control: many security programs (PCI DSS, SOC 2, internal crypto policies) require data-at-rest keys to be rotated on a schedule, and rotating after a suspected device compromise re-keys everything in one move. That is why the default is `KSafeKeyRotationPolicy.Never`, matching what Android Keystore, Apple Keychain, and Google Tink do: nothing rotates behind your back, and you opt in when your threat model or auditor asks for it.
+On every KSafe platform the key material is hardware- or OS-protected and does not expire, so
+starting a new rotation is **not** a security necessity — it is a hygiene/compliance control:
+many security programs (PCI DSS, SOC 2, internal crypto policies) require data-at-rest keys to
+be rotated on a schedule, and rotating after a suspected device compromise re-keys everything
+in one move. That is why the default is `KSafeKeyRotationPolicy.Never`: KSafe never creates a
+new generation behind your back. It only finishes one the application already started if a
+crash interrupted it, or retries temporarily skipped work at the same generation.
 
 ## On-demand: `rotateKeys()`
 
@@ -26,7 +34,7 @@ println("now on key generation ${result.keyGeneration}")
 println("rotated=${result.rotated} skipped=${result.skipped} failed=${result.failed}")
 ```
 
-One suspend call re-encrypts every encrypted entry under a brand-new key generation and deletes every superseded key that nothing references anymore. Plaintext entries are untouched (they have no key). Call it from a background coroutine on large stores — the cost is one decrypt + one encrypt per encrypted entry (on Android's `DEFAULT` tier that is a TEE round-trip to use the wrapped DEK per entry).
+One suspend call re-encrypts every encrypted entry under a brand-new key generation and deletes every superseded key that nothing references anymore. Plaintext entries are untouched (they have no key). Call it from a background coroutine on large stores — the cost is one decrypt + one encrypt per encrypted entry. The route matters: Android `DEFAULT` does the bulk payload crypto in userspace with its already-unwrapped DEK, while hardware-isolated entries pay secure-hardware operations per entry (see [What it costs](#what-it-costs)).
 
 Rotation needs an operational encryption backend to mint the new generation; if [`isEncryptionOperational`](PROTECTION_INFO.md) is `false` (e.g. a web page outside a secure context, or a JVM whose OS vault is unreachable), there is no fresh key to rotate to and the pass has nothing it can safely re-encrypt under.
 
@@ -35,8 +43,8 @@ The result is a simple tally:
 | Field | Meaning |
 |---|---|
 | `rotated` | Entries now encrypted under the new generation |
-| `skipped` | Entries left on their previous generation this pass — a strict (`requireUnlockedDevice`) entry while the device was locked, or an entry a concurrent write superseded (the write wins). Still fully readable; the next rotation picks them up |
-| `failed` | Entries whose decrypt/re-encrypt failed definitively — the old key is genuinely gone or the ciphertext is corrupt. Rotation leaves them untouched (neither rewritten nor deleted), but a `failed` entry is by definition not decryptable; `skipped`, not `failed`, is the readable/retry-later bucket |
+| `skipped` | Entries left on their previous generation this pass — a strict (`requireUnlockedDevice`) entry while the device was locked, or an entry a concurrent write superseded (the write wins). Still fully readable; KSafe marks them for the next instance |
+| `failed` | Entries whose decrypt/re-encrypt failed definitively. Rotation leaves their bytes and metadata untouched and does not arm automatic retry. A decrypt failure can mean the old key is gone or the ciphertext is corrupt; an encrypt failure may happen after a successful old-key decrypt, so the counter alone does not prove whether the original entry is readable. Investigate the cause; `skipped`, not `failed`, is the retry-later bucket |
 | `keyGeneration` | The store's generation after the pass; new writes encrypt under it |
 
 A second concurrent `rotateKeys()` on the same instance throws `IllegalStateException` (single-flight).
@@ -48,18 +56,84 @@ import kotlin.time.Duration.Companion.days
 
 val ksafe = KSafe(
     config = KSafeConfig(
-        keyRotationPolicy = KSafeKeyRotationPolicy.MaxAge(90.days)
+        keyRotationPolicy = KSafeKeyRotationPolicy.MaxAge(90.days),
+        keyRotationRetryAttempts = 3, // default; 0 disables next-instance retries
     )
 )
 ```
 
-With `MaxAge`, KSafe checks once per startup — in the background, never blocking startup or reads — whether the current key generation is older than allowed, and runs a full rotation pass if so. The age is measured from the last rotation; for a store that has never rotated, from the first launch under the policy (the birth is stamped then — pre-existing installs don't retroactively appear "old"). A failed or partial pass logs. A manual `rotateKeys()` re-attempts the leftover entries immediately; the automatic `MaxAge` scheduler re-attempts them only on the first launch after another full `maxAge`, because each rotation restamps the generation birth time and restarts the age clock. Left-behind entries stay readable under their retained old key until then.
+With `MaxAge`, KSafe checks once per startup — in the background, never blocking startup or
+reads — whether the current key generation is older than allowed, and runs a full rotation
+pass if so. The age is measured from the last rotation; for a store that has never rotated,
+from the first launch under the policy (the birth is stamped then — pre-existing installs
+don't retroactively appear "old"). In 3.1.0+, a pass that returns with `skipped` entries has
+completed, but it is not forgotten: KSafe persists `rp:N`, where `N` is the configured number
+of automatic next-instance retries (3 by default). The current instance starts no timer and
+performs no second pass. Each **new KSafe instance** consumes at most one attempt and retries
+the same generation immediately, without changing the generation-birth clock. Set
+`keyRotationRetryAttempts = 0` to arm no retry budget. If a later run has already crossed
+`MaxAge`, the normal fresh-generation rotation takes precedence and moves the older entries
+directly into it. A manual `rotateKeys()` can still re-attempt sooner.
+A pass interrupted before returning is different; its persisted `r:1` state makes the next
+instance resume that already-active generation unconditionally.
 
-`Never` (the default) performs no automatic work at all; `rotateKeys()` remains available.
+`Never` (the default) never starts a **new** rotation automatically; `rotateKeys()` remains
+available. In 3.1.0+, it does not disable lifecycle completion: an interrupted pass resumes
+immediately, and normally skipped work may consume the configured bounded budget on later
+instances. Neither path starts a new generation.
 
 ## Semantics and guarantees
 
-**Journal-free and resumable.** Every entry's metadata records *which key generation decrypts it*. A rotation bumps the store's generation first, then walks the entries; each entry flips to the new generation atomically (value + metadata in one commit). There is no all-or-nothing switch: a crash mid-rotation leaves a mixed-generation store where **every entry stays readable** — old generations are kept alive until the last entry referencing them is gone — and the next `rotateKeys()` call rotates whatever is still behind.
+**Crash-safe and automatically resumable (3.1.0+).** Every entry's metadata records *which key
+generation decrypts it*. A rotation first persists the new generation together with a tiny
+lifecycle field, `"r":1` (`rotation in progress`), then walks the entries; each entry flips to
+the new generation atomically (value + metadata in one commit). There is no all-or-nothing
+switch: a crash mid-rotation leaves a mixed-generation store where **every entry stays
+readable**, because old generations stay alive while any entry references them.
+
+When the next KSafe instance is created, startup sees the marker and resumes the **same**
+generation in the background — it does not create another generation. This is independent of
+`MaxAge`: it also happens under the default `Never` policy. Only after the entry pass and the
+superseded-master sweep have both completed does KSafe change the state to `"r":0`
+(`completed`). Consequently, recovery also covers the narrow crash window after the last entry
+moved but before old-key cleanup. This is not a per-entry transaction journal or rollback log;
+it is one lifecycle field in the existing store-generation record. Repeating the remaining
+work is safe and idempotent.
+
+A pass that returns normally records `"r":0`: that was a completed pass, not a crash. When it
+contains retryable `skipped` entries, the same record also carries `"rp":N`: the remaining
+automatic retry budget, not a timestamp. The current instance returns and does no more rotation
+work. On the next construction KSafe atomically changes `r:0,rp:N` to `r:1,rp:N-1` **before**
+retrying entries still behind the current generation. If the device remains locked, completion
+persists the reduced positive budget for the following instance; after the last attempt it
+removes `rp`. A crash after the claim leaves `r:1` and the already-decremented count. Ordinary
+crash recovery finishes that claimed attempt, but never refills the budget—even `r:1,rp:0`
+can resume only that final attempt.
+
+There is one priority rule: if `MaxAge` is configured and the generation is already due when
+that next instance starts, KSafe runs the normal fresh-generation rotation instead of first
+retrying the old target. That pass scans every older entry, so it absorbs the pending work
+without paying for two consecutive whole-store passes.
+
+`failed` alone does not create `rp`: it is definitive, not a retry-later classification, and
+may mean the entry is permanently unreadable. When one pass contains both skipped and failed
+entries, the skipped work arms the retry; failed entries may be encountered again as part of
+that scan, but they do not re-arm the budget once no retryable entry remains.
+
+`keyRotationRetryAttempts` is captured when a normally completed pass arms its budget.
+Changing a later instance to `0` suppresses automatic consumption while that configuration is
+active; it does not erase the persisted budget. This lets an application pause and later
+re-enable recovery without losing the fact that work remains. Manual rotation is always
+available regardless of the setting.
+
+> **Safe upgrade from 3.0.0.** Released 3.0.0 records contain `g` and `ts`, but no `r`.
+> Absence cannot tell 3.1.0 whether the old rotation completed or the process died. KSafe
+> therefore never guesses: on the first 3.1.0 startup it adds `"r":0`, preserves the existing
+> generation and timestamp, and does **no** resume, generation bump, entry rewrite, key sweep,
+> or same-launch `MaxAge` pass. Normal policy applies from the following launch. If 3.0.0 really
+> crashed and left old/new generations mixed, both remain readable; a later explicit
+> `rotateKeys()` or due `MaxAge` pass moves the older entries normally. Only a pass that 3.1.0+
+> itself started can have `"r":1` and be auto-resumed.
 
 **Concurrent writes always win.** Each entry's rotation commits under a compare-and-swap on its stored ciphertext, serialized with user writes on KSafe's single write consumer. If a write lands first, the rotation of that entry is skipped (it will re-encrypt under the new generation anyway, or be picked up next pass); if the rotation lands first, a queued write simply overwrites it. A rotation can never resurrect an older value.
 
@@ -67,9 +141,9 @@ With `MaxAge`, KSafe checks once per startup — in the background, never blocki
 
 **Free envelope upgrades.** Entries still on the legacy (pre-2.x) envelope are upgraded to the current envelope format as part of rotating.
 
-**Strict entries need an unlocked device.** A `requireUnlockedDevice = true` entry can only be decrypted (and therefore rotated) while the device is unlocked. Locked ones are counted as `skipped`; their old key is retained until the next pass picks them up — immediately on a manual `rotateKeys()`, or under `MaxAge` only after another full `maxAge`.
+**Strict entries need an unlocked device.** A `requireUnlockedDevice = true` entry can only be decrypted (and therefore rotated) while the device is unlocked. Locked ones are counted as `skipped`; their old key is retained, and later KSafe instances retry them while the bounded budget remains. A manual `rotateKeys()` can retry sooner.
 
-**A key-store outage pauses, it doesn't fail.** If the OS key store is momentarily unreachable mid-rotation (a locked keyring, a headless launch, a device that just locked), the affected entries are reported as `skipped`, not `failed` — they stay readable under their current generation and the next pass picks them up. `failed` means a genuine, definitive problem (the key is gone), not a transient one.
+**A key-store outage pauses, it doesn't fail.** If the OS key store is momentarily unreachable mid-rotation (a locked keyring, a headless launch, a device that just locked), the affected entries are reported as `skipped`, not `failed` — they stay on their current generation and the next-instance retry picks them up when the vault is available again. `failed` means a genuine, definitive problem (the key is gone), not a transient one.
 
 ## What it costs
 
@@ -149,10 +223,21 @@ println(info?.keyGeneration)   // 1 = never rotated; higher after rotateKeys()
 
 `KSafeKeyInfo.keyGeneration` reports the generation that decrypts a specific entry, so you can verify a rotation reached everything (any entry still below `KSafeRotationResult.keyGeneration` will be picked up by the next pass).
 
+Background recovery logs
+`KSafe: resumed interrupted key rotation at generation N (rotated X, skipped Y, failed Z).`
+after a successful resume. A `MaxAge`-started pass keeps its corresponding
+`KSafe: MaxAge key-rotation pass -> …` message. A completed-partial retry logs
+`KSafe: retried incomplete key rotation at generation N (rotated X, skipped Y, failed Z).`
+
 ## Edge cases & caveats
 
 - **Downgrading below 3.0.0 after a rotation (or after any 3.0.0 strict `HARDWARE_ISOLATED` write) is destructive — back up first.** A 2.2.x binary can't resolve generation-suffixed or strict-variant keys, and its startup **orphan sweep permanently deletes the rows and metadata** it can't decrypt — typically on the first launch. Upgrading back restores access only if that sweep never ran. Never-rotated stores with no strict writes are unaffected (generation 1 uses the exact same key names as 2.2.x). Treat the first rotation and the first strict write as one-way doors.
-- **Multiple instances / processes on the same file — rotate from ONE place**: the generation propagates through the store, so co-existing instances start writing under the new generation as soon as they observe it. But two instances (or a second process — a widget / share-extension) rotating the *same* store at once run **uncoordinated superseded-key sweeps**: one can delete a master generation the other's in-flight entries still need, leaving those entries undecryptable. This is the same multi-instance / multi-process caveat KSafe already warns about (use one `KSafe` per `fileName`) — rotation makes it *destructive*, so always trigger `rotateKeys()` (and the `MaxAge` policy) from a single instance.
+- **Multiple instances / processes on the same file:** public KSafe instances in the same
+  process share the backend's commit mutex, so their entry commits and key sweeps are
+  serialized; duplicate resume attempts are idempotent. A mutex cannot cross an OS-process
+  boundary, however. Do not rotate the same physical store concurrently from an app process
+  and an extension/widget/second process; nominate one process for manual and `MaxAge`
+  rotation.
 - **`clearAll()`** wipes every generation's keys (best-effort: a platform-vault deletion failure is logged, not thrown — the data wipe itself fails loudly) and resets the store to generation 1. A rotation pass still in flight when the wipe lands is fenced: its remaining entries are reported `skipped` and nothing from the pre-wipe pass is stamped onto the reset store.
 - **Generation upper bound**: the generation counter is capped at 10 000 (about 27 years of daily rotation). `rotateKeys()` at the cap throws `IllegalStateException` instead of overflowing; `clearAll()` resets the counter to 1.
 - **Cost recap**: one decrypt + one encrypt per encrypted entry, chunked and bounded internally. On mobile hardware-backed tiers this is keystore-IPC-bound — a store with hundreds of entries takes seconds of background time, which is why `MaxAge` runs off the critical path and why `rotateKeys()` is a `suspend` function.

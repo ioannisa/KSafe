@@ -131,7 +131,7 @@ KSafe(
 val ksafe = KSafe(
     context = context,
     config = KSafeConfig(
-        keySize = 256,                       // AES key size: 128 or 256 (Android/JVM/Apple); web is always AES-256-GCM
+        aesKeySize = KSafeAesKeySize.BITS_256, // BITS_128 or BITS_256 on every platform
         requireUnlockedDevice = false,       // Default for protection-based encrypted writes
         json = KSafeDefaults.json,           // Custom kotlinx.serialization Json — see docs/SERIALIZATION.md
         appNamespace = null,                 // Key-isolation namespace — see docs/JVM_PROTECTION.md / docs/SETUP.md
@@ -140,7 +140,8 @@ val ksafe = KSafe(
 )
 ```
 
-**Note:** The encryption algorithm (AES-GCM) is intentionally NOT configurable to prevent insecure configurations.
+**Note:** The encryption algorithm (AES-GCM) is intentionally not configurable. `aesKeySize`
+selects the strength of newly created keys; existing keys keep their size until `rotateKeys()`.
 
 ### Device Lock-State Policy
 

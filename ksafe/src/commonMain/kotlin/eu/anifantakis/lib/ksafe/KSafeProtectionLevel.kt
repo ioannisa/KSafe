@@ -5,8 +5,9 @@ package eu.anifantakis.lib.ksafe
  * for a [KSafe] instance after runtime negotiation; higher ordinal = harder for
  * an attacker to recover the key, comparable across every platform by ordinal.
  *
- * Describes the key's protection, not the data: payload is always AES-256-GCM
- * ciphertext regardless of level — what varies is how hard the key is to recover.
+ * Describes the key's protection, not the data: payload is always AES-GCM ciphertext
+ * regardless of level (256-bit key by default; see [KSafeConfig.aesKeySize]) — what
+ * varies is how hard the key is to recover.
  *
  * Distinct from [KSafeKeyStorage] (device-capability vocabulary used by
  * [KSafe.deviceKeyStorages]); this is negotiated runtime custody and the value

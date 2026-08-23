@@ -2,9 +2,6 @@
 
 package eu.anifantakis.lib.ksafe.internal
 
-import dev.whyoleg.cryptography.CryptographyProvider
-import dev.whyoleg.cryptography.algorithms.AES
-import dev.whyoleg.cryptography.providers.cryptokit.CryptoKit
 import eu.anifantakis.lib.ksafe.KSafeConfig
 import kotlinx.cinterop.BetaInteropApi
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -16,7 +13,6 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.refTo
 import kotlinx.cinterop.usePinned
 import kotlinx.cinterop.value
-import kotlinx.coroutines.runBlocking
 import platform.CoreFoundation.CFDataRef
 import platform.CoreFoundation.CFDictionaryCreateMutable
 import platform.CoreFoundation.CFDictionarySetValue
@@ -250,7 +246,7 @@ internal class AppleKeychainEncryption(
         }
     }
 
-    private val keySizeBytes: Int = config.keySize / 8
+    private val keySizeBytes: Int = config.aesKeySize.bytes
 
     /**
      * In-process cache of unwrapped raw AES key bytes by `keyId`. Keychain bytes are immutable
@@ -487,21 +483,11 @@ internal class AppleKeychainEncryption(
     }
 
     private fun cryptoKitEncrypt(keyBytes: ByteArray, data: ByteArray, aad: ByteArray?): ByteArray =
-        runBlocking {
-            val aesGcm = CryptographyProvider.CryptoKit.get(AES.GCM)
-            val symmetricKey = aesGcm.keyDecoder().decodeFromByteArray(AES.Key.Format.RAW, keyBytes)
-            if (aad != null) symmetricKey.cipher().encrypt(plaintext = data, associatedData = aad)
-            else symmetricKey.cipher().encrypt(plaintext = data)
-        }
+        AppleAesGcm.encrypt(keyBytes, data, authenticatedData = aad)
 
     override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray {
         val keyBytes = getExistingKeychainKey(identifier, requireUnlockedDevice)
-        return runBlocking {
-            val aesGcm = CryptographyProvider.CryptoKit.get(AES.GCM)
-            val symmetricKey = aesGcm.keyDecoder().decodeFromByteArray(AES.Key.Format.RAW, keyBytes)
-            if (aad != null) symmetricKey.cipher().decrypt(ciphertext = data, associatedData = aad)
-            else symmetricKey.cipher().decrypt(ciphertext = data)
-        }
+        return AppleAesGcm.decrypt(keyBytes, data, authenticatedData = aad)
     }
 
     override fun deleteKey(identifier: String) {

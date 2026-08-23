@@ -26,8 +26,18 @@ private const val DISPATCH_JS: String = """
 private external fun wkDispatch(op: String, a: String, b: String?, c: String? = definedExternally): Promise<JsAny?>
 
 @PublishedApi
-internal actual suspend fun webKeyEnsure(idbName: String, legacyRawKeyB64: String?, mintIfAbsent: Boolean) {
-    wkDispatch(if (mintIfAbsent) WebKeyStoreOps.ENSURE else WebKeyStoreOps.ENSURE_NO_MINT, idbName, legacyRawKeyB64).await<JsAny?>()
+internal actual suspend fun webKeyEnsure(
+    idbName: String,
+    legacyRawKeyB64: String?,
+    mintIfAbsent: Boolean,
+    keySizeBits: Int,
+) {
+    wkDispatch(
+        if (mintIfAbsent) WebKeyStoreOps.ENSURE else WebKeyStoreOps.ENSURE_NO_MINT,
+        idbName,
+        legacyRawKeyB64,
+        keySizeBits.toString(),
+    ).await<JsAny?>()
 }
 
 @PublishedApi

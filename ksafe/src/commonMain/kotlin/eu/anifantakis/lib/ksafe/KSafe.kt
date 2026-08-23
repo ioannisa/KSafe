@@ -13,7 +13,8 @@ import kotlinx.serialization.serializer
 /**
  * Secure, type-safe key–value storage for Kotlin Multiplatform.
  *
- * All data is encrypted by default with AES-256-GCM; key custody is
+ * All data is encrypted by default with AES-GCM (256-bit key by default, 128-bit
+ * when selected through [KSafeConfig.aesKeySize]); key custody is
  * platform-specific (Android Keystore, Apple Keychain, OS secret store on JVM,
  * non-extractable WebCrypto key on Web). Reads ([getDirect]) are served from an
  * in-memory hot cache; writes ([putDirect]) update the cache immediately and
@@ -120,7 +121,14 @@ class KSafe @PublishedApi internal constructor(
      * entry can only rotate while the device is unlocked — locked ones are skipped and
      * retried by the next call. Crash-safe and resumable: each entry records which key
      * generation decrypts it, so an interrupted rotation leaves a mixed-generation store
-     * where everything stays readable.
+     * where everything stays readable. Since 3.1.0, an explicit durable lifecycle state makes
+     * the next KSafe instance resume that same generation automatically, even when the
+     * configured policy is [KSafeKeyRotationPolicy.Never]. A marker-less 3.0.0 generation
+     * record is conservatively adopted as completed and is never auto-resumed. A pass that
+     * returns normally with retryable skipped entries persists the bounded budget configured
+     * by [KSafeConfig.keyRotationRetryAttempts]. Each next KSafe instance consumes at most one
+     * attempt and retries the same generation immediately, unless its configured MaxAge is
+     * already due — in that case the normal fresh-generation rotation supersedes the retry.
      *
      * Cost: one decrypt + one encrypt per encrypted entry — call it from a background
      * coroutine on stores with many entries.
@@ -128,7 +136,10 @@ class KSafe @PublishedApi internal constructor(
      * Note: [getOrCreateSecret] secrets keep their VALUE (rotating a passphrase your database
      * is encrypted with would lose the database) — only the key wrapping them changes.
      *
-     * @throws IllegalStateException if a rotation is already running on this instance.
+     * @throws IllegalStateException if a rotation is already running on this instance, or if
+     *         the store's persisted rotation state is not one this build understands (an
+     *         unknown lifecycle or retry marker, e.g. written by a newer KSafe). The store is
+     *         left untouched — repair or upgrade rather than retrying.
      */
     suspend fun rotateKeys(): KSafeRotationResult = core.rotateKeys()
 

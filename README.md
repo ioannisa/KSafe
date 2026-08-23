@@ -47,9 +47,57 @@ The first command only tells Claude Code where the plugin lives — it installs 
 itself. The second does the actual install (the format is `<plugin>@<marketplace>`; both
 happen to be named `ksafe` here). Restart the session and the skill is active.
 
-From then on you're done: Claude Code checks this repo for updates at the start of every
-session, so skill improvements arrive on their own. `/plugin update` fetches the latest
-immediately if you don't want to wait.
+From then on updates are handled for you — but on Claude Code's own schedule, not at the
+moment we publish. If you want the newest skill *now* (say, right after a KSafe release),
+force it; see below.
+
+<details>
+<summary><b>Forcing an update — and why one command isn't always enough</b></summary>
+
+An installed plugin is pinned to a specific commit of this repo, and Claude Code keeps its
+own clone of the repo separately. So there are **two** things that can be out of date, and
+refreshing only the second one silently does nothing:
+
+| Layer | What it is | Refreshed by |
+|---|---|---|
+| **Marketplace** | Claude Code's clone of this repo | `marketplace update` |
+| **Plugin** | the commit your session actually loads | `update` |
+
+Run them **in this order** — the plugin can only move to a commit the marketplace has
+already fetched:
+
+```
+/plugin marketplace update ksafe    # 1. fetch the newest commits of this repo
+/plugin update ksafe@ksafe          # 2. re-pin the plugin to the newest one
+```
+
+Same thing from a terminal, outside any session:
+
+```bash
+claude plugin marketplace update ksafe
+claude plugin update ksafe@ksafe
+```
+
+**Restart the session afterwards** — a running session keeps the skill it loaded at start.
+
+Check what you're actually on at any time:
+
+```bash
+claude plugin list
+```
+
+The `Version:` shown for `ksafe@ksafe` is the commit hash this repo was at when the plugin
+was pinned. If step 2 reports *"already at the latest version"* but you expected something
+newer, step 1 hasn't picked up the commit yet — the release may not be pushed, or the
+marketplace fetch failed.
+
+</details>
+
+> **Don't also copy `SKILL.md` into `~/.claude/skills/ksafe/`.** That directory holds
+> manually-installed skills, which never update and are addressed by the bare name `ksafe`
+> — while the plugin is addressed as `ksafe:ksafe`. Keeping both means asking for "the
+> ksafe skill" loads the stale hand-copied one. Pick the plugin *or* the plain copy below,
+> never both.
 
 ### Other agents
 > (Codex, Gemini CLI, Copilot, Cursor, Junie, …)
@@ -78,8 +126,8 @@ done
 
 Re-run it to refresh (again: no auto-update). If you've already cloned this repo,
 `cp -r skills/ksafe "$HOME/.<agent>/skills/"` does the same thing offline. Add `claude` to
-the list only if you prefer a plain skill over the plugin from the section above — don't
-do both.
+the list only if you prefer a plain skill over the plugin from the section above — for the
+reason why the two don't mix, see the warning at the end of that section.
 
 ## Demo & Videos
 
@@ -162,6 +210,19 @@ val ksafe = KSafe(context)
 val ksafe = KSafe()
 ```
 
+AES-GCM is intentionally fixed so callers cannot select an unsafe mode. Its key strength is
+typed and consistent across every platform:
+
+```kotlin
+val ksafe128 = KSafe(
+    config = KSafeConfig(aesKeySize = KSafeAesKeySize.BITS_128)
+)
+// Default: KSafeAesKeySize.BITS_256
+```
+
+The setting applies when KSafe creates a key. Existing stores keep their current key size until
+`rotateKeys()` mints a new generation.
+
 With Koin (recommended for KMP):
 
 ```kotlin
@@ -222,6 +283,12 @@ ksafe.putDirect(
         requireUnlockedDevice = true
     )
 )
+
+// 3.1.0+: or freeze the mode at the TYPE level — no mode parameter exists to forget
+val prefs = KSafePlain(ksafe)            // every write plain
+val vault = KSafeHardwareIsolated(ksafe) // every write requests StrongBox / Secure Enclave
+var theme2 by prefs("light")
+vault.put("pin", pin)
 ```
 
 **Complex objects** — just mark them `@Serializable`; JSON and encryption are automatic:
@@ -296,11 +363,31 @@ Or make it a policy and forget about it:
 
 ```kotlin
 val ksafe = KSafe(config = KSafeConfig(
-    keyRotationPolicy = KSafeKeyRotationPolicy.MaxAge(90.days)  // rotate in the background when the key turns 90 days old
+    keyRotationPolicy = KSafeKeyRotationPolicy.MaxAge(90.days), // rotate in the background when the key turns 90 days old
+    keyRotationRetryAttempts = 3, // default; 0 disables next-instance retries
 ))
 ```
 
-Crash-safe and resumable by design: every entry records which key generation decrypts it, so an interrupted rotation leaves a store where **everything stays readable** and the next pass picks up the rest. Concurrent writes always win over the rotation; superseded keys are deleted only when nothing references them. Values — including `getOrCreateSecret` passphrases — never change; only the key material and envelopes do.
+Crash-safe and resumable by design: every entry records which key generation decrypts it. From
+3.1.0, a generation bump also carries a durable lifecycle state (`r:1` while active, `r:0`
+after completion), so an interrupted rotation leaves a store where **everything stays
+readable** and the next KSafe instance automatically resumes that same generation — even with
+the default `Never` policy. A 3.0.0 record has no `r` field; the first 3.1.0 startup safely
+stamps it `r:0` and does no rotation work in that launch rather than guessing that a released
+store crashed. Concurrent writes always win; superseded keys are deleted only when nothing
+references them. Values — including `getOrCreateSecret` passphrases — never change; only the
+key material and envelopes do.
+
+Automatic crash recovery remains distinct from a normal retry. A pass that returns normally
+writes `r:0`; when it reports retryable `skipped` entries it also persists `rp:N`, the number
+of automatic next-instance attempts still available (3 by default). The current instance
+starts no timer and does not try again in the same app run. Each **new KSafe instance** consumes
+at most one attempt and retries the same generation immediately, even under `Never`. The claim
+is durable and decrement-first: `r:0,rp:N -> r:1,rp:N-1`, so a crash cannot refill the budget;
+`r:1,rp:0` still resumes the last claimed attempt after a crash but cannot schedule another
+one. Set `keyRotationRetryAttempts = 0` to disable this automatic retry path. If `MaxAge` is
+already due, its fresh rotation takes precedence. `failed` alone never arms the budget: it
+denotes a definitive problem that needs investigation.
 
 Rotation also hardens the encryption itself: once rotated, encrypted entries **can't be copied, swapped, or relocated between keys** — tampering that relocates, swaps, or re-tiers an *encrypted* entry breaks its GCM tag, so the read **fails closed to the caller's default** rather than decrypting in the wrong context (the one boundary: rewriting an entry's metadata to *plaintext* reclassifies it, so the read returns the stored bytes verbatim — undecipherable ciphertext, never the underlying secret). A gen-1 (un-rotated) store keeps the exact pre-3.0.0 bytes, so this kicks in at the first `rotateKeys()`.
 

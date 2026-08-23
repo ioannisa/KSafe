@@ -93,7 +93,12 @@ class WebNamespaceCollisionTest {
 
         // Seed a key + ciphertext under the FROZEN ≤ 2.2.1 record name ("a_b:" + engine prefix).
         val oldIdbName = "a_b:${enginePrefix}ksafe_key_token"
-        webKeyEnsure(oldIdbName, null, mintIfAbsent = true)
+        webKeyEnsure(
+            oldIdbName,
+            null,
+            mintIfAbsent = true,
+            keySizeBits = KSafeAesKeySize.BITS_256.bits,
+        )
         val ctB64 = webKeyEncrypt(oldIdbName, Base64.encode("legacy-secret".encodeToByteArray()), null)
 
         // The upgraded canonical engine must find it via the lossy-legacy probe.

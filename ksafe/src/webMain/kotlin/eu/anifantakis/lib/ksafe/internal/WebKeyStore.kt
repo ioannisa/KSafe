@@ -16,7 +16,12 @@ package eu.anifantakis.lib.ksafe.internal
  * missing") rather than minting one that can't decrypt the surviving ciphertext.
  */
 @PublishedApi
-internal expect suspend fun webKeyEnsure(idbName: String, legacyRawKeyB64: String?, mintIfAbsent: Boolean)
+internal expect suspend fun webKeyEnsure(
+    idbName: String,
+    legacyRawKeyB64: String?,
+    mintIfAbsent: Boolean,
+    keySizeBits: Int,
+)
 
 /**
  * Encrypts [plaintextB64]; returns Base64 of `IV ‖ ciphertext ‖ tag`.

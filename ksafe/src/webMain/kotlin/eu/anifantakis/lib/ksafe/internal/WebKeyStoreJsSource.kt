@@ -21,8 +21,8 @@ internal object WebKeyStoreJsSource {
      * keep closure state between `@JsFun` calls); which op maps to which store call is written once.
      */
     const val OP_ROUTING: String = """
-      if (op === '${WebKeyStoreOps.ENSURE}') return wk.ensure(a, b, true);
-      if (op === '${WebKeyStoreOps.ENSURE_NO_MINT}') return wk.ensure(a, b, false);
+      if (op === '${WebKeyStoreOps.ENSURE}') return wk.ensure(a, b, true, c);
+      if (op === '${WebKeyStoreOps.ENSURE_NO_MINT}') return wk.ensure(a, b, false, c);
       if (op === '${WebKeyStoreOps.ENCRYPT}') return wk.enc(a, b, c);
       if (op === '${WebKeyStoreOps.DECRYPT}') return wk.dec(a, b, c);
       if (op === '${WebKeyStoreOps.COPY_KEY}') return wk.copyIfAbsent(a, b);
@@ -127,7 +127,9 @@ internal object WebKeyStoreJsSource {
       }
       // Legacy-first: a legacy localStorage raw key, when present, is authoritative (it provably
       // encrypted the current ciphertext) — import it and overwrite any stale IDB key.
-      var ensure = function(name, legacy, mint) {
+      var ensure = function(name, legacy, mint, keyBitsRaw) {
+        var keyBits = Number(keyBitsRaw);
+        if (keyBits !== 128 && keyBits !== 256) throw new Error('KSafe: AES-GCM key size must be 128 or 256 bits');
         // Legacy import must precede the mem short-circuit: `mem` can hold a stale entry too.
         if (legacy) { return requireSubtle().importKey('raw', b2u(legacy), 'AES-GCM', false, ['encrypt', 'decrypt']).then(function(nk) { return idbPut(name, nk).then(function() { mem.set(name, nk); return null; }); }); }
         // No mem short-circuit: `mem` can hold a stale entry whose IDB record a concurrent
@@ -141,7 +143,7 @@ internal object WebKeyStoreJsSource {
           if (!mint) { mem['delete'](name); return null; }
           // Create via atomic 'add', not 'put': if two same-origin tabs race on first launch,
           // only one 'add' wins and the loser adopts the winner's key.
-          return requireSubtle().generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']).then(function(nk) {
+          return requireSubtle().generateKey({ name: 'AES-GCM', length: keyBits }, false, ['encrypt', 'decrypt']).then(function(nk) {
             return idbAdd(name, nk).then(function(added) {
               if (added) { mem.set(name, nk); return null; }
               return idbGet(name).then(function(existing) { if (existing) mem.set(name, existing); return null; });

@@ -39,7 +39,7 @@ internal fun webSharesDefaultLegacyPrefix(fileName: String?): Boolean =
     fileName == null || fileName == "default"
 
 /**
- * Web (wasmJs + js) [KSafeEncryption]: an AES-256-GCM key held as a non-extractable WebCrypto
+ * Web (wasmJs + js) [KSafeEncryption]: an AES-GCM key held as a non-extractable WebCrypto
  * `CryptoKey` in IndexedDB, so raw key bytes are never exposed to JS. A legacy raw key still in
  * `localStorage` is imported as a non-extractable key on first touch and the `localStorage` entry
  * scrubbed. WebCrypto is async-only, so the blocking [encrypt]/[decrypt] throw; use the suspend
@@ -148,7 +148,12 @@ internal class WebSoftwareEncryption(
      */
     private suspend fun preserveLegacyKeyForSiblings(alias: String, legacy: String?) {
         if (legacy != null && appNsPrefix.isNotEmpty()) {
-            webKeyEnsure(unNamespacedIdbName(alias), legacy, mintIfAbsent = false)
+            webKeyEnsure(
+                unNamespacedIdbName(alias),
+                legacy,
+                mintIfAbsent = false,
+                keySizeBits = config.aesKeySize.bits,
+            )
         }
     }
 
@@ -173,7 +178,12 @@ internal class WebSoftwareEncryption(
             migrateNamespacedKeyOnce(alias)
             val legacy = localStorageGet(legacyKey(alias))
             preserveLegacyKeyForSiblings(alias, legacy)
-            webKeyEnsure(idbName(alias), legacy, mintIfAbsent = mintIfAbsent)
+            webKeyEnsure(
+                idbName(alias),
+                legacy,
+                mintIfAbsent = mintIfAbsent,
+                keySizeBits = config.aesKeySize.bits,
+            )
             if (legacy != null) {
                 localStorageRemove(legacyKey(alias))
             }

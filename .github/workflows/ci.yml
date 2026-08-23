@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main, "2.*" ]
+    # Any release branch, not just the 2.x line it was pinned to: a 3.1.0 branch matched
+    # nothing, so work merged into main from one had never been through CI.
+    branches: [ main, "[0-9]*.*" ]
   pull_request:
   workflow_dispatch:        # manual: full legacy suite on demand
   schedule:
@@ -41,10 +43,15 @@ jobs:
       - name: Compile all :ksafe targets
         run: ./gradlew :ksafe:compileKotlinJvm :ksafe:compileKotlinJs :ksafe:compileKotlinWasmJs :ksafe:compileKotlinMetadata --stacktrace
       # Public-ABI lock (kotlinx binary-compatibility-validator): fails if any module's
-      # public API drifts from the committed api/ dumps (JVM + klib). After an intentional
-      # API change run `./gradlew apiDump` and commit the diff.
-      - name: API compatibility check
-        run: ./gradlew apiCheck --stacktrace
+      # public API drifts from the committed api/ dumps. After an intentional API change run
+      # `./gradlew apiDump` on a Mac and commit the diff.
+      #
+      # JVM half only. The klib half needs every Apple target COMPILED to read its API, and
+      # since the CryptoKit cinterop landed those can no longer be cross-compiled off a Mac —
+      # this host would produce a js/wasmJs-only dump and report the missing Apple entries as
+      # drift. It runs in the apple-native job instead, against a real Apple toolchain.
+      - name: JVM ABI check
+        run: ./gradlew jvmApiCheck --stacktrace
       # Only the fast, feature-relevant JVM unit test. The full :ksafe:jvmTest
       # suite is run by the separate (non-blocking) jvm-full-suite job — it
       # contains pre-existing stress tests that livelock on a 2-vCPU runner
@@ -334,6 +341,13 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v5
+      # The FULL ABI lock — JVM plus klib — lives here because only a Mac can compile the
+      # Apple targets the klib dump describes. The build job runs the JVM half for fast
+      # feedback; this is the one that guards the iOS/macOS/js/wasmJs surface, against a real
+      # Apple toolchain rather than a cross-compile. `./gradlew apiDump` on a Mac after an
+      # intentional change.
+      - name: Full ABI check (JVM + klib)
+        run: ./gradlew apiCheck --stacktrace
       - name: Native Apple tests (all 3 modules)
         run: >
           ./gradlew

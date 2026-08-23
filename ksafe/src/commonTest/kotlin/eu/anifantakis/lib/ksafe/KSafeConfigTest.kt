@@ -4,9 +4,10 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /**
- * Locks in: KSafeConfig defaults, key-size validation, and data-class behavior.
+ * Locks in: KSafeConfig defaults, typed AES key sizes, and data-class behavior.
  */
 class KSafeConfigTest {
 
@@ -14,42 +15,47 @@ class KSafeConfigTest {
     fun defaultConfig_hasCorrectDefaults() {
         val config = KSafeConfig()
 
-        assertEquals(256, config.keySize, "Default keySize should be 256")
+        assertEquals(
+            KSafeAesKeySize.BITS_256,
+            config.aesKeySize,
+            "Default AES key size should be 256 bits",
+        )
         assertFalse(config.requireUnlockedDevice, "Default requireUnlockedDevice should be false")
+        assertEquals(3, config.keyRotationRetryAttempts)
     }
 
     @Test
-    fun keySize_128_isValid() {
-        val config = KSafeConfig(keySize = 128)
-        assertEquals(128, config.keySize)
+    fun aesKeySize_128_hasExpectedDimensions() {
+        val config = KSafeConfig(aesKeySize = KSafeAesKeySize.BITS_128)
+        assertEquals(128, config.aesKeySize.bits)
+        assertEquals(16, config.aesKeySize.bytes)
     }
 
     @Test
-    fun keySize_256_isValid() {
-        val config = KSafeConfig(keySize = 256)
-        assertEquals(256, config.keySize)
+    fun aesKeySize_256_hasExpectedDimensions() {
+        val config = KSafeConfig(aesKeySize = KSafeAesKeySize.BITS_256)
+        assertEquals(256, config.aesKeySize.bits)
+        assertEquals(32, config.aesKeySize.bytes)
     }
 
     @Test
-    fun keySize_invalid_throwsException() {
-        assertFailsWith<IllegalArgumentException> {
-            KSafeConfig(keySize = 64)
-        }
+    fun keyRotationRetryAttempts_zeroAndPositive_areValid() {
+        assertEquals(0, KSafeConfig(keyRotationRetryAttempts = 0).keyRotationRetryAttempts)
+        assertEquals(7, KSafeConfig(keyRotationRetryAttempts = 7).keyRotationRetryAttempts)
+    }
 
+    @Test
+    fun keyRotationRetryAttempts_negative_throwsException() {
         assertFailsWith<IllegalArgumentException> {
-            KSafeConfig(keySize = 192)
-        }
-
-        assertFailsWith<IllegalArgumentException> {
-            KSafeConfig(keySize = 512)
+            KSafeConfig(keyRotationRetryAttempts = -1)
         }
     }
 
     @Test
     fun config_equality_works() {
-        val config1 = KSafeConfig(keySize = 256)
-        val config2 = KSafeConfig(keySize = 256)
-        val config3 = KSafeConfig(keySize = 128)
+        val config1 = KSafeConfig(aesKeySize = KSafeAesKeySize.BITS_256)
+        val config2 = KSafeConfig(aesKeySize = KSafeAesKeySize.BITS_256)
+        val config3 = KSafeConfig(aesKeySize = KSafeAesKeySize.BITS_128)
 
         assertEquals(config1, config2, "Same configs should be equal")
         assertFalse(config1 == config3, "Different configs should not be equal")
@@ -57,11 +63,53 @@ class KSafeConfigTest {
 
     @Test
     fun config_copy_works() {
-        val original = KSafeConfig(keySize = 256)
-        val copied = original.copy(keySize = 128)
+        val original = KSafeConfig(aesKeySize = KSafeAesKeySize.BITS_256)
+        val copied = original.copy(aesKeySize = KSafeAesKeySize.BITS_128)
 
-        assertEquals(256, original.keySize)
-        assertEquals(128, copied.keySize)
+        assertEquals(KSafeAesKeySize.BITS_256, original.aesKeySize)
+        assertEquals(KSafeAesKeySize.BITS_128, copied.aesKeySize)
         assertEquals(original.requireUnlockedDevice, copied.requireUnlockedDevice)
+        assertEquals(original.keyRotationRetryAttempts, copied.keyRotationRetryAttempts)
+    }
+
+    // ---- the pre-3.1.0 keySize surface, kept until 4.0.0 -------------------------------
+
+    @Suppress("DEPRECATION")
+    @Test
+    fun deprecatedKeySize_stillConstructsAndReads() {
+        assertEquals(KSafeAesKeySize.BITS_128, KSafeConfig(keySize = 128).aesKeySize)
+        assertEquals(KSafeAesKeySize.BITS_256, KSafeConfig(keySize = 256).aesKeySize)
+        assertEquals(128, KSafeConfig(keySize = 128).keySize)
+        assertEquals(256, KSafeConfig().keySize)
+    }
+
+    @Suppress("DEPRECATION")
+    @Test
+    fun deprecatedKeySize_acceptsTheOldPositionalSignature() {
+        val config = KSafeConfig(128, true, KSafeDefaults.json, "ns", KSafeKeyRotationPolicy.Never)
+        assertEquals(KSafeAesKeySize.BITS_128, config.aesKeySize)
+        assertEquals("ns", config.appNamespace)
+        assertTrue(config.requireUnlockedDevice)
+    }
+
+    @Suppress("DEPRECATION")
+    @Test
+    fun deprecatedKeySize_rejectsAnUnsupportedBitCountWithTheOldMessage() {
+        val error = assertFailsWith<IllegalArgumentException> { KSafeConfig(keySize = 512) }
+        assertEquals("keySize must be 128 or 256 bits. Got: 512", error.message)
+    }
+
+    @Suppress("DEPRECATION")
+    @Test
+    fun deprecatedKeySize_stillCopies_andLeavesTheGeneratedCopyReachable() {
+        val base = KSafeConfig(aesKeySize = KSafeAesKeySize.BITS_256, keyRotationRetryAttempts = 7)
+
+        val viaInt = base.copy(keySize = 128)
+        assertEquals(KSafeAesKeySize.BITS_128, viaInt.aesKeySize)
+        assertEquals(7, viaInt.keyRotationRetryAttempts, "unrelated fields must carry over")
+
+        // No argument, and any non-keySize argument, must still reach the generated copy.
+        assertEquals(base, base.copy())
+        assertEquals(KSafeAesKeySize.BITS_128, base.copy(aesKeySize = KSafeAesKeySize.BITS_128).aesKeySize)
     }
 }

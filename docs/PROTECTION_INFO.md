@@ -53,8 +53,9 @@ comparison.
 
 > **About data vs. key.** This scale describes the protection of the
 > encryption **key**, not the data. KSafe always encrypts payload data with
-> AES-GCM — 256-bit by default, configurable to 128-bit via `KSafeConfig.keySize`
-> on Android/Apple/JVM (Web is always AES-256-GCM) — regardless of level. Even at
+> AES-GCM — `KSafeAesKeySize.BITS_256` by default, or `BITS_128` via
+> `KSafeConfig.aesKeySize` on every platform — regardless of level. Existing
+> keys retain their size until rotation. Even at
 > the weakest rung (`SOFTWARE`) the
 > data on disk is still AES-GCM ciphertext — what varies across levels
 > is how hard it is for an attacker to recover the **key** that decrypts

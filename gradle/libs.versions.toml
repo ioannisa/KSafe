@@ -12,7 +12,6 @@ core = "1.7.0"
 junit = "1.3.0"
 runtime = "1.10.3"
 
-cryptography = "0.6.0"
 jna = "5.19.1"
 turbine = "1.2.1"
 robolectric = "4.16.1"
@@ -33,13 +32,6 @@ androidx-runner = { group = "androidx.test", name = "runner", version.ref = "run
 androidx-core = { group = "androidx.test", name = "core", version.ref = "core" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junit" }
 robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
-
-# Cryptography — Apple (Kotlin/Native) only. Android & JVM use javax.crypto,
-# Web (2.1.0) uses WebCrypto SubtleCrypto directly. Do not add a provider for
-# those targets: they have a native primitive and do not reference this library.
-cryptography-core = { module = "dev.whyoleg.cryptography:cryptography-core", version.ref = "cryptography" }
-cryptography-provider-base = { module = "dev.whyoleg.cryptography:cryptography-provider-base", version.ref = "cryptography" }
-cryptography-provider-cryptokit = { module = "dev.whyoleg.cryptography:cryptography-provider-cryptokit", version.ref = "cryptography" }
 
 # JNA — JVM-only native interop for OS secret stores
 # (Windows DPAPI / macOS Keychain / Linux libsecret Secret Service)

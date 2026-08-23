@@ -19,14 +19,15 @@ internal actual suspend fun platformVerifyBiometric(
         ?: return true
 
     return try {
-        // skipIfAuthorized re-checks the cache once the gate is held, so a caller queued behind one
-        // that just authenticated skips a redundant second prompt.
-        val prompted = BiometricHelper.authenticate(
+        // Both hooks run under the gate: skipIfAuthorized re-checks the cache once it is held, so a
+        // caller queued behind one that just authenticated skips a redundant second prompt, and
+        // onAuthorized seeds before the gate is released so that re-check can actually see it.
+        // Seeding only from onAuthorized also keeps the rule that a skip must not extend the window.
+        BiometricHelper.authenticate(
             reason, allowDeviceCredentialFallback, title, cancelLabel,
             skipIfAuthorized = { attempt.isFresh() },
+            onAuthorized = { attempt.seedIfActive() },
         )
-        // Seed only after a REAL prompt: a skip must not extend the window.
-        if (prompted) attempt.seedIfActive()
         true
     } catch (e: BiometricAuthException) {
         println("KSafeBiometrics: Biometric authentication failed - ${e.message}")

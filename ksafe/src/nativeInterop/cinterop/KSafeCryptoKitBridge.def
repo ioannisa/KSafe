@@ -1,0 +1,4 @@
+headers = KSafeCryptoKitBridge.h
+package = eu.anifantakis.lib.ksafe.internal.cryptokit
+staticLibraries = libKSafeCryptoKitBridge.a
+linkerOpts = -framework CryptoKit -framework Foundation

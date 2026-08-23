@@ -54,7 +54,7 @@ internal suspend fun KSafeCore.processWrites(batchIn: List<PendingWrite>) {
     // One suspend disk read, exactly when it's needed: the first batch on an instance
     // whose cache never merged a snapshot (a cold/lazy reopen's immediate write must not
     // regress a rotated store to generation 1), and any batch carrying a SetKeyGeneration
-    // (whose commit must never write a generation BELOW what a sibling already persisted).
+    // or CompleteKeyRotation (both must compare against the current durable lifecycle state).
     // Serialized under commitMutex, so the value can't be concurrently rewritten.
     //
     // Under lazyLoad there is no snapshot collector, so that first read is otherwise the ONLY
@@ -66,7 +66,9 @@ internal suspend fun KSafeCore.processWrites(batchIn: List<PendingWrite>) {
     val refreshForLazyEncrypt = lazyLoad && batchIn.any { it is EncryptingWrite }
     if (!keyGenerationReconciled.get() ||
         refreshForLazyEncrypt ||
-        batchIn.any { it is PendingWrite.SetKeyGeneration }
+        batchIn.any {
+            it is PendingWrite.SetKeyGeneration || it is PendingWrite.CompleteKeyRotation
+        }
     ) {
         // This read happens BEFORE the commit's own try/catch, so its failure (a DataStore
         // read IOException) would otherwise fail every awaiter while the batch's optimistic
@@ -121,9 +123,31 @@ internal suspend fun KSafeCore.processWrites(batchIn: List<PendingWrite>) {
     // start. The user op wins; the rotation is skipped (applied stays false → reported
     // as skipped, picked up by the next pass). The reverse order needs no guard — a user
     // op enqueued after the Rotate legitimately supersedes it.
+    //
+    // A second exception is the reserved generation record. Startup's one-time 3.0 adoption
+    // (`gN/r:0`) can race an explicit rotation bump (`gN+1/r:1`) into the same coalescing
+    // window. Ordinary last-write-wins would let a later, lower adoption displace the bump
+    // while BOTH awaiters are acknowledged, after which the pass would write gN+1 entries
+    // under a store still claiming gN. For two SetKeyGeneration ops, the higher generation
+    // therefore wins regardless of queue order; at the same generation, in-progress wins
+    // over a passive timestamp/adoption write.
     val finalByKey = LinkedHashMap<String, PendingWrite>()
     for (op in batch) {
         if (op is PendingWrite.Rotate && finalByKey.containsKey(op.userKey)) continue
+        val existing = finalByKey[op.userKey]
+        if (op is PendingWrite.SetKeyGeneration &&
+            existing is PendingWrite.SetKeyGeneration
+        ) {
+            val winner = when {
+                op.generation > existing.generation -> op
+                op.generation < existing.generation -> existing
+                op.rotationInProgress && !existing.rotationInProgress -> op
+                !op.rotationInProgress && existing.rotationInProgress -> existing
+                else -> op
+            }
+            finalByKey[op.userKey] = winner
+            continue
+        }
         val displaced = finalByKey.put(op.userKey, op)
         // A displaced write's superseded-alias captures must survive the coalescing: it
         // observed the entry's pre-transition alias, while the winner enqueued after it
@@ -198,6 +222,7 @@ internal suspend fun KSafeCore.processWrites(batchIn: List<PendingWrite>) {
         currentKeyGeneration.raiseToAtLeast(KeySafeMetadataManager.parseKeyGeneration(raw))
     }
     val appliedRotations = mutableSetOf<String>()
+    val appliedGenerationWrites = mutableSetOf<PendingWrite.SetKeyGeneration>()
 
     val ops = mutableListOf<StorageOp>()
     for (op in finalByKey.values) {
@@ -304,12 +329,92 @@ internal suspend fun KSafeCore.processWrites(batchIn: List<PendingWrite>) {
                 // proceeds. persistedKeygenRaw was read under this batch's commitMutex.
                 val persistedGen = KeySafeMetadataManager.parseKeyGeneration(persistedKeygenRaw)
                 val persistedTs = KeySafeMetadataManager.parseKeyGenerationTimestamp(persistedKeygenRaw)
-                if (persistedKeygenRaw == null || op.generation > persistedGen ||
-                    (op.generation == persistedGen && persistedTs == null)
+                val persistedLifecycle =
+                    KeySafeMetadataManager.parseKeyRotationLifecycle(persistedKeygenRaw)
+                val persistedHasLifecycle =
+                    KeySafeMetadataManager.hasKeyRotationLifecycle(persistedKeygenRaw)
+                val persistedRetryAttempts =
+                    KeySafeMetadataManager.parseKeyRotationRetryAttempts(persistedKeygenRaw)
+                val claimsPendingRetry =
+                    op.claimPendingRetry &&
+                        op.generation == persistedGen &&
+                        persistedHasLifecycle &&
+                        persistedLifecycle == 0 &&
+                        persistedRetryAttempts != null &&
+                        persistedRetryAttempts > 0
+                val writesGenerationState =
+                    persistedKeygenRaw == null ||
+                        op.generation > persistedGen ||
+                        claimsPendingRetry ||
+                        (
+                            op.generation == persistedGen &&
+                                (!persistedHasLifecycle ||
+                                    persistedLifecycle == 0 ||
+                                    persistedLifecycle == 1) &&
+                                (
+                                    persistedTs == null ||
+                                        !persistedHasLifecycle
+                                    )
+                            )
+                if (writesGenerationState) {
+                    ops += StorageOp.Put(
+                        KeySafeMetadataManager.KEYGEN_RAW_KEY,
+                        StoredValue.Text(
+                            KeySafeMetadataManager.buildKeyGenerationState(
+                                generation = op.generation,
+                                timestampMillis =
+                                    if (claimsPendingRetry) {
+                                        persistedTs ?: op.timestampMillis
+                                    } else {
+                                        op.timestampMillis
+                                    },
+                                rotationInProgress =
+                                    claimsPendingRetry ||
+                                        op.rotationInProgress ||
+                                        (
+                                            op.generation == persistedGen &&
+                                                KeySafeMetadataManager.parseKeyRotationInProgress(
+                                                    persistedKeygenRaw
+                                                )
+                                            ),
+                                retryAttemptsRemaining =
+                                    if (
+                                        persistedKeygenRaw == null ||
+                                        op.generation > persistedGen
+                                    ) {
+                                        null
+                                    } else if (claimsPendingRetry) {
+                                        persistedRetryAttempts - 1
+                                    } else {
+                                        persistedRetryAttempts
+                                    },
+                            )
+                        ),
+                    )
+                    appliedGenerationWrites += op
+                }
+            }
+            is PendingWrite.CompleteKeyRotation -> {
+                // Completion is generation-CAS'd. A stale pass (or a pass fenced by clearAll)
+                // must not acknowledge a newer generation as completed. Rewriting only from
+                // the explicit in-progress state also keeps this idempotent across retries.
+                val persistedGen = KeySafeMetadataManager.parseKeyGeneration(persistedKeygenRaw)
+                if (persistedKeygenRaw != null &&
+                    persistedGen == op.generation &&
+                    KeySafeMetadataManager.parseKeyRotationInProgress(persistedKeygenRaw)
                 ) {
                     ops += StorageOp.Put(
                         KeySafeMetadataManager.KEYGEN_RAW_KEY,
-                        StoredValue.Text("""{"g":${op.generation},"ts":${op.timestampMillis}}"""),
+                        StoredValue.Text(
+                            KeySafeMetadataManager.buildKeyGenerationState(
+                                generation = persistedGen,
+                                timestampMillis =
+                                    KeySafeMetadataManager.parseKeyGenerationTimestamp(
+                                        persistedKeygenRaw
+                                    ),
+                                retryAttemptsRemaining = op.retryAttemptsRemaining,
+                            )
+                        ),
                     )
                 }
             }
@@ -468,7 +573,11 @@ internal suspend fun KSafeCore.processWrites(batchIn: List<PendingWrite>) {
             is PendingWrite.SetKeyGeneration -> {
                 // Monotonic, matching updateCache's snapshot load.
                 currentKeyGeneration.raiseToAtLeast(op.generation)
+                if (op in appliedGenerationWrites) op.applied.set(true)
             }
+            // The in-progress flag is not cached; startup/manual resume always reads the
+            // durable key-generation record. No in-memory maintenance is needed here.
+            is PendingWrite.CompleteKeyRotation -> Unit
             is PendingWrite.SweepSupersededMasters -> {
                 // Serialized on the consumer: every earlier write is committed and no
                 // batch is concurrently encrypting, so "unreferenced on disk" really
@@ -491,6 +600,12 @@ internal suspend fun KSafeCore.processWrites(batchIn: List<PendingWrite>) {
                     if (KeySafeMetadataManager.parseEnvelopeVersion(rawMeta) <
                         KeySafeMetadataManager.ENVELOPE_VERSION_V2
                     ) continue
+                    // A metadata record whose value never landed (a torn write on a backend
+                    // without multi-key atomicity) describes nothing decryptable, but counting it
+                    // would keep its generation's master alive forever: rotation skips it for
+                    // lack of ciphertext and the orphan sweep enumerates value records, so no
+                    // later pass can ever release the reference.
+                    if (!hasAnyValueRecord(postSnapshot, userKey)) continue
                     referencedAliases += aliasWithGeneration(
                         masterAlias(KeySafeMetadataManager.parseRequireUnlockedDevice(rawMeta)),
                         KeySafeMetadataManager.parseKeyGeneration(rawMeta),

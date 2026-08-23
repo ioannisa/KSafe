@@ -39,15 +39,17 @@ round-trips — on real hardware.
 Run `./run-xctest.sh` **once first** so Xcode generates a provisioning profile for
 `<bundle>.host`; the full-suite script reuses it to sign the `.kexe` app.
 
-#### Expected "failures" on a real device
+#### Expect a clean run
 
-A handful of `IosKeychainEncryptionTest` cases are written for the **simulator / no-entitlement**
-environment and `assertFailsWith` that the Keychain **throws** (-34018). On a real signed device
-the Keychain **works**, so `encrypt()` succeeds and those asserts fail — that is *correct* device
-behaviour, not a KSafe bug. They are:
-`testThrowsOnKeychainErrorInTestEnvironment`, `testDecryptThrowsOnKeychainError`,
-`testSecureEnclaveThrowsInTestEnvironment`, `testCustomConfigIsAccepted`. (They pass on the
-simulator, their intended environment. To make them device-safe they'd need an `isEmulator` gate.)
+The suite is green on a real device — **286/286** as of 2026-08-05. Any red is a real failure;
+there is no list of cases to excuse.
+
+Four `IosKeychainEncryptionTest` cases used to fail here by construction: they were written for the
+**simulator / no-entitlement** environment and asserted that the Keychain *throws*, which stops
+being true once the app is signed. They now branch on `SecurityChecker.isEmulator()` and assert what
+each environment actually guarantees — the refusal without entitlements, a full round-trip with
+them. A standing "these four are expected to fail" note is exactly where a genuine regression would
+have gone unnoticed.
 
 ## Layout
 

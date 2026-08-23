@@ -276,6 +276,7 @@ object BiometricHelper {
         title: String? = null,
         cancelLabel: String? = null,
         skipIfAuthorized: () -> Boolean = { false },
+        onAuthorized: suspend () -> Unit = {},
     ): Boolean {
         val fragmentActivity = waitForFragmentActivity()
 
@@ -303,6 +304,12 @@ object BiometricHelper {
             // authorization, letting us skip a redundant back-to-back prompt.
             if (skipIfAuthorized()) return@withSinglePrompt false
             showBiometricPrompt(fragmentActivity, subtitle, allowDeviceCredentialFallback, title, cancelLabel)
+            // Record the authorization while the gate is still HELD — showBiometricPrompt throws
+            // on denial, so reaching here is a success. A caller queued behind us re-checks
+            // skipIfAuthorized the instant the gate changes hands, and recording after the
+            // release leaves a window in which it reads a cache we have not written yet and
+            // prompts a second time.
+            onAuthorized()
             true
         }
     }

@@ -11,11 +11,12 @@ final class KSafeDeviceTests: XCTestCase {
 
     private func makeSafe(_ name: String) -> KSafe {
         let config = KSafeConfig(
-            keySize: 256,
+            aesKeySize: KSafeAesKeySize.bits256,
             requireUnlockedDevice: false,
             json: KSafeDefaults.shared.json,
             appNamespace: nil,
-            keyRotationPolicy: KSafeKeyRotationPolicyNever.shared
+            keyRotationPolicy: KSafeKeyRotationPolicyNever.shared,
+            keyRotationRetryAttempts: 3
         )
         return KSafe_appleKt.KSafe(
             fileName: name,

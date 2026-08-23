@@ -7,6 +7,19 @@
 // - Show declarations: true
 
 // Library unique name: <eu.anifantakis:ksafe>
+final enum class eu.anifantakis.lib.ksafe/KSafeAesKeySize : kotlin/Enum<eu.anifantakis.lib.ksafe/KSafeAesKeySize> { // eu.anifantakis.lib.ksafe/KSafeAesKeySize|null[0]
+    enum entry BITS_128 // eu.anifantakis.lib.ksafe/KSafeAesKeySize.BITS_128|null[0]
+    enum entry BITS_256 // eu.anifantakis.lib.ksafe/KSafeAesKeySize.BITS_256|null[0]
+
+    final val bits // eu.anifantakis.lib.ksafe/KSafeAesKeySize.bits|{}bits[0]
+        final fun <get-bits>(): kotlin/Int // eu.anifantakis.lib.ksafe/KSafeAesKeySize.bits.<get-bits>|<get-bits>(){}[0]
+    final val entries // eu.anifantakis.lib.ksafe/KSafeAesKeySize.entries|#static{}entries[0]
+        final fun <get-entries>(): kotlin.enums/EnumEntries<eu.anifantakis.lib.ksafe/KSafeAesKeySize> // eu.anifantakis.lib.ksafe/KSafeAesKeySize.entries.<get-entries>|<get-entries>#static(){}[0]
+
+    final fun valueOf(kotlin/String): eu.anifantakis.lib.ksafe/KSafeAesKeySize // eu.anifantakis.lib.ksafe/KSafeAesKeySize.valueOf|valueOf#static(kotlin.String){}[0]
+    final fun values(): kotlin/Array<eu.anifantakis.lib.ksafe/KSafeAesKeySize> // eu.anifantakis.lib.ksafe/KSafeAesKeySize.values|values#static(){}[0]
+}
+
 final enum class eu.anifantakis.lib.ksafe/KSafeEncryptedProtection : kotlin/Enum<eu.anifantakis.lib.ksafe/KSafeEncryptedProtection> { // eu.anifantakis.lib.ksafe/KSafeEncryptedProtection|null[0]
     enum entry DEFAULT // eu.anifantakis.lib.ksafe/KSafeEncryptedProtection.DEFAULT|null[0]
     enum entry HARDWARE_ISOLATED // eu.anifantakis.lib.ksafe/KSafeEncryptedProtection.HARDWARE_ISOLATED|null[0]
@@ -534,28 +547,83 @@ final class eu.anifantakis.lib.ksafe/KSafe { // eu.anifantakis.lib.ksafe/KSafe|n
 }
 
 final class eu.anifantakis.lib.ksafe/KSafeConfig { // eu.anifantakis.lib.ksafe/KSafeConfig|null[0]
-    constructor <init>(kotlin/Int = ..., kotlin/Boolean = ..., kotlinx.serialization.json/Json = ..., kotlin/String? = ..., eu.anifantakis.lib.ksafe/KSafeKeyRotationPolicy = ...) // eu.anifantakis.lib.ksafe/KSafeConfig.<init>|<init>(kotlin.Int;kotlin.Boolean;kotlinx.serialization.json.Json;kotlin.String?;eu.anifantakis.lib.ksafe.KSafeKeyRotationPolicy){}[0]
+    constructor <init>(eu.anifantakis.lib.ksafe/KSafeAesKeySize = ..., kotlin/Boolean = ..., kotlinx.serialization.json/Json = ..., kotlin/String? = ..., eu.anifantakis.lib.ksafe/KSafeKeyRotationPolicy = ..., kotlin/Int = ...) // eu.anifantakis.lib.ksafe/KSafeConfig.<init>|<init>(eu.anifantakis.lib.ksafe.KSafeAesKeySize;kotlin.Boolean;kotlinx.serialization.json.Json;kotlin.String?;eu.anifantakis.lib.ksafe.KSafeKeyRotationPolicy;kotlin.Int){}[0]
+    constructor <init>(kotlin/Int, kotlin/Boolean = ..., kotlinx.serialization.json/Json = ..., kotlin/String? = ..., eu.anifantakis.lib.ksafe/KSafeKeyRotationPolicy = ...) // eu.anifantakis.lib.ksafe/KSafeConfig.<init>|<init>(kotlin.Int;kotlin.Boolean;kotlinx.serialization.json.Json;kotlin.String?;eu.anifantakis.lib.ksafe.KSafeKeyRotationPolicy){}[0]
 
+    final val aesKeySize // eu.anifantakis.lib.ksafe/KSafeConfig.aesKeySize|{}aesKeySize[0]
+        final fun <get-aesKeySize>(): eu.anifantakis.lib.ksafe/KSafeAesKeySize // eu.anifantakis.lib.ksafe/KSafeConfig.aesKeySize.<get-aesKeySize>|<get-aesKeySize>(){}[0]
     final val appNamespace // eu.anifantakis.lib.ksafe/KSafeConfig.appNamespace|{}appNamespace[0]
         final fun <get-appNamespace>(): kotlin/String? // eu.anifantakis.lib.ksafe/KSafeConfig.appNamespace.<get-appNamespace>|<get-appNamespace>(){}[0]
     final val json // eu.anifantakis.lib.ksafe/KSafeConfig.json|{}json[0]
         final fun <get-json>(): kotlinx.serialization.json/Json // eu.anifantakis.lib.ksafe/KSafeConfig.json.<get-json>|<get-json>(){}[0]
     final val keyRotationPolicy // eu.anifantakis.lib.ksafe/KSafeConfig.keyRotationPolicy|{}keyRotationPolicy[0]
         final fun <get-keyRotationPolicy>(): eu.anifantakis.lib.ksafe/KSafeKeyRotationPolicy // eu.anifantakis.lib.ksafe/KSafeConfig.keyRotationPolicy.<get-keyRotationPolicy>|<get-keyRotationPolicy>(){}[0]
+    final val keyRotationRetryAttempts // eu.anifantakis.lib.ksafe/KSafeConfig.keyRotationRetryAttempts|{}keyRotationRetryAttempts[0]
+        final fun <get-keyRotationRetryAttempts>(): kotlin/Int // eu.anifantakis.lib.ksafe/KSafeConfig.keyRotationRetryAttempts.<get-keyRotationRetryAttempts>|<get-keyRotationRetryAttempts>(){}[0]
     final val keySize // eu.anifantakis.lib.ksafe/KSafeConfig.keySize|{}keySize[0]
         final fun <get-keySize>(): kotlin/Int // eu.anifantakis.lib.ksafe/KSafeConfig.keySize.<get-keySize>|<get-keySize>(){}[0]
     final val requireUnlockedDevice // eu.anifantakis.lib.ksafe/KSafeConfig.requireUnlockedDevice|{}requireUnlockedDevice[0]
         final fun <get-requireUnlockedDevice>(): kotlin/Boolean // eu.anifantakis.lib.ksafe/KSafeConfig.requireUnlockedDevice.<get-requireUnlockedDevice>|<get-requireUnlockedDevice>(){}[0]
 
-    final fun component1(): kotlin/Int // eu.anifantakis.lib.ksafe/KSafeConfig.component1|component1(){}[0]
+    final fun component1(): eu.anifantakis.lib.ksafe/KSafeAesKeySize // eu.anifantakis.lib.ksafe/KSafeConfig.component1|component1(){}[0]
     final fun component2(): kotlin/Boolean // eu.anifantakis.lib.ksafe/KSafeConfig.component2|component2(){}[0]
     final fun component3(): kotlinx.serialization.json/Json // eu.anifantakis.lib.ksafe/KSafeConfig.component3|component3(){}[0]
     final fun component4(): kotlin/String? // eu.anifantakis.lib.ksafe/KSafeConfig.component4|component4(){}[0]
     final fun component5(): eu.anifantakis.lib.ksafe/KSafeKeyRotationPolicy // eu.anifantakis.lib.ksafe/KSafeConfig.component5|component5(){}[0]
-    final fun copy(kotlin/Int = ..., kotlin/Boolean = ..., kotlinx.serialization.json/Json = ..., kotlin/String? = ..., eu.anifantakis.lib.ksafe/KSafeKeyRotationPolicy = ...): eu.anifantakis.lib.ksafe/KSafeConfig // eu.anifantakis.lib.ksafe/KSafeConfig.copy|copy(kotlin.Int;kotlin.Boolean;kotlinx.serialization.json.Json;kotlin.String?;eu.anifantakis.lib.ksafe.KSafeKeyRotationPolicy){}[0]
+    final fun component6(): kotlin/Int // eu.anifantakis.lib.ksafe/KSafeConfig.component6|component6(){}[0]
+    final fun copy(eu.anifantakis.lib.ksafe/KSafeAesKeySize = ..., kotlin/Boolean = ..., kotlinx.serialization.json/Json = ..., kotlin/String? = ..., eu.anifantakis.lib.ksafe/KSafeKeyRotationPolicy = ..., kotlin/Int = ...): eu.anifantakis.lib.ksafe/KSafeConfig // eu.anifantakis.lib.ksafe/KSafeConfig.copy|copy(eu.anifantakis.lib.ksafe.KSafeAesKeySize;kotlin.Boolean;kotlinx.serialization.json.Json;kotlin.String?;eu.anifantakis.lib.ksafe.KSafeKeyRotationPolicy;kotlin.Int){}[0]
+    final fun copy(kotlin/Int, kotlin/Boolean = ..., kotlinx.serialization.json/Json = ..., kotlin/String? = ..., eu.anifantakis.lib.ksafe/KSafeKeyRotationPolicy = ...): eu.anifantakis.lib.ksafe/KSafeConfig // eu.anifantakis.lib.ksafe/KSafeConfig.copy|copy(kotlin.Int;kotlin.Boolean;kotlinx.serialization.json.Json;kotlin.String?;eu.anifantakis.lib.ksafe.KSafeKeyRotationPolicy){}[0]
     final fun equals(kotlin/Any?): kotlin/Boolean // eu.anifantakis.lib.ksafe/KSafeConfig.equals|equals(kotlin.Any?){}[0]
     final fun hashCode(): kotlin/Int // eu.anifantakis.lib.ksafe/KSafeConfig.hashCode|hashCode(){}[0]
     final fun toString(): kotlin/String // eu.anifantakis.lib.ksafe/KSafeConfig.toString|toString(){}[0]
+}
+
+final class eu.anifantakis.lib.ksafe/KSafeEncrypted { // eu.anifantakis.lib.ksafe/KSafeEncrypted|null[0]
+    constructor <init>(eu.anifantakis.lib.ksafe/KSafe, kotlin/Boolean = ...) // eu.anifantakis.lib.ksafe/KSafeEncrypted.<init>|<init>(eu.anifantakis.lib.ksafe.KSafe;kotlin.Boolean){}[0]
+
+    final val ksafe // eu.anifantakis.lib.ksafe/KSafeEncrypted.ksafe|{}ksafe[0]
+        final fun <get-ksafe>(): eu.anifantakis.lib.ksafe/KSafe // eu.anifantakis.lib.ksafe/KSafeEncrypted.ksafe.<get-ksafe>|<get-ksafe>(){}[0]
+    final val mode // eu.anifantakis.lib.ksafe/KSafeEncrypted.mode|{}mode[0]
+        final fun <get-mode>(): eu.anifantakis.lib.ksafe/KSafeWriteMode // eu.anifantakis.lib.ksafe/KSafeEncrypted.mode.<get-mode>|<get-mode>(){}[0]
+
+    final fun deleteDirect(kotlin/String) // eu.anifantakis.lib.ksafe/KSafeEncrypted.deleteDirect|deleteDirect(kotlin.String){}[0]
+    final inline fun <#A1: reified kotlin/Any?> asFlow(#A1, kotlin/String? = ...): kotlin.properties/ReadOnlyProperty<kotlin/Any?, kotlinx.coroutines.flow/Flow<#A1>> // eu.anifantakis.lib.ksafe/KSafeEncrypted.asFlow|asFlow(0:0;kotlin.String?){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> asMutableStateFlow(#A1, kotlinx.coroutines/CoroutineScope, kotlin/String? = ...): kotlin.properties/ReadOnlyProperty<kotlin/Any?, kotlinx.coroutines.flow/MutableStateFlow<#A1>> // eu.anifantakis.lib.ksafe/KSafeEncrypted.asMutableStateFlow|asMutableStateFlow(0:0;kotlinx.coroutines.CoroutineScope;kotlin.String?){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> asStateFlow(#A1, kotlinx.coroutines/CoroutineScope, kotlin/String? = ...): kotlin.properties/ReadOnlyProperty<kotlin/Any?, kotlinx.coroutines.flow/StateFlow<#A1>> // eu.anifantakis.lib.ksafe/KSafeEncrypted.asStateFlow|asStateFlow(0:0;kotlinx.coroutines.CoroutineScope;kotlin.String?){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> asWritableFlow(#A1, kotlin/String? = ...): kotlin.properties/ReadOnlyProperty<kotlin/Any?, eu.anifantakis.lib.ksafe/WritableKSafeFlow<#A1>> // eu.anifantakis.lib.ksafe/KSafeEncrypted.asWritableFlow|asWritableFlow(0:0;kotlin.String?){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> getDirect(kotlin/String, #A1): #A1 // eu.anifantakis.lib.ksafe/KSafeEncrypted.getDirect|getDirect(kotlin.String;0:0){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> getFlow(kotlin/String, #A1): kotlinx.coroutines.flow/Flow<#A1> // eu.anifantakis.lib.ksafe/KSafeEncrypted.getFlow|getFlow(kotlin.String;0:0){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> getStateFlow(kotlin/String, #A1, kotlinx.coroutines/CoroutineScope): kotlinx.coroutines.flow/StateFlow<#A1> // eu.anifantakis.lib.ksafe/KSafeEncrypted.getStateFlow|getStateFlow(kotlin.String;0:0;kotlinx.coroutines.CoroutineScope){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> invoke(#A1, kotlin/String? = ...): kotlin.properties/ReadWriteProperty<kotlin/Any?, #A1> // eu.anifantakis.lib.ksafe/KSafeEncrypted.invoke|invoke(0:0;kotlin.String?){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> putDirect(kotlin/String, #A1) // eu.anifantakis.lib.ksafe/KSafeEncrypted.putDirect|putDirect(kotlin.String;0:0){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> putDirect(kotlin/String, #A1, noinline kotlin/Function1<kotlin/Throwable, kotlin/Unit>) // eu.anifantakis.lib.ksafe/KSafeEncrypted.putDirect|putDirect(kotlin.String;0:0;kotlin.Function1<kotlin.Throwable,kotlin.Unit>){0§<kotlin.Any?>}[0]
+    final suspend fun delete(kotlin/String) // eu.anifantakis.lib.ksafe/KSafeEncrypted.delete|delete(kotlin.String){}[0]
+    final suspend inline fun <#A1: reified kotlin/Any?> get(kotlin/String, #A1): #A1 // eu.anifantakis.lib.ksafe/KSafeEncrypted.get|get(kotlin.String;0:0){0§<kotlin.Any?>}[0]
+    final suspend inline fun <#A1: reified kotlin/Any?> put(kotlin/String, #A1) // eu.anifantakis.lib.ksafe/KSafeEncrypted.put|put(kotlin.String;0:0){0§<kotlin.Any?>}[0]
+}
+
+final class eu.anifantakis.lib.ksafe/KSafeHardwareIsolated { // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated|null[0]
+    constructor <init>(eu.anifantakis.lib.ksafe/KSafe, kotlin/Boolean = ...) // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.<init>|<init>(eu.anifantakis.lib.ksafe.KSafe;kotlin.Boolean){}[0]
+
+    final val ksafe // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.ksafe|{}ksafe[0]
+        final fun <get-ksafe>(): eu.anifantakis.lib.ksafe/KSafe // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.ksafe.<get-ksafe>|<get-ksafe>(){}[0]
+    final val mode // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.mode|{}mode[0]
+        final fun <get-mode>(): eu.anifantakis.lib.ksafe/KSafeWriteMode // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.mode.<get-mode>|<get-mode>(){}[0]
+
+    final fun deleteDirect(kotlin/String) // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.deleteDirect|deleteDirect(kotlin.String){}[0]
+    final inline fun <#A1: reified kotlin/Any?> asFlow(#A1, kotlin/String? = ...): kotlin.properties/ReadOnlyProperty<kotlin/Any?, kotlinx.coroutines.flow/Flow<#A1>> // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.asFlow|asFlow(0:0;kotlin.String?){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> asMutableStateFlow(#A1, kotlinx.coroutines/CoroutineScope, kotlin/String? = ...): kotlin.properties/ReadOnlyProperty<kotlin/Any?, kotlinx.coroutines.flow/MutableStateFlow<#A1>> // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.asMutableStateFlow|asMutableStateFlow(0:0;kotlinx.coroutines.CoroutineScope;kotlin.String?){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> asStateFlow(#A1, kotlinx.coroutines/CoroutineScope, kotlin/String? = ...): kotlin.properties/ReadOnlyProperty<kotlin/Any?, kotlinx.coroutines.flow/StateFlow<#A1>> // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.asStateFlow|asStateFlow(0:0;kotlinx.coroutines.CoroutineScope;kotlin.String?){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> asWritableFlow(#A1, kotlin/String? = ...): kotlin.properties/ReadOnlyProperty<kotlin/Any?, eu.anifantakis.lib.ksafe/WritableKSafeFlow<#A1>> // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.asWritableFlow|asWritableFlow(0:0;kotlin.String?){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> getDirect(kotlin/String, #A1): #A1 // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.getDirect|getDirect(kotlin.String;0:0){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> getFlow(kotlin/String, #A1): kotlinx.coroutines.flow/Flow<#A1> // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.getFlow|getFlow(kotlin.String;0:0){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> getStateFlow(kotlin/String, #A1, kotlinx.coroutines/CoroutineScope): kotlinx.coroutines.flow/StateFlow<#A1> // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.getStateFlow|getStateFlow(kotlin.String;0:0;kotlinx.coroutines.CoroutineScope){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> invoke(#A1, kotlin/String? = ...): kotlin.properties/ReadWriteProperty<kotlin/Any?, #A1> // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.invoke|invoke(0:0;kotlin.String?){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> putDirect(kotlin/String, #A1) // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.putDirect|putDirect(kotlin.String;0:0){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> putDirect(kotlin/String, #A1, noinline kotlin/Function1<kotlin/Throwable, kotlin/Unit>) // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.putDirect|putDirect(kotlin.String;0:0;kotlin.Function1<kotlin.Throwable,kotlin.Unit>){0§<kotlin.Any?>}[0]
+    final suspend fun delete(kotlin/String) // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.delete|delete(kotlin.String){}[0]
+    final suspend inline fun <#A1: reified kotlin/Any?> get(kotlin/String, #A1): #A1 // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.get|get(kotlin.String;0:0){0§<kotlin.Any?>}[0]
+    final suspend inline fun <#A1: reified kotlin/Any?> put(kotlin/String, #A1) // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.put|put(kotlin.String;0:0){0§<kotlin.Any?>}[0]
 }
 
 final class eu.anifantakis.lib.ksafe/KSafeKeyInfo { // eu.anifantakis.lib.ksafe/KSafeKeyInfo|null[0]
@@ -578,6 +646,30 @@ final class eu.anifantakis.lib.ksafe/KSafeKeyInfo { // eu.anifantakis.lib.ksafe/
     final fun equals(kotlin/Any?): kotlin/Boolean // eu.anifantakis.lib.ksafe/KSafeKeyInfo.equals|equals(kotlin.Any?){}[0]
     final fun hashCode(): kotlin/Int // eu.anifantakis.lib.ksafe/KSafeKeyInfo.hashCode|hashCode(){}[0]
     final fun toString(): kotlin/String // eu.anifantakis.lib.ksafe/KSafeKeyInfo.toString|toString(){}[0]
+}
+
+final class eu.anifantakis.lib.ksafe/KSafePlain { // eu.anifantakis.lib.ksafe/KSafePlain|null[0]
+    constructor <init>(eu.anifantakis.lib.ksafe/KSafe) // eu.anifantakis.lib.ksafe/KSafePlain.<init>|<init>(eu.anifantakis.lib.ksafe.KSafe){}[0]
+
+    final val ksafe // eu.anifantakis.lib.ksafe/KSafePlain.ksafe|{}ksafe[0]
+        final fun <get-ksafe>(): eu.anifantakis.lib.ksafe/KSafe // eu.anifantakis.lib.ksafe/KSafePlain.ksafe.<get-ksafe>|<get-ksafe>(){}[0]
+    final val mode // eu.anifantakis.lib.ksafe/KSafePlain.mode|{}mode[0]
+        final fun <get-mode>(): eu.anifantakis.lib.ksafe/KSafeWriteMode // eu.anifantakis.lib.ksafe/KSafePlain.mode.<get-mode>|<get-mode>(){}[0]
+
+    final fun deleteDirect(kotlin/String) // eu.anifantakis.lib.ksafe/KSafePlain.deleteDirect|deleteDirect(kotlin.String){}[0]
+    final inline fun <#A1: reified kotlin/Any?> asFlow(#A1, kotlin/String? = ...): kotlin.properties/ReadOnlyProperty<kotlin/Any?, kotlinx.coroutines.flow/Flow<#A1>> // eu.anifantakis.lib.ksafe/KSafePlain.asFlow|asFlow(0:0;kotlin.String?){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> asMutableStateFlow(#A1, kotlinx.coroutines/CoroutineScope, kotlin/String? = ...): kotlin.properties/ReadOnlyProperty<kotlin/Any?, kotlinx.coroutines.flow/MutableStateFlow<#A1>> // eu.anifantakis.lib.ksafe/KSafePlain.asMutableStateFlow|asMutableStateFlow(0:0;kotlinx.coroutines.CoroutineScope;kotlin.String?){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> asStateFlow(#A1, kotlinx.coroutines/CoroutineScope, kotlin/String? = ...): kotlin.properties/ReadOnlyProperty<kotlin/Any?, kotlinx.coroutines.flow/StateFlow<#A1>> // eu.anifantakis.lib.ksafe/KSafePlain.asStateFlow|asStateFlow(0:0;kotlinx.coroutines.CoroutineScope;kotlin.String?){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> asWritableFlow(#A1, kotlin/String? = ...): kotlin.properties/ReadOnlyProperty<kotlin/Any?, eu.anifantakis.lib.ksafe/WritableKSafeFlow<#A1>> // eu.anifantakis.lib.ksafe/KSafePlain.asWritableFlow|asWritableFlow(0:0;kotlin.String?){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> getDirect(kotlin/String, #A1): #A1 // eu.anifantakis.lib.ksafe/KSafePlain.getDirect|getDirect(kotlin.String;0:0){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> getFlow(kotlin/String, #A1): kotlinx.coroutines.flow/Flow<#A1> // eu.anifantakis.lib.ksafe/KSafePlain.getFlow|getFlow(kotlin.String;0:0){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> getStateFlow(kotlin/String, #A1, kotlinx.coroutines/CoroutineScope): kotlinx.coroutines.flow/StateFlow<#A1> // eu.anifantakis.lib.ksafe/KSafePlain.getStateFlow|getStateFlow(kotlin.String;0:0;kotlinx.coroutines.CoroutineScope){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> invoke(#A1, kotlin/String? = ...): kotlin.properties/ReadWriteProperty<kotlin/Any?, #A1> // eu.anifantakis.lib.ksafe/KSafePlain.invoke|invoke(0:0;kotlin.String?){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> putDirect(kotlin/String, #A1) // eu.anifantakis.lib.ksafe/KSafePlain.putDirect|putDirect(kotlin.String;0:0){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> putDirect(kotlin/String, #A1, noinline kotlin/Function1<kotlin/Throwable, kotlin/Unit>) // eu.anifantakis.lib.ksafe/KSafePlain.putDirect|putDirect(kotlin.String;0:0;kotlin.Function1<kotlin.Throwable,kotlin.Unit>){0§<kotlin.Any?>}[0]
+    final suspend fun delete(kotlin/String) // eu.anifantakis.lib.ksafe/KSafePlain.delete|delete(kotlin.String){}[0]
+    final suspend inline fun <#A1: reified kotlin/Any?> get(kotlin/String, #A1): #A1 // eu.anifantakis.lib.ksafe/KSafePlain.get|get(kotlin.String;0:0){0§<kotlin.Any?>}[0]
+    final suspend inline fun <#A1: reified kotlin/Any?> put(kotlin/String, #A1) // eu.anifantakis.lib.ksafe/KSafePlain.put|put(kotlin.String;0:0){0§<kotlin.Any?>}[0]
 }
 
 final class eu.anifantakis.lib.ksafe/KSafeProtectionInfo { // eu.anifantakis.lib.ksafe/KSafeProtectionInfo|null[0]
@@ -760,6 +852,12 @@ final object eu.anifantakis.lib.ksafe/KSafeDefaults { // eu.anifantakis.lib.ksaf
 
 final val eu.anifantakis.lib.ksafe.internal/decryptFlowContext // eu.anifantakis.lib.ksafe.internal/decryptFlowContext|{}decryptFlowContext[0]
     final fun <get-decryptFlowContext>(): kotlin.coroutines/CoroutineContext // eu.anifantakis.lib.ksafe.internal/decryptFlowContext.<get-decryptFlowContext>|<get-decryptFlowContext>(){}[0]
+final val eu.anifantakis.lib.ksafe/encrypted // eu.anifantakis.lib.ksafe/encrypted|@eu.anifantakis.lib.ksafe.KSafe{}encrypted[0]
+    final fun (eu.anifantakis.lib.ksafe/KSafe).<get-encrypted>(): eu.anifantakis.lib.ksafe/KSafeEncrypted // eu.anifantakis.lib.ksafe/encrypted.<get-encrypted>|<get-encrypted>@eu.anifantakis.lib.ksafe.KSafe(){}[0]
+final val eu.anifantakis.lib.ksafe/hardwareIsolated // eu.anifantakis.lib.ksafe/hardwareIsolated|@eu.anifantakis.lib.ksafe.KSafe{}hardwareIsolated[0]
+    final fun (eu.anifantakis.lib.ksafe/KSafe).<get-hardwareIsolated>(): eu.anifantakis.lib.ksafe/KSafeHardwareIsolated // eu.anifantakis.lib.ksafe/hardwareIsolated.<get-hardwareIsolated>|<get-hardwareIsolated>@eu.anifantakis.lib.ksafe.KSafe(){}[0]
+final val eu.anifantakis.lib.ksafe/plain // eu.anifantakis.lib.ksafe/plain|@eu.anifantakis.lib.ksafe.KSafe{}plain[0]
+    final fun (eu.anifantakis.lib.ksafe/KSafe).<get-plain>(): eu.anifantakis.lib.ksafe/KSafePlain // eu.anifantakis.lib.ksafe/plain.<get-plain>|<get-plain>@eu.anifantakis.lib.ksafe.KSafe(){}[0]
 
 final fun (eu.anifantakis.lib.ksafe.internal/StoredValue).eu.anifantakis.lib.ksafe.internal/toCacheValue(): kotlin/Any // eu.anifantakis.lib.ksafe.internal/toCacheValue|toCacheValue@eu.anifantakis.lib.ksafe.internal.StoredValue(){}[0]
 final fun (eu.anifantakis.lib.ksafe/KSafeWriteMode).eu.anifantakis.lib.ksafe/toProtection(): eu.anifantakis.lib.ksafe/KSafeProtection? // eu.anifantakis.lib.ksafe/toProtection|toProtection@eu.anifantakis.lib.ksafe.KSafeWriteMode(){}[0]
@@ -818,9 +916,6 @@ final fun eu.anifantakis.lib.ksafe/KSafe(kotlin/String? = ..., kotlin/Boolean = 
 
 // Targets: [apple]
 final fun eu.anifantakis.lib.ksafe/KSafe(kotlin/String? = ..., kotlin/Boolean = ..., eu.anifantakis.lib.ksafe/KSafeMemoryPolicy = ..., eu.anifantakis.lib.ksafe/KSafeConfig = ..., eu.anifantakis.lib.ksafe/KSafeSecurityPolicy = ..., kotlin.time/Duration = ..., kotlin/Boolean = ..., kotlin/String? = ..., eu.anifantakis.lib.ksafe.internal/KSafeEncryption): eu.anifantakis.lib.ksafe/KSafe // eu.anifantakis.lib.ksafe/KSafe|KSafe(kotlin.String?;kotlin.Boolean;eu.anifantakis.lib.ksafe.KSafeMemoryPolicy;eu.anifantakis.lib.ksafe.KSafeConfig;eu.anifantakis.lib.ksafe.KSafeSecurityPolicy;kotlin.time.Duration;kotlin.Boolean;kotlin.String?;eu.anifantakis.lib.ksafe.internal.KSafeEncryption){}[0]
-
-// Targets: [apple]
-final fun eu.anifantakis.lib.ksafe/obtainAesGcm(): dev.whyoleg.cryptography.algorithms/AES.GCM // eu.anifantakis.lib.ksafe/obtainAesGcm|obtainAesGcm(){}[0]
 
 // Targets: [js, wasmJs]
 final class eu.anifantakis.lib.ksafe.internal/LocalStorageStorage : eu.anifantakis.lib.ksafe.internal/KSafePlatformStorage { // eu.anifantakis.lib.ksafe.internal/LocalStorageStorage|null[0]
@@ -893,4 +988,4 @@ final suspend fun eu.anifantakis.lib.ksafe.internal/webKeyDelete(kotlin/String) 
 final suspend fun eu.anifantakis.lib.ksafe.internal/webKeyEncrypt(kotlin/String, kotlin/String, kotlin/String? = ...): kotlin/String // eu.anifantakis.lib.ksafe.internal/webKeyEncrypt|webKeyEncrypt(kotlin.String;kotlin.String;kotlin.String?){}[0]
 
 // Targets: [js, wasmJs]
-final suspend fun eu.anifantakis.lib.ksafe.internal/webKeyEnsure(kotlin/String, kotlin/String?, kotlin/Boolean) // eu.anifantakis.lib.ksafe.internal/webKeyEnsure|webKeyEnsure(kotlin.String;kotlin.String?;kotlin.Boolean){}[0]
+final suspend fun eu.anifantakis.lib.ksafe.internal/webKeyEnsure(kotlin/String, kotlin/String?, kotlin/Boolean, kotlin/Int) // eu.anifantakis.lib.ksafe.internal/webKeyEnsure|webKeyEnsure(kotlin.String;kotlin.String?;kotlin.Boolean;kotlin.Int){}[0]

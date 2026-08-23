@@ -1,7 +1,9 @@
 package eu.anifantakis.lib.ksafe
 
 import app.cash.turbine.test
+import eu.anifantakis.lib.ksafe.internal.keyvault.DataStoreKeyVault
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlin.test.*
@@ -63,6 +65,20 @@ class JvmFileNameTest {
             val storeFile = java.io.File(tmpDir, "eu_anifantakis_ksafe_datastore_$name.preferences_pb")
             assertTrue(storeFile.exists(), "Expected $storeFile to exist before clearAll()")
 
+            // Capture the key material that exists BEFORE the wipe. That is what clearAll()
+            // promises to destroy. It does NOT promise the store never holds a key record again:
+            // every KSafeCore.init eagerly mints both masters off-thread (prewarmMasterKeys), and
+            // in jvmTest the software fallback keeps key records in this very file — so asserting
+            // "no ksafe_key_ prefix anywhere afterwards" is a race against an unrelated mint, not
+            // a wipe check. Assert the specific pre-clear bytes are gone instead.
+            val preClearKeyMaterial = safe.dataStore.data.first().asMap()
+                .filterKeys { it.name.startsWith(DataStoreKeyVault.KEY_PREFIX) }
+                .values.map { it.toString() }
+            assertTrue(
+                preClearKeyMaterial.isNotEmpty(),
+                "the software fallback must have persisted a key record before clearAll()",
+            )
+
             safe.clearAll()
 
             // clearAll() guarantees no RECOVERABLE data remains — not that the physical file is
@@ -76,9 +92,14 @@ class JvmFileNameTest {
             assertEquals("default", reopened.get("k", "default"), "the wipe must survive a cold reopen")
             reopened.close()
 
-            // No user key material or ciphertext survives in the on-disk store.
+            // No pre-clear key material and no ciphertext survives in the on-disk store.
             val residue = if (storeFile.exists()) storeFile.readBytes().decodeToString() else ""
-            assertFalse(residue.contains("ksafe_key_"), "no key records may survive clearAll()")
+            for (keyMaterial in preClearKeyMaterial) {
+                assertFalse(
+                    residue.contains(keyMaterial),
+                    "the key that could decrypt pre-clearAll data must not survive clearAll()",
+                )
+            }
             assertFalse(residue.contains("__ksafe_value_"), "no encrypted values may survive clearAll()")
             safe.close()
         } finally {

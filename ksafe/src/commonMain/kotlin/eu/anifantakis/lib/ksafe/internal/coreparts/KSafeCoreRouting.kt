@@ -7,6 +7,7 @@ import eu.anifantakis.lib.ksafe.internal.KSafeCore.Companion.aliasForRecordedMet
 import eu.anifantakis.lib.ksafe.internal.KSafeCore.Companion.ownsPerEntryAlias
 import eu.anifantakis.lib.ksafe.internal.KSafeCore.EncMeta
 import eu.anifantakis.lib.ksafe.internal.KeySafeMetadataManager
+import eu.anifantakis.lib.ksafe.internal.StoredValue
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -45,6 +46,19 @@ internal val NO_RECORD_META = EncMeta(
 )
 
 internal fun KSafeCore.metaRawKey(key: String): String = KeySafeMetadataManager.metadataRawKey(key)
+
+/**
+ * Whether [snapshot] holds a value for [userKey] under ANY of the three layouts an entry can
+ * occupy. A metadata record without one is the surviving half of a torn write: it describes
+ * nothing readable, so no caller may treat it as evidence the entry exists.
+ */
+internal fun KSafeCore.hasAnyValueRecord(
+    snapshot: Map<String, StoredValue>,
+    userKey: String,
+): Boolean =
+    snapshot.containsKey(valueRawKey(userKey)) ||
+        snapshot.containsKey(legacyEncryptedRawKey(userKey)) ||
+        snapshot.containsKey(userKey)
 
 internal fun KSafeCore.legacyProtectionRawKey(key: String): String =
     KeySafeMetadataManager.legacyProtectionRawKey(key)

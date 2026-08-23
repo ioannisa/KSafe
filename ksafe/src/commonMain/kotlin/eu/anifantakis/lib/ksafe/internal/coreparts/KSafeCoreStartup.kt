@@ -174,6 +174,8 @@ internal suspend fun KSafeCore.cleanupOrphanedCiphertext() {
         }.awaitAll().filterNotNull()
     }
 
+    reapValuelessMetadata()
+
     if (orphans.isEmpty()) return
 
     // CAS the on-disk ciphertext before deleting: a rotation that committed after the probe
@@ -198,5 +200,37 @@ internal suspend fun KSafeCore.cleanupOrphanedCiphertext() {
         }
         if (orphanOps.isEmpty()) return
         storage.applyBatch(orphanOps)
+    }
+}
+
+/**
+ * Removes metadata records whose value never landed — the surviving half of a write torn by
+ * process death on a backend without multi-key atomicity. Such a record already reads back as the
+ * caller's default, so deleting it loses nothing; leaving it accumulates junk that no other pass
+ * enumerates (rotation needs a ciphertext, the orphan sweep walks value records).
+ *
+ * The same discipline as the orphan sweep guards it: the whole scan+delete holds the commit mutex,
+ * so no half-applied batch of this process is ever visible, and a key with a write in flight is
+ * skipped — on a backend that commits metadata first, "metadata without a value" is also the
+ * transient shape of a perfectly healthy write.
+ *
+ * On a backend whose `applyBatch` is atomic this is a no-op by construction: every producer of a
+ * metadata record emits its value record in the SAME batch, so the pair can only be split by a
+ * process death partway through a non-atomic apply.
+ */
+private suspend fun KSafeCore.reapValuelessMetadata() {
+    commitMutex.withLock {
+        val fresh = storage.snapshot()
+        val ops = mutableListOf<StorageOp>()
+        for ((rawKey, storedValue) in fresh) {
+            val userKey = KeySafeMetadataManager.tryExtractCanonicalMetadataKey(rawKey) ?: continue
+            if ((storedValue as? StoredValue.Text) == null) continue
+            if (hasAnyValueRecord(fresh, userKey)) continue
+            if (isUserKeyDirty(userKey)) continue
+            ops += StorageOp.Delete(rawKey)
+            ops += StorageOp.Delete(legacyProtectionRawKey(userKey))
+        }
+        if (ops.isEmpty()) return
+        storage.applyBatch(ops)
     }
 }

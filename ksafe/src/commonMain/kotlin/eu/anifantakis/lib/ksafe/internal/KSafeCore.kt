@@ -28,6 +28,7 @@ import eu.anifantakis.lib.ksafe.internal.coreparts.nullOrDefault
 import eu.anifantakis.lib.ksafe.internal.coreparts.prewarmMasterKeys
 import eu.anifantakis.lib.ksafe.internal.coreparts.putEncryptedSuspend
 import eu.anifantakis.lib.ksafe.internal.coreparts.putPlainSuspend
+import eu.anifantakis.lib.ksafe.internal.coreparts.raiseToAtLeast
 import eu.anifantakis.lib.ksafe.internal.coreparts.resolveFromCache
 import eu.anifantakis.lib.ksafe.internal.coreparts.retryingTransientReads
 import eu.anifantakis.lib.ksafe.internal.coreparts.stageDelete
@@ -401,6 +402,42 @@ internal class KSafeCore(
         data class SetKeyGeneration(
             val generation: Int,
             val timestampMillis: Long,
+            /**
+             * True only for the generation bump that starts a rotation. Persisted with the
+             * bump, before any entry is touched, so a later instance can resume this exact
+             * generation after process death instead of incorrectly advancing to another one.
+             */
+            val rotationInProgress: Boolean = false,
+            /**
+             * True only when the next KSafe instance claims a normally-completed generation's
+             * persisted retry budget. The consumer changes `r:0,rp:N` to `r:1,rp:N-1` only
+             * while that exact state is still durable; decrement-before-work makes crashes
+             * unable to refill the budget, while the CAS lets same-file instances race without
+             * running duplicate work.
+             */
+            val claimPendingRetry: Boolean = false,
+            /** Set by the consumer iff this lifecycle transition was durably applied. */
+            val applied: KSafeAtomicFlag = KSafeAtomicFlag(false),
+            override val completion: CompletableDeferred<Unit>,
+        ) : PendingWrite() {
+            override val userKey: String get() = KeySafeMetadataManager.KEYGEN_RAW_KEY
+            override val rawCacheKey: String get() = KeySafeMetadataManager.KEYGEN_RAW_KEY
+            override val writeToken: Any get() = this // never rolled back per-key
+        }
+
+        /**
+         * Changes the durable lifecycle marker from in-progress (`r:1`) to completed (`r:0`)
+         * after every entry commit and the superseded-master sweep have completed. The
+         * consumer applies it only while the persisted store is still at [generation], so a
+         * stale pass can never acknowledge a newer rotation as completed.
+         */
+        data class CompleteKeyRotation(
+            val generation: Int,
+            /**
+             * Persisted only when the pass returned normally with retryable (`skipped`)
+             * entries and another automatic attempt remains. Null means no pending retry.
+             */
+            val retryAttemptsRemaining: Int? = null,
             override val completion: CompletableDeferred<Unit>,
         ) : PendingWrite() {
             override val userKey: String get() = KeySafeMetadataManager.KEYGEN_RAW_KEY
@@ -572,45 +609,135 @@ internal class KSafeCore(
     internal val lazyStartupCleanupLaunched = KSafeAtomicFlag(false)
 
     /**
-     * Applies [KSafeConfig.keyRotationPolicy] once per startup, on the background scope —
-     * never blocking startup or reads. Under MaxAge: a store with no stamped generation
-     * birth gets one now (the age clock starts at the first launch under the policy);
-     * otherwise, once the current generation is older than the policy allows, a full
-     * [rotateKeys] pass runs in the background. Failures are logged and retried next launch.
+     * Runs rotation maintenance once per startup, on the background scope — never blocking
+     * startup or reads. An interrupted pass is resumed at its already-persisted generation
+     * regardless of [KSafeConfig.keyRotationPolicy]. A normally completed pass that left
+     * retryable entries receives a bounded retry budget consumed one attempt per newly created
+     * KSafe instance. If MaxAge is already due on that next run, its fresh rotation supersedes
+     * the same-generation retry. The current instance never waits or loops after a normally
+     * completed pass.
      */
     internal fun maybeScheduleKeyRotation() {
         val policy = config.keyRotationPolicy
-        if (policy !is KSafeKeyRotationPolicy.MaxAge) return
         collectorScope.launch {
+            var recoveringExistingGeneration = false
+            var unsupportedPersistedState = false
             runCatching {
                 val raw = (storage.snapshot()[KeySafeMetadataManager.KEYGEN_RAW_KEY] as? StoredValue.Text)?.value
-                val now = ksafeEpochMillis()
-                val bornAt = KeySafeMetadataManager.parseKeyGenerationTimestamp(raw)
-                if (bornAt == null) {
-                    val stamped = CompletableDeferred<Unit>()
+                val lifecycle = KeySafeMetadataManager.parseKeyRotationLifecycle(raw)
+                val hasLifecycle = KeySafeMetadataManager.hasKeyRotationLifecycle(raw)
+                val retryAttempts =
+                    KeySafeMetadataManager.parseKeyRotationRetryAttempts(raw)
+                if (!KeySafeMetadataManager.hasSupportedKeyRotationRetryState(raw)) {
+                    unsupportedPersistedState = true
+                    error("KSafe: unsupported key-rotation retry marker; the store was left untouched")
+                }
+                if (KeySafeMetadataManager.isLegacy30KeyGenerationState(raw)) {
+                    // KSafe 3.0.0 persisted generation + timestamp but had no lifecycle
+                    // field. Absence is therefore proof of "old completed format", NEVER
+                    // proof of a crash. Adopt it as r:0 and deliberately stop here: no
+                    // resume, generation bump, entry rewrite, sweep, or same-launch MaxAge.
+                    val adopted = CompletableDeferred<Unit>()
                     writeChannel.send(
-                        PendingWrite.SetKeyGeneration(currentKeyGeneration.get(), now, stamped)
+                        PendingWrite.SetKeyGeneration(
+                            generation = KeySafeMetadataManager.parseKeyGeneration(raw),
+                            timestampMillis =
+                                KeySafeMetadataManager.parseKeyGenerationTimestamp(raw)
+                                    ?: ksafeEpochMillis(),
+                            completion = adopted,
+                        )
                     )
-                    stamped.await()
-                } else if (now - bornAt >= policy.maxAge.inWholeMilliseconds) {
-                    val result = rotateKeys()
-                    println(
-                        "KSafe: MaxAge key-rotation pass -> generation ${result.keyGeneration} " +
-                            "(rotated ${result.rotated}, skipped ${result.skipped}, failed ${result.failed})."
+                    adopted.await()
+                } else if (lifecycle == 1) {
+                    recoveringExistingGeneration = true
+                    val result = resumeInterruptedRotation()
+                    if (result != null) {
+                        println(
+                            "KSafe: resumed interrupted key rotation at generation " +
+                                "${result.keyGeneration} (rotated ${result.rotated}, " +
+                                "skipped ${result.skipped}, failed ${result.failed})."
+                        )
+                    }
+                } else if (
+                    hasLifecycle &&
+                    lifecycle == 0 &&
+                    retryAttempts != null &&
+                    retryAttempts > 0
+                ) {
+                    val now = ksafeEpochMillis()
+                    val bornAt = KeySafeMetadataManager.parseKeyGenerationTimestamp(raw)
+                    val maxAgeDue =
+                        policy is KSafeKeyRotationPolicy.MaxAge &&
+                            bornAt != null &&
+                            now - bornAt >= policy.maxAge.inWholeMilliseconds
+                    if (maxAgeDue) {
+                        val result = rotateKeys()
+                        println(
+                            "KSafe: MaxAge key-rotation pass superseded pending retry -> " +
+                                "generation ${result.keyGeneration} (rotated ${result.rotated}, " +
+                                "skipped ${result.skipped}, failed ${result.failed})."
+                        )
+                    } else if (config.keyRotationRetryAttempts > 0) {
+                        recoveringExistingGeneration = true
+                        val result = retryPendingRotationAtStartup()
+                        if (result != null) {
+                            println(
+                                "KSafe: retried incomplete key rotation at generation " +
+                                    "${result.keyGeneration} (rotated ${result.rotated}, " +
+                                    "skipped ${result.skipped}, failed ${result.failed})."
+                            )
+                        }
+                    }
+                } else if ((hasLifecycle && lifecycle == 0) || raw == null) {
+                    if (policy !is KSafeKeyRotationPolicy.MaxAge) return@runCatching
+                    val now = ksafeEpochMillis()
+                    val bornAt = KeySafeMetadataManager.parseKeyGenerationTimestamp(raw)
+                    if (bornAt == null) {
+                        val stamped = CompletableDeferred<Unit>()
+                        writeChannel.send(
+                            PendingWrite.SetKeyGeneration(
+                                currentKeyGeneration.get(), now, completion = stamped,
+                            )
+                        )
+                        stamped.await()
+                    } else if (now - bornAt >= policy.maxAge.inWholeMilliseconds) {
+                        val result = rotateKeys()
+                        println(
+                            "KSafe: MaxAge key-rotation pass -> generation ${result.keyGeneration} " +
+                                "(rotated ${result.rotated}, skipped ${result.skipped}, " +
+                                "failed ${result.failed})."
+                        )
+                    }
+                } else {
+                    // An unknown future/corrupt lifecycle value is routing state, not a hint.
+                    // Preserve it and fail closed instead of overwriting it as "completed".
+                    unsupportedPersistedState = true
+                    error(
+                        "KSafe: unsupported key-rotation lifecycle marker r=$lifecycle; " +
+                            "the store was left untouched"
                     )
                 }
             }.onFailure {
                 if (it is CancellationException) throw it
-                // At the generation cap the refusal is permanent — every launch would fail
-                // identically, so don't promise a retry that can never succeed.
-                val exhausted = currentKeyGeneration.get() >= KeySafeMetadataManager.MAX_KEY_GENERATION
+                // Both refusals below are permanent — every launch would fail identically,
+                // so don't promise a retry that can never succeed.
+                val exhausted =
+                    !recoveringExistingGeneration &&
+                        currentKeyGeneration.get() >= KeySafeMetadataManager.MAX_KEY_GENERATION
                 ksafeLogWarning(
                     "KSafe: scheduled key rotation failed " +
                         "(${it::class.simpleName}: ${it.message}); " +
-                        if (exhausted)
-                            "the key-generation counter has reached its maximum — automatic " +
-                                "rotation is now permanently a no-op for this store."
-                        else "it will retry on a later launch."
+                        when {
+                            unsupportedPersistedState ->
+                                "the persisted rotation state is not one this build " +
+                                    "understands — it is preserved untouched, and every " +
+                                    "launch will refuse identically until it is repaired."
+                            exhausted ->
+                                "the key-generation counter has reached its maximum — " +
+                                    "automatic rotation is now permanently a no-op for " +
+                                    "this store."
+                            else -> "it will retry on a later launch."
+                        }
                 )
             }
         }
@@ -909,7 +1036,7 @@ internal class KSafeCore(
         deferred.await()
     }
 
-    /** Single-flight guard for [rotateKeys]; a second concurrent call fails fast. */
+    /** Single-flight guard for manual rotation, crash recovery, and pending retry. */
     private val rotationInFlight = KSafeAtomicFlag(false)
 
     private enum class RotateOutcome { ROTATED, SKIPPED, FAILED }
@@ -919,11 +1046,14 @@ internal class KSafeCore(
      * superseded key nothing references anymore.
      *
      * Resumable by design: each entry's metadata records the generation that decrypts it, so
-     * there is no all-or-nothing switch and no journal — a crash or a skipped entry (locked
-     * strict entry, concurrent write) leaves a mixed-generation store where EVERYTHING stays
-     * readable, and the next call rotates whatever is still behind. Old generations are
-     * retained until the last entry referencing them is gone. Legacy (v1-envelope) entries
-     * are upgraded to the current envelope as a side effect.
+     * there is no all-or-nothing switch — a crash leaves a mixed-generation store where
+     * EVERYTHING stays readable. The generation state also carries a tiny lifecycle marker:
+     * the next KSafe instance automatically resumes the SAME target generation, including the
+     * final old-master cleanup, even under the default `Never` policy. A completed pass's
+     * retryable skipped entries remain readable on their old generation and are marked for a
+     * same-generation attempt by the next KSafe instance; definitive failures are left
+     * untouched for diagnosis/recovery. Legacy (v1-envelope) entries are upgraded as a side
+     * effect.
      *
      * Serialized against user writes through the write consumer: each entry commits under a
      * CAS on its stored ciphertext, so a concurrent write always wins and is never clobbered.
@@ -934,135 +1064,284 @@ internal class KSafeCore(
             "KSafe: a key rotation is already in progress on this instance"
         }
         try {
-            val clearEpochAtStart = clearEpoch.get()
-            val newGeneration = currentKeyGeneration.get() + 1
-            // The generation is plaintext routing metadata bounded by parseKeyGeneration's
-            // clamp; refusing here keeps the increment from ever exceeding (or wrapping past)
-            // what the parsers and per-generation sweep loops accept.
-            check(newGeneration <= KeySafeMetadataManager.MAX_KEY_GENERATION) {
-                "KSafe: key rotation refused — the store is at generation " +
-                    "${newGeneration - 1}, the maximum this format supports " +
-                    "(${KeySafeMetadataManager.MAX_KEY_GENERATION})."
+            val keygenRaw =
+                (storage.snapshot()[KeySafeMetadataManager.KEYGEN_RAW_KEY] as? StoredValue.Text)?.value
+            val lifecycle = KeySafeMetadataManager.parseKeyRotationLifecycle(keygenRaw)
+            val hasLifecycle = KeySafeMetadataManager.hasKeyRotationLifecycle(keygenRaw)
+            val isLegacy30 =
+                KeySafeMetadataManager.isLegacy30KeyGenerationState(keygenRaw)
+            check(
+                KeySafeMetadataManager.hasSupportedKeyRotationRetryState(keygenRaw) &&
+                    (
+                        keygenRaw == null ||
+                            isLegacy30 ||
+                            (hasLifecycle && (lifecycle == 0 || lifecycle == 1))
+                        )
+            ) {
+                "KSafe: unsupported key-rotation lifecycle/retry marker; " +
+                    "the store was left untouched"
             }
+            val resuming = lifecycle == 1
+            val targetGeneration = if (resuming) {
+                KeySafeMetadataManager.parseKeyGeneration(keygenRaw).also {
+                    currentKeyGeneration.raiseToAtLeast(it)
+                }
+            } else {
+                val next = currentKeyGeneration.get() + 1
+                // The generation is plaintext routing metadata bounded by
+                // parseKeyGeneration's clamp; refusing here keeps the increment from ever
+                // exceeding (or wrapping past) what the parsers and sweep loops accept.
+                check(next <= KeySafeMetadataManager.MAX_KEY_GENERATION) {
+                    "KSafe: key rotation refused — the store is at generation " +
+                        "${next - 1}, the maximum this format supports " +
+                        "(${KeySafeMetadataManager.MAX_KEY_GENERATION})."
+                }
 
-            // Persist the bump FIRST, through the consumer: every write ordered after it
-            // encrypts under the new generation, so the candidate set below only shrinks.
-            // The timestamp restarts the MaxAge policy's age clock at this rotation.
-            val bumped = CompletableDeferred<Unit>()
-            writeChannel.send(PendingWrite.SetKeyGeneration(newGeneration, ksafeEpochMillis(), bumped))
-            bumped.await()
-
-            // Candidate set from a post-bump snapshot: encrypted entries still on an older
-            // generation (or a legacy envelope). Metadata is parsed from the same snapshot
-            // the ciphertext is read from, so alias derivation is self-consistent.
-            data class Candidate(
-                val userKey: String,
-                val protection: KSafeProtection,
-                val ciphertextB64: String,
-                val meta: EncMeta,
-            )
-            val snapshot = storage.snapshot()
-            val metadataEntries = snapshot.map { (rawKey, storedValue) ->
-                rawKey to (storedValue as? StoredValue.Text)?.value
-            }
-            val metaByKey = KeySafeMetadataManager.collectMetadata(metadataEntries, accept = { true })
-            val candidates = metaByKey.mapNotNull { (userKey, rawMeta) ->
-                val protection = KeySafeMetadataManager.parseProtection(rawMeta) ?: return@mapNotNull null
-                val meta = encMetaFromRaw(rawMeta)
-                if (meta.keyGeneration >= newGeneration) return@mapNotNull null
-                val ciphertext = (snapshot[valueRawKey(userKey)] as? StoredValue.Text)?.value
-                    ?: (snapshot[legacyEncryptedRawKey(userKey)] as? StoredValue.Text)?.value
-                    ?: return@mapNotNull null
-                Candidate(
-                    userKey = userKey,
-                    protection = protection,
-                    ciphertextB64 = ciphertext,
-                    meta = meta,
+                // Persist bump + recovery marker FIRST, through the consumer. Every write
+                // ordered after it uses the new generation, and a process death at any later
+                // instruction leaves enough durable state for the next instance to resume.
+                val bumped = CompletableDeferred<Unit>()
+                writeChannel.send(
+                    PendingWrite.SetKeyGeneration(
+                        generation = next,
+                        timestampMillis = ksafeEpochMillis(),
+                        rotationInProgress = true,
+                        completion = bumped,
+                    )
                 )
+                bumped.await()
+                next
             }
-
-            var rotated = 0
-            var skipped = 0
-            var failed = 0
-
-            // A chunk at a time, and the gate matches it, so [ROTATION_IN_FLIGHT] is the single
-            // bound on how much of the store is decrypted simultaneously — the property
-            // JvmRotationConcurrencyBoundTest pins.
-            for (chunk in candidates.chunked(ROTATION_IN_FLIGHT)) {
-                val gate = Semaphore(ROTATION_IN_FLIGHT)
-                val outcomes = coroutineScope {
-                    chunk.map { c ->
-                        async {
-                            gate.withPermit {
-                                val oldAlias = aliasForRawMeta(c.userKey, c.protection, c.meta)
-                                val plainBytes = try {
-                                    // Future-format entries fail closed: counted failed (this
-                                    // build can never rotate them), value left untouched.
-                                    decryptEntry(
-                                        c.userKey, c.protection, KSafeBase64.decode(c.ciphertextB64), c.meta,
-                                    )
-                                } catch (e: Throwable) {
-                                    if (e is CancellationException) throw e
-                                    // A locked strict entry OR a temporary key-store outage is
-                                    // retried by the next rotation (the entry stays readable
-                                    // under its recorded generation); only a definitive failure
-                                    // (e.g. the key genuinely gone) is reported as failed.
-                                    return@withPermit if (isRotationRetryable(e)) RotateOutcome.SKIPPED else RotateOutcome.FAILED
-                                }
-                                // The old per-entry key is superseded by this rotation; an old
-                                // MASTER is shared, so it is swept below only when unreferenced.
-                                val perEntryOldKey = ownsPerEntryAlias(c.protection, c.meta.envelopeVersion)
-                                val op = PendingWrite.Rotate(
-                                    userKey = c.userKey,
-                                    rawCacheKey = legacyEncryptedRawKey(c.userKey),
-                                    jsonString = plainBytes.decodeToString(),
-                                    protection = c.protection,
-                                    requireUnlockedDevice = c.meta.requireUnlockedDevice,
-                                    keyGeneration = newGeneration,
-                                    expectedOldCiphertext = c.ciphertextB64,
-                                    oldAliasToDelete = if (perEntryOldKey) oldAlias else null,
-                                    expectedClearEpoch = clearEpochAtStart,
-                                    ownerTokenAtIssue = writeOwners[c.userKey],
-                                    completion = CompletableDeferred(),
-                                )
-                                writeChannel.send(op)
-                                try {
-                                    op.completion.await()
-                                    if (op.applied.get()) RotateOutcome.ROTATED else RotateOutcome.SKIPPED
-                                } catch (e: Throwable) {
-                                    if (e is CancellationException) throw e
-                                    // A transient re-encrypt failure (device locked mid-pass,
-                                    // vault outage) is also a retry-later, not a failure.
-                                    if (isRotationRetryable(e)) RotateOutcome.SKIPPED else RotateOutcome.FAILED
-                                }
-                            }
-                        }
-                    }.awaitAll()
+            val retriesAfterThisPass =
+                if (resuming) {
+                    KeySafeMetadataManager.parseKeyRotationRetryAttempts(keygenRaw)
+                        ?.takeUnless { config.keyRotationRetryAttempts == 0 }
+                        ?: config.keyRotationRetryAttempts
+                } else {
+                    config.keyRotationRetryAttempts
                 }
-                for (outcome in outcomes) when (outcome) {
-                    RotateOutcome.ROTATED -> rotated++
-                    RotateOutcome.SKIPPED -> skipped++
-                    RotateOutcome.FAILED -> failed++
-                }
-            }
-
-            // Sweep superseded MASTER generations nothing references anymore — THROUGH the
-            // consumer, so the deletion is serialized with every write (see
-            // [PendingWrite.SweepSupersededMasters] for why an unserialized sweep can
-            // destroy an acknowledged concurrent write's key).
-            val swept = CompletableDeferred<Unit>()
-            writeChannel.send(PendingWrite.SweepSupersededMasters(newGeneration, swept))
-            swept.await()
-
-            return KSafeRotationResult(
-                rotated = rotated,
-                skipped = skipped,
-                failed = failed,
-                keyGeneration = newGeneration,
-            )
+            return rotateIntoGeneration(targetGeneration, retriesAfterThisPass)
         } finally {
             rotationInFlight.set(false)
         }
+    }
+
+    /**
+     * Startup-only recovery. A simultaneous manual pass owns the instance guard and already
+     * covers the work, so startup quietly yields instead of surfacing the public API's
+     * concurrent-call exception.
+     */
+    private suspend fun resumeInterruptedRotation(): KSafeRotationResult? {
+        if (!rotationInFlight.compareAndSet(false, true)) return null
+        try {
+            // Re-check after taking the guard: another same-file instance may have completed
+            // the pass between startup's first snapshot and this coroutine being scheduled.
+            val raw =
+                (storage.snapshot()[KeySafeMetadataManager.KEYGEN_RAW_KEY] as? StoredValue.Text)?.value
+            if (!KeySafeMetadataManager.parseKeyRotationInProgress(raw)) return null
+            val durableTarget = KeySafeMetadataManager.parseKeyGeneration(raw)
+            val retriesAfterThisPass =
+                KeySafeMetadataManager.parseKeyRotationRetryAttempts(raw)
+                    ?.takeUnless { config.keyRotationRetryAttempts == 0 }
+                    ?: config.keyRotationRetryAttempts
+            currentKeyGeneration.raiseToAtLeast(durableTarget)
+            return rotateIntoGeneration(durableTarget, retriesAfterThisPass)
+        } finally {
+            rotationInFlight.set(false)
+        }
+    }
+
+    /**
+     * Startup-only retry for a normally completed pass that left retryable work. Claims the
+     * durable `r:0,rp:N -> r:1,rp:N-1` state, then retries only entries behind the current
+     * generation. It never creates another generation and never changes the generation-birth
+     * timestamp. Decrementing before the work makes the budget crash-safe.
+     *
+     * If the device is still locked, completion persists the remaining positive budget; this
+     * instance does not loop, and only the next KSafe instance may consume another attempt.
+     */
+    private suspend fun retryPendingRotationAtStartup(): KSafeRotationResult? {
+        if (!rotationInFlight.compareAndSet(false, true)) return null
+        try {
+            // Re-read after taking the instance guard. A manual pass or sibling instance may
+            // already have claimed/completed the store since startup's first snapshot.
+            val currentRaw =
+                (storage.snapshot()[KeySafeMetadataManager.KEYGEN_RAW_KEY] as? StoredValue.Text)?.value
+            if (
+                KeySafeMetadataManager.parseKeyRotationLifecycle(currentRaw) != 0
+            ) {
+                return null
+            }
+            val remaining =
+                KeySafeMetadataManager.parseKeyRotationRetryAttempts(currentRaw)
+                    ?.takeIf { it > 0 }
+                    ?: return null
+
+            val target = KeySafeMetadataManager.parseKeyGeneration(currentRaw)
+            val started = CompletableDeferred<Unit>()
+            val claim = PendingWrite.SetKeyGeneration(
+                generation = target,
+                timestampMillis =
+                    KeySafeMetadataManager.parseKeyGenerationTimestamp(currentRaw)
+                        ?: ksafeEpochMillis(),
+                rotationInProgress = true,
+                claimPendingRetry = true,
+                completion = started,
+            )
+            writeChannel.send(claim)
+            started.await()
+            if (!claim.applied.get()) return null
+
+            currentKeyGeneration.raiseToAtLeast(target)
+            return rotateIntoGeneration(target, remaining - 1)
+        } finally {
+            rotationInFlight.set(false)
+        }
+    }
+
+    /** Re-encrypts entries into an already-persisted target generation; never bumps it. */
+    private suspend fun rotateIntoGeneration(
+        newGeneration: Int,
+        retryAttemptsRemainingOnSkip: Int = config.keyRotationRetryAttempts,
+    ): KSafeRotationResult {
+        val clearEpochAtStart = clearEpoch.get()
+        // Candidate set from a post-bump snapshot: encrypted entries still on an older
+        // generation (or a legacy envelope). Metadata is parsed from the same snapshot
+        // the ciphertext is read from, so alias derivation is self-consistent.
+        data class Candidate(
+            val userKey: String,
+            val protection: KSafeProtection,
+            val ciphertextB64: String,
+            val meta: EncMeta,
+        )
+        val snapshot = storage.snapshot()
+        val metadataEntries = snapshot.map { (rawKey, storedValue) ->
+            rawKey to (storedValue as? StoredValue.Text)?.value
+        }
+        val metaByKey = KeySafeMetadataManager.collectMetadata(metadataEntries, accept = { true })
+        val candidates = metaByKey.mapNotNull { (userKey, rawMeta) ->
+            val protection = KeySafeMetadataManager.parseProtection(rawMeta) ?: return@mapNotNull null
+            val meta = encMetaFromRaw(rawMeta)
+            if (meta.keyGeneration >= newGeneration) return@mapNotNull null
+            val ciphertext = (snapshot[valueRawKey(userKey)] as? StoredValue.Text)?.value
+                ?: (snapshot[legacyEncryptedRawKey(userKey)] as? StoredValue.Text)?.value
+                ?: return@mapNotNull null
+            Candidate(
+                userKey = userKey,
+                protection = protection,
+                ciphertextB64 = ciphertext,
+                meta = meta,
+            )
+        }
+
+        var rotated = 0
+        var skipped = 0
+        var failed = 0
+
+        // A chunk at a time, and the gate matches it, so [ROTATION_IN_FLIGHT] is the single
+        // bound on how much of the store is decrypted simultaneously — the property
+        // JvmRotationConcurrencyBoundTest pins.
+        for (chunk in candidates.chunked(ROTATION_IN_FLIGHT)) {
+            val gate = Semaphore(ROTATION_IN_FLIGHT)
+            val outcomes = coroutineScope {
+                chunk.map { c ->
+                    async {
+                        gate.withPermit {
+                            val oldAlias = aliasForRawMeta(c.userKey, c.protection, c.meta)
+                            val plainBytes = try {
+                                // Future-format entries fail closed: counted failed (this
+                                // build can never rotate them), value left untouched.
+                                decryptEntry(
+                                    c.userKey, c.protection,
+                                    KSafeBase64.decode(c.ciphertextB64), c.meta,
+                                )
+                            } catch (e: Throwable) {
+                                if (e is CancellationException) throw e
+                                // A locked strict entry OR a temporary key-store outage is
+                                // retried by the next rotation (the entry stays readable
+                                // under its recorded generation); only a definitive failure
+                                // (e.g. the key genuinely gone) is reported as failed.
+                                return@withPermit if (isRotationRetryable(e)) {
+                                    RotateOutcome.SKIPPED
+                                } else {
+                                    RotateOutcome.FAILED
+                                }
+                            }
+                            // The old per-entry key is superseded by this rotation; an old
+                            // MASTER is shared, so it is swept below only when unreferenced.
+                            val perEntryOldKey =
+                                ownsPerEntryAlias(c.protection, c.meta.envelopeVersion)
+                            val op = PendingWrite.Rotate(
+                                userKey = c.userKey,
+                                rawCacheKey = legacyEncryptedRawKey(c.userKey),
+                                jsonString = plainBytes.decodeToString(),
+                                protection = c.protection,
+                                requireUnlockedDevice = c.meta.requireUnlockedDevice,
+                                keyGeneration = newGeneration,
+                                expectedOldCiphertext = c.ciphertextB64,
+                                oldAliasToDelete = if (perEntryOldKey) oldAlias else null,
+                                expectedClearEpoch = clearEpochAtStart,
+                                ownerTokenAtIssue = writeOwners[c.userKey],
+                                completion = CompletableDeferred(),
+                            )
+                            writeChannel.send(op)
+                            try {
+                                op.completion.await()
+                                if (op.applied.get()) {
+                                    RotateOutcome.ROTATED
+                                } else {
+                                    RotateOutcome.SKIPPED
+                                }
+                            } catch (e: Throwable) {
+                                if (e is CancellationException) throw e
+                                // A transient re-encrypt failure (device locked mid-pass,
+                                // vault outage) is also a retry-later, not a failure.
+                                if (isRotationRetryable(e)) {
+                                    RotateOutcome.SKIPPED
+                                } else {
+                                    RotateOutcome.FAILED
+                                }
+                            }
+                        }
+                    }
+                }.awaitAll()
+            }
+            for (outcome in outcomes) when (outcome) {
+                RotateOutcome.ROTATED -> rotated++
+                RotateOutcome.SKIPPED -> skipped++
+                RotateOutcome.FAILED -> failed++
+            }
+        }
+
+        // Sweep superseded MASTER generations nothing references anymore — THROUGH the
+        // consumer, so the deletion is serialized with every write (see
+        // [PendingWrite.SweepSupersededMasters] for why an unserialized sweep can
+        // destroy an acknowledged concurrent write's key).
+        val swept = CompletableDeferred<Unit>()
+        writeChannel.send(PendingWrite.SweepSupersededMasters(newGeneration, swept))
+        swept.await()
+
+        // Mark the lifecycle completed (`r:1` -> `r:0`) LAST. If the process dies before this
+        // durable write, the next instance repeats the idempotent remainder at this SAME
+        // generation. The consumer generation-CAS prevents an old pass acknowledging a newer
+        // pass as completed.
+        val completed = CompletableDeferred<Unit>()
+        writeChannel.send(
+            PendingWrite.CompleteKeyRotation(
+                generation = newGeneration,
+                retryAttemptsRemaining =
+                    retryAttemptsRemainingOnSkip.takeIf { skipped > 0 && it > 0 },
+                completion = completed,
+            )
+        )
+        completed.await()
+
+        return KSafeRotationResult(
+            rotated = rotated,
+            skipped = skipped,
+            failed = failed,
+            keyGeneration = newGeneration,
+        )
     }
 
     fun getKeyInfo(key: String): KSafeKeyInfo? {

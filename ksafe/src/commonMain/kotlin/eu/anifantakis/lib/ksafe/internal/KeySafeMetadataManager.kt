@@ -422,6 +422,103 @@ internal object KeySafeMetadataManager {
         metaField(parseMetaObject(raw), "ts")?.toLongOrNull()
 
     /**
+     * Rotation-lifecycle state from the reserved key-generation record:
+     * - null: no readable integer `r` (use [hasKeyRotationLifecycle] and
+     *   [isLegacy30KeyGenerationState] to distinguish a genuine 3.0.0 record from an unknown
+     *   or malformed value);
+     * - 0: known completed / already adopted by the resume-aware format;
+     * - 1: generation bumped but the pass never reached its durable completion record.
+     *
+     * Values outside 0/1 are preserved as unknown future/corrupt state; callers must not
+     * silently reinterpret them as completed or in-progress.
+     */
+    internal fun parseKeyRotationLifecycle(raw: String?): Int? =
+        metaField(parseMetaObject(raw), "r")?.toIntOrNull()
+
+    /**
+     * Whether the lifecycle field itself exists, independently of whether this build
+     * understands its value. This distinction is load-bearing for 3.0.0 adoption: only an
+     * ABSENT field proves the old format; `r:"future"`, `r:null`, or any other unknown value
+     * must be preserved and rejected rather than rewritten as completed.
+     */
+    internal fun hasKeyRotationLifecycle(raw: String?): Boolean =
+        parseMetaObject(raw)?.containsKey("r") == true
+
+    /**
+     * Remaining automatic next-instance retries after a normally completed rotation left
+     * retryable (`skipped`) entries. `rp:N` is a durable budget, not a timer: the current
+     * instance never loops or waits. A claimant changes `r:0,rp:N` atomically to
+     * `r:1,rp:N-1` before touching an entry, so a crash cannot restore a consumed attempt.
+     *
+     * `rp:0` is valid only with `r:1`: it records that the last permitted retry was claimed
+     * and may need crash recovery, but completion must not arm another retry. Callers use
+     * [hasKeyRotationRetryPending] to distinguish absence from malformed/future state.
+     */
+    internal fun parseKeyRotationRetryAttempts(raw: String?): Int? =
+        metaField(parseMetaObject(raw), "rp")
+            ?.toIntOrNull()
+            ?.takeIf { it >= 0 }
+
+    /** Whether the pending-retry field exists, even if its value is unsupported. */
+    internal fun hasKeyRotationRetryPending(raw: String?): Boolean =
+        parseMetaObject(raw)?.containsKey("rp") == true
+
+    /**
+     * Whether `rp` is absent or forms a state owned by this release. A completed generation
+     * may carry only a positive budget; an in-progress generation may also carry zero because
+     * the final attempt is decremented durably before its work begins.
+     */
+    internal fun hasSupportedKeyRotationRetryState(raw: String?): Boolean {
+        if (!hasKeyRotationRetryPending(raw)) return true
+        val remaining = parseKeyRotationRetryAttempts(raw) ?: return false
+        return when (parseKeyRotationLifecycle(raw)) {
+            0 -> remaining > 0
+            1 -> true
+            else -> false
+        }
+    }
+
+    /**
+     * True only for the exact generation-record shape released by KSafe 3.0.0. A malformed
+     * non-null record also has no readable `r`, but must fail closed rather than be mistaken
+     * for migration evidence.
+     */
+    internal fun isLegacy30KeyGenerationState(raw: String?): Boolean {
+        val meta = parseMetaObject(raw) ?: return false
+        if (meta.keys != setOf("g", "ts")) return false
+        val generation = metaField(meta, "g")?.toIntOrNull() ?: return false
+        if (generation !in 1..MAX_KEY_GENERATION) return false
+        metaField(meta, "ts")?.toLongOrNull() ?: return false
+        return true
+    }
+
+    /** True only for the one lifecycle value this release owns as an unfinished pass. */
+    internal fun parseKeyRotationInProgress(raw: String?): Boolean =
+        parseKeyRotationLifecycle(raw) == 1
+
+    /**
+     * Builds the resume-aware reserved generation record. The lifecycle field is ALWAYS
+     * explicit: `r:0` means completed/adopted, `r:1` means interrupted/in progress. That makes
+     * an absent field unambiguously a 3.0.0 record during the 3.1.0 compatibility migration.
+     * [timestampMillis] is nullable only for conservative repair of malformed/legacy state;
+     * every record KSafe creates normally includes it.
+     */
+    internal fun buildKeyGenerationState(
+        generation: Int,
+        timestampMillis: Long?,
+        rotationInProgress: Boolean = false,
+        retryAttemptsRemaining: Int? = null,
+    ): String = buildJsonObject {
+        require(retryAttemptsRemaining == null || retryAttemptsRemaining >= 0) {
+            "retryAttemptsRemaining must be non-negative"
+        }
+        put("g", generation)
+        if (timestampMillis != null) put("ts", timestampMillis)
+        put("r", if (rotationInProgress) 1 else 0)
+        if (retryAttemptsRemaining != null) put("rp", retryAttemptsRemaining)
+    }.toString()
+
+    /**
      * Parses the access policy from the metadata JSON `u` field; legacy metadata has none.
      * Takes the [isLegacyProtectionLiteral] fast path because [parseRequireUnlockedDevice] puts
      * this on the read path of every entry.

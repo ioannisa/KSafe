@@ -240,20 +240,41 @@ ksafe.close()  // cancels background coroutines, releases the DataStore scope an
 
 ## Configuring KSafe (`KSafeConfig`)
 
-Every factory accepts an optional `config = KSafeConfig(...)`. Two settings matter at setup time:
+Every factory accepts an optional `config = KSafeConfig(...)`. The most important setup
+settings are:
 
 ```kotlin
 val ksafe = KSafe(
     config = KSafeConfig(
+        aesKeySize = KSafeAesKeySize.BITS_256,
         appNamespace = "com.example.myapp",
         keyRotationPolicy = KSafeKeyRotationPolicy.MaxAge(90.days),
+        keyRotationRetryAttempts = 3, // default; 0 disables next-instance retries
     )
 )
 ```
 
+**`aesKeySize`** selects `BITS_128` or `BITS_256` (the default) for newly created AES-GCM
+keys on every platform. AES-GCM itself is intentionally fixed; the setting changes key
+strength, not the cipher mode. An existing store continues using the size embedded in its
+current key until `rotateKeys()` creates a fresh generation.
+
 **`appNamespace`** is the isolation boundary for two apps that share a `fileName`. On **JVM/Desktop** and **Web** the encryption-key destination is shared (one OS secret store / one browser origin), so two apps using the same `fileName` would collide on the same key slot. Setting a distinct `appNamespace` (a reverse-DNS id is ideal) namespaces the key destination. On **JVM/Desktop** an explicit `appNamespace` also isolates the data directory — the DataStore file moves into a namespace subdirectory, and existing un-namespaced data is copied forward rather than stranded. On **Web** it namespaces the `localStorage` data slots too. It has **no effect on Android/iOS**, where the keystore is already per-app. If you leave it `null`, new JVM keys go to a fixed default namespace (`"shared"`), so two apps that share a `fileName` and both leave `appNamespace` null will collide; the old launcher-derived id is no longer a default and survives only as a read-side migration source. You can override the vault namespace via `-Dksafe.appNamespace=` or env `KSAFE_APP_NAMESPACE` (this namespaces only the key store, not the data directory), but setting an explicit `appNamespace` here is best. Web falls back to per-origin isolation.
 
-**`keyRotationPolicy`** is opt-in. It defaults to `KSafeKeyRotationPolicy.Never`; set `MaxAge(Duration)` to re-encrypt everything under a fresh key generation in the background once the current key exceeds that age (a once-per-startup check that never blocks startup or reads). On-demand rotation is always available via `ksafe.rotateKeys()`. See [KEY_ROTATION.md](KEY_ROTATION.md) for the full model and guarantees.
+**`keyRotationPolicy`** controls when KSafe starts a fresh generation. It defaults to
+`KSafeKeyRotationPolicy.Never`; set `MaxAge(Duration)` to re-encrypt everything in the
+background once the current key exceeds that age (a once-per-startup check that never blocks
+startup or reads). On-demand rotation is always available via `ksafe.rotateKeys()`.
+Since 3.1.0, passes started with the explicit `r:1` lifecycle state resume automatically at
+the same generation on the next instance under every policy, including `Never`. A 3.0.0
+generation record has no such field; its first 3.1.0 startup only adopts it as completed and
+does no rotation work. A normally completed pass that leaves retryable `skipped` entries
+records `rp:N`, a bounded count configured by `keyRotationRetryAttempts` (3 by default,
+0 disables it). The current instance does not retry again; each next KSafe instance consumes
+at most one attempt and retries the same generation, unless `MaxAge` is already due and the
+normal fresh-generation rotation takes precedence. The claim decrements the count durably
+before work, so crashes cannot refill it. `failed` alone does not schedule retries. See
+[KEY_ROTATION.md](KEY_ROTATION.md) for the full model.
 
 ***
 

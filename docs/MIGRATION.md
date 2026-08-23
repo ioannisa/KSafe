@@ -1,8 +1,53 @@
 # Migration Guide
 
-### From v2.2 to v2.3
+### From v3.0 to v3.1
 
-**No breaking changes, no code changes.** 2.3 adds **key rotation** on every platform. An un-rotated store's existing entries stay byte-identical to 2.2.x — bump the dependency, ship, done — and existing data keeps working without migration. (A new or rewritten strict `HARDWARE_ISOLATED` entry keys under 3.0.0's strict alias variant, with the same downgrade consequence as rotated entries — see the caveat below.)
+**Upgrading needs no code change. Stored data remains compatible.**
+
+- `KSafeConfig(keySize = 128)` still compiles and still links — it is deprecated, not removed,
+  and goes away in 4.0.0 with the rest of the deprecation sweep. Move to
+  `KSafeConfig(aesKeySize = KSafeAesKeySize.BITS_128)` at your convenience; `BITS_256` remains
+  the default. The `keySize` property and `copy(keySize = …)` are kept too.
+  - One residue: `KSafeConfig`'s generated `component1()` now returns `KSafeAesKeySize` rather
+    than `Int`, because a data class derives it from the primary constructor. Only destructuring
+    a config is affected.
+- **The one genuine break:** the Apple-only `obtainAesGcm()` is gone. It returned a
+  `dev.whyoleg.cryptography` type, and that dependency was removed — so the function cannot be
+  kept even as a deprecation, since its return type no longer exists. If you called it you
+  already depend on that library yourself to use the result, so replace the call with
+  `CryptographyProvider.CryptoKit.get(AES.GCM)` in your own code.
+
+The AES-GCM algorithm and ciphertext framing are unchanged. Upgrading does not regenerate
+existing keys or re-encrypt entries, so previously stored values remain readable. The selected
+`aesKeySize` applies only when a key is first created or replaced by rotation; an existing key
+keeps its original size until then. Web now honors this setting too; a Web key created by an
+older release remains AES-256 until it is rotated.
+
+`KSafeConfig.keyRotationRetryAttempts` is also new and defaults to 3; set it to 0 to disable automatic
+next-instance retries for normally skipped work. KSafe 3.1 also adds automatic recovery of a
+rotation interrupted by process death. New 3.1 rotations persist `"r":1` with the generation
+bump and change it to `"r":0` only after the entry pass and old-key sweep complete; the next
+instance can therefore resume the same generation under every policy, including `Never`.
+
+A normally completed 3.1 pass with retryable `skipped` entries uses a separate optional
+`"rp":N` budget. It remains `r:0` because the pass did return, and the current KSafe instance
+does not try again. Each next instance consumes at most one attempt by durably changing
+`r:0,rp:N` to `r:1,rp:N-1` before work. If its configured `MaxAge` is already due by then, the
+normal fresh-generation rotation takes precedence instead. `failed` alone does not schedule
+the retry.
+
+The released 3.0 format has no `r` field, so an absent field cannot prove whether an old pass
+completed or crashed. The first 3.1 startup handles this conservatively: it stamps the existing
+generation record as `"r":0`, preserves its generation and timestamp, and performs no resume,
+generation bump, entry rewrite, key sweep, or same-launch `MaxAge` pass. From the next launch,
+the configured policy behaves normally. If 3.0 really left a mixed-generation store, every
+entry remains readable under the generation in its own metadata; a later explicit
+`rotateKeys()` or due `MaxAge` pass moves it normally. Unknown future `r` values are preserved
+and rejected fail-closed rather than reinterpreted.
+
+### From v2.2 to v3.0
+
+**No code changes are needed for rotation.** 3.0 adds **key rotation** on every platform. An un-rotated store's existing entries stay byte-identical to 2.2.x — bump the dependency, ship, done — and existing data keeps working without migration. (A new or rewritten strict `HARDWARE_ISOLATED` entry keys under 3.0.0's strict alias variant, with the same downgrade consequence as rotated entries — see the caveat below.)
 
 The on-disk model gains a store-wide **key generation** counter. A freshly upgraded store is *generation 1* and uses the exact key names and envelope (v2) that 2.2.x wrote, so upgrading (and even downgrading again, before any rotation or strict write) is free. (One exception: an `appNamespace` whose token doesn't survive sanitization intact — characters outside `[A-Za-z0-9._-]`, or more than 120 of them — is relocated under a collision-safe digested identity on the first 3.0.0 launch; a downgraded 2.2.x binary then sees the retained pre-upgrade copy, and interim writes are not carried back on re-upgrade. Use a clean, short token to keep downgrade free.)
 
@@ -18,9 +63,9 @@ val ksafe = KSafe(
 )
 ```
 
-The default policy is `KSafeKeyRotationPolicy.Never` — key material is hardware/OS-protected and doesn't expire, so automatic rotation is an opt-in hygiene/compliance control. Rotation is crash-safe and resumable without a journal (an interrupted pass leaves a mixed-generation store that stays fully readable), concurrent writes always win, and values are sacred — `getOrCreateSecret` secrets keep their value; only the wrapping key changes. Strict (`requireUnlockedDevice`) entries rotate only while the device is unlocked, and a transient key-store outage counts as `skipped`, never `failed`. There is no per-key rotate — `rotateKeys()` is whole-store.
+The default policy is `KSafeKeyRotationPolicy.Never` — key material is hardware/OS-protected and doesn't expire, so starting new generations automatically is an opt-in hygiene/compliance control. Rotation is crash-safe: an interrupted pass leaves a readable mixed-generation store and a later `rotateKeys()` rotates the remainder (3.1.0 adds automatic same-generation recovery for passes it starts). In 3.1.0, a normally completed pass with `skipped` work also writes `rp:N`, a bounded automatic retry budget configured by `KSafeConfig.keyRotationRetryAttempts` (3 by default, 0 disables it). Each next KSafe instance consumes at most one attempt even under `Never`; an already-due `MaxAge` pass may move the work straight into a fresh generation instead. Concurrent writes always win, and values are sacred — `getOrCreateSecret` secrets keep their value; only the wrapping key changes. Strict (`requireUnlockedDevice`) entries rotate only while the device is unlocked, and a transient key-store outage counts as `skipped`, never `failed`. There is no per-key rotate — `rotateKeys()` is whole-store.
 
-**One migration caveat, and it only applies after you rotate.** The first `rotateKeys()` upgrades the store to *generation ≥ 2*, which switches encrypted entries to an authenticated **v3 envelope** (AES-GCM whose associated data binds each ciphertext to store identity, user key, protection tier, unlock policy, and key generation). Once rotated, **downgrading to a pre-3.0.0 binary must be treated as destructive for the rotated entries** (the same applies to strict `HARDWARE_ISOLATED` entries written by 3.0.0): the older binary can't resolve their keys, and its startup orphan sweep permanently deletes the rows and metadata it can't decrypt — typically on the first launch. Upgrading back restores access only if that sweep never ran. So finish rolling out 2.3 before you call `rotateKeys()` in production, and back up before any planned downgrade.
+**One migration caveat, and it only applies after you rotate.** The first `rotateKeys()` upgrades the store to *generation ≥ 2*, which switches encrypted entries to an authenticated **v3 envelope** (AES-GCM whose associated data binds each ciphertext to store identity, user key, protection tier, unlock policy, and key generation). Once rotated, **downgrading to a pre-3.0.0 binary must be treated as destructive for the rotated entries** (the same applies to strict `HARDWARE_ISOLATED` entries written by 3.0.0): the older binary can't resolve their keys, and its startup orphan sweep permanently deletes the rows and metadata it can't decrypt — typically on the first launch. Upgrading back restores access only if that sweep never ran. So finish rolling out 3.0 before you call `rotateKeys()` in production, and back up before any planned downgrade.
 
 Full walkthrough, per-platform behavior, and the cryptographic-erasure notes: [docs/KEY_ROTATION.md](KEY_ROTATION.md).
 

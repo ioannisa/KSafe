@@ -84,4 +84,4 @@ Full setup (Apple team id, device pinning, provisioning) lives in [`ios-device-t
 
 ### Key rotation
 
-Rotation (`rotateKeys()` and the `MaxAge` startup policy) is exercised by the JVM suite and, on real hardware, by the on-device iOS harness above (`run-xctest.sh` calls `rotateKeys`). See [`KEY_ROTATION.md`](KEY_ROTATION.md) for what rotation guarantees and how the generation model behaves under crashes and concurrent writes.
+Rotation (`rotateKeys()`, 3.1.0 automatic same-generation crash resume, the bounded persisted next-instance retry budget for normally `skipped` entries—including custom/zero budgets and decrement-before-work—conservative 3.0.0-record adoption, and the `MaxAge` startup policy) is exercised by the JVM suite and, on real hardware, by the on-device iOS harness above (`run-xctest.sh` calls `rotateKeys`). See [`KEY_ROTATION.md`](KEY_ROTATION.md) for what rotation guarantees and how the generation model behaves under crashes and concurrent writes.

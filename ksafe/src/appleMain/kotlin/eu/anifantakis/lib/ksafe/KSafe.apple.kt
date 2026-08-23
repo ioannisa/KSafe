@@ -5,9 +5,6 @@ import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
-import dev.whyoleg.cryptography.CryptographyProvider
-import dev.whyoleg.cryptography.algorithms.AES
-import dev.whyoleg.cryptography.providers.cryptokit.CryptoKit
 import eu.anifantakis.lib.ksafe.internal.DATASTORE_FILE_SUFFIX
 import eu.anifantakis.lib.ksafe.internal.DataStoreStorage
 import eu.anifantakis.lib.ksafe.internal.AppleKeyCustody
@@ -139,10 +136,6 @@ private fun buildAppleKSafe(
 ): KSafe {
     requireValidStoreFileName(fileName)
     validateSecurityPolicy(securityPolicy)
-
-    // Reference CryptoKit + AES.GCM statically so Kotlin/Native DCE can't strip them.
-    CryptographyProvider.CryptoKit
-    @Suppress("UNUSED_VARIABLE") val retainAesGcm = AES.GCM
 
     // Probe the SE for real instead of assuming "not the Simulator ⇒ has SE": that was true on
     // iOS but wrong on SE-less Macs (pre-T2 Intel, VMs), where it masked a silent downgrade to a
@@ -391,7 +384,3 @@ private fun buildAppleKSafe(
         },
     )
 }
-
-// Non-inline helper kept for external Swift callers that may reference it for warm-up.
-@Suppress("unused")
-fun obtainAesGcm(): AES.GCM = CryptographyProvider.CryptoKit.get(AES.GCM)

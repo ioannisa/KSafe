@@ -18,7 +18,7 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * JVM [KSafeEncryption]: software AES-256-GCM (`javax.crypto`) for the payload, with the
+ * JVM [KSafeEncryption]: software AES-GCM (`javax.crypto`) for the payload, with the
  * AES key itself protected by an OS secret store via [JvmKeyVault] — DPAPI on Windows,
  * login Keychain on macOS (SE-gated on Apple Silicon / T2), Secret Service / libsecret
  * on Linux.
@@ -82,11 +82,12 @@ internal class JvmSoftwareEncryption(
         aad: ByteArray?,
     ): ByteArray {
         // Bounded retry around a sibling-instance clearAll racing this encrypt: the key was
-        // resolved, the vault record wiped, and the acknowledged ciphertext would be
-        // unreadable on the next launch. The epoch check detects the race; the repair either
-        // re-asserts this key's durability or defers to a different winner by re-encrypting
-        // under it (the same trade-off the Android DEK re-persist makes: an acknowledged
-        // write's durability beats best-effort erasure).
+        // resolved, then the wipe landed, and without the epoch re-check the acknowledged
+        // ciphertext would be unreadable on the next launch. The response is to RE-ENCRYPT
+        // under whatever legitimately owns the vault slot afterwards — a concurrent winner's
+        // key, or fresh material minted by the next resolution. The key this attempt used is
+        // never re-persisted: it is exactly the material `clearAll()` promised to destroy,
+        // and re-inserting it would make a pre-wipe backup of the store decryptable again.
         repeat(2) {
             val epochAtResolve = cacheEpoch.get()
             val secretKey = getOrCreateSecretKey(identifier)
@@ -94,16 +95,15 @@ internal class JvmSoftwareEncryption(
             if (cacheEpoch.get() == epochAtResolve) return out
             synchronized(aliasLocks.forAlias(identifier)) {
                 val vaultBytes = runCatching { vaults.active.get(identifier) }.getOrNull()
-                when {
-                    vaultBytes == null -> {
-                        runCatching { vaults.active.put(identifier, secretKey.encoded) }
-                        return out
-                    }
-                    vaultBytes.contentEquals(secretKey.encoded) -> return out
-                    // A different key won the slot — fall through and re-encrypt under it.
-                }
+                // Our key still owns the slot (e.g. a concurrent re-mint of identical bytes) —
+                // the ciphertext is readable exactly as persisted, keep it.
+                if (vaultBytes != null && vaultBytes.contentEquals(secretKey.encoded)) return out
+                // Slot wiped, or a different key won it — fall through and re-encrypt.
             }
         }
+        // Two consecutive wipes raced this write; seal under the current resolution and stop
+        // re-checking. The pathological tail fails toward erasure — the ciphertext may land
+        // under a key a third wipe then destroys — never toward undoing a wipe.
         return encryptWith(getOrCreateSecretKey(identifier), data, aad)
     }
 
@@ -184,10 +184,9 @@ internal class JvmSoftwareEncryption(
         secretKey(alias, create = true)!!
 
     /**
-     * Resolve/create only — no throwaway encrypt. The encrypt path's clearAll-race repair
-     * re-persists the key it used, which is right for an acknowledged user write but wrong
-     * here: prewarm output is discarded, so repairing it would re-persist key material a
-     * concurrent `clearAll()` just erased, silently undoing its cryptographic erasure.
+     * Resolve/create only — no throwaway encrypt, and none of the encrypt path's clearAll-race
+     * handling: prewarm output is discarded, so there is no acknowledged ciphertext whose
+     * readability a raced wipe could break, and nothing that needs re-encrypting.
      */
     override suspend fun prewarmKey(
         identifier: String,
@@ -293,7 +292,7 @@ internal class JvmSoftwareEncryption(
             }
             else -> {
                 val keyGen = KeyGenerator.getInstance("AES")
-                keyGen.init(config.keySize)
+                keyGen.init(config.aesKeySize.bits)
                 val generated = keyGen.generateKey()
                 active.put(alias, generated.encoded)
                 // Custody marker: a key WE mint into the legacy/software slot (opt-out
