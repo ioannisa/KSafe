@@ -170,9 +170,9 @@ KSafe in action across many scenarios: **[KSafeDemo — Compose Multiplatform ap
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:3.0.0")
-implementation("eu.anifantakis:ksafe-compose:3.0.0")     // ← Compose state (optional)
-implementation("eu.anifantakis:ksafe-biometrics:3.0.0")  // ← Biometric auth (optional)
+implementation("eu.anifantakis:ksafe:3.1.0")
+implementation("eu.anifantakis:ksafe-compose:3.1.0")     // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe-biometrics:3.1.0")  // ← Biometric auth (optional)
 ```
 
 > Skip `ksafe-compose` if you don't use Jetpack Compose or `mutableStateOf` persistence.
