@@ -241,6 +241,15 @@ public final class eu/anifantakis/lib/ksafe/KSafeProtectionLevel : java/lang/Enu
 	public static fun values ()[Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;
 }
 
+public final class eu/anifantakis/lib/ksafe/KSafeReference : kotlin/properties/ReadWriteProperty {
+	public fun <init> (Leu/anifantakis/lib/ksafe/KSafe;Lkotlinx/serialization/KSerializer;Ljava/lang/Object;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeWriteMode;)V
+	public final fun getKey ()Ljava/lang/String;
+	public final fun getValue ()Ljava/lang/Object;
+	public fun getValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;)Ljava/lang/Object;
+	public final fun setValue (Ljava/lang/Object;)V
+	public fun setValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;Ljava/lang/Object;)V
+}
+
 public final class eu/anifantakis/lib/ksafe/KSafeRotationResult {
 	public fun <init> (IIII)V
 	public final fun component1 ()I

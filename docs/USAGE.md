@@ -45,6 +45,19 @@ class MyViewModel(ksafe: KSafe): ViewModel() {
 
 > The property delegate works with any `KSafe` instance — the receiver of `by myKSafe(...)` becomes the storage backend. See [docs/SETUP.md](SETUP.md#multiple-instances) for the named-instance pattern (e.g. `var theme by prefs(...)`, `var token by vault("")`). The variable name is used as the storage key when no explicit `key` is supplied.
 
+**Prefer no delegation at all? Hold the handle directly (3.2.0+).** The same call that backs
+`by` returns a `KSafeReference` — keep it in a normal `val` and read/write `.value`. Direct
+access needs an explicit `key`: a plain `=` assignment carries no property name Kotlin could
+hand to KSafe (a key-less handle is delegate-only, and `.value` on it throws).
+
+```kotlin
+val counter = ksafe(0, key = "counter")   // KSafeReference<Int>
+counter.value++                           // read + write, no `by`
+```
+
+Works on the mode-typed views too (`ksafePlain(0, key = "theme")`), where writes use the
+view's frozen mode.
+
 ## Flow Delegates (Reactive Reads)
 
 KSafe has always offered `getFlow()` and `getStateFlow()` with explicit key strings. These delegates extend the same property-name-as-key pattern from `invoke()` above to Flows and StateFlows — use whichever style you prefer.
@@ -434,7 +447,8 @@ var theme by prefs("dark")               // delegate: key = property name, write
 val pin by vault.asWritableFlow("", key = "pin")   // .set() writes hardware-isolated
 ```
 
-The full write surface is covered — `put`/`putDirect`, the `by view(...)` delegate,
+The full write surface is covered — `put`/`putDirect`, the `by view(...)` delegate (whose
+result, given an explicit `key`, is also a direct no-`by` `.value` handle — 3.2.0+),
 `asFlow`/`asWritableFlow`/`asStateFlow`/`asMutableStateFlow`/`getStateFlow`, and (via
 `:ksafe-compose`) `mutableStateOf` and `rememberKSafeState` — so the type guarantee has no
 gap where writes actually happen.

@@ -2,6 +2,19 @@
 
 All notable changes to KSafe will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Direct access without property delegation.** `ksafe(default, key)` — the same call that
+  backs `by` — now returns `KSafeReference`, a handle you can also hold in a normal `val`:
+  `val counter = ksafe(0, key = "counter"); counter.value++`. `value` reads through the hot
+  cache and writes fire-and-forget with the `KSafeWriteMode` captured at creation; the
+  mode-typed views' `invoke` returns the same handle with their frozen mode. Direct `.value`
+  access requires the explicit `key` — a plain `=` assignment carries no property name Kotlin
+  could supply — so a key-less handle stays delegate-only and `.value` on it throws
+  `IllegalStateException`. Delegate behaviour is unchanged.
+
 ## [3.1.0] - 2026-08-24
 
 ### Added

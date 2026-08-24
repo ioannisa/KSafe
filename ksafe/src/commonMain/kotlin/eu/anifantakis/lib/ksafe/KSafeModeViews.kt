@@ -6,7 +6,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlin.properties.ReadOnlyProperty
-import kotlin.properties.ReadWriteProperty
 
 /**
  * A write-mode view over an existing [KSafe]: every write made through this handle is
@@ -79,13 +78,14 @@ class KSafePlain(val ksafe: KSafe) {
     fun deleteDirect(key: String) = ksafe.deleteDirect(key)
 
     /**
-     * Property delegate; writes are always [KSafeWriteMode.Plain]. With no [key] the
+     * Property delegate — or, with an explicit [key], a direct no-`by` handle via
+     * [KSafeReference.value]. Writes are always [KSafeWriteMode.Plain]. With no [key] the
      * storage key is the property's own name, exactly as with `by ksafe(...)`.
      */
     inline operator fun <reified T> invoke(
         defaultValue: T,
         key: String? = null,
-    ): ReadWriteProperty<Any?, T> = ksafe.invoke(defaultValue, key, KSafeWriteMode.Plain)
+    ): KSafeReference<T> = ksafe.invoke(defaultValue, key, KSafeWriteMode.Plain)
 
     /** Read-only cold-Flow delegate. See [KSafe.asFlow]. */
     inline fun <reified T> asFlow(
@@ -177,13 +177,14 @@ class KSafeEncrypted(
     fun deleteDirect(key: String) = ksafe.deleteDirect(key)
 
     /**
-     * Property delegate; writes always use this view's frozen [mode]. With no [key] the
-     * storage key is the property's own name, exactly as with `by ksafe(...)`.
+     * Property delegate — or, with an explicit [key], a direct no-`by` handle via
+     * [KSafeReference.value]. Writes always use this view's frozen [mode]. With no [key]
+     * the storage key is the property's own name, exactly as with `by ksafe(...)`.
      */
     inline operator fun <reified T> invoke(
         defaultValue: T,
         key: String? = null,
-    ): ReadWriteProperty<Any?, T> = ksafe.invoke(defaultValue, key, mode)
+    ): KSafeReference<T> = ksafe.invoke(defaultValue, key, mode)
 
     /** Read-only cold-Flow delegate. See [KSafe.asFlow]. */
     inline fun <reified T> asFlow(
@@ -276,13 +277,14 @@ class KSafeHardwareIsolated(
     fun deleteDirect(key: String) = ksafe.deleteDirect(key)
 
     /**
-     * Property delegate; writes always use this view's frozen [mode]. With no [key] the
-     * storage key is the property's own name, exactly as with `by ksafe(...)`.
+     * Property delegate — or, with an explicit [key], a direct no-`by` handle via
+     * [KSafeReference.value]. Writes always use this view's frozen [mode]. With no [key]
+     * the storage key is the property's own name, exactly as with `by ksafe(...)`.
      */
     inline operator fun <reified T> invoke(
         defaultValue: T,
         key: String? = null,
-    ): ReadWriteProperty<Any?, T> = ksafe.invoke(defaultValue, key, mode)
+    ): KSafeReference<T> = ksafe.invoke(defaultValue, key, mode)
 
     /** Read-only cold-Flow delegate. See [KSafe.asFlow]. */
     inline fun <reified T> asFlow(

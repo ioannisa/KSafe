@@ -143,7 +143,10 @@ All views share the one store (same file, key namespace, cache — and ONE `awai
 on web). Rules an agent must know:
 - The guarantee is **write-side only**: reads are mode-free and auto-detect each entry's
   protection, so `prefs.get()` reads an encrypted entry fine.
-- The views cover the FULL write surface: `put`/`putDirect`, the `by view(...)` delegate,
+- The views cover the FULL write surface: `put`/`putDirect`, the `by view(...)` delegate
+  (3.2.0+: its result is a `KSafeReference` — held in a `val` WITH an explicit key it is
+  also a direct no-`by` `.value` handle; key-less handles are delegate-only, `.value`
+  throws, because `=` carries no property name),
   `asFlow`/`asWritableFlow`/`asStateFlow`/`asMutableStateFlow`/`getStateFlow`, and (via
   `:ksafe-compose`) `mutableStateOf`/`rememberKSafeState`.
 - Store-scoped operations (`rotateKeys`, `clearAll`, `close`, `protectionInfo`, `getKeyInfo`,
@@ -1004,6 +1007,7 @@ var token   by ksafe("")                                  // encrypted
 var counter by ksafe(0, mode = KSafeWriteMode.Plain)      // opt out
 var theme   by ksafe("light", key = "app_theme")          // custom key
 var nul: String? by ksafe(null)                           // nullable: type the declaration
+val c = ksafe(0, key = "counter"); c.value++              // 3.2.0+: no-`by` handle; .value needs the key
 
 // Mode-typed views (3.1.0+) — the write mode is the TYPE, no mode argument exists
 val prefs = KSafePlain(ksafe);  val vault = KSafeHardwareIsolated(ksafe)   // or ksafe.plain / .hardwareIsolated

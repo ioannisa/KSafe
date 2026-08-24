@@ -350,6 +350,20 @@ final class <#A: kotlin/Any?> eu.anifantakis.lib.ksafe/KSafeMutableStateFlowDele
     final fun getValue(kotlin/Any?, kotlin.reflect/KProperty<*>): kotlinx.coroutines.flow/MutableStateFlow<#A> // eu.anifantakis.lib.ksafe/KSafeMutableStateFlowDelegate.getValue|getValue(kotlin.Any?;kotlin.reflect.KProperty<*>){}[0]
 }
 
+final class <#A: kotlin/Any?> eu.anifantakis.lib.ksafe/KSafeReference : kotlin.properties/ReadWriteProperty<kotlin/Any?, #A> { // eu.anifantakis.lib.ksafe/KSafeReference|null[0]
+    constructor <init>(eu.anifantakis.lib.ksafe/KSafe, kotlinx.serialization/KSerializer<#A>, #A, kotlin/String?, eu.anifantakis.lib.ksafe/KSafeWriteMode) // eu.anifantakis.lib.ksafe/KSafeReference.<init>|<init>(eu.anifantakis.lib.ksafe.KSafe;kotlinx.serialization.KSerializer<1:0>;1:0;kotlin.String?;eu.anifantakis.lib.ksafe.KSafeWriteMode){}[0]
+
+    final val key // eu.anifantakis.lib.ksafe/KSafeReference.key|{}key[0]
+        final fun <get-key>(): kotlin/String? // eu.anifantakis.lib.ksafe/KSafeReference.key.<get-key>|<get-key>(){}[0]
+
+    final var value // eu.anifantakis.lib.ksafe/KSafeReference.value|{}value[0]
+        final fun <get-value>(): #A // eu.anifantakis.lib.ksafe/KSafeReference.value.<get-value>|<get-value>(){}[0]
+        final fun <set-value>(#A) // eu.anifantakis.lib.ksafe/KSafeReference.value.<set-value>|<set-value>(1:0){}[0]
+
+    final fun getValue(kotlin/Any?, kotlin.reflect/KProperty<*>): #A // eu.anifantakis.lib.ksafe/KSafeReference.getValue|getValue(kotlin.Any?;kotlin.reflect.KProperty<*>){}[0]
+    final fun setValue(kotlin/Any?, kotlin.reflect/KProperty<*>, #A) // eu.anifantakis.lib.ksafe/KSafeReference.setValue|setValue(kotlin.Any?;kotlin.reflect.KProperty<*>;1:0){}[0]
+}
+
 final class <#A: kotlin/Any?> eu.anifantakis.lib.ksafe/KSafeStateFlowDelegate : kotlin.properties/ReadOnlyProperty<kotlin/Any?, kotlinx.coroutines.flow/StateFlow<#A>> { // eu.anifantakis.lib.ksafe/KSafeStateFlowDelegate|null[0]
     constructor <init>(eu.anifantakis.lib.ksafe/KSafe, kotlinx.serialization/KSerializer<#A>, #A, kotlin/String?, kotlinx.coroutines/CoroutineScope) // eu.anifantakis.lib.ksafe/KSafeStateFlowDelegate.<init>|<init>(eu.anifantakis.lib.ksafe.KSafe;kotlinx.serialization.KSerializer<1:0>;1:0;kotlin.String?;kotlinx.coroutines.CoroutineScope){}[0]
 
@@ -594,7 +608,7 @@ final class eu.anifantakis.lib.ksafe/KSafeEncrypted { // eu.anifantakis.lib.ksaf
     final inline fun <#A1: reified kotlin/Any?> getDirect(kotlin/String, #A1): #A1 // eu.anifantakis.lib.ksafe/KSafeEncrypted.getDirect|getDirect(kotlin.String;0:0){0§<kotlin.Any?>}[0]
     final inline fun <#A1: reified kotlin/Any?> getFlow(kotlin/String, #A1): kotlinx.coroutines.flow/Flow<#A1> // eu.anifantakis.lib.ksafe/KSafeEncrypted.getFlow|getFlow(kotlin.String;0:0){0§<kotlin.Any?>}[0]
     final inline fun <#A1: reified kotlin/Any?> getStateFlow(kotlin/String, #A1, kotlinx.coroutines/CoroutineScope): kotlinx.coroutines.flow/StateFlow<#A1> // eu.anifantakis.lib.ksafe/KSafeEncrypted.getStateFlow|getStateFlow(kotlin.String;0:0;kotlinx.coroutines.CoroutineScope){0§<kotlin.Any?>}[0]
-    final inline fun <#A1: reified kotlin/Any?> invoke(#A1, kotlin/String? = ...): kotlin.properties/ReadWriteProperty<kotlin/Any?, #A1> // eu.anifantakis.lib.ksafe/KSafeEncrypted.invoke|invoke(0:0;kotlin.String?){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> invoke(#A1, kotlin/String? = ...): eu.anifantakis.lib.ksafe/KSafeReference<#A1> // eu.anifantakis.lib.ksafe/KSafeEncrypted.invoke|invoke(0:0;kotlin.String?){0§<kotlin.Any?>}[0]
     final inline fun <#A1: reified kotlin/Any?> putDirect(kotlin/String, #A1) // eu.anifantakis.lib.ksafe/KSafeEncrypted.putDirect|putDirect(kotlin.String;0:0){0§<kotlin.Any?>}[0]
     final inline fun <#A1: reified kotlin/Any?> putDirect(kotlin/String, #A1, noinline kotlin/Function1<kotlin/Throwable, kotlin/Unit>) // eu.anifantakis.lib.ksafe/KSafeEncrypted.putDirect|putDirect(kotlin.String;0:0;kotlin.Function1<kotlin.Throwable,kotlin.Unit>){0§<kotlin.Any?>}[0]
     final suspend fun delete(kotlin/String) // eu.anifantakis.lib.ksafe/KSafeEncrypted.delete|delete(kotlin.String){}[0]
@@ -618,7 +632,7 @@ final class eu.anifantakis.lib.ksafe/KSafeHardwareIsolated { // eu.anifantakis.l
     final inline fun <#A1: reified kotlin/Any?> getDirect(kotlin/String, #A1): #A1 // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.getDirect|getDirect(kotlin.String;0:0){0§<kotlin.Any?>}[0]
     final inline fun <#A1: reified kotlin/Any?> getFlow(kotlin/String, #A1): kotlinx.coroutines.flow/Flow<#A1> // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.getFlow|getFlow(kotlin.String;0:0){0§<kotlin.Any?>}[0]
     final inline fun <#A1: reified kotlin/Any?> getStateFlow(kotlin/String, #A1, kotlinx.coroutines/CoroutineScope): kotlinx.coroutines.flow/StateFlow<#A1> // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.getStateFlow|getStateFlow(kotlin.String;0:0;kotlinx.coroutines.CoroutineScope){0§<kotlin.Any?>}[0]
-    final inline fun <#A1: reified kotlin/Any?> invoke(#A1, kotlin/String? = ...): kotlin.properties/ReadWriteProperty<kotlin/Any?, #A1> // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.invoke|invoke(0:0;kotlin.String?){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> invoke(#A1, kotlin/String? = ...): eu.anifantakis.lib.ksafe/KSafeReference<#A1> // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.invoke|invoke(0:0;kotlin.String?){0§<kotlin.Any?>}[0]
     final inline fun <#A1: reified kotlin/Any?> putDirect(kotlin/String, #A1) // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.putDirect|putDirect(kotlin.String;0:0){0§<kotlin.Any?>}[0]
     final inline fun <#A1: reified kotlin/Any?> putDirect(kotlin/String, #A1, noinline kotlin/Function1<kotlin/Throwable, kotlin/Unit>) // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.putDirect|putDirect(kotlin.String;0:0;kotlin.Function1<kotlin.Throwable,kotlin.Unit>){0§<kotlin.Any?>}[0]
     final suspend fun delete(kotlin/String) // eu.anifantakis.lib.ksafe/KSafeHardwareIsolated.delete|delete(kotlin.String){}[0]
@@ -664,7 +678,7 @@ final class eu.anifantakis.lib.ksafe/KSafePlain { // eu.anifantakis.lib.ksafe/KS
     final inline fun <#A1: reified kotlin/Any?> getDirect(kotlin/String, #A1): #A1 // eu.anifantakis.lib.ksafe/KSafePlain.getDirect|getDirect(kotlin.String;0:0){0§<kotlin.Any?>}[0]
     final inline fun <#A1: reified kotlin/Any?> getFlow(kotlin/String, #A1): kotlinx.coroutines.flow/Flow<#A1> // eu.anifantakis.lib.ksafe/KSafePlain.getFlow|getFlow(kotlin.String;0:0){0§<kotlin.Any?>}[0]
     final inline fun <#A1: reified kotlin/Any?> getStateFlow(kotlin/String, #A1, kotlinx.coroutines/CoroutineScope): kotlinx.coroutines.flow/StateFlow<#A1> // eu.anifantakis.lib.ksafe/KSafePlain.getStateFlow|getStateFlow(kotlin.String;0:0;kotlinx.coroutines.CoroutineScope){0§<kotlin.Any?>}[0]
-    final inline fun <#A1: reified kotlin/Any?> invoke(#A1, kotlin/String? = ...): kotlin.properties/ReadWriteProperty<kotlin/Any?, #A1> // eu.anifantakis.lib.ksafe/KSafePlain.invoke|invoke(0:0;kotlin.String?){0§<kotlin.Any?>}[0]
+    final inline fun <#A1: reified kotlin/Any?> invoke(#A1, kotlin/String? = ...): eu.anifantakis.lib.ksafe/KSafeReference<#A1> // eu.anifantakis.lib.ksafe/KSafePlain.invoke|invoke(0:0;kotlin.String?){0§<kotlin.Any?>}[0]
     final inline fun <#A1: reified kotlin/Any?> putDirect(kotlin/String, #A1) // eu.anifantakis.lib.ksafe/KSafePlain.putDirect|putDirect(kotlin.String;0:0){0§<kotlin.Any?>}[0]
     final inline fun <#A1: reified kotlin/Any?> putDirect(kotlin/String, #A1, noinline kotlin/Function1<kotlin/Throwable, kotlin/Unit>) // eu.anifantakis.lib.ksafe/KSafePlain.putDirect|putDirect(kotlin.String;0:0;kotlin.Function1<kotlin.Throwable,kotlin.Unit>){0§<kotlin.Any?>}[0]
     final suspend fun delete(kotlin/String) // eu.anifantakis.lib.ksafe/KSafePlain.delete|delete(kotlin.String){}[0]
@@ -877,7 +891,7 @@ final inline fun <#A: reified kotlin/Any?> (eu.anifantakis.lib.ksafe/KSafe).eu.a
 final inline fun <#A: reified kotlin/Any?> (eu.anifantakis.lib.ksafe/KSafe).eu.anifantakis.lib.ksafe/getStateFlow(kotlin/String, #A, kotlinx.coroutines/CoroutineScope): kotlinx.coroutines.flow/StateFlow<#A> // eu.anifantakis.lib.ksafe/getStateFlow|getStateFlow@eu.anifantakis.lib.ksafe.KSafe(kotlin.String;0:0;kotlinx.coroutines.CoroutineScope){0§<kotlin.Any?>}[0]
 final inline fun <#A: reified kotlin/Any?> (eu.anifantakis.lib.ksafe/KSafe).eu.anifantakis.lib.ksafe/getStateFlow(kotlin/String, #A, kotlinx.coroutines/CoroutineScope, eu.anifantakis.lib.ksafe/KSafeProtection = ...): kotlinx.coroutines.flow/StateFlow<#A> // eu.anifantakis.lib.ksafe/getStateFlow|getStateFlow@eu.anifantakis.lib.ksafe.KSafe(kotlin.String;0:0;kotlinx.coroutines.CoroutineScope;eu.anifantakis.lib.ksafe.KSafeProtection){0§<kotlin.Any?>}[0]
 final inline fun <#A: reified kotlin/Any?> (eu.anifantakis.lib.ksafe/KSafe).eu.anifantakis.lib.ksafe/getStateFlow(kotlin/String, #A, kotlinx.coroutines/CoroutineScope, kotlin/Boolean): kotlinx.coroutines.flow/StateFlow<#A> // eu.anifantakis.lib.ksafe/getStateFlow|getStateFlow@eu.anifantakis.lib.ksafe.KSafe(kotlin.String;0:0;kotlinx.coroutines.CoroutineScope;kotlin.Boolean){0§<kotlin.Any?>}[0]
-final inline fun <#A: reified kotlin/Any?> (eu.anifantakis.lib.ksafe/KSafe).eu.anifantakis.lib.ksafe/invoke(#A, kotlin/String? = ..., eu.anifantakis.lib.ksafe/KSafeWriteMode = ...): kotlin.properties/ReadWriteProperty<kotlin/Any?, #A> // eu.anifantakis.lib.ksafe/invoke|invoke@eu.anifantakis.lib.ksafe.KSafe(0:0;kotlin.String?;eu.anifantakis.lib.ksafe.KSafeWriteMode){0§<kotlin.Any?>}[0]
+final inline fun <#A: reified kotlin/Any?> (eu.anifantakis.lib.ksafe/KSafe).eu.anifantakis.lib.ksafe/invoke(#A, kotlin/String? = ..., eu.anifantakis.lib.ksafe/KSafeWriteMode = ...): eu.anifantakis.lib.ksafe/KSafeReference<#A> // eu.anifantakis.lib.ksafe/invoke|invoke@eu.anifantakis.lib.ksafe.KSafe(0:0;kotlin.String?;eu.anifantakis.lib.ksafe.KSafeWriteMode){0§<kotlin.Any?>}[0]
 final inline fun <#A: reified kotlin/Any?> (eu.anifantakis.lib.ksafe/KSafe).eu.anifantakis.lib.ksafe/invoke(#A, kotlin/String? = ..., kotlin/Boolean): kotlin.properties/ReadWriteProperty<kotlin/Any?, #A> // eu.anifantakis.lib.ksafe/invoke|invoke@eu.anifantakis.lib.ksafe.KSafe(0:0;kotlin.String?;kotlin.Boolean){0§<kotlin.Any?>}[0]
 final suspend fun (eu.anifantakis.lib.ksafe/KSafe).eu.anifantakis.lib.ksafe/getOrCreateSecret(kotlin/String = ..., kotlin/Int = ..., eu.anifantakis.lib.ksafe/KSafeEncryptedProtection = ..., kotlin/Boolean = ...): kotlin/ByteArray // eu.anifantakis.lib.ksafe/getOrCreateSecret|getOrCreateSecret@eu.anifantakis.lib.ksafe.KSafe(kotlin.String;kotlin.Int;eu.anifantakis.lib.ksafe.KSafeEncryptedProtection;kotlin.Boolean){}[0]
 

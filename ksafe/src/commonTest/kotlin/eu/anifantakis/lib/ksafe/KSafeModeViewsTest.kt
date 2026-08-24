@@ -3,6 +3,7 @@ package eu.anifantakis.lib.ksafe
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlinx.coroutines.test.runTest
@@ -87,6 +88,55 @@ abstract class KSafeModeViewsTest {
 
         assertNull(ksafe.getKeyInfo("view_plain_d")?.protection)
         assertEquals(KSafeProtection.HARDWARE_ISOLATED, ksafe.getKeyInfo("view_isolated_d")?.protection)
+    }
+
+    // ── direct handles — the invoke result used without `by` ─────────────────
+
+    @Test
+    fun handleReadsAndWritesWithoutDelegation() = runTest {
+        val ksafe = createKSafe()
+        val counter = ksafe(0, key = "ref_counter")
+
+        assertEquals(0, counter.value)
+        counter.value++
+        counter.value++
+        assertEquals(2, counter.value)
+        assertEquals(2, ksafe.getDirect("ref_counter", 0))
+    }
+
+    @Test
+    fun handlesThroughEachViewRecordTheFrozenTier() = runTest {
+        val ksafe = createKSafe()
+
+        KSafePlain(ksafe)(0, key = "ref_plain").value = 1
+        KSafeEncrypted(ksafe)(0, key = "ref_encrypted").value = 2
+        KSafeHardwareIsolated(ksafe)(0, key = "ref_isolated").value = 3
+
+        assertNull(ksafe.getKeyInfo("ref_plain")?.protection)
+        assertEquals(KSafeProtection.DEFAULT, ksafe.getKeyInfo("ref_encrypted")?.protection)
+        assertEquals(KSafeProtection.HARDWARE_ISOLATED, ksafe.getKeyInfo("ref_isolated")?.protection)
+    }
+
+    @Test
+    fun handleSharesTheStoreWithTheDirectApi() = runTest {
+        val ksafe = createKSafe()
+        val handle = KSafePlain(ksafe)("", key = "ref_shared")
+
+        ksafe.putDirect("ref_shared", "written-directly")
+        assertEquals("written-directly", handle.value)
+
+        handle.value = "written-via-handle"
+        assertEquals("written-via-handle", ksafe.getDirect("ref_shared", ""))
+    }
+
+    @Test
+    fun keylessHandleRejectsDirectValueAccess() = runTest {
+        val ksafe = createKSafe()
+        // Without a key the handle is delegate-only: `=` gives Kotlin no property name.
+        val handle = ksafe(0)
+
+        assertFailsWith<IllegalStateException> { handle.value }
+        assertFailsWith<IllegalStateException> { handle.value = 1 }
     }
 
     // ── views share the store; reads are untyped ─────────────────────────────

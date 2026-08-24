@@ -19,7 +19,10 @@ import kotlin.properties.ReadOnlyProperty
 import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
 
-/** Non-inline delegate holding a captured [KSerializer], so the getDirect/putDirect inline chain isn't duplicated at every property site. */
+/**
+ * Superseded by [KSafeReference], kept only so call sites inlined against ≤3.1.0
+ * keep linking. New code never instantiates it.
+ */
 @PublishedApi
 internal class KSafeDelegate<T>(
     private val ksafe: KSafe,
@@ -39,7 +42,9 @@ internal class KSafeDelegate<T>(
 }
 
 /**
- * Allows KSafe to be used with property delegation.
+ * Allows KSafe to be used with property delegation — and, since the result is a
+ * [KSafeReference], held directly in a `val` for no-`by` access via
+ * [KSafeReference.value] (an explicit [key] required for that; see [KSafeReference]).
  *
  * Uses non-blocking [KSafe.getDirect]/[KSafe.putDirect] under the hood.
  * Default mode is encrypted, inheriting the instance's `KSafeConfig.requireUnlockedDevice`
@@ -49,7 +54,7 @@ inline operator fun <reified T> KSafe.invoke(
     defaultValue: T,
     key: String? = null,
     mode: KSafeWriteMode = core.defaultEncryptedMode()
-): ReadWriteProperty<Any?, T> = KSafeDelegate(this, serializer<T>(), defaultValue, key, mode)
+): KSafeReference<T> = KSafeReference(this, serializer<T>(), defaultValue, key, mode)
 
 @PublishedApi
 internal class KSafeFlowDelegate<T>(
