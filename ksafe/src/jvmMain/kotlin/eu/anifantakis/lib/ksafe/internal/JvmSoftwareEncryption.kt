@@ -294,15 +294,11 @@ internal class JvmSoftwareEncryption(
                 val keyGen = KeyGenerator.getInstance("AES")
                 keyGen.init(config.aesKeySize.bits)
                 val generated = keyGen.generateKey()
-                active.put(alias, generated.encoded)
-                // Custody marker: a key WE mint into the legacy/software slot (opt-out
-                // session, runtime vault degrade, vault-less host) is fallback-minted —
-                // genuine pre-2.x legacy keys never carry it. The legacy-first migration
-                // uses it to tell "authoritative legacy key, replace a stale OS copy"
-                // from "fallback key that must never overwrite the live OS key".
+                // Marker first: a crash between the writes must not leave an unmarked fallback key.
                 if (active === vaults.legacy) {
-                    runCatching { vaults.legacy.put(fallbackMintMarker(alias), FALLBACK_MINT_MARKER) }
+                    vaults.legacy.put(fallbackMintMarker(alias), FALLBACK_MINT_MARKER)
                 }
+                active.put(alias, generated.encoded)
                 generated
             }
         }

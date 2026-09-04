@@ -15,6 +15,15 @@ All notable changes to KSafe will be documented in this file.
   could supply — so a key-less handle stays delegate-only and `.value` on it throws
   `IllegalStateException`. Delegate behaviour is unchanged.
 
+### Fixed
+
+- **JVM: a software-fallback key can no longer be left without its custody marker.** The
+  marker that tells a fallback-minted key apart from a genuine pre-2.x legacy key is now
+  written before the key, and a failed marker write fails the mint instead of being ignored.
+  Previously a crash or a swallowed write between the two commits left an unmarked fallback key,
+  which the next OS-backed launch migrated over the real OS-vault key, making every value
+  encrypted under the real key unreadable.
+
 ## [3.1.0] - 2026-08-24
 
 ### Added

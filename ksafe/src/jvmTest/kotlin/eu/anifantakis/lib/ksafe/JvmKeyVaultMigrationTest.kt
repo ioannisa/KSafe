@@ -4,6 +4,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import eu.anifantakis.lib.ksafe.internal.JvmSoftwareEncryption
+import eu.anifantakis.lib.ksafe.internal.KSafeReservedKeys
 import eu.anifantakis.lib.ksafe.internal.keyvault.DataStoreKeyVault
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVault
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVaultProvider
@@ -16,6 +17,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -1196,5 +1198,66 @@ class JvmKeyVaultMigrationTest {
         } finally {
             if (original == null) System.clearProperty(prop) else System.setProperty(prop, original)
         }
+    }
+
+    /** Legacy vault that records put order and can fail custody-marker puts. */
+    private class RecordingLegacyVault(
+        private val inner: JvmKeyVault,
+        private val failMarkerPut: Boolean,
+    ) : JvmKeyVault {
+        val puts = mutableListOf<String>()
+        override val name = "RecordingLegacyVault (test)"
+        override val isOsBacked = false
+        override fun get(alias: String): ByteArray? = inner.get(alias)
+        override fun put(alias: String, keyBytes: ByteArray) {
+            puts += alias
+            if (failMarkerPut && alias.endsWith(KSafeReservedKeys.VAULT_SOFTWARE_FALLBACK)) {
+                throw IOException("simulated marker write failure")
+            }
+            inner.put(alias, keyBytes)
+        }
+        override fun delete(alias: String) = inner.delete(alias)
+    }
+
+    private inline fun withSoftwareOptOut(block: () -> Unit) {
+        val prev = System.getProperty("ksafe.jvm.keyVault")
+        System.setProperty("ksafe.jvm.keyVault", "software")
+        try {
+            block()
+        } finally {
+            if (prev == null) System.clearProperty("ksafe.jvm.keyVault") else System.setProperty("ksafe.jvm.keyVault", prev)
+        }
+    }
+
+    @Test
+    fun fallbackMint_writesCustodyMarkerBeforeKey() = withSoftwareOptOut {
+        val alias = "user:token"
+        val legacy = RecordingLegacyVault(DataStoreKeyVault(dataStore), failMarkerPut = false)
+        val engine = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, legacyOverride = legacy),
+        )
+
+        engine.encrypt(alias, "data".toByteArray())
+
+        assertEquals(
+            listOf("$alias.${KSafeReservedKeys.VAULT_SOFTWARE_FALLBACK}", alias),
+            legacy.puts,
+            "the custody marker must be durable before the key it describes",
+        )
+    }
+
+    @Test
+    fun fallbackMint_markerWriteFailure_mintsNoKey() = withSoftwareOptOut {
+        val alias = "user:token"
+        val store = DataStoreKeyVault(dataStore)
+        val legacy = RecordingLegacyVault(store, failMarkerPut = true)
+        val engine = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, legacyOverride = legacy),
+        )
+
+        assertFailsWith<IOException> { engine.encrypt(alias, "data".toByteArray()) }
+        assertNull(store.get(alias), "an unmarked fallback key must never reach the legacy vault")
     }
 }
