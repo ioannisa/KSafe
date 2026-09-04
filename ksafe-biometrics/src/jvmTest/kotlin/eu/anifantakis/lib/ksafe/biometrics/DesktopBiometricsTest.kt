@@ -43,6 +43,38 @@ class DesktopBiometricsTest {
         )
     }
 
+    /**
+     * A blank reason must never reach the OS layer: Apple's `evaluatePolicy` raises
+     * `NSInvalidArgumentException` for an empty `localizedReason`, and that raise kills the
+     * process instead of failing the call.
+     */
+    @Test
+    fun blankReason_reachesThePlatformAsTheBuiltInDefault() = runBlocking {
+        val seen = mutableListOf<String>()
+        desktopPromptOverrideForTest = { reason, _ -> seen += reason; true }
+
+        assertTrue(KSafeBiometrics.verifyBiometric(reason = ""))
+        assertTrue(KSafeBiometrics.verifyBiometric(reason = "   "))
+        assertTrue(KSafeBiometrics.verifyBiometric(reason = "Unlock the vault"))
+
+        assertEquals(
+            listOf("Authenticate to continue", "Authenticate to continue", "Unlock the vault"),
+            seen,
+        )
+    }
+
+    @Test
+    fun blankReason_isAlsoNormalisedByTheDirectDoor() {
+        val seen = mutableListOf<String>()
+        val latch = java.util.concurrent.CountDownLatch(1)
+        desktopPromptOverrideForTest = { reason, _ -> seen += reason; true }
+
+        KSafeBiometrics.verifyBiometricDirect(reason = "") { latch.countDown() }
+
+        assertTrue(latch.await(2, java.util.concurrent.TimeUnit.SECONDS), "callback within 2s")
+        assertEquals(listOf("Authenticate to continue"), seen)
+    }
+
     @Test
     fun promptSuccess_returnsTrue_andSeedsTheCache() = runBlocking {
         var prompts = 0

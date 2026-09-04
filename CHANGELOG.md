@@ -115,6 +115,11 @@ counter.value++
   already returned the real value. Such a read is now retried on a slow backoff, so the flow
   picks the value up on its own within about half a minute of unlock (sooner if the lock was
   brief), with no write needed.
+- **An empty biometric `reason` no longer terminates the process.** Passing `reason = ""` to
+  `verifyBiometric` / `verifyBiometricDirect` — typically a missing translation assigned to
+  `KSafeBiometrics.defaultReason` at startup — raised inside `LAContext.evaluatePolicy` and
+  killed the app on iOS, macOS and JVM Desktop on macOS, with no exception a caller could catch.
+  A blank reason now falls back to the built-in default before any platform call is made.
 
 ## [3.1.0] - 2026-08-24
 

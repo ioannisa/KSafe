@@ -127,7 +127,8 @@ internal object MacLocalAuthentication {
 
                 // NSString is autoreleased — covered by the pool around this setup block.
                 // LAContext retains what it needs before evaluatePolicy returns.
-                val reasonBytes = reason.toByteArray(Charsets.UTF_8)
+                // Last line of defence: an empty localizedReason raises through JNA and aborts the JVM.
+                val reasonBytes = promptReason(reason).toByteArray(Charsets.UTF_8)
                 val reasonBuf = Memory((reasonBytes.size + 1).toLong()).apply {
                     write(0, reasonBytes, 0, reasonBytes.size)
                     setByte(reasonBytes.size.toLong(), 0)

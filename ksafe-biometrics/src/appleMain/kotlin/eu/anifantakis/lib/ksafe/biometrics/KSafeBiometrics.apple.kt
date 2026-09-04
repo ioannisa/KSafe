@@ -114,7 +114,9 @@ private fun runLAContextEvaluate(
     // with a fixed string would ship one language to every locale. LAContext has no title/
     // subtitle — only the reason — so `title` has no Apple counterpart and is ignored.
     if (cancelLabel != null) context.localizedCancelTitle = cancelLabel
-    context.evaluatePolicy(laPolicy(allowDeviceCredentialFallback), localizedReason = reason) { success, _ ->
+    // Last line of defence: an empty localizedReason raises through interop and kills the process.
+    val safeReason = promptReason(reason)
+    context.evaluatePolicy(laPolicy(allowDeviceCredentialFallback), localizedReason = safeReason) { success, _ ->
         CoroutineScope(Dispatchers.Main).launch { onResult(success) }
     }
 }

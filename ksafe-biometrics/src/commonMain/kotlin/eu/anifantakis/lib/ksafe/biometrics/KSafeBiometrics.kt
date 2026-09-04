@@ -39,7 +39,7 @@ object KSafeBiometrics {
      * Windows-Hello / macOS message. Ignored on the web (the browser owns that dialog's text).
      * Set it at startup so the built-in English string never reaches a localized app.
      */
-    var defaultReason: String = "Authenticate to continue"
+    var defaultReason: String = DEFAULT_BIOMETRIC_REASON
 
     /**
      * Default label for the prompt's cancel/negative button. `null` (default) uses the
@@ -81,7 +81,7 @@ object KSafeBiometrics {
         title: String? = defaultTitle,
         cancelLabel: String? = defaultCancelLabel,
     ): Boolean = platformVerifyBiometric(
-        reason, authorizationDuration, allowDeviceCredentialFallback,
+        promptReason(reason), authorizationDuration, allowDeviceCredentialFallback,
         promptTextOrNull(title), promptTextOrNull(cancelLabel),
     )
 
@@ -96,7 +96,7 @@ object KSafeBiometrics {
         cancelLabel: String? = defaultCancelLabel,
         onResult: (Boolean) -> Unit,
     ) = platformVerifyBiometricDirect(
-        reason, authorizationDuration, allowDeviceCredentialFallback,
+        promptReason(reason), authorizationDuration, allowDeviceCredentialFallback,
         promptTextOrNull(title), promptTextOrNull(cancelLabel), onResult,
     )
 

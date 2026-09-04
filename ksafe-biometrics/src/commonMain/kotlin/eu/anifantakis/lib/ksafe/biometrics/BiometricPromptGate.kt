@@ -31,3 +31,11 @@ internal class BiometricPromptGate {
  * `localizedCancelTitle` and the web naming a passkey `""`.
  */
 internal fun promptTextOrNull(value: String?): String? = value?.takeIf { it.isNotBlank() }
+
+/**
+ * A blank reason kills the process on Apple (`evaluatePolicy` raises), so it falls back to the
+ * built-in default, never to the public [KSafeBiometrics.defaultReason] that may itself be blank.
+ */
+internal fun promptReason(reason: String): String = reason.ifBlank { DEFAULT_BIOMETRIC_REASON }
+
+internal const val DEFAULT_BIOMETRIC_REASON: String = "Authenticate to continue"

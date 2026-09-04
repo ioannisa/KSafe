@@ -23,6 +23,29 @@ class PromptTextTest {
         assertNull(promptTextOrNull(null), "null keeps meaning absent")
     }
 
+    /**
+     * The reason has no "absent" state — every platform needs a string — and Apple raises
+     * `NSInvalidArgumentException` inside `LAContext.evaluatePolicy` for an empty one, which
+     * terminates the process rather than returning `false`. So blank resolves to the built-in
+     * default instead of to null.
+     */
+    @Test
+    fun blankReasonFallsBackToTheBuiltInDefault() {
+        assertEquals("Authenticate to continue", promptReason(""))
+        assertEquals("Authenticate to continue", promptReason("   "))
+        assertEquals("Authenticate to continue", promptReason("\t\n"))
+    }
+
+    @Test
+    fun realReasonSurvivesVerbatim() {
+        assertEquals("Unlock", promptReason("Unlock"))
+    }
+
+    @Test
+    fun defaultReasonStartsAtTheBuiltInDefault() {
+        assertEquals("Authenticate to continue", KSafeBiometrics.defaultReason)
+    }
+
     @Test
     fun realTextSurvivesVerbatim() {
         assertEquals("My App", promptTextOrNull("My App"))
