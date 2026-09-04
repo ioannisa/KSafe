@@ -2,6 +2,7 @@
 
 package eu.anifantakis.lib.ksafe.internal
 
+import android.security.KeyStoreException as AndroidKeyStoreException
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
@@ -28,6 +29,7 @@ internal class AndroidKeystoreEncryption(
     private val config: KSafeConfig = KSafeConfig(),
     private val dekStore: WrappedDekStore,
     private val useSoftwareDek: Boolean = true,
+    private val loadKey: (String) -> SecretKey? = { alias -> keyStore.getKey(alias, null) as? SecretKey },
 ) : KSafeEncryption {
 
     companion object {
@@ -386,6 +388,16 @@ internal class AndroidKeystoreEncryption(
         }
     }
 
+    private fun isDefinitivelyUnreadable(e: java.security.UnrecoverableKeyException): Boolean {
+        val cause = e.cause
+        val onKeyStoreApi = android.os.Build.VERSION.SDK_INT >= 33
+        return isDefinitivelyUnreadableKey(
+            hasCause = cause != null,
+            keyStoreErrorCode = if (onKeyStoreApi) KeyStoreFault.errorCodeOf(cause) else null,
+            isSystemError = onKeyStoreApi && KeyStoreFault.isSystemErrorOf(cause),
+        )
+    }
+
     /** Returns an existing Keystore key; never creates one — throws if absent (decrypt path). */
     private fun getExistingSecretKey(identifier: String): SecretKey {
         keyCache[identifier]?.let { return it }
@@ -394,11 +406,12 @@ internal class AndroidKeystoreEncryption(
             keyCache[identifier]?.let { return it }
 
             // An alias can exist yet be unreadable (UnrecoverableKeyException after OS/keymaster
-            // changes). On the decrypt path treat it as "absent" so the canonical "No encryption
-            // key found" lets the orphan sweep reclaim the entry.
+            // changes). On the decrypt path treat a PROVEN-permanent one as "absent" so the
+            // canonical "No encryption key found" lets the orphan sweep reclaim the entry.
             val key = try {
-                keyStore.getKey(identifier, null) as? SecretKey
+                loadKey(identifier)
             } catch (e: java.security.UnrecoverableKeyException) {
+                if (!isDefinitivelyUnreadable(e)) throw keystoreLockedFailure(e)
                 null
             } ?: throw IllegalStateException(KSafeEngineMessage.noKeyFound(identifier))
             keyCache[identifier] = key
@@ -458,11 +471,12 @@ internal class AndroidKeystoreEncryption(
         synchronized(aliasLocks.forAlias(identifier)) {
             keyCache[identifier]?.let { return it }
 
-            // An existing-but-unreadable blob (UnrecoverableKeyException) self-heals on this create
-            // path: delete it and mint a fresh key (old ciphertext is unrecoverable regardless).
+            // A PROVEN-permanently-unreadable blob self-heals on this create path: delete it and
+            // mint a fresh key (old ciphertext is unrecoverable regardless).
             val existing = try {
-                keyStore.getKey(identifier, null) as? SecretKey
+                loadKey(identifier)
             } catch (e: java.security.UnrecoverableKeyException) {
+                if (!isDefinitivelyUnreadable(e)) throw keystoreLockedFailure(e)
                 deleteKeyInternal(identifier)
                 null
             }
@@ -613,12 +627,34 @@ internal class AndroidKeystoreEncryption(
 internal const val ANDROID_KEYSTORE_PROVIDER: String = "AndroidKeyStore"
 
 /**
- * An `InvalidKeyException` reported as the transient locked-Keystore failure the core retries on.
- * Every cipher-init site raises the identical message, so the phrase the classifier matches cannot
- * drift on one of them.
+ * The transient locked-Keystore failure the core retries on. Every site raises the identical
+ * message, so the phrase the classifier matches cannot drift on one of them.
  */
 private fun keystoreLockedFailure(cause: Throwable): IllegalStateException =
     IllegalStateException(
         "KSafe: Cannot access ${KSafeEngineMessage.KEYSTORE} key - ${KSafeEngineMessage.DEVICE_LOCKED}.",
         cause,
     )
+
+/** Reads the framework signals off a Keystore cause; own class so API 33 types load only there. */
+private object KeyStoreFault {
+    fun errorCodeOf(cause: Throwable?): Int? = (cause as? AndroidKeyStoreException)?.numericErrorCode
+    fun isSystemErrorOf(cause: Throwable?): Boolean = (cause as? AndroidKeyStoreException)?.isSystemError == true
+}
+
+/**
+ * Whether an `UnrecoverableKeyException` PROVES the alias is permanently unreadable. Keystore
+ * reports transient daemon faults through the same exception, and a wrong "permanent" verdict
+ * destroys every value the key protects while a wrong "transient" one only retries.
+ */
+internal fun isDefinitivelyUnreadableKey(
+    hasCause: Boolean,
+    keyStoreErrorCode: Int?,
+    isSystemError: Boolean,
+): Boolean {
+    // AndroidKeyStoreSpi re-wraps a permanently invalidated key as a cause-less exception.
+    if (!hasCause) return true
+    if (keyStoreErrorCode == null || isSystemError) return false
+    return keyStoreErrorCode == AndroidKeyStoreException.ERROR_KEY_CORRUPTED ||
+        keyStoreErrorCode == AndroidKeyStoreException.ERROR_KEY_DOES_NOT_EXIST
+}

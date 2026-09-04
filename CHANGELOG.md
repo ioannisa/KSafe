@@ -40,6 +40,16 @@ All notable changes to KSafe will be documented in this file.
   `put`, `delete`, `clearAll` or `rotateKeys` whose request was the one lost waited forever. The
   consumer now polls the queue inside the window and sleeps in short slices between polls, so no
   receiver is ever parked where the timer can cancel it.
+- **Android: a transient Keystore failure no longer destroys every encrypted value.** The Android
+  Keystore reports a permanently unreadable key and a temporary daemon fault — keystore2
+  restarting, a busy backend, a StrongBox HAL that has not come up yet — through the very same
+  `UnrecoverableKeyException`, and KSafe treated all of them as permanent. One such hiccup at cold
+  start deleted the master key and its wrapped data key and minted fresh ones, silently and
+  irreversibly making every value written before it unreadable. Only a fault the Keystore proves
+  is permanent now leads to a key being deleted and re-minted; anything else surfaces as the same
+  retryable Keystore error a locked device raises, so the value survives and the read can be
+  retried. The Keystore only reports that proof from Android 13, so below it no fault is assumed
+  permanent.
 
 ## [3.1.0] - 2026-08-24
 
