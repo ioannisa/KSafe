@@ -23,6 +23,15 @@ All notable changes to KSafe will be documented in this file.
   Previously a crash or a swallowed write between the two commits left an unmarked fallback key,
   which the next OS-backed launch migrated over the real OS-vault key, making every value
   encrypted under the real key unreadable.
+- **JVM: `clearAll()` on a store with an `appNamespace` is no longer undone by the next
+  launch.** The un-namespaced store files were copied into the namespace directory on every
+  construction, gated only on the destination file being absent. After `clearAll()` had removed
+  the drained fallback archive and its marker, the next launch re-copied the still-present
+  un-namespaced fallback ciphertext and plaintext key map and drained every pre-wipe value back
+  into the freshly wiped store; the same re-copy also recreated those two files in the namespace
+  directory on every normal launch. The carry-forward is now one-shot: once the cohort has been
+  fully published (or there was nothing to carry), a marker in the destination directory ends it,
+  and a failed publish leaves no marker so the next launch retries.
 
 ## [3.1.0] - 2026-08-24
 

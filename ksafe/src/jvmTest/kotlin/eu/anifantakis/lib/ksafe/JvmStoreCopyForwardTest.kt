@@ -168,4 +168,61 @@ class JvmStoreCopyForwardTest {
             "copies must keep source mtimes so a newer fallback stays newer than the marker",
         )
     }
+
+    @Test
+    fun importOnce_publishesTheCohort_andNeverReCopiesAfterTheMarker() {
+        val src = dir("src6").also {
+            File(it, "$base.ksafe.json").writeText("{\"data\":1}")
+            File(it, "$base.ksafe-keys.json").writeText("{\"keys\":1}")
+        }
+        val dst = dir("dst6")
+
+        importStoreFilesOnce(listOf(src), dst, base)
+
+        val marker = File(dst, base + NAMESPACE_IMPORT_MARKER_SUFFIX)
+        assertTrue(marker.exists(), "a fully published import must leave the one-shot marker")
+        assertTrue(File(dst, "$base.ksafe-keys.json").exists(), "the cohort must be published")
+
+        // A later wipe removes the copies; the next launch must NOT bring them back.
+        File(dst, "$base.ksafe.json").delete()
+        File(dst, "$base.ksafe-keys.json").delete()
+        importStoreFilesOnce(listOf(src), dst, base)
+        assertFalse(File(dst, "$base.ksafe.json").exists(), "a completed import must not be repeated")
+        assertFalse(File(dst, "$base.ksafe-keys.json").exists(), "a completed import must not re-copy the plaintext key map")
+    }
+
+    @Test
+    fun importOnce_failedPublish_leavesNoMarker_soTheNextLaunchRetries() {
+        val src = dir("src7").also {
+            File(it, "$base.ksafe.json").writeText("{\"data\":1}")
+            File(it, "$base.ksafe-keys.json").writeText("{\"keys\":1}")
+        }
+        val dst = dir("dst7")
+        val marker = File(dst, base + NAMESPACE_IMPORT_MARKER_SUFFIX)
+
+        var copies = 0
+        importStoreFilesOnce(listOf(src), dst, base) { s, d ->
+            if (++copies == 2) throw java.io.IOException("injected copy failure")
+            s.copyTo(d, overwrite = true)
+        }
+        assertFalse(marker.exists(), "a failed publish must not be marked as imported")
+
+        importStoreFilesOnce(listOf(src), dst, base)
+        assertTrue(File(dst, "$base.ksafe.json").exists(), "retry must publish the data file")
+        assertTrue(File(dst, "$base.ksafe-keys.json").exists(), "retry must publish the key sidecar")
+        assertTrue(marker.exists(), "the successful retry must leave the marker")
+    }
+
+    @Test
+    fun importOnce_nothingToCopy_stillLeavesTheMarker() {
+        val src = dir("src8")
+        val dst = dir("dst8")
+
+        importStoreFilesOnce(listOf(src), dst, base)
+
+        assertTrue(
+            File(dst, base + NAMESPACE_IMPORT_MARKER_SUFFIX).exists(),
+            "an empty source must still end the one-shot import",
+        )
+    }
 }

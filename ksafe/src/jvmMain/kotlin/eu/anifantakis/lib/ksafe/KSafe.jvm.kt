@@ -174,12 +174,12 @@ private fun buildJvmKSafe(
         File(resolvedBaseDir, explicitNamespace).also { nsDir ->
             if (!nsDir.exists()) nsDir.mkdirs()
             secureDirectory(nsDir)
-            copyStoreFilesForward(listOfNotNull(legacyNamespaceDir, resolvedBaseDir), nsDir, baseFileName)
+            importStoreFilesOnce(listOfNotNull(legacyNamespaceDir, resolvedBaseDir), nsDir, baseFileName)
         }
     } else {
         // A canonicalized-away token (e.g. whitespace-only) may still have pre-3.0.0 data in
         // its old subdir; surface it at the un-namespaced path it now maps to.
-        if (legacyNamespaceDir != null) copyStoreFilesForward(listOf(legacyNamespaceDir), resolvedBaseDir, baseFileName)
+        if (legacyNamespaceDir != null) importStoreFilesOnce(listOf(legacyNamespaceDir), resolvedBaseDir, baseFileName)
         resolvedBaseDir
     }
 
@@ -296,7 +296,8 @@ private val storeCohortSuffixes = listOf(
  * migration, stranding its values. The `.migration-pending` marker is carried too: without
  * it a namespaced first launch after an un-namespaced transient migration failure reverts to
  * "fallback wins" and can overwrite the newer OS-backed writes the copied `.preferences_pb`
- * holds.
+ * holds. Returns true once the cohort is fully published (or there was nothing to copy), false
+ * when a copy or rename failed and the next launch must retry.
  */
 internal fun copyStoreFilesForward(
     srcDirs: List<File>,
@@ -304,10 +305,10 @@ internal fun copyStoreFilesForward(
     baseFileName: String,
     rename: (File, File) -> Boolean = { tmp, dst -> tmp.renameTo(dst) },
     copy: (File, File) -> Unit = { src, dst -> src.copyTo(dst, overwrite = true) },
-) {
+): Boolean {
     val srcDir = srcDirs.firstOrNull { dir ->
         storeCohortSuffixes.any { File(dir, baseFileName + it).exists() }
-    } ?: return
+    } ?: return true
     val staged = ArrayList<Pair<File, File>>()
     for (suffix in storeCohortSuffixes) {
         val dst = File(dstDir, baseFileName + suffix)
@@ -322,7 +323,7 @@ internal fun copyStoreFilesForward(
         } catch (_: Throwable) {
             runCatching { tmp.delete() }
             staged.forEach { (t, _) -> runCatching { t.delete() } }
-            return
+            return false
         }
     }
     for ((index, entry) in staged.withIndex()) {
@@ -333,7 +334,26 @@ internal fun copyStoreFilesForward(
         // whole point of the order above. Dropping the rest instead leaves those names absent
         // for the next launch to re-copy; what is published stays a valid prefix of the cohort.
         staged.drop(index).forEach { (rest, _) -> runCatching { rest.delete() } }
-        return
+        return false
+    }
+    return true
+}
+
+/** Named outside clearAll()'s residue sweep: no `<base>.ksafe` prefix, no `.fwd-tmp` suffix. */
+internal const val NAMESPACE_IMPORT_MARKER_SUFFIX: String = ".ns-imported"
+
+/** One-shot carry-forward: a marker written after a complete publish keeps a later clearAll() from re-arming it. */
+internal fun importStoreFilesOnce(
+    srcDirs: List<File>,
+    dstDir: File,
+    baseFileName: String,
+    rename: (File, File) -> Boolean = { tmp, dst -> tmp.renameTo(dst) },
+    copy: (File, File) -> Unit = { src, dst -> src.copyTo(dst, overwrite = true) },
+) {
+    val marker = File(dstDir, baseFileName + NAMESPACE_IMPORT_MARKER_SUFFIX)
+    if (marker.exists()) return
+    if (copyStoreFilesForward(srcDirs, dstDir, baseFileName, rename, copy)) {
+        runCatching { marker.createNewFile() }
     }
 }
 
