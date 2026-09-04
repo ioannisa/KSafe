@@ -5,11 +5,11 @@ import eu.anifantakis.lib.ksafe.internal.KSafeCore.PendingWrite
 import eu.anifantakis.lib.ksafe.internal.ksafeLogError
 import kotlin.time.TimeSource
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.Duration.Companion.milliseconds
 
 internal fun KSafeCore.startWriteConsumer() {
     writeScope.launch {
@@ -32,7 +32,9 @@ internal fun KSafeCore.startWriteConsumer() {
                 while (batch.size < maxBatchSize) {
                     val remaining = writeCoalesceWindowMs - windowStart.elapsedNow().inWholeMilliseconds
                     if (remaining <= 0) break
-                    val next = withTimeoutOrNull(remaining) { writeChannel.receive() } ?: break
+                    // Poll, never park: a timer-cancelled receive drops an element already handed to it.
+                    val next = writeChannel.tryReceive().getOrNull()
+                    if (next == null) { delay(minOf(remaining, 2L).milliseconds); continue }
                     batch.add(next)
                     if (next.completion != null) break
                 }

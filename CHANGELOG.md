@@ -32,6 +32,14 @@ All notable changes to KSafe will be documented in this file.
   directory on every normal launch. The carry-forward is now one-shot: once the cohort has been
   fully published (or there was nothing to carry), a marker in the destination directory ends it,
   and a failed publish leaves no marker so the next launch retries.
+- **A write arriving at the edge of the coalesce window can no longer be lost (all platforms).**
+  The write consumer waited for the next queued write inside a timed receive; when the window
+  timer fired after a sender had already handed that receive its element but before the consumer
+  was scheduled again, the receive was cancelled and the element vanished from both the queue and
+  the batch. A fire-and-forget write then survived only in memory until restart, and a suspending
+  `put`, `delete`, `clearAll` or `rotateKeys` whose request was the one lost waited forever. The
+  consumer now polls the queue inside the window and sleeps in short slices between polls, so no
+  receiver is ever parked where the timer can cancel it.
 
 ## [3.1.0] - 2026-08-24
 
