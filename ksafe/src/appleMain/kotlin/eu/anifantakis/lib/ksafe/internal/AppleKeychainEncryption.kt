@@ -44,9 +44,11 @@ import platform.Security.SecKeyCreateEncryptedData
 import platform.Security.SecKeyCreateRandomKey
 import platform.Security.SecKeyRef
 import platform.Security.errSecAuthFailed
+import platform.Security.errSecDecode
 import platform.Security.errSecInteractionNotAllowed
 import platform.Security.errSecItemNotFound
 import platform.Security.errSecNotAvailable
+import platform.Security.errSecParam
 import platform.Security.errSecSuccess
 import platform.Security.errSecUserCanceled
 import platform.Security.kSecAttrAccessible
@@ -206,10 +208,7 @@ internal class AppleKeychainEncryption(
         internal fun keychainLookupOrder(keyId: String): List<String> =
             listOf("$SE_KEY_TAG_PREFIX$keyId", keyId)
 
-        /**
-         * OSStatus codes whose SE/unwrap failure is transient (NOT corruption): the SE key must
-         * be preserved and the error propagated rather than regenerated.
-         */
+        /** OSStatus codes whose SE/unwrap failure is transient: the error is branded retryable. */
         private val TRANSIENT_OSSTATUS: Set<Long> = setOf(
             errSecInteractionNotAllowed.toLong(), // -25308: device locked
             errSecNotAvailable.toLong(),          // -25291: keychain/securityd not ready
@@ -220,9 +219,9 @@ internal class AppleKeychainEncryption(
         private val OSSTATUS_TAG = Regex("""osstatus=(-?\d+)""")
 
         /**
-         * True when an unwrap/SE error is transient and should propagate rather than trigger
-         * destructive cleanup. Keys on the locale-independent `[osstatus=<code>]` tag; the
-         * English-substring check is only a fallback for messages carrying no tag.
+         * True when an unwrap/SE error is transient. Keys on the locale-independent
+         * `[osstatus=<code>]` tag; the English-substring check is only a fallback for messages
+         * carrying no tag.
          */
         internal fun isTransientUnwrapFailure(message: String?): Boolean {
             val msg = message ?: return false
@@ -230,6 +229,18 @@ internal class AppleKeychainEncryption(
             if (code != null && code in TRANSIENT_OSSTATUS) return true
             return msg.contains(KSafeEngineMessage.DEVICE_LOCKED, ignoreCase = true) ||
                 msg.contains("interaction", ignoreCase = true)
+        }
+
+        /** Codes that prove the wrapped blob is unusable, so replacing it loses nothing readable. */
+        private val CORRUPT_ENVELOPE_OSSTATUS: Set<Long> = setOf(
+            errSecDecode.toLong(), // -26275: the blob does not decode
+            errSecParam.toLong(),  // -50: the blob is not a valid envelope for this key
+        )
+
+        /** True only on positive proof; an unknown code or an untagged CFError must not destroy the SE key pair. */
+        internal fun isProvablyCorruptEnvelope(message: String?): Boolean {
+            val code = OSSTATUS_TAG.find(message ?: return false)?.groupValues?.get(1)?.toLongOrNull()
+            return code != null && code in CORRUPT_ENVELOPE_OSSTATUS
         }
 
         /**
@@ -684,7 +695,8 @@ internal class AppleKeychainEncryption(
 
     /**
      * Gets an encryption key, creating one on miss. With [hardwareIsolated] the key is SE-wrapped
-     * (ECIES); transient failures propagate, genuine SE-unavailable errors fall back to plain.
+     * (ECIES); failures on an existing key propagate, genuine SE-unavailable errors fall back to
+     * plain.
      */
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     internal fun getOrCreateKeychainKey(
@@ -713,8 +725,9 @@ internal class AppleKeychainEncryption(
                             getOrCreateKeychainKeyPlain(keyId, requireUnlockedDevice)
                         isTransientUnwrapFailure(msg) ||
                             msg.contains("Keychain error") ||
-                            // A store failure is NOT "SE unavailable": don't fall back to a
-                            // divergent plain key under the same identifier.
+                            // Neither an unwrap nor a store failure is "SE unavailable": falling
+                            // back would downgrade the alias to a divergent plain key.
+                            msg.contains("Failed to unwrap AES key with Secure Enclave") ||
                             msg.contains("Failed to store key in Keychain") -> throw e
                         // SE genuinely unavailable (simulator, old device, no entitlements).
                         else -> getOrCreateKeychainKeyPlain(keyId, requireUnlockedDevice)
@@ -741,8 +754,8 @@ internal class AppleKeychainEncryption(
                 try {
                     return unwrapAesKey(sePrivateKey, wrappedBytes)
                 } catch (e: IllegalStateException) {
-                    if (isTransientUnwrapFailure(e.message)) throw e
-                    // Permanent failure → clean up and recreate below.
+                    if (!isProvablyCorruptEnvelope(e.message)) throw e
+                    // Provably corrupt envelope → clean up and recreate below.
                     deleteSecureEnclaveKey(seTag(keyId))
                     keychain.delete(seWrappedAccount(keyId))
                 } finally {

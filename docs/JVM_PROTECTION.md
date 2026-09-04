@@ -408,10 +408,13 @@ path, active only when the picked vault is OS-backed:
   fallback namespaces — `legacyFallbackNamespaces` returns, in probe order, the
   namespace an older release resolved from this same configuration before the
   token was canonicalised (`legacyResolvedJvmAppNamespace`; absent when the two
-  agree), then `derived`, then `"shared"`, minus whichever equals the current
-  one. `derived` is `legacyDerivedJvmNamespace()`, reproducing the removed
-  `sun.java.command` derivation byte-for-byte. Twins are built lazily and only
-  in production wiring.
+  agree), then the namespaces the `-Dksafe.appNamespace` / `KSAFE_APP_NAMESPACE`
+  tiers would have resolved when a `KSafeConfig.appNamespace` outranks them
+  (`shadowedJvmAppNamespaces` — never reclaimed, and only while the property or
+  variable is still set), then `derived`, then `"shared"`, minus whichever equals
+  the current one. `derived` is `legacyDerivedJvmNamespace()`, reproducing the
+  removed `sun.java.command` derivation byte-for-byte. Twins are built lazily and
+  only in production wiring.
 - **Forward migration on a hit.** When a twin has the key, KSafe writes it into
   the active vault, then read-back-verifies. The recovered bytes are always
   returned so this session decrypts even if the copy hiccups (the migration just

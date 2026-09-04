@@ -8,6 +8,7 @@ import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVault
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVaultProvider
 import eu.anifantakis.lib.ksafe.internal.keyvault.legacyResolvedJvmAppNamespace
 import eu.anifantakis.lib.ksafe.internal.keyvault.resolveJvmAppNamespace
+import eu.anifantakis.lib.ksafe.internal.keyvault.shadowedJvmAppNamespaces
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
@@ -50,6 +51,7 @@ internal class JvmSoftwareEncryption(
             },
             resolveJvmAppNamespace(config.appNamespace),
             legacyAppNamespace = legacyResolvedJvmAppNamespace(config.appNamespace),
+            shadowedAppNamespaces = shadowedJvmAppNamespaces(config.appNamespace),
         )
 
     @PublishedApi

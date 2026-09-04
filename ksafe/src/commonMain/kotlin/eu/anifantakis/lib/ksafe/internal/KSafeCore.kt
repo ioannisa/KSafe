@@ -221,6 +221,9 @@ internal class KSafeCore(
     @PublishedApi
     internal var postCommitRepairHook: ((String) -> Unit)? = null
 
+    /** Test-only seam fired with a batch's keys after applyBatch; null in production. Runs under commitMutex: never call a suspend write from it. */
+    internal var postApplyBatchHook: ((Set<String>) -> Unit)? = null
+
     /** `true` when the primary [memoryCache] holds Base64 ciphertext at rest. */
     internal val cacheHoldsCiphertext: Boolean =
         memoryPolicy == KSafeMemoryPolicy.ENCRYPTED ||

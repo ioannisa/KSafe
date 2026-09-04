@@ -26,6 +26,18 @@ internal const val KSAFE_LEGACY_KEY_RECORD_PREFIX: String = "ksafe_key_"
  */
 internal const val KSAFE_RESERVED_NAMESPACE_PREFIX: String = "__ksafe_"
 
+/**
+ * Record-name prefixes of the slots `getOrCreateSecret` reserves. The writer and the startup orphan
+ * sweep that must never reap one spell them from here.
+ */
+internal object KSafeSecretSlots {
+    /** Slot for a `[A-Za-z0-9_]` key: the logical key verbatim. */
+    const val PLAIN_PREFIX: String = "ksafe_secret_"
+
+    /** Slot for any other key: the UTF-8 bytes of the key in lowercase hex. */
+    const val HEX_PREFIX: String = "ksafe_secretx_"
+}
+
 private val STORE_FILE_NAME_PATTERN = Regex("[a-z][a-z0-9_]*")
 
 /** Validates a factory `fileName`; null (the default store) is always accepted. */

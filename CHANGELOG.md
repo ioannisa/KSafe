@@ -72,6 +72,40 @@ counter.value++
   suspended forever holding the gate, and every later prompt in the process queued behind it. The
   host is now re-checked on the main thread immediately before the prompt is shown and the call
   fails with `BiometricAuthException` instead.
+- **iOS/macOS: an unexpected Secure Enclave unwrap failure no longer destroys a hardware-isolated
+  key.** Only a handful of error codes were recognised as temporary, so any other failure while
+  unwrapping the Enclave-wrapped AES key — a securityd or SEP hiccup, or an error carrying no
+  status code at all — was read as a corrupt key: the Enclave key pair and the wrapped key were
+  deleted and re-created, making every `HARDWARE_ISOLATED` value for that alias unreadable, and a
+  failed re-creation then fell back to a plain Keychain key under the same identifier, silently
+  downgrading the alias for good. Only an envelope the system proves is undecodable is now
+  replaced; every other failure surfaces as an error with both halves of the key intact.
+- **A `getOrCreateSecret` secret is no longer deleted by the startup orphan sweep.** A secret
+  slot is an ordinary encrypted entry, so when its backing key was gone — an Android Auto Backup
+  restore onto a new phone, a Keystore invalidation, an evicted web CryptoKey — the sweep reclaimed
+  the ciphertext, and the next `getOrCreateSecret` call found nothing to refuse and minted a fresh
+  random secret. Secret slots are now exempt from the sweep, so the ciphertext survives and
+  `getOrCreateSecret` throws its documented refuse-to-rotate error instead of handing back a
+  passphrase that opens nothing. Stores whose slot an earlier version already reaped are not
+  recoverable.
+- **JVM: adding an `appNamespace` no longer hides keys stored under `-Dksafe.appNamespace` or
+  `KSAFE_APP_NAMESPACE`.** An app running with only the system property or environment variable
+  set kept its encryption keys under that namespace while its data stayed un-namespaced. Setting
+  `KSafeConfig.appNamespace` in a later release made the config value win: the data was copied
+  forward into the new namespace directory, the old key namespace was never probed, and every
+  encrypted entry read back as its default before the startup sweep deleted it, while the keys sat
+  untouched in the OS vault. That namespace is now probed as a read-only recovery source whenever
+  the property or variable is still set, and never deleted from, since another process may still
+  run with it.
+- **A same-value rewrite can no longer leave a key's cache holding ciphertext its disk never
+  got.** A write that re-saved a key's current value while an earlier write for the same key was
+  still committing could leave the in-memory copy holding the earlier write's ciphertext while
+  disk held the later one. When the two writes routed differently, an unlock-policy change or a
+  hardware-isolated rewrite, the entry then read back as its default for the rest of the session;
+  with identical routing it stayed readable but wedged at the next `rotateKeys()`, whose cache
+  check no longer matched. The post-commit plaintext-to-ciphertext cache swap is now anchored on
+  write ownership rather than on the staged value, so a superseded batch leaves the newer writer's
+  state alone.
 
 ## [3.1.0] - 2026-08-24
 

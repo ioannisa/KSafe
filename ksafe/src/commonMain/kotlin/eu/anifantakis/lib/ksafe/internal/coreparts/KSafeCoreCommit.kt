@@ -460,12 +460,14 @@ internal suspend fun KSafeCore.processWrites(batchIn: List<PendingWrite>) {
         }
     }
 
+    postApplyBatchHook?.invoke(finalByKey.keys) // test-only interleaving seam; null in production
+
     // Reclaim ownership to each key's commit winner so the post-commit cache re-assert below
     // isn't gated out by a coalesced-out same-batch loser that still holds the token.
     reclaimBatchOwnershipToSurvivors(batch, finalByKey.values)
 
     // Post-commit cache maintenance. Ciphertext-at-rest policies swap plaintext → ciphertext
-    // under a CAS guard so a newer putDirect issued mid-batch isn't overwritten. Then REPAIR:
+    // under an ownership gate so a newer putDirect issued mid-batch isn't overwritten. Then REPAIR:
     // a clearAll ordered before this op may have wiped its optimistic in-memory state, so an op
     // still owning the key (writeOwners token) re-asserts it via putIfAbsent — restoring a wiped
     // slot without touching a newer write's value. Failed-encrypt keys have no ciphertext.
@@ -474,14 +476,23 @@ internal suspend fun KSafeCore.processWrites(batchIn: List<PendingWrite>) {
             is PendingWrite.Encrypted -> if (op.userKey !in encryptFailures) {
                 // Strict entries always settle to ciphertext in cache (even under a plaintext
                 // policy) so reads native-decrypt and enforce the lock; mirrors updateCache.
+                // Anchored on OWNERSHIP, not value: every entry point stages the identical jsonString,
+                // so a value-only CAS lets a superseded batch overwrite a newer same-valued writer.
+                val owns = writeOwners[op.userKey] === op.writeToken
                 val cacheValue: Any = if (cacheHoldsCiphertext || op.requireUnlockedDevice) {
                     val base64 = KSafeBase64.encode(encryptedCiphertext[op.userKey]!!)
-                    memoryCache.replaceIf(op.rawCacheKey, op.jsonString, base64)
+                    if (owns) {
+                        memoryCache.replaceIf(op.rawCacheKey, op.jsonString, base64)
+                        // Token flipped mid-swap: give the newer writer its plaintext back.
+                        if (writeOwners[op.userKey] !== op.writeToken) {
+                            memoryCache.replaceIf(op.rawCacheKey, base64, op.jsonString)
+                        }
+                    }
                     base64
                 } else {
                     op.jsonString
                 }
-                if (writeOwners[op.userKey] === op.writeToken) {
+                if (owns) {
                     val protLiteral = KeySafeMetadataManager.protectionToLiteral(op.protection)
                     val meta = encMetaForWrite(op.protection, op.requireUnlockedDevice, op.keyGeneration)
                     // A clamped write's enqueue-time optimistic meta still names the stale

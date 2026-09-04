@@ -7,6 +7,7 @@ import eu.anifantakis.lib.ksafe.internal.KSafeCore.Companion.aliasWithGeneration
 import eu.anifantakis.lib.ksafe.internal.KSafeCore.Companion.encMetaFromRaw
 import eu.anifantakis.lib.ksafe.internal.KSafeCore.EncMeta
 import eu.anifantakis.lib.ksafe.internal.KSafeEngineMessage
+import eu.anifantakis.lib.ksafe.internal.KSafeSecretSlots
 import eu.anifantakis.lib.ksafe.internal.KeySafeMetadataManager
 import eu.anifantakis.lib.ksafe.internal.StorageOp
 import eu.anifantakis.lib.ksafe.internal.StoredValue
@@ -123,6 +124,10 @@ internal suspend fun KSafeCore.cleanupOrphanedCiphertext() {
         if (rawKey.startsWith(legacyEncryptedPrefix)) return@mapNotNull null
         if (!rawKey.startsWith(KeySafeMetadataManager.VALUE_PREFIX)) return@mapNotNull null
         val userKey = rawKey.removePrefix(KeySafeMetadataManager.VALUE_PREFIX)
+        // Reaping a getOrCreateSecret slot turns its refuse-to-rotate guard into a silent new secret.
+        if (userKey.startsWith(KSafeSecretSlots.PLAIN_PREFIX) ||
+            userKey.startsWith(KSafeSecretSlots.HEX_PREFIX)
+        ) return@mapNotNull null
         val protection = protectionByKey[userKey] ?: return@mapNotNull null
         val encryptedString = (value as? StoredValue.Text)?.value ?: return@mapNotNull null
         // Route the probe from the SAME snapshot's metadata, not a stale encMetaMap generation a

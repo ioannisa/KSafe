@@ -1,5 +1,6 @@
 package eu.anifantakis.lib.ksafe
 
+import eu.anifantakis.lib.ksafe.internal.KSafeSecretSlots
 import eu.anifantakis.lib.ksafe.internal.secureRandomBytes
 import eu.anifantakis.lib.ksafe.internal.toLowercaseHex
 import kotlinx.coroutines.CancellationException
@@ -39,10 +40,14 @@ suspend fun KSafe.getOrCreateSecret(
     // Injective slot: [A-Za-z0-9_] keys use "ksafe_secret_<key>", others hex under "ksafe_secretx_";
     // the '_' vs 'x' prefix split keeps hex and plain slots from ever colliding.
     val safeKey = key.all { it == '_' || it in '0'..'9' || it in 'a'..'z' || it in 'A'..'Z' }
-    val storageKey = if (safeKey) "ksafe_secret_$key" else "ksafe_secretx_${hexEncodeUtf8(key)}"
+    val storageKey = if (safeKey) {
+        KSafeSecretSlots.PLAIN_PREFIX + key
+    } else {
+        KSafeSecretSlots.HEX_PREFIX + hexEncodeUtf8(key)
+    }
     // Collision-prone legacy slot ('_'-collapsed); the pre-2.2.0 migration source for special-char keys.
     val collapsedKey = key.replace(Regex("[^a-zA-Z0-9_]"), "_")
-    val legacyStorageKey = "ksafe_secret_$collapsedKey"
+    val legacyStorageKey = KSafeSecretSlots.PLAIN_PREFIX + collapsedKey
     // Marks "ksafe_secret_<name>" as a live safe-key slot, so a special-char sibling whose collapsed
     // name equals <name> can't misread it (via the legacy probe) as its own secret and silently share it.
     val safeOwnerKey = "ksafe_secretowner_$key"

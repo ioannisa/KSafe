@@ -139,6 +139,11 @@ internal class JvmKeyVaultProvider(
      * instance may still own keys under it.
      */
     private val legacyAppNamespace: String? = null,
+    /**
+     * The namespaces the property/env tiers would have resolved, shadowed by an explicit
+     * `KSafeConfig.appNamespace` (see [shadowedJvmAppNamespaces]). Probe-only.
+     */
+    private val shadowedAppNamespaces: List<String> = emptyList(),
     /** Test seam: force a specific vault and skip OS detection. */
     forced: JvmKeyVault? = null,
     /** Replaces the default software vault (JSON-file fallback supplies a [FileKeyVault]). */
@@ -163,6 +168,8 @@ internal class JvmKeyVaultProvider(
      * in probe order. Takes precedence over the single-candidate seams.
      */
     private val legacyNamespaceCandidatesForTest: List<Pair<JvmKeyVault, String?>>? = null,
+    /** Test seam: builds the twin for a computed probe namespace, in place of OS detection. */
+    private val legacyNamespaceVaultFactoryForTest: ((String) -> JvmKeyVault?)? = null,
 ) {
     private val dataStoreForTwin: DataStore<Preferences>? = dataStore
 
@@ -307,11 +314,18 @@ internal class JvmKeyVaultProvider(
     private val legacyProbes: List<Pair<JvmKeyVault, String?>> by lazy {
         legacyNamespaceCandidatesForTest?.let { return@lazy it }
         legacyNamespaceCandidateForTest?.let { return@lazy listOf(it to legacyNamespaceNameForTest) }
-        if (usingTestSeams) return@lazy emptyList()
-        if (!picked.isOsBacked) return@lazy emptyList()
+        val factory = legacyNamespaceVaultFactoryForTest
+        if (factory == null && (usingTestSeams || !picked.isOsBacked)) return@lazy emptyList()
         val os = System.getProperty("os.name").orEmpty().lowercase()
-        legacyFallbackNamespaces(appNamespace, legacyDerivedJvmNamespace(), legacyAppNamespace).mapNotNull { ns ->
-            buildOsVault(os, ns, dataStoreForTwin)?.let { it to ns }
+        legacyFallbackNamespaces(
+            appNamespace,
+            legacyDerivedJvmNamespace(),
+            legacyAppNamespace,
+            shadowedAppNamespaces,
+        ).mapNotNull { ns ->
+            // Tagged with the shared default: the one tag mayReclaimFrom always refuses.
+            val tag = if (ns in shadowedAppNamespaces) DEFAULT_JVM_NAMESPACE else ns
+            (if (factory != null) factory(ns) else buildOsVault(os, ns, dataStoreForTwin))?.let { it to tag }
         }
     }
 
@@ -319,8 +333,10 @@ internal class JvmKeyVaultProvider(
      * False for namespaces that may still have a live owner — the shared default (a
      * co-existing no-namespace instance) and the pre-canonicalization [legacyAppNamespace]
      * (a not-yet-upgraded instance of this same app) — so probe-recovery copies from them
-     * but never reclaim-deletes. `null` stands for a derived legacy namespace (test seams),
-     * which has no live owner and stays reclaimable.
+     * but never reclaim-deletes. The property/env namespaces an override shadows are tagged
+     * as the shared default by [legacyProbes], so the same refusal covers them. `null` stands
+     * for a derived legacy namespace (test seams), which has no live owner and stays
+     * reclaimable.
      */
     private fun mayReclaimFrom(sourceNamespace: String?): Boolean =
         sourceNamespace != DEFAULT_JVM_NAMESPACE &&
@@ -486,13 +502,17 @@ internal const val DEFAULT_JVM_NAMESPACE = "shared"
  * minus whichever equals [currentNamespace]. An explicit `appNamespace` probes
  * `[derived, "shared"]` since an app that ran un-namespaced holds keys under `"shared"`
  * while a stable-launcher app that later set one holds them under the derived.
+ *
+ * [shadowedNamespaces] sit between the two: they were the active namespace until the
+ * override, so they outrank the launcher-derived guess.
  */
 internal fun legacyFallbackNamespaces(
     currentNamespace: String,
     derivedNamespace: String?,
     legacyConfigNamespace: String? = null,
+    shadowedNamespaces: List<String> = emptyList(),
 ): List<String> =
-    listOfNotNull(legacyConfigNamespace, derivedNamespace, DEFAULT_JVM_NAMESPACE)
+    (listOfNotNull(legacyConfigNamespace) + shadowedNamespaces + listOfNotNull(derivedNamespace, DEFAULT_JVM_NAMESPACE))
         .filter { it != currentNamespace }
         .distinct()
 
@@ -542,6 +562,22 @@ internal fun legacyResolvedJvmAppNamespace(override: String?): String? {
         ?: System.getenv("KSAFE_APP_NAMESPACE").cleanNamespaceToken()
         ?: DEFAULT_JVM_NAMESPACE
     return legacy.takeIf { it != resolveJvmAppNamespace(override) }
+}
+
+/**
+ * The namespaces the property (`-Dksafe.appNamespace`) and env (`KSAFE_APP_NAMESPACE`) tiers of
+ * [resolveJvmAppNamespace] would have resolved, once [override] outranks them — property first,
+ * each in both the canonical and the frozen pre-3.0.0 spelling. Probe-only, never reclaimed, and
+ * only recoverable while the property/env is still set.
+ */
+internal fun shadowedJvmAppNamespaces(override: String?): List<String> {
+    val current = canonicalJvmNamespaceToken(override) ?: return emptyList()
+    return listOfNotNull(
+        System.getProperty("ksafe.appNamespace"),
+        System.getenv("KSAFE_APP_NAMESPACE"),
+    ).flatMap { listOfNotNull(canonicalJvmNamespaceToken(it), it.cleanNamespaceToken()) }
+        .filter { it != current }
+        .distinct()
 }
 
 /**
