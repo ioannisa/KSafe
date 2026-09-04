@@ -106,6 +106,15 @@ counter.value++
   check no longer matched. The post-commit plaintext-to-ciphertext cache swap is now anchored on
   write ownership rather than on the staged value, so a superseded batch leaves the newer writer's
   state alone.
+- **A `Flow` first read on a locked device now recovers by itself once the device unlocks.** A
+  `Flow`, `StateFlow` or Compose state observing an encrypted entry that could not be decrypted at
+  that moment (most often a `requireUnlockedDevice` entry read while the device was locked) kept
+  showing the caller's default: the
+  undecryptable snapshot was skipped, and storage only emits again on a write, so the observer
+  stayed at the default until some unrelated value happened to be saved — while `getDirect`
+  already returned the real value. Such a read is now retried on a slow backoff, so the flow
+  picks the value up on its own within about half a minute of unlock (sooner if the lock was
+  brief), with no write needed.
 
 ## [3.1.0] - 2026-08-24
 

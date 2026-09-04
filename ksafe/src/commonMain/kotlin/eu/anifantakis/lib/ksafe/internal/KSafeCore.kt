@@ -23,6 +23,7 @@ import eu.anifantakis.lib.ksafe.internal.coreparts.isRotationRetryable
 import eu.anifantakis.lib.ksafe.internal.coreparts.isTransientDecryptFailure
 import eu.anifantakis.lib.ksafe.internal.coreparts.ksafeEpochMillis
 import eu.anifantakis.lib.ksafe.internal.coreparts.legacyProtectionRawKey
+import eu.anifantakis.lib.ksafe.internal.coreparts.lockedDecryptRetryBackoffMs
 import eu.anifantakis.lib.ksafe.internal.coreparts.metaRawKey
 import eu.anifantakis.lib.ksafe.internal.coreparts.nullOrDefault
 import eu.anifantakis.lib.ksafe.internal.coreparts.prewarmMasterKeys
@@ -49,11 +50,12 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
@@ -64,6 +66,9 @@ import kotlinx.serialization.json.Json
 import kotlin.time.ComparableTimeMark
 import kotlin.time.Duration
 import kotlin.time.TimeSource
+
+/** Marker that makes a transient decrypt failure resubscribe instead of terminating the flow. */
+private class TransientDecryptRetry(cause: Throwable) : Exception(cause)
 
 /**
  * Platform-independent orchestration engine between the public [KSafe] API and the
@@ -822,16 +827,10 @@ internal class KSafeCore(
     }
 
     /**
-     * Per-emission sentinel: a transient decrypt failure maps to this and is filtered
-     * out, so the emission is **skipped** rather than crashing the flow.
-     */
-    private val transientDecryptSkip = Any()
-
-    /**
-     * A transient decrypt failure (locked device / busy Keystore) skips that emission rather
-     * than throwing: this flow is collected by long-lived observers (viewModelScope / Recomposer)
-     * where an uncaught throw would crash the app and permanently stop observation. Skipping keeps
-     * the flow and its last value alive; the next decryptable snapshot updates it.
+     * A transient decrypt failure (locked device / busy Keystore) never reaches collectors as a
+     * value or a throw: long-lived observers (viewModelScope / Recomposer) would crash and stop
+     * observing. The flow resubscribes on a slow backoff instead, so an observer seeded while
+     * the device was locked recovers on its own after unlock.
      */
     @PublishedApi
     internal fun getFlowRaw(
@@ -846,7 +845,7 @@ internal class KSafeCore(
             // the stateIn/observe scope's uncaught exception crashes on Android and freezes the
             // StateFlow forever, while the internal collector silently keeps getDirect fresh and
             // masks the cause. Placed BEFORE .map so only the storage read retries; per-emission
-            // decrypt failures are already handled inside .map (transientDecryptSkip / default).
+            // decrypt failures are handled by the slower retryWhen below.
             .retryingTransientReads { attempt, cause ->
                 ksafeLogWarning(
                     "KSafe: getFlow snapshot read failed (attempt $attempt, " +
@@ -887,7 +886,7 @@ internal class KSafeCore(
                             // recorded unlock policy travels with the routing, so a strict entry
                             // bypasses the engine's in-memory key cache and the native store
                             // enforces the lock on every emission; on a locked device the strict
-                            // decrypt throws transient and the emission is skipped below.
+                            // decrypt throws transient and the flow resubscribes below.
                             val plainBytes = decryptEntry(
                                 key, protection, KSafeBase64.decode(enc), encMetaFromRaw(metaRaw),
                             )
@@ -896,9 +895,7 @@ internal class KSafeCore(
                             else jsonDecode(json, serializer, rawString)
                         } catch (e: Throwable) {
                             if (e is CancellationException) throw e
-                            // Transient (locked device / busy Keystore): skip this emission
-                            // (filtered below) so collectors aren't crashed.
-                            if (isTransientDecryptFailure(e)) transientDecryptSkip
+                            if (isTransientDecryptFailure(e)) throw TransientDecryptRetry(e)
                             else defaultValue
                         }
                     } else defaultValue
@@ -910,9 +907,21 @@ internal class KSafeCore(
             // and stateIn collects on the caller's scope (often Main), so without flowOn every
             // emission would run keystore IPC on the main thread → ANR. decryptFlowContext is
             // Dispatchers.Default on JVM/Android/Apple, a no-op on single-threaded web; the
-            // cheap filter/distinctUntilChanged stay in the collector's context.
+            // cheap retry/distinctUntilChanged stay in the collector's context.
             .flowOn(decryptFlowContext)
-            .filter { it !== transientDecryptSkip }
+            // Placed AFTER flowOn so a retry re-collects the WHOLE upstream: storage re-delivers
+            // its current snapshot to the new collector, the only way to see the value without a write.
+            .retryWhen { cause, attempt ->
+                if (cause !is TransientDecryptRetry) return@retryWhen false
+                if (attempt == 0L) {
+                    ksafeLogWarning(
+                        "KSafe: encrypted read of '$key' is temporarily unavailable " +
+                            "(locked device / busy key store); the flow will retry.",
+                    )
+                }
+                delay(lockedDecryptRetryBackoffMs(attempt))
+                true
+            }
             .distinctUntilChanged()
     }
 

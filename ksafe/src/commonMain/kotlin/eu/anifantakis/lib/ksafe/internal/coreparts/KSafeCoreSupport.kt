@@ -85,3 +85,7 @@ internal fun <T> Flow<T>.retryingTransientReads(
     delay(collectorRetryBackoffMs(attempt))
     true
 }
+
+/** Capped backoff (250ms doubling to 30s) for a transiently failed decrypt; a device locked overnight must not wake the key store every second. */
+internal fun lockedDecryptRetryBackoffMs(attempt: Long): Long =
+    minOf(30_000L, 250L shl minOf(attempt, 7L).toInt())

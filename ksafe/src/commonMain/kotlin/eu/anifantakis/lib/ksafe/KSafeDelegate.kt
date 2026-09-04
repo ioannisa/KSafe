@@ -362,7 +362,7 @@ internal class KSafeMutableStateFlowDelegate<T>(
                 })
             }
 
-            // getFlowRaw skips transient decrypt failures, so a locked-device
+            // getFlowRaw retries transient decrypt failures internally, so a locked-device
             // emission can't crash [scope] or kill observation.
             scope.launch {
                 @Suppress("UNCHECKED_CAST")

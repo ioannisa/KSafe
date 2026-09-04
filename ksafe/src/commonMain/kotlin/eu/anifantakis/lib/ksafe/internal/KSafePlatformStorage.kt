@@ -14,7 +14,7 @@ internal interface KSafePlatformStorage {
     /** One-shot bulk read of the entire store. */
     suspend fun snapshot(): Map<String, StoredValue>
 
-    /** Stream of full-store snapshots, each reflecting the latest on-disk state. */
+    /** Stream of full-store snapshots, each reflecting the latest on-disk state. Re-collection must re-deliver the current snapshot: `getFlowRaw` resubscribes to recover from a transient decrypt failure. */
     fun snapshotFlow(): Flow<Map<String, StoredValue>>
 
     /**

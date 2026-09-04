@@ -379,7 +379,7 @@ KSafe's hardware-backed encryption has been tested and verified on real devices:
 
 ### Error Handling
 
-If decryption fails **permanently** (e.g., corrupted data or a missing key), KSafe gracefully returns the default value on every read path, ensuring your app continues to function. On a **transient** failure (such as a locked device), behaviour depends on the read API: only the suspend `get()` surfaces the failure as an exception so you can await unlock and retry, while `getDirect()` / property delegates return the default and `getFlow()` skips that emission (keeping its last value until the next decryptable snapshot).
+If decryption fails **permanently** (e.g., corrupted data or a missing key), KSafe gracefully returns the default value on every read path, ensuring your app continues to function. On a **transient** failure (such as a locked device), behaviour depends on the read API: only the suspend `get()` surfaces the failure as an exception so you can await unlock and retry, while `getDirect()` / property delegates return the default and `getFlow()` keeps its last value and retries on a slow backoff until the entry is decryptable again.
 
 **Exception:** When `requireUnlockedDevice = true` and the device is locked, KSafe throws `IllegalStateException` instead of returning the default value. This allows your app to detect and handle the locked state explicitly (e.g., showing a "device is locked" message).
 

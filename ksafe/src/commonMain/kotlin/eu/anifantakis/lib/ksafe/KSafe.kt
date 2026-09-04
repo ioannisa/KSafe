@@ -227,7 +227,7 @@ class KSafe @PublishedApi internal constructor(
      * Failure contract: on a *transient* decrypt failure (locked device,
      * momentarily busy Keystore/Keychain) this rethrows so callers can await
      * unlock and retry — unlike [getDirect], which returns [defaultValue], and
-     * [getFlow], which skips the emission. A non-transient failure (absent or
+     * [getFlow], which retries until the value is readable. A non-transient failure (absent or
      * corrupt ciphertext) still returns [defaultValue].
      */
     suspend inline fun <reified T> get(key: String, defaultValue: T): T {
