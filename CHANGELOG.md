@@ -2,7 +2,7 @@
 
 All notable changes to KSafe will be documented in this file.
 
-## [Unreleased]
+## [3.2.0] - xxxx-xx-xx
 
 ### Added
 
@@ -14,6 +14,21 @@ All notable changes to KSafe will be documented in this file.
   access requires the explicit `key` — a plain `=` assignment carries no property name Kotlin
   could supply — so a key-less handle stays delegate-only and `.value` on it throws
   `IllegalStateException`. Delegate behaviour is unchanged.
+
+### Short Demo
+> Note the key cannot be infered in the new direct-handle approach and must be provided via param only.
+
+That is so far we had only property delegation:
+```kotlin
+var counter by ksafe(0)
+counter++
+```
+
+Now we also support a direct handle:
+```kotlin
+var counter = ksafe(0, key = "counter")
+counter.value++
+```
 
 ### Fixed
 
@@ -50,6 +65,13 @@ All notable changes to KSafe will be documented in this file.
   retryable Keystore error a locked device raises, so the value survives and the read can be
   retried. The Keystore only reports that proof from Android 13, so below it no fault is assumed
   permanent.
+- **Android: a biometric prompt for an Activity that has stopped no longer hangs the caller.**
+  The host Activity is resolved before the process-wide single-prompt gate is entered, so another
+  caller's user-paced prompt could leave it stale by the time our turn came. androidx drops a
+  prompt silently once the host's fragment state is saved, so no callback ever fired: the caller
+  suspended forever holding the gate, and every later prompt in the process queued behind it. The
+  host is now re-checked on the main thread immediately before the prompt is shown and the call
+  fails with `BiometricAuthException` instead.
 
 ## [3.1.0] - 2026-08-24
 

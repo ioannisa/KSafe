@@ -63,6 +63,8 @@ internal fun allowedAuthenticators(allowDeviceCredentialFallback: Boolean): Int 
 
 object BiometricHelper {
 
+    private const val BIOMETRIC_FRAGMENT_TAG = "androidx.biometric.BiometricFragment"
+
     private var currentFragmentActivity: WeakReference<FragmentActivity>? = null
     private var currentAnyActivity: WeakReference<Activity>? = null
     private var isInitialized = false
@@ -136,6 +138,10 @@ object BiometricHelper {
     }
 
     fun getCurrentActivity(): FragmentActivity? = currentFragmentActivity?.get()
+
+    internal fun setForegroundActivityForTest(activity: FragmentActivity?) {
+        currentFragmentActivity = activity?.let { WeakReference(it) }
+    }
 
     /**
      * Best-effort synchronous probe for a usable [FragmentActivity]. Reports false for a plain
@@ -268,7 +274,7 @@ object BiometricHelper {
      * @param allowDeviceCredentialFallback `true` accepts PIN/password fallback
      *        (`BIOMETRIC_STRONG | DEVICE_CREDENTIAL`); `false` is biometrics-only with a Cancel button.
      * @throws BiometricActivityNotFoundException if no FragmentActivity becomes available within timeout
-     * @throws BiometricAuthException if authentication fails or is cancelled
+     * @throws BiometricAuthException if authentication fails, is cancelled, or the host cannot show a prompt
      */
     suspend fun authenticate(
         subtitle: String,
@@ -369,7 +375,31 @@ object BiometricHelper {
                     .apply { if (!allowDeviceCredentialFallback) setNegativeButtonText(resolvedCancel) }
                     .build()
 
+                // androidx drops the prompt silently once the FragmentManager state is saved;
+                // a host that stopped while we queued on the gate would hang the caller forever.
+                if (activity.isFinishing || activity.isDestroyed ||
+                    activity.supportFragmentManager.isStateSaved() ||
+                    !activity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+                ) {
+                    continuation.resumeWithException(
+                        BiometricAuthException("Activity is not in a state to show a biometric prompt")
+                    )
+                    return@runOnUiThread
+                }
+
                 biometricPrompt.authenticate(promptInfo)
+
+                // androidx attaches the prompt fragment synchronously (executePendingTransactions),
+                // so its absence here means the prompt was dropped.
+                if (continuation.isActive &&
+                    activity.supportFragmentManager.findFragmentByTag(BIOMETRIC_FRAGMENT_TAG) == null
+                ) {
+                    runCatching { biometricPrompt.cancelAuthentication() }
+                    continuation.resumeWithException(
+                        BiometricAuthException("Biometric prompt was not attached")
+                    )
+                    return@runOnUiThread
+                }
 
                 // Dismiss on cancellation (main thread): androidx.biometric reuses ONE
                 // activity-scoped fragment, so an orphaned prompt would rebind to the next caller

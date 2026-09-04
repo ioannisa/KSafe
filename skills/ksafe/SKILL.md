@@ -545,7 +545,8 @@ KSafeBiometrics.biometricsAvailableDirect { available -> if (available) showUnlo
 `onResult` on the **main thread** on Android and Apple (2.1.2+) — safe to touch UI from it.
 Concurrent calls are serialized on **every** platform (Apple since 3.1.0): a second prompt queues
 behind the first and skips entirely if the holder just authorized the same scope. Sequential calls
-never prompt twice inside the window regardless.
+never prompt twice inside the window regardless. On Android a queued caller whose host Activity
+stopped while it waited (e.g. a Home press) returns `false` instead of hanging (3.2.0+).
 Prompt text comes from three process-wide defaults set once at startup, with per-call
 overrides (`title`/`cancelLabel` are appended AFTER the existing params):
 
