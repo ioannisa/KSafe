@@ -117,13 +117,17 @@ object KSafeBiometrics {
      * `false` on: JVM Linux (no prompt API), the opt-outs
      * (`-Dksafe.biometrics.jvm.prompts=off`, `KSafeBiometricsWeb.promptsEnabled = false`),
      * devices with nothing to prompt (no enrolled biometrics/credentials per
-     * [allowDeviceCredentialFallback]), insecure web contexts, and the iOS Simulator
+     * [allowDeviceCredentialFallback]), insecure web contexts, Android while no live
+     * `FragmentActivity`/`AppCompatActivity` host exists, and the iOS Simulator
      * (where [verifyBiometric] is a pass-through).
      *
      * Suspending because the browser (WebAuthn) and Windows (Hello) can only answer
      * asynchronously; the check never shows UI and needs no user gesture, so probe it
      * once at startup (on web, right next to `awaitCacheReady()`) and keep the result
-     * in app state for synchronous `if (available)` use everywhere.
+     * in app state for synchronous `if (available)` use everywhere. On Android probe
+     * from a composition or an Activity, never from `Application.onCreate` — no host
+     * exists that early, so a cached answer would be a permanent `false`. This probe
+     * answers for the host that exists right now; [verifyBiometric] waits for one.
      *
      * @param allowDeviceCredentialFallback mirror of [verifyBiometric]'s parameter:
      *        `true` asks "would the default permissive prompt show", `false` asks

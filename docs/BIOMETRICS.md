@@ -138,6 +138,11 @@ LaunchedEffect(Unit) {
 }
 ```
 
+On Android the answer also depends on a live `FragmentActivity` / `AppCompatActivity` host, so
+probe from a composition or an Activity as the sample above does — never from
+`Application.onCreate`, where no host exists yet and the cached answer would be a permanent
+`false`. `verifyBiometric` waits for that host; this probe does not.
+
 The optional `allowDeviceCredentialFallback` parameter mirrors `verifyBiometric`:
 `biometricsAvailable(false)` asks whether a **biometrics-only** prompt is possible.
 Reports `false` under the opt-outs, on JVM Linux (no prompt API), and on the iOS

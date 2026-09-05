@@ -143,6 +143,9 @@ object BiometricHelper {
         currentFragmentActivity = activity?.let { WeakReference(it) }
     }
 
+    /** Fires immediately before the system sheet is raised; null in production. */
+    internal var beforePromptShowForTest: (() -> Unit)? = null
+
     /**
      * Best-effort synchronous probe for a usable [FragmentActivity]. Reports false for a plain
      * `ComponentActivity` host (Compose default) rather than the false-positive `canAuthenticate`
@@ -329,9 +332,13 @@ object BiometricHelper {
     ): Unit = suspendCancellableCoroutine { continuation ->
         // BiometricPrompt must be created and shown on the main thread.
         activity.runOnUiThread {
+            // A cancellation that landed while this block waited in the main queue must not
+            // still raise the sheet, over whatever screen the user moved on to.
+            if (!continuation.isActive) return@runOnUiThread
             try {
                 val executor = ContextCompat.getMainExecutor(activity)
 
+                var promptRef: BiometricPrompt? = null
                 val biometricPrompt = BiometricPrompt(
                     activity,
                     executor,
@@ -387,6 +394,18 @@ object BiometricHelper {
                     return@runOnUiThread
                 }
 
+                // Dismiss on cancellation (main thread): androidx.biometric reuses ONE
+                // activity-scoped fragment, so an orphaned prompt would rebind to the next caller
+                // and could be satisfied under the wrong security config (e.g. device-credential
+                // fallback the next caller refused). Registered BEFORE the show; promptRef stays
+                // null until we commit, so an early fire cannot touch anyone else's prompt.
+                continuation.invokeOnCancellation {
+                    activity.runOnUiThread { runCatching { promptRef?.cancelAuthentication() } }
+                }
+                promptRef = biometricPrompt
+                if (!continuation.isActive) return@runOnUiThread
+
+                beforePromptShowForTest?.invoke()
                 biometricPrompt.authenticate(promptInfo)
 
                 // androidx attaches the prompt fragment synchronously (executePendingTransactions),
@@ -399,14 +418,6 @@ object BiometricHelper {
                         BiometricAuthException("Biometric prompt was not attached")
                     )
                     return@runOnUiThread
-                }
-
-                // Dismiss on cancellation (main thread): androidx.biometric reuses ONE
-                // activity-scoped fragment, so an orphaned prompt would rebind to the next caller
-                // and could be satisfied under the wrong security config (e.g. device-credential
-                // fallback the next caller refused).
-                continuation.invokeOnCancellation {
-                    activity.runOnUiThread { runCatching { biometricPrompt.cancelAuthentication() } }
                 }
 
             } catch (e: Exception) {

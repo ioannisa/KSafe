@@ -535,6 +535,9 @@ pass through / refuse without gating, so route to your own PIN/password flow ins
 ```kotlin
 // suspend — never shows UI, no gesture needed. Probe ONCE at startup (on web: next to
 // awaitCacheReady()) and keep the result in app state for synchronous `if (available)` use.
+// On Android probe from a composition/Activity, NOT Application.onCreate — no FragmentActivity
+// host exists that early, so the cached answer is a permanent false. verifyBiometric waits for
+// the host; this probe does not.
 if (KSafeBiometrics.biometricsAvailable()) { /* biometric flow */ } else { /* PIN screen */ }
 
 // callback twin (non-suspending) — for a non-coroutine call site

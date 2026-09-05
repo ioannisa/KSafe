@@ -5,6 +5,9 @@
         <activity
             android:name="eu.anifantakis.lib.ksafe.biometrics.StaleHostActivity"
             android:exported="false" />
+        <activity
+            android:name="eu.anifantakis.lib.ksafe.biometrics.PromptHostActivity"
+            android:exported="false" />
     </application>
 
 </manifest>

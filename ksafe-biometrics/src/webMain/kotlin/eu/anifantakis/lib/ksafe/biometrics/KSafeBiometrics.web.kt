@@ -58,8 +58,8 @@ object KSafeBiometricsWeb {
         // being removed, and a throwing removeItem (storage-blocked browsers) must not leave
         // a live authorization that skips the promised fresh enrollment for its TTL.
         BiometricSessionStore.clear(null)
-        webBioLocalRemove(WEBAUTHN_CREDENTIAL_ID_KEY)
-        runCatching { webBioLocalRemove(WEBAUTHN_REGISTERED_TITLE_KEY) }
+        runCatching { localRemove(WEBAUTHN_CREDENTIAL_ID_KEY) }
+        runCatching { localRemove(WEBAUTHN_REGISTERED_TITLE_KEY) }
         abandoned?.let(::signalAbandonedCredential)
     }
 
@@ -105,6 +105,12 @@ internal const val WEBAUTHN_REGISTERED_TITLE_KEY = "__ksafe_biometrics_webauthn_
 
 internal var webAuthnCallOverrideForTest: (suspend (op: String, arg: String?) -> String)? = null
 internal var webAuthnAbortOverrideForTest: (() -> Unit)? = null
+internal var webBioLocalRemoveOverrideForTest: ((key: String) -> Unit)? = null
+
+private fun localRemove(key: String) {
+    val override = webBioLocalRemoveOverrideForTest
+    if (override != null) override(key) else webBioLocalRemove(key)
+}
 
 private suspend fun ceremony(op: String, arg: String?): String =
     webAuthnCallOverrideForTest?.invoke(op, arg) ?: webAuthnCall(op, arg)
@@ -193,7 +199,7 @@ private suspend fun runWebAuthnGate(allowDeviceCredentialFallback: Boolean, titl
             // Absent title -> slot removed, so a legacy record and a title-less one both read null.
             runCatching {
                 if (title != null) webBioLocalSet(WEBAUTHN_REGISTERED_TITLE_KEY, title)
-                else webBioLocalRemove(WEBAUTHN_REGISTERED_TITLE_KEY)
+                else localRemove(WEBAUTHN_REGISTERED_TITLE_KEY)
             }
             WebAuthnGateResult.AUTHENTICATED
         }

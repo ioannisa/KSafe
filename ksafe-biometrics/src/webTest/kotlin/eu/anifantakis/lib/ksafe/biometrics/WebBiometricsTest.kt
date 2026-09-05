@@ -27,6 +27,7 @@ class WebBiometricsTest {
     private fun reset() {
         webAuthnCallOverrideForTest = null
         webAuthnAbortOverrideForTest = null
+        webBioLocalRemoveOverrideForTest = null
         KSafeBiometricsWeb.promptsEnabled = true
         KSafeBiometricsWeb.resetRegistration()
         KSafeBiometrics.clearBiometricAuth()
@@ -139,6 +140,40 @@ class WebBiometricsTest {
             "the abandoned credential id must reach the provider, not the new one",
         )
         assertFalse(KSafeBiometricsWeb.isRegistered, "the local record is cleared regardless")
+    }
+
+    @Test
+    fun resetRegistration_survivesAStorageBlockedRemoval() = runTest {
+        // "Block all cookies" / a sandboxed iframe: the localStorage getter throws SecurityError.
+        // resetRegistration is a non-suspending public API wired to a button, so the throw must
+        // not escape it, nor cost the title slot and the abandoned-credential signal after it.
+        val signalled = CompletableDeferred<String?>()
+        webAuthnCallOverrideForTest = { op, arg ->
+            when (op) {
+                "available" -> "yes"
+                "register" -> "registered:cred-blocked"
+                "signalUnknown" -> { signalled.complete(arg); "signal:ok" }
+                else -> fail("unexpected op $op")
+            }
+        }
+
+        KSafeBiometrics.defaultTitle = "Blocked Origin"
+        assertTrue(KSafeBiometrics.verifyBiometric("Unlock"))
+        assertEquals("Blocked Origin", KSafeBiometricsWeb.registeredTitle)
+
+        webBioLocalRemoveOverrideForTest = { key ->
+            if (key == WEBAUTHN_CREDENTIAL_ID_KEY) throw IllegalStateException("SecurityError")
+            webBioLocalRemove(key)
+        }
+        try {
+            KSafeBiometricsWeb.resetRegistration()
+        } finally {
+            webBioLocalRemoveOverrideForTest = null
+            webBioLocalRemove(WEBAUTHN_CREDENTIAL_ID_KEY)
+        }
+
+        assertNull(KSafeBiometricsWeb.registeredTitle, "the title slot must still be cleared")
+        assertEquals("cred-blocked", signalled.await(), "the abandoned credential must still be signalled")
     }
 
     @Test

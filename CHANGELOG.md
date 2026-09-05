@@ -270,6 +270,22 @@ counter.value++
   parameter could therefore be skipped and keep showing an old value. The marker is gone, and
   `value` now documents that composition should read through `:ksafe-compose` or
   `asStateFlow().collectAsState()` instead.
+- **Android: a cancelled `verifyBiometric` can no longer raise the system prompt anyway.** The
+  show is posted to the main thread, and on a busy looper it could still be waiting there when the
+  user navigated away and the calling scope was cancelled — the block then ran unguarded and put
+  the sheet over the new screen. It now checks the call is still live before showing, and registers
+  its dismiss-on-cancellation handler before the sheet goes up rather than after.
+- **Web: `resetRegistration()` no longer throws out of a storage-blocked browser.** Removing the
+  stored credential id was the one `localStorage` touch in the file left unguarded, so in an origin
+  that blocks storage ("block all cookies", a sandboxed iframe) the `SecurityError` escaped a
+  non-suspending public API straight into the click handler, and skipped the title-slot removal and
+  the abandoned-credential signal that follow it. The removal is now tolerated like every other.
+- **Docs: `biometricsAvailable()` says that Android needs a live Activity host.** The enumerated
+  `false` cases omitted it while the surrounding advice was "probe once at startup and keep the
+  result", so an app probing from `Application.onCreate` cached a permanent `false` and showed its
+  PIN fallback for the whole process. The KDoc, `docs/BIOMETRICS.md` and the skill now say to probe
+  from a composition or an Activity, and note that `verifyBiometric` waits for the host while this
+  probe does not. No behaviour change.
 
 ### Changed
 
