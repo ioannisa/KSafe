@@ -63,8 +63,12 @@ internal fun KSafeCore.resolveFromCache(
                     // put/delete may have landed, so only repopulate the side cache when the
                     // primary still holds the exact ciphertext we decrypted (CAS discipline) —
                     // otherwise we'd serve stale plaintext, permanently under LAZY_PLAIN_TEXT.
+                    // Store, re-check, undo our own entry: a put may land between guard and store.
                     if (usesPlaintextSideCache && !reqUnlocked && memoryCache[cacheKey] == encryptedString) {
-                        plaintextCache[cacheKey] = CachedPlaintext(candidate, plaintextExpiry())
+                        sideCacheWriteBackHook?.invoke()
+                        val entry = CachedPlaintext(candidate, plaintextExpiry())
+                        plaintextCache[cacheKey] = entry
+                        if (memoryCache[cacheKey] != encryptedString) plaintextCache.removeIf(cacheKey, entry)
                     }
                 }
             } catch (e: Throwable) {

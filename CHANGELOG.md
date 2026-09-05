@@ -157,6 +157,16 @@ counter.value++
   superseded-key sweep keeps a key alive while any live instance still reads through it (Android,
   iOS/macOS and JVM Desktop; on web each instance still owns its own store handle, so the
   singleton rule still applies there).
+- **A read racing a write to the same key can no longer pin the pre-write value in the plaintext
+  side cache.** Under the two memory policies that keep a decrypted copy beside the encrypted one,
+  a read that decrypts an entry writes the result back into that side cache, but only while the
+  encrypted copy it decrypted is still the current one. That check and the write-back were two
+  separate steps, so a write landing in between was overwritten by the older value the read had
+  just finished decrypting — after which every read of that key returned the pre-write value while
+  the store on disk held the new one: permanently under the default `LAZY_PLAIN_TEXT`, and until
+  the entry expired under `ENCRYPTED_WITH_TIMED_CACHE`. The write-back now re-checks after storing
+  and withdraws its own entry when it lost the race, so the newer write's value is what every
+  later read sees.
 
 ## [3.1.0] - 2026-08-24
 
