@@ -6,57 +6,33 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
-/**
- * Web (Kotlin/JS + Kotlin/Wasm) implementation of [KSafeBiometrics] via WebAuthn platform
- * authenticators (`navigator.credentials`) as a local re-auth gate (self-generated challenge,
- * no server ceremony).
- *
- * Web-specific quirks:
- * - First use runs a one-time `create()` ceremony (which itself verifies the user) and stores
- *   the credential id in `localStorage`; later calls run `get()` against it.
- * - The `reason` string is NOT displayed — WebAuthn dialogs are browser-controlled and accept
- *   no custom message.
- * - Browsers may require transient activation — call from a click handler or the ceremony can be
- *   rejected (`NotAllowedError`).
- * - `allowDeviceCredentialFallback = false` cannot exclude the platform's PIN where the OS treats
- *   it as part of the authenticator (e.g. Windows Hello); it still keys the auth cache strictly.
- * - No platform authenticator: permissive mode passes through (`true`), strict mode refuses. Once
- *   the authenticator IS reachable, a denial or unexpected error fails closed (`false`).
- * - [KSafeBiometricsWeb.promptsEnabled]` = false` restores the pre-2.2.0 always-`true` no-op.
- */
+// WebAuthn platform authenticators used as a local re-auth gate: self-generated challenge, no
+// server ceremony. The `reason` string is never shown (the browser owns the dialog), and browsers
+// may require transient activation, so call from a click handler.
 
-/** Ceremony ops, implemented per target ('js()' dispatcher vs '@JsFun'):
- *  "available"/null → "yes" | "no:<reason>"
- *  "register"/null  → "registered:<credIdB64url>" | "denied:<name>" | "error:<name>"
- *  "verify"/credId  → "verified" | "denied:<name>" | "error:<name>" */
+/** Ops: "available" → "yes"|"no:<reason>"; "register" → "registered:<credIdB64url>"|"denied:<n>"|"error:<n>";
+ *  "verify"/credId → "verified"|"denied:<n>"|"error:<n>". */
 internal expect suspend fun webAuthnCall(op: String, arg: String?): String
 
-/** Aborts the in-flight register/verify ceremony (its `AbortController`), synchronously. */
 internal expect fun webAuthnAbort()
 
 internal expect fun webBioLocalGet(key: String): String?
 internal expect fun webBioLocalSet(key: String, value: String)
 internal expect fun webBioLocalRemove(key: String)
 
-/** Monotonic now (ms) — `performance.now()`; a wall-clock jump must not extend a cached auth. */
+/** Monotonic now (ms): a wall-clock jump must not extend a cached auth. */
 internal expect fun webBioMonotonicNowMs(): Double
 
 /** Web-only controls for [KSafeBiometrics] (visible from `jsMain`/`wasmJsMain` app code). */
 object KSafeBiometricsWeb {
-    /** `false` restores the pre-2.2.0 always-`true` no-op — the web twin of the JVM prompts opt-out. */
+    /** `false` makes verification a no-op that always succeeds — the web twin of the JVM opt-out. */
     var promptsEnabled: Boolean = true
 
-    /**
-     * Forgets the stored WebAuthn credential id AND revokes every cached authorization window,
-     * so the next call re-registers. Use when the user removed the passkey OS-side (every
-     * `verify` then fails as denied) or to force fresh enrollment.
-     */
+    /** Forgets the stored credential id and revokes cached authorizations, so the next call re-registers. */
     fun resetRegistration() {
-        // Captured before the removal below, because it is the credential we are abandoning.
         val abandoned = runCatching { webBioLocalGet(WEBAUTHN_CREDENTIAL_ID_KEY) }.getOrNull()
-        // Revoke BEFORE touching storage: every cached window was earned under the credential
-        // being removed, and a throwing removeItem (storage-blocked browsers) must not leave
-        // a live authorization that skips the promised fresh enrollment for its TTL.
+        // Revoke BEFORE touching storage: a throwing removeItem must not leave a live
+        // authorization that outlives the credential it was earned under.
         BiometricSessionStore.clear(null)
         runCatching { localRemove(WEBAUTHN_CREDENTIAL_ID_KEY) }
         runCatching { localRemove(WEBAUTHN_REGISTERED_TITLE_KEY) }
@@ -64,43 +40,25 @@ object KSafeBiometricsWeb {
     }
 
     /**
-     * Whether THIS ORIGIN holds a stored WebAuthn credential id — i.e. whether the next
-     * verification would re-use a passkey instead of enrolling one.
-     *
-     * Reflects KSafe's own local record, NOT the authenticator's truth, and it is NEVER
-     * invalidated automatically: a passkey the user deleted OS-side keeps reading `true` while
-     * every verification fails, until the app calls [resetRegistration]. KSafe deliberately does
-     * not self-heal — WebAuthn reports a cancelled prompt and an unrecognized credential as the
-     * same `NotAllowedError` (so a site cannot probe for credentials), so discarding the
-     * enrollment on failure would punish a user who merely pressed Cancel. Give the user a
-     * "reset biometric unlock" affordance instead. Conversely, clearing site data reads `false`
-     * while the passkey may survive, orphaned, in the password manager.
+     * Whether this origin holds a stored credential id. Reflects KSafe's own record, not the
+     * authenticator's: WebAuthn reports a cancelled prompt and an unknown credential identically,
+     * so a passkey deleted OS-side keeps reading `true` until [resetRegistration] is called.
      */
     val isRegistered: Boolean
         get() = runCatching { webBioLocalGet(WEBAUTHN_CREDENTIAL_ID_KEY) }.getOrNull() != null
 
     /**
-     * The title the stored passkey was registered under — what a password manager lists —
-     * or `null` when nothing is registered, when it was enrolled without a title, or when it
-     * predates this record (KSafe < 3.0.0).
-     *
-     * Lets an app that renames itself re-enroll exactly once instead of on every launch:
-     * ```
-     * if (KSafeBiometricsWeb.isRegistered &&
-     *     KSafeBiometricsWeb.registeredTitle != KSafeBiometrics.defaultTitle
-     * ) KSafeBiometricsWeb.resetRegistration()
-     * ```
-     * Renaming does not rename the existing passkey; the user should also delete the stale one
-     * OS-side, or it lingers alongside the new entry.
+     * The title the stored passkey was registered under, or `null` if nothing is registered or it
+     * was enrolled without one. An app that renames itself can compare it against its current
+     * title and call [resetRegistration] once, instead of re-enrolling on every launch.
      */
     val registeredTitle: String?
         get() = runCatching { webBioLocalGet(WEBAUTHN_REGISTERED_TITLE_KEY) }.getOrNull()
 }
 
-/** localStorage slot for the WebAuthn credential id (a public identifier, not a secret). */
+/** localStorage slot for the credential id — a public identifier, not a secret. */
 internal const val WEBAUTHN_CREDENTIAL_ID_KEY = "__ksafe_biometrics_webauthn_id__"
 
-/** localStorage slot for the title the stored passkey was registered under. */
 internal const val WEBAUTHN_REGISTERED_TITLE_KEY = "__ksafe_biometrics_webauthn_title__"
 
 internal var webAuthnCallOverrideForTest: (suspend (op: String, arg: String?) -> String)? = null
@@ -115,9 +73,8 @@ private fun localRemove(key: String) {
 private suspend fun ceremony(op: String, arg: String?): String =
     webAuthnCallOverrideForTest?.invoke(op, arg) ?: webAuthnCall(op, arg)
 
-// A cancelled awaiter releases the prompt gate, but the browser's WebAuthn dialog stays up —
-// abort the ceremony so the next caller can't start an overlapping (browser-rejected) one and
-// a cancelled registration can't mint a credential whose id is never stored.
+// A cancelled awaiter releases the gate but the browser dialog stays up: abort, or the next caller
+// starts an overlapping ceremony and a cancelled registration mints a credential nobody stored.
 private suspend fun abortableCeremony(op: String, arg: String?): String =
     try {
         ceremony(op, arg)
@@ -126,23 +83,13 @@ private suspend fun abortableCeremony(op: String, arg: String?): String =
         throw e
     }
 
-// Gate serializes ceremonies: browsers reject overlapping WebAuthn calls, and single-threaded web
-// still interleaves at suspension points.
+// Browsers reject overlapping WebAuthn calls, and single-threaded web still interleaves at suspends.
 private val promptGate = BiometricPromptGate()
 
 private val directCallbackScope = CoroutineScope(SupervisorJob())
 
-/**
- * Best-effort notice to the passkey provider that [credentialId] is no longer recognised, so it
- * can drop the credential a [KSafeBiometricsWeb.resetRegistration] abandons instead of leaving it
- * beside the next enrollment.
- *
- * Fire-and-forget by construction: [KSafeBiometricsWeb.resetRegistration] is not suspending, the
- * signal is advisory (each provider decides what to do with it), and every failure mode — a
- * browser without the API, a provider that ignores it, a rejection, or Safari 26's promise that
- * never settles — must leave the reset itself untouched. The timeout exists only so a
- * non-settling promise cannot accumulate a suspended coroutine per call.
- */
+// Advisory notice that the credential is abandoned. Fire-and-forget: the reset must survive every
+// failure, and the timeout only stops a never-settling promise from parking a coroutine per call.
 private fun signalAbandonedCredential(credentialId: String) {
     directCallbackScope.launch {
         runCatching { withTimeoutOrNull(SIGNAL_TIMEOUT_MS) { ceremony("signalUnknown", credentialId) } }
@@ -162,8 +109,7 @@ private fun warnUnavailableOnce(reason: String) {
     }
 }
 
-// Only AUTHENTICATED (a real ceremony) may seed the auth cache; a PASS_THROUGH must not, or a later
-// cache hit would skip a real prompt once an authenticator becomes reachable.
+// Only AUTHENTICATED may seed the auth cache; seeding a PASS_THROUGH would skip a later real prompt.
 private enum class WebAuthnGateResult { AUTHENTICATED, PASS_THROUGH, DENIED }
 
 private suspend fun runWebAuthnGate(allowDeviceCredentialFallback: Boolean, title: String?): WebAuthnGateResult {
@@ -175,27 +121,20 @@ private suspend fun runWebAuthnGate(allowDeviceCredentialFallback: Boolean, titl
         return if (allowDeviceCredentialFallback) WebAuthnGateResult.PASS_THROUGH else WebAuthnGateResult.DENIED
     }
 
-    // A blocked localStorage (SecurityError: "block all cookies", sandboxed iframe) must not
-    // escape verifyBiometric's Boolean contract: treat the id as absent and run the register
-    // ceremony, which itself verifies the user (its best-effort persist already tolerates
-    // the same failure).
+    // Blocked localStorage (SecurityError) must not escape verifyBiometric's Boolean contract:
+    // treat the id as absent and register, which itself verifies the user.
     val credentialId = runCatching { webBioLocalGet(WEBAUTHN_CREDENTIAL_ID_KEY) }.getOrNull()
     val outcome = if (credentialId == null) {
-        // The title names the passkey the ceremony mints (rp.name / user.name / displayName) —
-        // what a password manager lists. Written ONCE, at registration: a later title change
-        // cannot rename an existing passkey (see KSafeBiometrics.defaultTitle).
+        // The title names the passkey this mints; a later title change cannot rename an existing one.
         abortableCeremony("register", title)
     } else {
         abortableCeremony("verify", credentialId)
     }
     return when {
         outcome == "verified" -> WebAuthnGateResult.AUTHENTICATED
-        // create() verified the user; persisting the id is best-effort — if setItem throws (storage
-        // disabled / quota / legacy Safari private browsing) the verified user must still pass.
+        // create() verified the user, so a throwing setItem must still let that user pass.
         outcome.startsWith("registered:") -> {
             runCatching { webBioLocalSet(WEBAUTHN_CREDENTIAL_ID_KEY, outcome.removePrefix("registered:")) }
-            // Record the name the passkey was minted under so an app that later changes its
-            // title can detect the mismatch and re-enroll deliberately, instead of guessing.
             // Absent title -> slot removed, so a legacy record and a title-less one both read null.
             runCatching {
                 if (title != null) webBioLocalSet(WEBAUTHN_REGISTERED_TITLE_KEY, title)
@@ -217,19 +156,14 @@ internal actual suspend fun platformVerifyBiometric(
     val attempt = beginBiometricAttempt(authorizationDuration, allowDeviceCredentialFallback)
         ?: return true
 
-    // Re-check the cache INSIDE the gate: a caller we queued behind may have just seeded this scope,
-    // so skip a redundant prompt (null → authorized, but don't re-seed, so the window can't extend).
+    // Re-check inside the gate: a caller we queued behind may have just seeded this scope.
     val result = promptGate.withSinglePrompt {
         if (attempt.isFresh()) {
             null
         } else {
             val outcome = runWebAuthnGate(allowDeviceCredentialFallback, title)
-            // Seed while the gate is still HELD: a caller queued behind us re-checks freshness the
-            // instant the gate changes hands, and seeding after the release leaves a window in
-            // which it reads a cache we have not written yet and runs a second ceremony.
-            // Seed only a REAL ceremony success — never a pass-through, a cache re-hit, nor a
-            // success that landed after clearBiometricAuth()/resetRegistration() revoked the
-            // scope mid-prompt.
+            // Seed while the gate is still HELD: a queued caller re-checks freshness the instant
+            // the gate changes hands. Real ceremony only — never a pass-through or a revoked scope.
             if (outcome == WebAuthnGateResult.AUTHENTICATED) attempt.seedIfActive()
             outcome
         }
@@ -252,8 +186,7 @@ internal actual fun platformVerifyBiometricDirect(
 }
 
 internal actual suspend fun platformBiometricsAvailable(allowDeviceCredentialFallback: Boolean): Boolean {
-    // The fallback flag is accepted for API symmetry only — WebAuthn user verification
-    // is whatever the platform authenticator offers, so it cannot narrow the answer.
+    // Fallback flag accepted for API symmetry only: it cannot narrow WebAuthn user verification.
     if (!KSafeBiometricsWeb.promptsEnabled) return false
     return ceremony("available", null) == "yes"
 }

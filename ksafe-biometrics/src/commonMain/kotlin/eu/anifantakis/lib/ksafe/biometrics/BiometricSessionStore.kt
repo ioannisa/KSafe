@@ -3,30 +3,18 @@ package eu.anifantakis.lib.ksafe.biometrics
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
-/**
- * Monotonic now, in milliseconds: a backward wall-clock jump must never extend a cached
- * authorization. `Double` because the web's source (`performance.now()`) is sub-millisecond;
- * the origin is arbitrary per platform, so only DIFFERENCES of two readings mean anything.
- */
+/** Monotonic now, in milliseconds, so a backward wall-clock jump cannot extend a cached
+ *  authorization. The origin is arbitrary per platform, so only differences mean anything. */
 internal expect fun biometricMonotonicNowMs(): Double
 
-/**
- * The per-scope biometric authorization cache, shared by every platform so the read path, the
- * seed path and clearing can never drift apart.
- *
- * Entries are keyed by [BiometricAuthSession.sessionKey] and hold the [biometricMonotonicNowMs]
- * reading of the authentication that created them. PRESENCE of an entry is the only "is there an
- * authorization" sentinel: the stamp feeds elapsed-time math only, because a monotonic clock's
- * origin is arbitrary and its readings may legitimately be zero or negative.
- */
+/** Per-scope biometric authorization cache, shared by every platform. Presence of an entry is the
+ *  authorization; the stamp feeds elapsed-time math only, as a reading can be zero or negative. */
 @OptIn(ExperimentalAtomicApi::class)
 internal object BiometricSessionStore {
 
-    // Immutable map behind a CAS loop, so a seed, a rollback and a clear racing each other can
-    // never lose a write.
+    // Immutable map behind a CAS loop, so a seed, a rollback and a clear can't lose a write.
     private val sessions = AtomicReference<Map<String, Double>>(emptyMap())
 
-    /** Whether [sessionKey] still holds an authorization inside [authorizationDuration]'s window. */
     fun isFresh(sessionKey: String?, authorizationDuration: BiometricAuthorizationDuration?): Boolean {
         val key = sessionKey ?: return false
         val duration = authorizationDuration ?: return false
@@ -34,12 +22,8 @@ internal object BiometricSessionStore {
         return (biometricMonotonicNowMs() - lastAuth) < duration.duration
     }
 
-    /**
-     * Seeds [sessionKey], then re-checks its revocation epoch: a clear can land between the
-     * caller's own epoch compare and this write, and clearing bumps the epoch BEFORE removing
-     * timestamps, so the re-check always observes it and rolls the entry back. The rollback
-     * removes only the entry this call wrote (stamp compare), never a newer one.
-     */
+    /** Seeds [sessionKey], then re-checks the revocation epoch: clearing bumps the epoch before
+     *  removing timestamps, so a clear landing mid-call is observed and rolled back. */
     fun seedThenRecheckRevocation(sessionKey: String, epochAtPromptStart: Long) {
         val stamp = biometricMonotonicNowMs()
         seed(sessionKey, stamp)
@@ -48,10 +32,8 @@ internal object BiometricSessionStore {
         }
     }
 
-    /**
-     * [seedThenRecheckRevocation] for a suspending prompt path: additionally skips the seed when
-     * the caller's coroutine was cancelled, or when the scope was revoked while the prompt was up.
-     */
+    /** [seedThenRecheckRevocation] for a suspending prompt: also skips the seed when the caller
+     *  was cancelled, or the scope was revoked while the prompt was up. */
     suspend fun seedIfActive(sessionKey: String, epochAtPromptStart: Long) {
         val stamp = biometricMonotonicNowMs()
         seedBiometricSessionIfActive(
@@ -62,16 +44,13 @@ internal object BiometricSessionStore {
         }
     }
 
-    /** Drops [scope]'s cached authorizations, or every scope's when `null`. */
     fun clear(scope: String?) {
-        // Revoke BEFORE removing entries, so an in-flight prompt's success cannot re-seed a
-        // window this clear is about to (or just did) remove.
+        // Revoke before removing entries, or an in-flight prompt's success re-seeds a cleared window.
         if (scope == null) {
             BiometricAuthSession.markAllRevoked()
             sessions.store(emptyMap())
             return
         }
-        // Clear BOTH the permissive and the strict slot of the scope (see BiometricAuthSession).
         val permissiveKey = BiometricAuthSession.sessionKey(scope, requireStrict = false)
         val strictKey = BiometricAuthSession.sessionKey(scope, requireStrict = true)
         BiometricAuthSession.markRevoked(permissiveKey)

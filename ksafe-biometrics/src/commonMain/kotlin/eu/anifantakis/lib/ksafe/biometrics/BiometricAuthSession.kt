@@ -4,21 +4,16 @@ import kotlinx.coroutines.ensureActive
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
-/**
- * Shared decision helpers for the per-scope biometric authorization cache; every platform
- * uses these so the read path, write path, and clearing always agree on eligibility and keying.
- */
+/** Shared decision helpers for the per-scope biometric authorization cache. */
 @OptIn(ExperimentalAtomicApi::class)
 internal object BiometricAuthSession {
 
-    /** Only a strictly positive duration caches; `null` or `duration <= 0` opts out. */
     fun shouldCache(authorizationDuration: BiometricAuthorizationDuration?): Boolean =
         authorizationDuration != null && authorizationDuration.duration > 0
 
     /**
-     * The cache slot a call maps to, or `null` when it opted out of caching ([shouldCache]).
-     * Strict (biometrics-only) calls key a separate slot, so a device-credential success can
-     * never satisfy a later `allowDeviceCredentialFallback = false` call within the window.
+     * The cache slot a call maps to, or `null` when it opted out of caching. Strict
+     * (biometrics-only) calls key a separate slot, so a device-credential success never satisfies one.
      */
     fun cacheKey(
         authorizationDuration: BiometricAuthorizationDuration?,
@@ -30,45 +25,30 @@ internal object BiometricAuthSession {
             null
         }
 
-    /**
-     * The epoch a prompt for [cacheKey] must still see when it succeeds, or `0` for an uncached
-     * call — which never seeds, so no epoch can disqualify it.
-     */
+    /** The epoch a prompt must still see when it succeeds; `0` for an uncached call, which never seeds. */
     fun epochAtPromptStart(cacheKey: String?): Long = cacheKey?.let { revocationEpoch(it) } ?: 0L
 
-    /**
-     * Maps (scope, strength) to a cache key, injectively: the strength discriminator is a
-     * prefix and caller scopes are namespaced, so no caller string can forge another slot.
-     */
+    /** Maps (scope, strength) to a cache key injectively, so no caller scope can forge another slot. */
     fun sessionKey(scope: String?, requireStrict: Boolean): String {
         val strength = if (requireStrict) STRICT_TAG else PERMISSIVE_TAG
         val scopePart = if (scope == null) GLOBAL_SCOPE_KEY else CALLER_SCOPE_PREFIX + scope
         return strength + scopePart
     }
 
-    // Strength prefix keys strict (biometrics-only) and permissive slots separately, so a
-    // device-credential (PIN/password) success can never satisfy a biometrics-only call.
     private const val STRICT_TAG = "S"
     private const val PERMISSIVE_TAG = "P"
 
-    // Global (null-scope) sentinel; caller scopes are always emitted as "scope:" + value,
-    // so no caller string can ever produce this key.
+    // Null-scope sentinel; its NUL prefix is unreachable from any caller scope.
     private const val GLOBAL_SCOPE_KEY = "\u0000ksafe-global-scope"
     private const val CALLER_SCOPE_PREFIX = "scope:"
 
-    // Revocation epochs close the clear-vs-in-flight-prompt race: removing a cache entry
-    // cannot stop a prompt that is already on screen, whose success would re-seed the entry
-    // the caller just revoked. A prompt captures its key's epoch before showing UI; clearing
-    // bumps the epoch, so a success that lands afterwards no longer matches and must not seed.
+    // Closes the clear-vs-in-flight-prompt race: a prompt captures its key's epoch before showing
+    // UI and clearing bumps it, so a success landing after a clear no longer matches and can't seed.
     private class RevocationEpochs(val global: Long, val perKey: Map<String, Long>)
 
     private val revocationEpochs = AtomicReference(RevocationEpochs(0L, emptyMap()))
 
-    /**
-     * Epoch stamp for [sessionKey] — the sum of the global epoch and the key's own epoch.
-     * Both components only ever grow, so the stamp is strictly increasing under any mix of
-     * scoped and global revocations and a captured value can never be revisited.
-     */
+    /** Global epoch plus the key's own; both only grow, so a captured stamp is never revisited. */
     fun revocationEpoch(sessionKey: String): Long {
         val state = revocationEpochs.load()
         return state.global + (state.perKey[sessionKey] ?: 0L)
@@ -86,39 +66,28 @@ internal object BiometricAuthSession {
         }
     }
 
-    /** Revokes every key (global clear): no in-flight prompt may seed the cache after it. */
+    /** Revokes every key: no in-flight prompt may seed the cache after it. */
     fun markAllRevoked() {
         while (true) {
             val current = revocationEpochs.load()
-            // Per-key entries must survive a global bump: dropping one would shrink that
-            // key's stamp back toward a value an in-flight prompt may have captured.
+            // Per-key entries must survive a global bump: dropping one would shrink that key's
+            // stamp back toward a value an in-flight prompt may have captured.
             val bumped = RevocationEpochs(current.global + 1L, current.perKey)
             if (revocationEpochs.compareAndSet(current, bumped)) return
         }
     }
 }
 
-/**
- * One platform's in-progress trip through the authorization gate: the cache slot it maps to
- * (`null` when the call opted out of caching) and the revocation epoch a later seed must still
- * match. Created by [beginBiometricAttempt] and carried through the platform's own prompt flow,
- * which is where the platforms genuinely differ.
- */
+/** One in-progress trip through the authorization gate: its cache slot and the epoch a later seed must match. */
 internal class BiometricAttempt(
     val cacheKey: String?,
     private val authorizationDuration: BiometricAuthorizationDuration?,
     val epochAtPromptStart: Long,
 ) {
-    /**
-     * Re-check for use INSIDE a prompt gate: a caller queued behind one that just authenticated
-     * skips a redundant second prompt.
-     */
+    /** Re-check inside a prompt gate: a caller queued behind one that just authenticated skips a second prompt. */
     fun isFresh(): Boolean = BiometricSessionStore.isFresh(cacheKey, authorizationDuration)
 
-    /**
-     * Seeds the slot after a REAL prompt success. A no-op for a call that opted out of caching,
-     * and skipped when the caller was cancelled or the scope revoked while the prompt was up.
-     */
+    /** Seeds the slot after a real prompt success; skipped if the caller was cancelled or the scope revoked meanwhile. */
     suspend fun seedIfActive() {
         val key = cacheKey ?: return
         BiometricSessionStore.seedIfActive(key, epochAtPromptStart)
@@ -126,12 +95,8 @@ internal class BiometricAttempt(
 }
 
 /**
- * The prologue every platform's `platformVerifyBiometric` shares. Returns `null` when the cache
- * already holds a live authorization — the caller returns `true` without prompting — otherwise
- * the attempt its prompt flow runs under.
- *
- * The epoch is captured only after the cache misses, so it always brackets the prompt that
- * follows it.
+ * Prologue shared by every platform's `platformVerifyBiometric`; `null` means the cache already
+ * holds a live authorization. The epoch is captured after the cache misses, so it brackets the prompt.
  */
 internal fun beginBiometricAttempt(
     authorizationDuration: BiometricAuthorizationDuration?,
@@ -147,17 +112,8 @@ internal fun beginBiometricAttempt(
 }
 
 /**
- * Runs [seed] only while the calling coroutine is still active AND [sessionKey]'s revocation
- * epoch still equals [epochAtPromptStart]: a success arriving after cancellation, or after
- * `clearBiometricAuth()` revoked the scope while the prompt was up, must not seed the cache.
- * On cancellation the seed is skipped and the cancellation propagates; on revocation the
- * seed is silently skipped (the caller still gets its `true` result).
- *
- * A clear can also land BETWEEN the epoch compare and the seed write; clearing bumps the
- * epoch before removing timestamps, so re-checking after the write always observes such a
- * clear — [unseed] then rolls the just-written entry back so the revocation sticks. The
- * rollback must remove only the entry this call wrote (compare the timestamp), never a
- * newer one seeded by a later prompt.
+ * Runs [seed] only while the caller is active and [sessionKey]'s epoch still matches. A clear can
+ * land between compare and write, so [unseed] must roll back this call's own entry, never a newer one.
  */
 internal suspend fun seedBiometricSessionIfActive(
     sessionKey: String,

@@ -1,12 +1,7 @@
 package eu.anifantakis.lib.ksafe.biometrics
 
-/**
- * Builds the JNA bridge named [name] on first touch, degrading to `null` — the documented
- * pass-through — when its platform libraries are missing or fail to load.
- *
- * Lazy so that merely loading the owning object on another OS never touches those libraries,
- * and so the first touch of any JNA class stays inside the catch.
- */
+/** Builds the JNA bridge [name] on first touch, degrading to `null` (the documented pass-through)
+ *  when its libraries are missing. Lazy, so the first JNA touch happens inside the catch. */
 internal fun <T : Any> lazyNativeBridge(name: String, create: () -> T): Lazy<T?> = lazy {
     try {
         create()

@@ -10,27 +10,18 @@ import kotlin.experimental.ExperimentalNativeApi
 import kotlin.native.OsFamily
 import kotlin.native.Platform
 
-/**
- * Apple-platform [KSafeBiometrics] helpers.
- *
- * iOS: Face ID / Touch ID via `LAPolicyDeviceOwnerAuthenticationWithBiometrics`; returns `true` on the Simulator.
- * macOS: `LAPolicyDeviceOwnerAuthentication` — Touch ID, password, or Apple Watch unlock.
- */
+// Apple biometrics: iOS Face ID / Touch ID, macOS device-owner auth. Verify is a pass-through
+// that returns true on the Simulator, where no real prompt can be shown.
 
 @OptIn(ExperimentalForeignApi::class)
 private fun isSimulator(): Boolean =
     NSProcessInfo.processInfo.environment["SIMULATOR_UDID"] != null
 
-/**
- * Serializes prompt presentation, as on Android / JVM / web. Apple has no shared callback to
- * strand (each caller owns its own [platform.LocalAuthentication.LAContext]), so this is here for
- * the other half of the gate's job: a caller queued behind one that just authorized the same scope
- * re-checks the cache when the gate changes hands and skips a redundant ceremony.
- */
+/** Serializes prompts so a caller queued behind an authorization can skip a redundant ceremony. */
 private val promptGate = BiometricPromptGate()
 
-// macOS defaults to DeviceOwnerAuthentication (many Macs lack Touch ID); iOS is biometrics-only.
-// Fallback is opt-in. The prompt and the availability probe must ask about the SAME policy.
+// macOS defaults to device-owner auth (many Macs lack Touch ID); iOS is biometrics-only.
+// The prompt and the availability probe must ask about the SAME policy.
 private fun laPolicy(allowDeviceCredentialFallback: Boolean) =
     if (allowDeviceCredentialFallback) {
         platform.LocalAuthentication.LAPolicyDeviceOwnerAuthentication
@@ -54,23 +45,18 @@ internal actual suspend fun platformVerifyBiometric(
     }
 
     return promptGate.withSinglePrompt {
-        // Re-check the cache INSIDE the gate: the caller we queued behind may have just authorized
-        // this scope, so skip a redundant ceremony. A skip authorizes but does not re-seed, so the
-        // window cannot extend. The seed for a REAL success happens in the callback below, before
-        // it resumes the continuation — so it lands while this gate is still held, and the next
-        // caller's re-check can actually see it.
+        // Re-check inside the gate: the caller we queued behind may have just authorized this
+        // scope. A skip authorizes but does not re-seed, so the window cannot extend.
         if (attempt.isFresh()) return@withSinglePrompt true
 
         suspendCancellableCoroutine { continuation ->
-            // Own the LAContext so a cancelled coroutine can invalidate() the pending prompt; guard resume against a late/repeat callback.
+            // Own the LAContext so a cancelled coroutine can invalidate() the pending prompt.
             val context = platform.LocalAuthentication.LAContext()
             continuation.invokeOnCancellation { runCatching { context.invalidate() } }
             CoroutineScope(Dispatchers.Main).launch {
                 runLAContextEvaluate(context, reason, allowDeviceCredentialFallback, cancelLabel) { success ->
-                    // A success arriving after the caller cancelled — or after clearBiometricAuth()
-                    // revoked the scope while the prompt was up — must NOT seed the cache. Not
-                    // attempt.seedIfActive(): this callback is not the caller's coroutine, so the
-                    // liveness check is the continuation's, and the epoch compare is explicit.
+                    // A success arriving after cancellation, or after clearBiometricAuth() revoked
+                    // the scope mid-prompt, must not seed — hence the explicit liveness + epoch check.
                     val cacheKey = attempt.cacheKey
                     if (success && cacheKey != null && continuation.isActive &&
                         BiometricAuthSession.revocationEpoch(cacheKey) == attempt.epochAtPromptStart
@@ -92,7 +78,6 @@ internal actual fun platformVerifyBiometricDirect(
     cancelLabel: String?,
     onResult: (Boolean) -> Unit,
 ) {
-    // Main, like every Apple callback here: the suspending twin owns the cache and prompt logic.
     CoroutineScope(Dispatchers.Main).launch {
         onResult(
             platformVerifyBiometric(
@@ -110,11 +95,9 @@ private fun runLAContextEvaluate(
     cancelLabel: String?,
     onResult: (Boolean) -> Unit,
 ) {
-    // Left unset when null so the system supplies its own LOCALIZED cancel title; overriding
-    // with a fixed string would ship one language to every locale. LAContext has no title/
-    // subtitle — only the reason — so `title` has no Apple counterpart and is ignored.
+    // Unset when null so the system supplies its own localized title; LAContext has no `title`.
     if (cancelLabel != null) context.localizedCancelTitle = cancelLabel
-    // Last line of defence: an empty localizedReason raises through interop and kills the process.
+    // An empty localizedReason raises through interop and kills the process.
     val safeReason = promptReason(reason)
     context.evaluatePolicy(laPolicy(allowDeviceCredentialFallback), localizedReason = safeReason) { success, _ ->
         CoroutineScope(Dispatchers.Main).launch { onResult(success) }
@@ -123,7 +106,7 @@ private fun runLAContextEvaluate(
 
 @OptIn(ExperimentalForeignApi::class)
 private fun appleBiometricsAvailability(allowDeviceCredentialFallback: Boolean): Boolean {
-    // Simulator verify is a pass-through, so availability reports false: the contract is "will verify show a REAL prompt".
+    // Simulator verify is a pass-through, so report false: the contract is "will a real prompt show".
     if (isSimulator()) return false
     return platform.LocalAuthentication.LAContext()
         .canEvaluatePolicy(laPolicy(allowDeviceCredentialFallback), error = null)

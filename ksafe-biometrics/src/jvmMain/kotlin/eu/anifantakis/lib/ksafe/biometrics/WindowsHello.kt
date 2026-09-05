@@ -11,12 +11,7 @@ import com.sun.jna.ptr.IntByReference
 import com.sun.jna.ptr.PointerByReference
 import java.security.MessageDigest
 
-/**
- * Computes WinRT pinterface IIDs at runtime: an RFC 4122 v5 (SHA-1) UUID over the
- * WinRT pinterface namespace GUID + the type's signature string. These GUIDs are
- * never published as constants, so computing them is the only dependency-free route.
- * Locked in by unit tests against reference GUIDs (`IIterable<String>`, `IVector<String>`).
- */
+/** WinRT pinterface IIDs as RFC 4122 v5 UUIDs; they are published nowhere as constants. */
 internal object WinRtGuid {
 
     /** WinRT pinterface namespace GUID: {11f47ad5-7b73-42c0-abae-878b1e16adee}. */
@@ -25,7 +20,6 @@ internal object WinRtGuid {
         0xab.toByte(), 0xae.toByte(), 0x87.toByte(), 0x8b.toByte(), 0x1e, 0x16, 0xad.toByte(), 0xee.toByte(),
     )
 
-    /** Canonical-string GUID of the v5 UUID for [signature] under the WinRT namespace. */
     fun pinterfaceGuid(signature: String): String {
         val sha1 = MessageDigest.getInstance("SHA-1")
         sha1.update(PINTERFACE_NAMESPACE)
@@ -38,18 +32,13 @@ internal object WinRtGuid {
         return "${hex(0, 4)}-${hex(4, 6)}-${hex(6, 8)}-${hex(8, 10)}-${hex(10, 16)}"
     }
 
-    /**
-     * `IAsyncOperation<Windows.Security.Credentials.UI.UserConsentVerificationResult>`.
-     * The enum signature is `i4`: a non-`[Flags]` enum has Int32 underlying type. `u4`
-     * ([Flags]/UInt32) computes a different GUID, which `RequestVerificationForWindowAsync`
-     * rejects with `E_NOINTERFACE`.
-     */
+    /** The enum must be `i4`; `u4` yields a GUID `RequestVerificationForWindowAsync` rejects. */
     val ASYNC_OP_USER_CONSENT: String = pinterfaceGuid(
         "pinterface({9fc2b0bb-e446-44e2-aa61-9cab8f636af2};" +
             "enum(Windows.Security.Credentials.UI.UserConsentVerificationResult;i4))"
     )
 
-    /** A canonical-string GUID as the 16-byte little-endian Windows layout JNA can pass as REFIID. */
+    /** A canonical GUID string in the 16-byte little-endian layout JNA passes as REFIID. */
     fun toWindowsBytes(guid: String): Memory {
         val hex = guid.replace("-", "")
         require(hex.length == 32) { "bad GUID: $guid" }
@@ -65,14 +54,8 @@ internal object WinRtGuid {
 }
 
 /**
- * Windows Hello consent prompt for the JVM, via the documented Win32 interop route:
- * `RoGetActivationFactory` → [IUserConsentVerifierInterop] →
- * `RequestVerificationForWindowAsync` (classic COM, no WinRT projection needed).
- *
- * Platform limitation: Windows treats the Hello PIN as part of Hello itself and
- * `UserConsentVerifier` cannot exclude it, so `allowDeviceCredentialFallback = false`
- * cannot enforce biometrics-only here. The flag still keys the authorization cache
- * strictly and controls the unavailable-fallback behavior.
+ * Windows Hello consent prompt for the JVM, over classic COM interop. Windows counts the Hello PIN
+ * as part of Hello, so `allowDeviceCredentialFallback = false` cannot enforce biometrics-only here.
  */
 internal object WindowsHello {
 
@@ -91,10 +74,8 @@ internal object WindowsHello {
     private const val STATUS_COMPLETED = 1
 
     private class Runtime {
-        // Win32 exports are stdcall; JNA's default is cdecl. Identical on x64/ARM64 (one
-        // convention), but a 32-bit JVM would unbalance the stack without ALT_CONVENTION.
-        // Kept inside Runtime so the first touch of any JNA class stays under the lazy's
-        // catch and a broken JNA install still degrades to the pass-through, not a throw.
+        // Win32 exports are stdcall, JNA defaults to cdecl: a 32-bit JVM unbalances the stack
+        // without ALT_CONVENTION. Inside Runtime so a broken JNA install fails under the lazy.
         private val stdcall = mapOf(Library.OPTION_CALLING_CONVENTION to Function.ALT_CONVENTION)
 
         val combase: NativeLibrary = NativeLibrary.getInstance("combase", stdcall)
@@ -106,10 +87,8 @@ internal object WindowsHello {
 
     val isAvailable: Boolean get() = runtime != null
 
-    /** Byte offset of vtable [slot]: entries are pointer-sized (8 on x64/ARM64, 4 on x86). */
     internal fun vtableByteOffset(slot: Int): Long = slot.toLong() * Native.POINTER_SIZE
 
-    /** Calls COM vtable [slot] on [iface] (`this` is prepended), returning HRESULT. */
     private fun comCall(iface: Pointer, slot: Int, vararg args: Any?): Int {
         val fn = Function.getFunction(iface.getPointer(0).getPointer(vtableByteOffset(slot)), Function.ALT_CONVENTION)
         return fn.invokeInt(arrayOf(iface, *args))
@@ -119,7 +98,6 @@ internal object WindowsHello {
         if (iface != null) runCatching { comCall(iface, 2) } // IUnknown::Release
     }
 
-    /** Best-effort HWND for dialog anchoring: own foreground window → console → desktop. */
     private fun pickWindowHandle(rt: Runtime): Pointer? {
         val getForeground = rt.user32.getFunction("GetForegroundWindow")
         val foreground = getForeground.invokePointer(emptyArray())
@@ -145,15 +123,8 @@ internal object WindowsHello {
     }
 
     /**
-     * Runs [body] with a live MTA apartment on this thread, balancing only an init this call
-     * owned: S_OK / S_FALSE mean THIS call incremented the per-thread apartment count, while
-     * RPC_E_CHANGED_MODE means the thread already had an apartment (usable, but not ours to
-     * uninitialize — otherwise the IO-pool thread leaves MTA and a later co-resident STA
-     * component gets RPC_E_CHANGED_MODE). [onInitFailure] supplies the result when no apartment
-     * could be entered at all.
-     *
-     * [body] must release its interfaces in its own `finally`: an inner `finally` runs before
-     * this one, so the apartment is still live while they are released.
+     * MTA apartment for [body], uninitialized only when this call entered it — on RPC_E_CHANGED_MODE
+     * the thread already had one and dropping it evicts an STA. [body] releases in its own `finally`.
      */
     private inline fun <T> withComApartment(rt: Runtime, onInitFailure: () -> T, body: () -> T): T {
         val hrInit = rt.combase.getFunction("RoInitialize").invokeInt(arrayOf(1))
@@ -166,11 +137,7 @@ internal object WindowsHello {
         }
     }
 
-    /**
-     * The [RUNTIME_CLASS] activation factory for [iid], or `null` when the class name or the
-     * factory could not be obtained. The class-name HSTRING is an [in] parameter the factory
-     * does not retain, so it is deleted as soon as the call returns.
-     */
+    /** The [RUNTIME_CLASS] activation factory for [iid]; the class-name HSTRING is freed on return. */
     private fun activationFactory(rt: Runtime, iid: String): Pointer? {
         val classHstr = createHString(rt, RUNTIME_CLASS) ?: return null
         try {
@@ -184,18 +151,8 @@ internal object WindowsHello {
     }
 
     /**
-     * Polls `IAsyncInfo::get_Status` (slot 7) every [pollIntervalMs] until the operation leaves
-     * Started — polling avoids implementing a COM callback object for the Completed handler.
-     * `false` on a COM failure, on a terminal status other than Completed, and on [timeoutMs],
-     * which cancels the native operation first. An interrupt (the caller's coroutine cancelling
-     * through `runInterruptible`) cancels it too and propagates, or the ceremony would stay on
-     * screen up to its own timeout.
-     */
-    /**
-     * Awaits one WinRT async operation and returns its `Int` result, or null on any failure.
-     *
-     * Owns the `IAsyncInfo` it queries for and releases it on every exit — the reference a
-     * duplicated copy of this sequence leaks. The caller keeps ownership of [asyncOp].
+     * Awaits one WinRT async operation, releasing the `IAsyncInfo` it queries for on every exit;
+     * [asyncOp] stays the caller's. Polls the status rather than installing a Completed handler.
      */
     private fun awaitAsyncIntResult(asyncOp: Pointer?, timeoutMs: Long, pollIntervalMs: Long): Int? {
         if (asyncOp == null) return null
@@ -231,12 +188,7 @@ internal object WindowsHello {
         }
     }
 
-    /**
-     * `UserConsentVerifier.CheckAvailabilityAsync` — whether [evaluate] would show a real
-     * Hello prompt. Prompt-free and fast (local COM round-trip); blocks briefly, so call it
-     * off the caller's dispatcher. `Available` (0) → true; anything else (no device, not
-     * configured, policy-disabled, busy) or any COM failure → false.
-     */
+    /** Whether [evaluate] would show a real prompt; blocks on a COM round-trip, so call it off-dispatcher. */
     fun checkAvailability(timeoutMs: Long = 10_000): Boolean {
         val rt = runtime ?: return false
         return try {
@@ -247,14 +199,12 @@ internal object WindowsHello {
                     statics = activationFactory(rt, IID_USER_CONSENT_VERIFIER_STATICS)
                         ?: return@withComApartment false
 
-                    // IInspectable-based → slot 6 is CheckAvailabilityAsync(void** asyncOp);
-                    // the typed async op comes out directly, no REFIID parameter.
+                    // IInspectable-based → slot 6 is CheckAvailabilityAsync(void** asyncOp).
                     val asyncRef = PointerByReference()
                     if (comCall(statics, 6, asyncRef) != 0) return@withComApartment false
                     asyncOp = asyncRef.value
 
-                    // Polls 6x faster than the interactive prompt: this probe shows no UI, so the
-                    // whole call is latency the caller waits on.
+                    // No UI here, so the whole call is latency the caller waits on: poll fast.
                     val result = awaitAsyncIntResult(asyncOp, timeoutMs, pollIntervalMs = 5)
                         ?: return@withComApartment false
                     result == 0 // UserConsentVerifierAvailability.Available
@@ -271,20 +221,15 @@ internal object WindowsHello {
 
     internal fun classifyResult(resultValue: Int, allowDeviceCredentialFallback: Boolean): Boolean = when (resultValue) {
         VERIFIED -> true
-        // Explicit "unavailable" (installed but not usable): pass through (permissive) / refuse (strict).
+        // Installed but not usable: pass through (permissive) / refuse (strict).
         DEVICE_NOT_PRESENT, NOT_CONFIGURED_FOR_USER, DISABLED_BY_POLICY ->
             unavailable(allowDeviceCredentialFallback)
         else -> false // Canceled, RetriesExhausted, DeviceBusy — a real denial, block.
     }
 
     /**
-     * Shows the Windows Hello prompt and blocks until it resolves (call from a
-     * background dispatcher). Returns true only on [VERIFIED].
-     *
-     * Fail-closed: once the activation factory resolves, Hello IS present, so any later
-     * COM/bridge failure returns `false`. Pass-through is reserved for a genuine "Hello not
-     * usable" — factory never resolved, or [classifyResult] sees no-device / not-configured /
-     * policy-disabled — where permissive mode passes through and strict mode refuses.
+     * Shows the Windows Hello prompt and blocks until it resolves; call from a background dispatcher.
+     * Fail-closed: once the factory resolves Hello is present, so a later COM failure returns `false`.
      */
     fun evaluate(reason: String, allowDeviceCredentialFallback: Boolean, timeoutMs: Long = 300_000): Boolean {
         val rt = runtime ?: return false
@@ -299,8 +244,7 @@ internal object WindowsHello {
 
                     reasonHstr = createHString(rt, reason) ?: return@withComApartment false
                     val asyncRef = PointerByReference()
-                    // IUserConsentVerifierInterop is IInspectable-based → slot 6 is
-                    // RequestVerificationForWindowAsync(HWND, HSTRING, REFIID, void**).
+                    // IInspectable-based → slot 6 is RequestVerificationForWindowAsync.
                     val hrRequest = comCall(
                         factory, 6,
                         pickWindowHandle(rt), reasonHstr,
@@ -309,7 +253,6 @@ internal object WindowsHello {
                     if (hrRequest != 0) return@withComApartment false
                     asyncOp = asyncRef.value
 
-                    // The prompt is user-paced, so a slower poll costs nothing.
                     val result = awaitAsyncIntResult(asyncOp, timeoutMs, pollIntervalMs = 30)
                         ?: return@withComApartment false
                     classifyResult(result, allowDeviceCredentialFallback)
@@ -320,7 +263,7 @@ internal object WindowsHello {
                 }
             }
         } catch (ie: InterruptedException) {
-            // Cancellation, not a denial — must reach runInterruptible, not read as `false`.
+            // Cancellation, not a denial: must reach runInterruptible, not read as `false`.
             throw ie
         } catch (t: Throwable) {
             System.err.println("KSafe biometrics: Windows Hello prompt failed (${t.message})")
@@ -328,10 +271,7 @@ internal object WindowsHello {
         }
     }
 
-    /**
-     * Hello entirely absent on this machine: permissive mode preserves the documented
-     * legacy pass-through (a capable prompt was never possible), strict mode refuses.
-     */
+    /** Hello absent on this machine: permissive mode passes through, strict mode refuses. */
     private fun unavailable(allowDeviceCredentialFallback: Boolean): Boolean {
         warnUnavailableOnce()
         return allowDeviceCredentialFallback
