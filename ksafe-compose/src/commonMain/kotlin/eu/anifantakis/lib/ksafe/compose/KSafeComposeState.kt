@@ -496,11 +496,21 @@ inline fun <reified T> KSafe.rememberKSafeState(
         instanceKey = ksafe,
         modeKey = mode,
         readInitial = { resolvedKey -> ksafe.getDirect<T>(resolvedKey, defaultValue) },
+        readDurable = { resolvedKey, fallback -> ksafe.getDirect<T>(resolvedKey, fallback) },
         writeValue = { resolvedKey, newValue, onWriteFailed ->
             ksafe.putDirect<T>(resolvedKey, newValue, mode, onWriteFailed)
         },
         flowProvider = { resolvedKey -> ksafe.getFlow<T>(resolvedKey, defaultValue) },
     )
+}
+
+private fun <T> legacyReadDurable(
+    readInitial: (String) -> T,
+    policy: SnapshotMutationPolicy<T>,
+    defaultValue: T,
+): (String, T) -> T = { resolvedKey, fallback ->
+    val durable = readInitial(resolvedKey)
+    if (policy.equivalent(durable, defaultValue)) fallback else durable
 }
 
 /**
@@ -518,9 +528,29 @@ class KSafeComposeStateProvider<T> @PublishedApi internal constructor(
     private val instanceKey: Any?,
     private val modeKey: Any?,
     private val readInitial: (resolvedKey: String) -> T,
+    private val readDurable: (resolvedKey: String, fallback: T) -> T,
     private val writeValue: (resolvedKey: String, newValue: T, onWriteFailed: (Throwable) -> Unit) -> Unit,
     private val flowProvider: (resolvedKey: String) -> Flow<T>,
 ) {
+    /**
+     * Binary-compat entry for consumers whose inlined `rememberKSafeState` predates [readDurable]:
+     * their post-failure re-read keeps treating a value equal to the default as unresolvable.
+     */
+    @PublishedApi internal constructor(
+        explicitKey: String?,
+        defaultValue: T,
+        observeExternalChanges: Boolean,
+        policy: SnapshotMutationPolicy<T>,
+        instanceKey: Any?,
+        modeKey: Any?,
+        readInitial: (resolvedKey: String) -> T,
+        writeValue: (resolvedKey: String, newValue: T, onWriteFailed: (Throwable) -> Unit) -> Unit,
+        flowProvider: (resolvedKey: String) -> Flow<T>,
+    ) : this(
+        explicitKey, defaultValue, observeExternalChanges, policy, instanceKey, modeKey,
+        readInitial, legacyReadDurable(readInitial, policy, defaultValue), writeValue, flowProvider,
+    )
+
     /**
      * Binary-compat entry for consumers whose inlined `rememberKSafeState` predates the
      * failure-aware saver: their writes carry no async-failure notification, so a failed
@@ -538,7 +568,8 @@ class KSafeComposeStateProvider<T> @PublishedApi internal constructor(
         flowProvider: (resolvedKey: String) -> Flow<T>,
     ) : this(
         explicitKey, defaultValue, observeExternalChanges, policy, instanceKey, modeKey,
-        readInitial, { resolvedKey, newValue, _ -> writeValue(resolvedKey, newValue) }, flowProvider,
+        readInitial, legacyReadDurable(readInitial, policy, defaultValue),
+        { resolvedKey, newValue, _ -> writeValue(resolvedKey, newValue) }, flowProvider,
     )
 
     @Composable
@@ -555,6 +586,7 @@ class KSafeComposeStateProvider<T> @PublishedApi internal constructor(
             observeExternalChanges = observeExternalChanges,
             policy = policy,
             readInitial = { readInitial(key) },
+            readDurable = { fallback -> readDurable(key, fallback) },
             writeValue = { newValue, onWriteFailed -> writeValue(key, newValue, onWriteFailed) },
             flowProvider = { flowProvider(key) },
         )
@@ -571,6 +603,7 @@ internal fun <T> rememberKSafeStateImpl(
     observeExternalChanges: Boolean,
     policy: SnapshotMutationPolicy<T>,
     readInitial: () -> T,
+    readDurable: (fallback: T) -> T,
     writeValue: (newValue: T, onWriteFailed: (Throwable) -> Unit) -> Unit,
     flowProvider: () -> Flow<T>,
 ): KSafeComposeState<T> {
@@ -590,16 +623,9 @@ internal fun <T> rememberKSafeStateImpl(
                 val writeToken = s.writeTokenInFlight()
                 val reconcile: (Throwable) -> Unit = { e ->
                     println("KSafe: Failed to save value for key '$key': ${e.message}")
-                    // The durable value, except when the read cannot resolve one. This seam bakes
-                    // in the caller's default as its own fallback, so a strict entry on a locked
-                    // device reads back as exactly that default — publishing it would blank a
-                    // value still intact on disk. Reading back the default is therefore treated as
-                    // "unknown" and yields to the last synced value, which never advances on a
-                    // successful write and so must not be preferred while the read still works.
-                    val durable = readInitial()
-                    val fallback =
-                        if (policy.equivalent(durable, defaultValue)) s.lastSyncedValue else durable
-                    s.reconcileAfterFailedPersist(writeToken, fallback)
+                    // Re-read with the last in-sync value as the read's OWN fallback: an unresolvable
+                    // read yields it, while a stored value equal to the default comes back as itself.
+                    s.reconcileAfterFailedPersist(writeToken, readDurable(s.lastSyncedValue))
                 }
                 try {
                     writeValue(newValue, reconcile)

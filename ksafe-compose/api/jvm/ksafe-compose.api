@@ -24,12 +24,13 @@ public final class eu/anifantakis/lib/ksafe/compose/KSafeComposeStateKt {
 	public static final field WRITE_ECHO_TIMEOUT_MS J
 	public static final fun observeFromStorage (Leu/anifantakis/lib/ksafe/compose/KSafeComposeState;Lkotlinx/coroutines/flow/Flow;ZZJJLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static synthetic fun observeFromStorage$default (Leu/anifantakis/lib/ksafe/compose/KSafeComposeState;Lkotlinx/coroutines/flow/Flow;ZZJJLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
-	public static final fun rememberKSafeStateImpl (Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;ZLandroidx/compose/runtime/SnapshotMutationPolicy;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function0;Landroidx/compose/runtime/Composer;I)Leu/anifantakis/lib/ksafe/compose/KSafeComposeState;
+	public static final fun rememberKSafeStateImpl (Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;ZLandroidx/compose/runtime/SnapshotMutationPolicy;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function0;Landroidx/compose/runtime/Composer;I)Leu/anifantakis/lib/ksafe/compose/KSafeComposeState;
 }
 
 public final class eu/anifantakis/lib/ksafe/compose/KSafeComposeStateProvider {
 	public static final field $stable I
 	public fun <init> (Ljava/lang/String;Ljava/lang/Object;ZLandroidx/compose/runtime/SnapshotMutationPolicy;Ljava/lang/Object;Ljava/lang/Object;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function1;)V
+	public fun <init> (Ljava/lang/String;Ljava/lang/Object;ZLandroidx/compose/runtime/SnapshotMutationPolicy;Ljava/lang/Object;Ljava/lang/Object;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function3;Lkotlin/jvm/functions/Function1;)V
 	public fun <init> (Ljava/lang/String;Ljava/lang/Object;ZLandroidx/compose/runtime/SnapshotMutationPolicy;Ljava/lang/Object;Ljava/lang/Object;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function3;Lkotlin/jvm/functions/Function1;)V
 	public final fun provideDelegate (Ljava/lang/Object;Lkotlin/reflect/KProperty;Landroidx/compose/runtime/Composer;I)Leu/anifantakis/lib/ksafe/compose/KSafeComposeState;
 }

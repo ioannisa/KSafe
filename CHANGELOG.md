@@ -167,6 +167,16 @@ counter.value++
   the entry expired under `ENCRYPTED_WITH_TIMED_CACHE`. The write-back now re-checks after storing
   and withdraws its own entry when it lost the race, so the newer write's value is what every
   later read sees.
+- **Compose: a failed write no longer rewinds `rememberKSafeState` to the composition-time value
+  when what is stored happens to equal the default.** After a persist failed, the state re-read
+  storage through a seam that carried the caller's default as the read's own fallback, so a value
+  that legitimately equals the default was indistinguishable from a read that could not resolve —
+  a cleared text field, a zeroed counter, a `false` flag. Both were resolved toward the last value
+  the state knew to be in sync, which without `observeExternalChanges` never advances past what
+  the composition read at startup: the UI resurrected data the user had already cleared, the next
+  edit was made from it, and the following save overwrote what was really stored. The re-read now
+  carries that last in-sync value as its own fallback, so an unresolvable read still yields it
+  while a stored value equal to the default comes back as itself.
 
 ## [3.1.0] - 2026-08-24
 
