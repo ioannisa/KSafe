@@ -115,21 +115,21 @@ class KSafeComposeState<T>(
     /**
      * One-shot cold-start self-heal: applies a value read from storage without persisting
      * (e.g. async decryption finishing after the initial read returned the default).
-     * Skipped once a user write is pending; never clears the guard.
+     * Skipped while any user write is unresolved; never clears the guard, never settles a write.
+     * The write slot, not the latch, is the record: a write netting back to [syncedValue] leaves
+     * the latch down while its value is still on its way to disk.
      */
     @PublishedApi internal fun updateFromStorage(newValue: T) {
-        if (!awaitingWriteEcho) {
-            val owner = unresolvedWrite.load()
-            betweenCheckAndPublishForTest?.invoke()
-            _internalState.value = newValue
-            // An armed flag here means a user write raced into this window — re-apply it,
-            // since this one-shot path has no later emission to correct a clobber.
-            if (awaitingWriteEcho) {
-                unresolvedWrite.load()?.let { _internalState.value = it.value }
-            } else {
-                syncedValue = newValue
-                settle(owner)
-            }
+        if (awaitingWriteEcho || unresolvedWrite.load() != null) return
+        betweenCheckAndPublishForTest?.invoke()
+        _internalState.value = newValue
+        // A write racing into this window owns the state — re-apply it, since this one-shot
+        // path has no later emission to correct a clobber.
+        val raced = unresolvedWrite.load()
+        if (raced != null) {
+            _internalState.value = raced.value
+        } else {
+            syncedValue = newValue
         }
     }
 

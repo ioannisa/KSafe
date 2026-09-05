@@ -256,6 +256,20 @@ counter.value++
   could previously disguise as a passing hiccup that a `Flow` would retry forever. The trade is
   deliberate and one-directional: a platform error that says "key not found" in its own wording,
   without KSafe's opening, is now left alone rather than reclaimed.
+- **Compose: the cold-start self-heal no longer overwrites a value the user is still typing.** The
+  one-shot heal that applies the stored value when the first read came back as the default (an
+  async decrypt on web, a locked device elsewhere) asked only the stale-emission latch whether a
+  write was pending — and that latch is deliberately down for a write whose value happens to equal
+  the last synced one, such as a field edited and then cleared back to its starting text. The heal
+  now consults the write record itself, so it stands aside while any write is unresolved and never
+  clears the record a failed persist needs in order to roll back.
+- **Compose: a `KSafeReference` read inside a composable is no longer skipped over.** The handle
+  `ksafe(default, key)` returns — new in this release — was marked `@Stable`, which promises
+  Compose that the same instance holds the same observable value, while its `value` reads and
+  writes storage directly with no snapshot state behind it; a composable taking the handle as a
+  parameter could therefore be skipped and keep showing an old value. The marker is gone, and
+  `value` now documents that composition should read through `:ksafe-compose` or
+  `asStateFlow().collectAsState()` instead.
 
 ### Changed
 

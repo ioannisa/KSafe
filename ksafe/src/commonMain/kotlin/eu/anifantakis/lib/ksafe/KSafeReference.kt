@@ -1,6 +1,5 @@
 package eu.anifantakis.lib.ksafe
 
-import androidx.compose.runtime.Stable
 import kotlinx.serialization.KSerializer
 import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
@@ -18,7 +17,6 @@ import kotlin.reflect.KProperty
  * Kotlin could hand to KSafe, so a key-less handle can only be used with `by` — touching
  * [value] on one throws [IllegalStateException].
  */
-@Stable
 class KSafeReference<T> @PublishedApi internal constructor(
     private val ksafe: KSafe,
     private val serializer: KSerializer<T>,
@@ -31,6 +29,9 @@ class KSafeReference<T> @PublishedApi internal constructor(
     /**
      * The persisted value, or the creation-time default while none exists. Setting persists
      * immediately (fire-and-forget, like [KSafe.putDirect]). Requires an explicit [key].
+     *
+     * Not observable by Compose — a change here recomposes nothing; in composition use
+     * `:ksafe-compose` or `asStateFlow().collectAsState()`.
      */
     var value: T
         get() = read(requireKey())

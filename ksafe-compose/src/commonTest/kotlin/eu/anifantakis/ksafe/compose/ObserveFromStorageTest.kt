@@ -267,6 +267,38 @@ class ObserveFromStorageTest {
         )
     }
 
+    // The write-echo latch stays down for a write that nets back to the last synced value, so it cannot
+    // stand in for "a write is in flight": the heal must consult the unresolved-write slot, leave the
+    // user's value alone and keep the slot so a later failed persist still has something to roll back.
+    @Test
+    fun updateFromStorage_writeNettingBackToSyncedValue_isNotClobberedAndKeepsItsRollbackSlot() {
+        val state = newState("A") // syncedValue = "A"
+
+        state.value = "B"         // arms the latch
+        state.value = "A"         // nets back to the synced value: the latch drops, the write is in flight
+        val inFlight = state.writeTokenInFlight()
+
+        state.updateFromStorage("hello")
+
+        assertEquals("A", state.value, "the cold-start heal must not publish over a write that is still in flight")
+        assertEquals("A", state.lastSyncedValue, "storage never confirmed anything, so the baseline must not move")
+
+        // The slot must still name that write, else its persist failing has no rollback record.
+        state.reconcileAfterFailedPersist(inFlight, durableValue = "durable")
+        assertEquals("durable", state.value, "the heal must not settle a write it did not observe echo")
+    }
+
+    // Control: with nothing in flight the one-shot heal still does its job.
+    @Test
+    fun updateFromStorage_withNoWriteInFlight_publishesAndRepinsTheBaseline() {
+        val state = newState("A")
+
+        state.updateFromStorage("hello")
+
+        assertEquals("hello", state.value)
+        assertEquals("hello", state.lastSyncedValue)
+    }
+
     // Cold-start one-shot: observeExternalChanges=false + coldStart=true takes the first emission via updateFromStorage.
     @Test
     fun observeFromStorage_coldStart_takesFirstEmissionAndCompletes() = runTest {
