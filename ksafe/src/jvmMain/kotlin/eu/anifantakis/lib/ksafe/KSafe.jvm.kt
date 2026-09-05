@@ -171,16 +171,22 @@ private fun buildJvmKSafe(
         ?.takeIf { it.isNotBlank() && it != explicitNamespace }
         ?.let { File(resolvedBaseDir, it) }
     val storageDir: File = if (explicitNamespace != null) {
-        File(resolvedBaseDir, explicitNamespace).also { nsDir ->
-            if (!nsDir.exists()) nsDir.mkdirs()
-            secureDirectory(nsDir)
-            importStoreFilesOnce(listOfNotNull(legacyNamespaceDir, resolvedBaseDir), nsDir, baseFileName)
-        }
+        val nsDir = File(resolvedBaseDir, explicitNamespace)
+        if (!nsDir.exists()) nsDir.mkdirs()
+        secureDirectory(nsDir)
+        val srcDirs = listOfNotNull(legacyNamespaceDir, resolvedBaseDir)
+        degradedCarryForwardSources[degradeMemoKey(nsDir, baseFileName)]
+            ?: if (importStoreFilesOnce(srcDirs, nsDir, baseFileName, copy = storeCopy())) nsDir
+            else carryForwardSourceForThisSession(srcDirs, baseFileName, nsDir)
     } else {
         // A canonicalized-away token (e.g. whitespace-only) may still have pre-3.0.0 data in
         // its old subdir; surface it at the un-namespaced path it now maps to.
-        if (legacyNamespaceDir != null) importStoreFilesOnce(listOf(legacyNamespaceDir), resolvedBaseDir, baseFileName)
-        resolvedBaseDir
+        val srcDirs = listOfNotNull(legacyNamespaceDir)
+        degradedCarryForwardSources[degradeMemoKey(resolvedBaseDir, baseFileName)]
+            ?: if (srcDirs.isEmpty() ||
+                importStoreFilesOnce(srcDirs, resolvedBaseDir, baseFileName, copy = storeCopy())
+            ) resolvedBaseDir
+            else carryForwardSourceForThisSession(srcDirs, baseFileName, resolvedBaseDir)
     }
 
     // KSafeCore and the fallback migration must compute identical aliases.
@@ -282,6 +288,10 @@ private val storeCohortSuffixes = listOf(
     JSON_FALLBACK_SUFFIX,
 )
 
+/** The single directory a carry-forward publishes from: the first of [srcDirs] holding any cohort file. */
+internal fun selectCopyForwardSource(srcDirs: List<File>, baseFileName: String): File? =
+    srcDirs.firstOrNull { dir -> storeCohortSuffixes.any { File(dir, baseFileName + it).exists() } }
+
 /**
  * Copies one store's on-disk files into [dstDir] (existing destinations kept). Copy, never
  * move: a move would steal another app's shared un-namespaced file. The whole cohort comes
@@ -307,9 +317,7 @@ internal fun copyStoreFilesForward(
     rename: (File, File) -> Boolean = { tmp, dst -> tmp.renameTo(dst) },
     copy: (File, File) -> Unit = { src, dst -> src.copyTo(dst, overwrite = true) },
 ): Boolean {
-    val srcDir = srcDirs.firstOrNull { dir ->
-        storeCohortSuffixes.any { File(dir, baseFileName + it).exists() }
-    } ?: return true
+    val srcDir = selectCopyForwardSource(srcDirs, baseFileName) ?: return true
     val staged = ArrayList<Pair<File, File>>()
     for (suffix in storeCohortSuffixes) {
         val dst = File(dstDir, baseFileName + suffix)
@@ -343,19 +351,64 @@ internal fun copyStoreFilesForward(
 /** Named outside clearAll()'s residue sweep: no `<base>.ksafe` prefix, no `.fwd-tmp` suffix. */
 internal const val NAMESPACE_IMPORT_MARKER_SUFFIX: String = ".ns-imported"
 
-/** One-shot carry-forward: a marker written after a complete publish keeps a later clearAll() from re-arming it. */
+/** Test seam: injects a copy fault into the factory's carry-forward. `null` in production. */
+internal var copyForwardCopyForTest: ((File, File) -> Unit)? = null
+
+private fun storeCopy(): (File, File) -> Unit =
+    copyForwardCopyForTest ?: { src, dst -> src.copyTo(dst, overwrite = true) }
+
+/**
+ * One-shot carry-forward: a marker written after a complete publish keeps a later clearAll() from
+ * re-arming it. Returns true when [dstDir] holds the cohort — already imported, nothing to import,
+ * or just published — and false when a source cohort exists and the publish failed.
+ */
 internal fun importStoreFilesOnce(
     srcDirs: List<File>,
     dstDir: File,
     baseFileName: String,
     rename: (File, File) -> Boolean = { tmp, dst -> tmp.renameTo(dst) },
     copy: (File, File) -> Unit = { src, dst -> src.copyTo(dst, overwrite = true) },
-) {
+): Boolean {
     val marker = File(dstDir, baseFileName + NAMESPACE_IMPORT_MARKER_SUFFIX)
-    if (marker.exists()) return
-    if (copyStoreFilesForward(srcDirs, dstDir, baseFileName, rename, copy)) {
-        runCatching { marker.createNewFile() }
-    }
+    if (marker.exists()) return true
+    if (!copyStoreFilesForward(srcDirs, dstDir, baseFileName, rename, copy)) return false
+    runCatching { marker.createNewFile() }
+    return true
+}
+
+/**
+ * Destinations this process has already degraded, and the source each degraded to. Lives until
+ * process exit: a second construction on a degraded store joins it instead of re-attempting the
+ * copy, which would otherwise snapshot a store file the first instance is actively writing and
+ * then publish the marker that strands its writes.
+ */
+private val degradedCarryForwardSources = java.util.concurrent.ConcurrentHashMap<String, File>()
+
+private fun degradeMemoKey(dstDir: File, baseFileName: String): String =
+    runCatching { dstDir.canonicalPath }.getOrDefault(dstDir.absolutePath) + "|" + baseFileName
+
+/** Test seam: forgets the degrade memo, modelling a process restart. */
+internal fun clearCarryForwardDegradeMemoForTest() = degradedCarryForwardSources.clear()
+
+/**
+ * A failed carry-forward must not promote the empty destination to authoritative: a store file
+ * created there would be skipped by the name-keyed retry forever, so this session runs from the
+ * source. For the duration of the degrade this session reads, writes and `clearAll()`s that
+ * shared source store.
+ */
+private fun carryForwardSourceForThisSession(
+    srcDirs: List<File>,
+    baseFileName: String,
+    dstDir: File,
+): File {
+    val src = selectCopyForwardSource(srcDirs, baseFileName) ?: return dstDir
+    degradedCarryForwardSources[degradeMemoKey(dstDir, baseFileName)] = src
+    System.err.println(
+        "KSafe Warning: the store carry-forward into '${dstDir.absolutePath}' failed; " +
+            "running from '${src.absolutePath}' until a later launch's carry-forward succeeds; " +
+            "reads, writes and clearAll() act on that shared store until then."
+    )
+    return src
 }
 
 /**

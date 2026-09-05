@@ -204,8 +204,23 @@ counter.value++
   kept its never-persisted value in memory under a dirty flag nothing ever cleared, so reads served
   a value that was not on disk for the rest of the session, and the per-entry encryption keys had
   already been deleted before the wipe was attempted, leaving `HARDWARE_ISOLATED` entries, and
-  entries written by pre-2.x releases, that survived on disk permanently undecryptable. The keys are now reclaimed only after the data wipe
-  succeeds, and a failed wipe rolls back the whole batch's in-memory state.
+  entries written by pre-2.x releases, that survived on disk permanently undecryptable. The keys
+  are now reclaimed only after the data wipe succeeds, and a failed wipe rolls back the whole
+  batch's in-memory state.
+- **JVM: a namespace carry-forward that fails no longer strands the store it could not copy.**
+  With an `appNamespace` set, copying the existing store files into the namespace directory can
+  fail on a full disk, an antivirus or indexer lock, or a permission error; construction then went
+  on against the empty namespace directory, so every value read back as its default and the first
+  write of that session — an ordinary `put`, or the generation birth-stamp a `MaxAge` rotation
+  policy issues at startup with no user action — created a store file there. Because the retry
+  decides per destination name, the next launch skipped exactly that file while publishing the
+  rest of the cohort around it: the un-namespaced values never arrived, and a fallback JSON
+  published without its pending marker re-armed the migration's "fallback wins" over what the
+  previous session had written. A failed carry-forward now runs that session from the directory it
+  could not copy out of — exactly where the app ran before the namespace was added — and logs a
+  warning, so the next launch carries the whole cohort forward, this session's writes included. A
+  store already stranded this way by 3.0.0 or 3.1.0 is not repaired: its namespaced store file
+  already exists, so the retry still skips it.
 
 ## [3.1.0] - 2026-08-24
 
