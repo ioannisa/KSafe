@@ -107,7 +107,7 @@ jobs:
   # drainable; full intensity remains the local default.
   # ---------------------------------------------------------------------------
   jvm-full-suite:
-    name: Full JVM suite (Java ${{ matrix.java }})
+    name: Full JVM suite — Linux (Java ${{ matrix.java }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -125,14 +125,55 @@ jobs:
       # stop the 2-vCPU hang, so a specific test deadlocks (not a throughput
       # drain). The per-test "STARTED/PASSED" events make the job log name the
       # culprit (last STARTED with no result) on timeout.
-      - name: Full JVM unit suite (software fallback, scaled stress)
-        run: ./gradlew :ksafe:jvmTest -PksafeStressScale=0.05 -PksafeTestLog --stacktrace
+      - name: Full JVM suites (software fallback, scaled stress)
+        run: >
+          ./gradlew
+          :ksafe:jvmTest :ksafe-compose:jvmTest :ksafe-biometrics:jvmTest
+          -PksafeStressScale=0.05 -PksafeTestLog --continue --stacktrace
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: jvm-full-test-report
-          path: ksafe/build/reports/tests/jvmTest
+          name: jvm-full-linux-report-java${{ matrix.java }}
+          path: |
+            ksafe/build/reports/tests/jvmTest
+            ksafe-compose/build/reports/tests/jvmTest
+            ksafe-biometrics/build/reports/tests/jvmTest
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # macOS: the whole JVM suite of all three modules on the JVM target (the
+  # `apple` job below covers the native targets only).
+  # ---------------------------------------------------------------------------
+  jvm-full-suite-macos:
+    name: Full JVM suite — macOS (Java ${{ matrix.java }})
+    runs-on: macos-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        java: [ '17', '24' ]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Full JVM suites (software fallback, scaled stress)
+        run: >
+          ./gradlew
+          :ksafe:jvmTest :ksafe-compose:jvmTest :ksafe-biometrics:jvmTest
+          -PksafeStressScale=0.05 -PksafeTestLog --continue --stacktrace
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: jvm-full-macos-report-java${{ matrix.java }}
+          path: |
+            ksafe/build/reports/tests/jvmTest
+            ksafe-compose/build/reports/tests/jvmTest
+            ksafe-biometrics/build/reports/tests/jvmTest
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
@@ -176,12 +217,13 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
-  # :ksafe-compose and :ksafe-biometrics — jvm + both browser targets. Their
+  # :ksafe-compose and :ksafe-biometrics — both browser targets (their JVM suites
+  # run in the three Full JVM suite jobs above). Their
   # native (macos/iosSim) tests are folded into the `apple` job below. Android
   # is intentionally manual/on-device only (see note near the bottom).
   # ---------------------------------------------------------------------------
   modules:
-    name: Compose + Biometrics (jvm + js + wasmJs)
+    name: Compose + Biometrics (js + wasmJs)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -199,8 +241,8 @@ jobs:
           CHROME_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
         run: >
           ./gradlew
-          :ksafe-compose:jvmTest :ksafe-compose:jsBrowserTest :ksafe-compose:wasmJsBrowserTest
-          :ksafe-biometrics:jvmTest :ksafe-biometrics:jsBrowserTest :ksafe-biometrics:wasmJsBrowserTest
+          :ksafe-compose:jsBrowserTest :ksafe-compose:wasmJsBrowserTest
+          :ksafe-biometrics:jsBrowserTest :ksafe-biometrics:wasmJsBrowserTest
           --continue --stacktrace
       - name: Upload test report
         if: always()
