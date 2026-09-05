@@ -120,6 +120,14 @@ counter.value++
   `KSafeBiometrics.defaultReason` at startup — raised inside `LAContext.evaluatePolicy` and
   killed the app on iOS, macOS and JVM Desktop on macOS, with no exception a caller could catch.
   A blank reason now falls back to the built-in default before any platform call is made.
+- **JVM: an OS key vault whose native bridge cannot link no longer bricks the store.** When the
+  vault's native library failed to load in-process — JNA is first resolved inside the
+  construction self-test — the self-test read the failure as a
+  locked-but-present vault, so every encrypted write was refused and every encrypted read
+  returned its default, on that launch and every launch after it. A link failure is now treated
+  as the runtime failure it is: custody degrades to the software vault and the store keeps
+  working, while reads still report the vault as unavailable rather than the key as missing, so
+  the startup sweep leaves existing ciphertext intact.
 
 ## [3.1.0] - 2026-08-24
 

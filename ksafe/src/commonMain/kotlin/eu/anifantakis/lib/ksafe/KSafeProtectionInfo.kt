@@ -51,7 +51,7 @@ data class KSafeProtectionInfo(
      *    (no libsecret daemon, unsupported OS); keys fall back to software. Weaker than
      *    intended but still fully OPERATIONAL.
      *  - `"jvm_os_vault_degraded"` — JVM: an OS secret store EXISTS but failed its self-test
-     *    (locked Keychain/keyring, headless launch, JNA link error). To avoid overwriting the
+     *    (locked Keychain/keyring, headless launch). To avoid overwriting the
      *    real OS key on a later healthy launch, KSafe refuses to mint keys, so encrypted
      *    reads/writes FAIL until it is reachable — NON-operational ([isEncryptionOperational]
      *    is `false`). Retry once the store is unlocked, or set `-Dksafe.jvm.keyVault=software`.

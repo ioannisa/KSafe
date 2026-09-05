@@ -75,7 +75,7 @@ outcomes when an OS vault isn't usable**, and they are not the same tier:
   `DataStoreKeyVault` and keeps working. `protectionInfo` reports
   `effectiveLevel = SOFTWARE`, note `jvm_os_vault_unavailable`, and
   `isEncryptionOperational = true`. One `warnFallbackOnce` per process.
-- **An OS vault was constructed but its self-test failed** (a locked Keychain, a
+- **An OS vault was constructed but its self-test failed with anything other than a native-link error** (a locked Keychain, a
   login keyring not yet on D-Bus, a headless/SSH launch). The real keys almost
   certainly live in that OS store and it will be reachable on a healthy launch,
   so falling back to the software store would destroy them: a fresh key minted
@@ -309,8 +309,8 @@ per JVM process (they guard distinct, non-fallback conditions):
   (`jvm_os_vault_degraded`, `isEncryptionOperational = false`). The message
   points at `-Dksafe.jvm.keyVault=software` for deliberately choosing software
   storage instead.
-- **`warnRuntimeDegrade`** — the OS vault came up healthy at construction but a
-  later get/put/delete threw a `LinkageError` / `ExceptionInInitializerError`
+- **`warnRuntimeDegrade`** — the OS vault came up healthy at construction, or its
+  self-test itself hit the link failure, and a get/put/delete threw a `LinkageError` / `ExceptionInInitializerError`
   (typically a jlink-trimmed runtime missing `jdk.unsupported` →
   `NoClassDefFoundError: sun/misc/Unsafe`). `degradeToLegacy` then routes to the
   software vault for the rest of the process. Because the OS vault is dead

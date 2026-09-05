@@ -4,6 +4,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import eu.anifantakis.lib.ksafe.internal.JvmSoftwareEncryption
+import eu.anifantakis.lib.ksafe.internal.KSafeEngineMessage
 import eu.anifantakis.lib.ksafe.internal.KSafeReservedKeys
 import eu.anifantakis.lib.ksafe.internal.keyvault.DataStoreKeyVault
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVault
@@ -27,6 +28,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /** Locks in: [JvmKeyVault] wiring and legacy-key → OS-store migration, via an in-memory fake vault. */
@@ -454,6 +456,68 @@ class JvmKeyVaultMigrationTest {
         } finally {
             System.clearProperty("ksafe.jvm.keyVault")
         }
+    }
+
+    // A vault whose native bridge never links is dead IN-PROCESS, not locked-but-present. On
+    // Windows JNA resolves lazily inside the first put/get, i.e. inside the self-test, so the
+    // link failure must degrade to the software vault instead of failing every write closed.
+
+    /** OS-vault stand-in whose every op dies with a `LinkageError` (JNA cannot load). */
+    private class UnlinkableOsVault : JvmKeyVault {
+        override val name = "UnlinkableOsVault (test)"
+        override val isOsBacked = true
+        override fun get(alias: String): ByteArray? = throw UnsatisfiedLinkError("jnidispatch")
+        override fun put(alias: String, keyBytes: ByteArray): Unit = throw UnsatisfiedLinkError("jnidispatch")
+        override fun delete(alias: String): Unit = throw UnsatisfiedLinkError("jnidispatch")
+    }
+
+    @Test
+    fun osVaultLinkageFailureInSelfTest_degradesToLegacy_ratherThanFailingClosed() = withoutSoftwareOptOut {
+        val provider = JvmKeyVaultProvider(dataStore, osCandidateForTest = UnlinkableOsVault())
+
+        assertSame(provider.legacy, provider.active, "an unlinkable OS vault ⇒ legacy is the active vault")
+        assertTrue(provider.hasDegraded, "reads must still report 'unavailable' so no ciphertext is swept")
+        assertFalse(
+            provider.osVaultUnavailable,
+            "a native-link failure is an in-process death, not a locked vault — minting must stay allowed",
+        )
+    }
+
+    @Test
+    fun osVaultLinkageFailureInSelfTest_encryptSucceeds_andUnknownKeyReportsUnavailable() = withoutSoftwareOptOut {
+        val alias = "user:token"
+
+        // Ciphertext whose key never reaches this store — the miss must read "unavailable",
+        // not the "No encryption key found" the orphan sweep deletes on.
+        val orphanCiphertext = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = FakeOsVault()),
+        ).encrypt("unknown", "secret".toByteArray())
+
+        val provider = JvmKeyVaultProvider(dataStore, osCandidateForTest = UnlinkableOsVault())
+        val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+
+        val ct = engine.encrypt(alias, "data".toByteArray())
+        assertContentEquals("data".toByteArray(), engine.decrypt(alias, ct))
+        assertNotNull(
+            DataStoreKeyVault(dataStore).get(alias),
+            "an unlinkable OS vault must still mint into the software vault",
+        )
+        assertNotNull(
+            DataStoreKeyVault(dataStore).get("$alias.${KSafeReservedKeys.VAULT_SOFTWARE_FALLBACK}"),
+            "a degraded mint must carry the custody marker the next healthy launch relies on",
+        )
+
+        val ex = assertFailsWith<IllegalStateException> { engine.decrypt("unknown", orphanCiphertext) }
+        val msg = ex.message.orEmpty()
+        assertTrue(
+            msg.contains(KSafeEngineMessage.VAULT_UNAVAILABLE, ignoreCase = true),
+            "should report vault unavailable; was: $msg",
+        )
+        assertFalse(
+            msg.contains("No encryption key found", ignoreCase = true),
+            "must NOT use the orphan-sweep delete message; was: $msg",
+        )
     }
 
     @Test
@@ -1217,6 +1281,17 @@ class JvmKeyVaultMigrationTest {
             inner.put(alias, keyBytes)
         }
         override fun delete(alias: String) = inner.delete(alias)
+    }
+
+    /** Lifts the suite-wide `-Dksafe.jvm.keyVault=software`, so pick() reaches the self-test. */
+    private inline fun withoutSoftwareOptOut(block: () -> Unit) {
+        val prev = System.getProperty("ksafe.jvm.keyVault")
+        System.clearProperty("ksafe.jvm.keyVault")
+        try {
+            block()
+        } finally {
+            if (prev != null) System.setProperty("ksafe.jvm.keyVault", prev)
+        }
     }
 
     private inline fun withSoftwareOptOut(block: () -> Unit) {

@@ -185,9 +185,10 @@ internal class JvmKeyVaultProvider(
     )
 
     /**
-     * Set when the OS vault [picked] at construction later fails at *runtime* — typically a
-     * jlink-trimmed JRE missing `jdk.unsupported`, so JNA throws
-     * `NoClassDefFoundError: sun/misc/Unsafe`. [degradeToLegacy] flips this; [active] then
+     * Set when the OS vault's native bridge dies in-process — typically a jlink-trimmed JRE
+     * missing `jdk.unsupported`, so JNA throws `NoClassDefFoundError: sun/misc/Unsafe` — either
+     * on a later call or already inside the construction [selfTest] (Windows resolves JNA
+     * lazily, so the link failure lands there). [degradeToLegacy] flips this; [active] then
      * returns [legacy]. Unlike [osVaultSelfTestFailed] the OS vault is dead *in-process*, so
      * there is no reachable OS key to overwrite and persisting to legacy is safe.
      */
@@ -215,7 +216,7 @@ internal class JvmKeyVaultProvider(
     private val softwareOptOut = AtomicBoolean(false)
 
     /**
-     * Declared *after* [degraded] / [osVaultSelfTestFailed] because [pick] writes the latter on
+     * Declared *after* [degraded] / [osVaultSelfTestFailed] because [pick] writes either on
      * a self-test failure — ordering it earlier would touch a not-yet-constructed flag and NPE.
      */
     private val picked: JvmKeyVault =
@@ -245,11 +246,15 @@ internal class JvmKeyVaultProvider(
     /**
      * Flips the provider into degraded mode after a runtime JNA failure on [picked], so
      * [active] returns [legacy] thereafter. Called when a `LinkageError` /
-     * `ExceptionInInitializerError` escapes a get/put/delete on the active vault.
+     * `ExceptionInInitializerError` escapes a get/put/delete on the active vault, and by [pick]
+     * when the same failure surfaces in the construction self-test.
      */
-    internal fun degradeToLegacy(cause: Throwable) {
+    internal fun degradeToLegacy(cause: Throwable) = degradeToLegacy(cause, picked.name)
+
+    /** Name passed in because [pick] degrades before [picked] is assigned. */
+    private fun degradeToLegacy(cause: Throwable, vaultName: String) {
         if (degraded.compareAndSet(false, true)) {
-            warnRuntimeDegrade(picked.name, cause)
+            warnRuntimeDegrade(vaultName, cause)
         }
     }
 
@@ -268,13 +273,23 @@ internal class JvmKeyVaultProvider(
         val candidate: JvmKeyVault? = osCandidateForTest ?: buildOsVault(os, appNamespace, dataStore)
 
         if (candidate != null) {
-            if (selfTest(candidate)) return candidate
-            // OS vault present but unreachable (locked Keychain, keyring not unlocked, headless).
-            // Flag it rather than trust the software store — otherwise the orphan sweep deletes
-            // OS-only ciphertext and junk keys minted here overwrite the real OS key next launch.
-            osVaultSelfTestFailed.set(true)
-            warnOsVaultUnavailableOnce(os)
-            return legacy
+            when (val result = selfTest(candidate)) {
+                is SelfTest.Passed -> return candidate
+                // Dead in-process like a runtime LinkageError: no reachable OS key to overwrite.
+                is SelfTest.Unlinkable -> {
+                    degradeToLegacy(result.cause, candidate.name)
+                    return legacy
+                }
+                // OS vault present but unreachable (locked Keychain, keyring not unlocked,
+                // headless). Flag it rather than trust the software store — otherwise the orphan
+                // sweep deletes OS-only ciphertext and junk keys minted here overwrite the real
+                // OS key next launch.
+                is SelfTest.Failed -> {
+                    osVaultSelfTestFailed.set(true)
+                    warnOsVaultUnavailableOnce(os)
+                    return legacy
+                }
+            }
         }
 
         warnFallbackOnce(os)
@@ -420,15 +435,27 @@ internal class JvmKeyVaultProvider(
      * self-tests interleave (A.put, B.put, A.get, A.delete, B.get → null) and flip a healthy
      * engine into fail-closed.
      */
-    private fun selfTest(vault: JvmKeyVault): Boolean = try {
+    private fun selfTest(vault: JvmKeyVault): SelfTest = try {
         val alias = "__ksafe_selftest__" + java.util.UUID.randomUUID()
         val canary = byteArrayOf(0x4B, 0x53, 0x61, 0x66, 0x65) // "KSafe"
         vault.put(alias, canary)
         val read = vault.get(alias)
         vault.delete(alias)
-        read != null && read.contentEquals(canary)
+        if (read != null && read.contentEquals(canary)) SelfTest.Passed else SelfTest.Failed
+    } catch (e: LinkageError) {
+        SelfTest.Unlinkable(e)
     } catch (t: Throwable) {
-        false
+        SelfTest.Failed
+    }
+
+    /**
+     * [Unlinkable] stays apart from [Failed]: an unreachable vault still owns the real keys, an
+     * unlinkable one is dead in-process and can own nothing this session.
+     */
+    private sealed interface SelfTest {
+        object Passed : SelfTest
+        object Failed : SelfTest
+        class Unlinkable(val cause: LinkageError) : SelfTest
     }
 
     private companion object {
@@ -473,8 +500,10 @@ internal class JvmKeyVaultProvider(
                 val typed = "${cause::class.java.simpleName}: ${cause.message}"
                 "KSafe SECURITY WARNING: the OS keyvault ($vaultName) failed at " +
                     "runtime ($typed); key custody has degraded to the software " +
-                    "vault. This usually means a jlink-trimmed runtime is missing " +
-                    "`jdk.unsupported` (sun.misc.Unsafe). IMPORTANT: that same " +
+                    "vault. This usually means the JNA native bridge could not load: a " +
+                    "jlink-trimmed runtime missing `jdk.unsupported` (sun.misc.Unsafe), a " +
+                    "stripped or AV-blocked `jna-platform`/`jnidispatch`, or a temp dir JNA " +
+                    "cannot extract into. If it is the missing module, note that the same " +
                     "module is REQUIRED by Jetpack DataStore (KSafe's storage " +
                     "backend) — without it DataStore itself crashes and data will " +
                     "NOT persist; KSafe cannot work around that. Add " +
