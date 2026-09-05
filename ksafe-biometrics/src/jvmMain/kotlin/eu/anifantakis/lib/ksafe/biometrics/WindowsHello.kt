@@ -85,6 +85,8 @@ internal object WindowsHello {
 
     private val runtime: Runtime? by lazyNativeBridge("Windows Hello") { Runtime() }
 
+    /** Whether the native bridge loaded; says nothing about Hello being set up — that is
+     *  [checkAvailability]. */
     val isAvailable: Boolean get() = runtime != null
 
     internal fun vtableByteOffset(slot: Int): Long = slot.toLong() * Native.POINTER_SIZE

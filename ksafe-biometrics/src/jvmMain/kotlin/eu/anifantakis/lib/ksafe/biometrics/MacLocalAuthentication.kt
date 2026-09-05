@@ -59,6 +59,8 @@ internal object MacLocalAuthentication {
 
     private val runtime: Runtime? by lazyNativeBridge("macOS LocalAuthentication") { Runtime() }
 
+    /** Whether the ObjC bridge loaded; says nothing about Touch ID being enrolled — that is
+     *  [canEvaluate]. */
     val isAvailable: Boolean get() = runtime != null
 
     // Probe and prompt must ask about the same policy, or canEvaluate answers for a prompt never shown.

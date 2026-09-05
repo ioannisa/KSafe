@@ -15,10 +15,8 @@ private val directCallbackScope = CoroutineScope(SupervisorJob() + Dispatchers.I
 // Two overlapping OS ceremonies stack dialogs, or the loser fails as DeviceBusy on Windows.
 private val promptGate = BiometricPromptGate()
 
-/** Test seam: replaces the OS prompt. */
 internal var desktopPromptOverrideForTest: ((reason: String, allowFallback: Boolean) -> Boolean)? = null
 
-/** Test seam: replaces the OS availability probe. */
 internal var desktopAvailabilityOverrideForTest: ((allowFallback: Boolean) -> Boolean)? = null
 
 private enum class DesktopOs { MAC, WINDOWS, OTHER }

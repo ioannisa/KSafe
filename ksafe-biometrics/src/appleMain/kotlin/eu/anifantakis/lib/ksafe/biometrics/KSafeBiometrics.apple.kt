@@ -55,8 +55,8 @@ internal actual suspend fun platformVerifyBiometric(
             continuation.invokeOnCancellation { runCatching { context.invalidate() } }
             CoroutineScope(Dispatchers.Main).launch {
                 runLAContextEvaluate(context, reason, allowDeviceCredentialFallback, cancelLabel) { success ->
-                    // A success arriving after cancellation, or after clearBiometricAuth() revoked
-                    // the scope mid-prompt, must not seed — hence the explicit liveness + epoch check.
+                    // Do not seed if the caller cancelled, or clearBiometricAuth() revoked the
+                    // scope while the prompt was up.
                     val cacheKey = attempt.cacheKey
                     if (success && cacheKey != null && continuation.isActive &&
                         BiometricAuthSession.revocationEpoch(cacheKey) == attempt.epochAtPromptStart
@@ -95,7 +95,8 @@ private fun runLAContextEvaluate(
     cancelLabel: String?,
     onResult: (Boolean) -> Unit,
 ) {
-    // Unset when null so the system supplies its own localized title; LAContext has no `title`.
+    // A null cancelLabel keeps the system's localized one. LAContext has no prompt title, so
+    // `title` has no Apple counterpart.
     if (cancelLabel != null) context.localizedCancelTitle = cancelLabel
     // An empty localizedReason raises through interop and kills the process.
     val safeReason = promptReason(reason)

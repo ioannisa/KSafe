@@ -25,10 +25,17 @@ internal expect fun webBioMonotonicNowMs(): Double
 
 /** Web-only controls for [KSafeBiometrics] (visible from `jsMain`/`wasmJsMain` app code). */
 object KSafeBiometricsWeb {
-    /** `false` makes verification a no-op that always succeeds — the web twin of the JVM opt-out. */
+    /** `false` makes [KSafeBiometrics.verifyBiometric] a no-op returning `true` and
+     *  [KSafeBiometrics.biometricsAvailable] report `false` — the web twin of the JVM
+     *  `-Dksafe.biometrics.jvm.prompts=off` opt-out. */
     var promptsEnabled: Boolean = true
 
-    /** Forgets the stored credential id and revokes cached authorizations, so the next call re-registers. */
+    /**
+     * Forgets the stored credential id and revokes cached authorizations, so the next call
+     * re-registers. Use it when the user deleted the passkey OS-side (every verification then
+     * fails) or to force fresh enrollment. The browser is only advised that the old passkey is
+     * unused, so it may linger in the password manager.
+     */
     fun resetRegistration() {
         val abandoned = runCatching { webBioLocalGet(WEBAUTHN_CREDENTIAL_ID_KEY) }.getOrNull()
         // Revoke BEFORE touching storage: a throwing removeItem must not leave a live

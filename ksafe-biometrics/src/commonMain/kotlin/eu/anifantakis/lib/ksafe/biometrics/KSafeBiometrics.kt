@@ -3,34 +3,42 @@ package eu.anifantakis.lib.ksafe.biometrics
 /**
  * Process-wide biometric authentication — no instance, no DI. Real prompts on Android, iOS,
  * macOS, JVM Desktop (Touch ID / Windows Hello) and the web (WebAuthn). Where no prompt path
- * exists (JVM on Linux, browsers without a platform authenticator, the opt-outs) the calls
- * return `true` rather than refusing, so shared code needs no branching.
+ * exists (JVM on Linux, the iOS Simulator, browsers without a platform authenticator while the
+ * credential fallback is on, or the opt-outs `-Dksafe.biometrics.jvm.prompts=off` and
+ * `KSafeBiometricsWeb.promptsEnabled = false`) [verifyBiometric] returns `true` rather than
+ * refusing, so shared code needs no branching; ask [biometricsAvailable] when that matters.
  */
 @Suppress("unused")
 object KSafeBiometrics {
 
     /** App/service name shown to the user, and the default for [verifyBiometric]'s `title`.
      *  Android uses it as the prompt title, the web to name the passkey; Apple and JVM ignore it.
-     *  The web writes the passkey name once, so set this before the first [verifyBiometric] call. */
+     *  `null` keeps each platform's own default. The web writes the passkey name once, so set
+     *  this before the first [verifyBiometric] call. */
     var defaultTitle: String? = null
 
     /** Default `reason` — why authentication is being asked. Shown as the Android subtitle,
-     *  Apple's `localizedReason` and the JVM message; ignored on the web. */
+     *  Apple's `localizedReason` and the JVM message; ignored on the web. Blank falls back to
+     *  the built-in English text. */
     var defaultReason: String = DEFAULT_BIOMETRIC_REASON
 
-    /** Label for the prompt's cancel button; `null` uses the platform's localized one. Android
-     *  applies it only when `allowDeviceCredentialFallback = false` — with the fallback on, the
-     *  platform forbids a negative button. */
+    /** Label for the prompt's cancel button; `null` or blank uses the platform's localized one.
+     *  Android applies it only when `allowDeviceCredentialFallback = false` — with the fallback
+     *  on, the platform forbids a negative button. Ignored on JVM and the web. */
     var defaultCancelLabel: String? = null
 
     /**
      * Suspends until the prompt completes: `true` on success, `false` on failure or dismissal.
+     * Returns `true` without a prompt while a cached authorization for [authorizationDuration]
+     * is live. Callable from any dispatcher; concurrent calls queue behind one prompt.
      * Cancelling the caller propagates `CancellationException` instead of returning `false`.
      *
+     * @param reason Why authentication is asked; see [defaultReason].
      * @param authorizationDuration Caches a success for that duration/scope; `null` always prompts.
      * @param allowDeviceCredentialFallback `true` (default) also accepts PIN/password/pattern.
      *        Ignored on JS/WasmJS; on JVM-Windows the Hello PIN counts as Hello itself.
      * @param title Android prompt title / web passkey name; ignored on Apple and JVM.
+     * @param cancelLabel Cancel button text; see [defaultCancelLabel] for where it applies.
      */
     suspend fun verifyBiometric(
         reason: String = defaultReason,
@@ -43,7 +51,8 @@ object KSafeBiometrics {
         promptTextOrNull(title), promptTextOrNull(cancelLabel),
     )
 
-    /** Non-blocking [verifyBiometric]; delivers the result via [onResult]. */
+    /** Callback-style [verifyBiometric] for non-coroutine callers. [onResult] runs on the main
+     *  thread on Android and Apple, on a background thread on JVM. */
     fun verifyBiometricDirect(
         reason: String = defaultReason,
         authorizationDuration: BiometricAuthorizationDuration? = null,
@@ -69,7 +78,8 @@ object KSafeBiometrics {
     suspend fun biometricsAvailable(allowDeviceCredentialFallback: Boolean = true): Boolean =
         platformBiometricsAvailable(allowDeviceCredentialFallback)
 
-    /** Non-suspending [biometricsAvailable]; delivers the result via [onResult]. */
+    /** Callback-style [biometricsAvailable]. [onResult] runs on the main thread on Android and
+     *  Apple, on a background thread on JVM. */
     fun biometricsAvailableDirect(
         allowDeviceCredentialFallback: Boolean = true,
         onResult: (Boolean) -> Unit,
@@ -101,7 +111,9 @@ internal expect fun platformBiometricsAvailableDirect(
 )
 
 /**
- * Caches a successful authentication so calls within the window skip the prompt.
+ * Caches a successful authentication so calls within the window skip the prompt. Strict and
+ * permissive calls (`allowDeviceCredentialFallback`) keep separate entries; drop them early
+ * with [KSafeBiometrics.clearBiometricAuth].
  *
  * @property duration Window in milliseconds; must be greater than 0 to cache.
  * @property scope Separate scopes keep separate timestamps; `null` is the global scope.

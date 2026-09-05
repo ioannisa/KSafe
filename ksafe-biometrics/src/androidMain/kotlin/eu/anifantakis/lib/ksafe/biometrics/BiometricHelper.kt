@@ -44,7 +44,12 @@ internal fun allowedAuthenticators(allowDeviceCredentialFallback: Boolean): Int 
         BiometricManager.Authenticators.BIOMETRIC_STRONG
     }
 
-/** Tracks the current Activity and drives biometric authentication. Auto-initialized by [KSafeBiometrics]. */
+/**
+ * Android prompt driver behind [KSafeBiometrics]: tracks the foreground `FragmentActivity` and
+ * shows `BiometricPrompt` on it. Initialized at app startup by the library's manifest content
+ * provider, so apps touch it only to tune [activityWaitTimeoutMs] / [confirmationRequired], or
+ * to call [authenticate] directly for its typed exceptions instead of a plain `false`.
+ */
 object BiometricHelper {
 
     private const val BIOMETRIC_FRAGMENT_TAG = "androidx.biometric.BiometricFragment"
@@ -57,6 +62,8 @@ object BiometricHelper {
 
     private var createdFragmentActivity: WeakReference<FragmentActivity>? = null
 
+    /** How long [authenticate] waits for a started `FragmentActivity` before throwing
+     *  [BiometricActivityNotFoundException]. */
     var activityWaitTimeoutMs: Long = 5_000L
 
 
@@ -66,7 +73,8 @@ object BiometricHelper {
     internal var applicationContext: android.content.Context? = null
         private set
 
-    /** Initialize activity tracking. Called automatically by [KSafeBiometrics]. */
+    /** Starts activity tracking. Runs automatically at app startup through the library's manifest
+     *  `<provider>`; call it yourself only if that provider was removed. Repeat calls are no-ops. */
     fun init(application: Application) {
         if (isInitialized) return
         isInitialized = true
@@ -114,6 +122,7 @@ object BiometricHelper {
         })
     }
 
+    /** The started or resumed `FragmentActivity` being tracked, or `null` while none is in the foreground. */
     fun getCurrentActivity(): FragmentActivity? = currentFragmentActivity?.get()
 
     internal fun setForegroundActivityForTest(activity: FragmentActivity?) {
@@ -239,11 +248,22 @@ object BiometricHelper {
     }
 
     /**
-     * Suspends until authentication resolves, waiting up to [activityWaitTimeoutMs] for an Activity.
-     * Must not be called from the Main thread. Returns false when [skipIfAuthorized] already
-     * reported a fresh authorization and no prompt was shown.
-     * @throws BiometricActivityNotFoundException if no FragmentActivity appears within the timeout
-     * @throws BiometricAuthException if authentication fails, is cancelled, or no prompt can be shown
+     * Shows the system prompt and suspends until it resolves, waiting up to [activityWaitTimeoutMs]
+     * for a started `FragmentActivity` first. Callable from any dispatcher, Main included; never
+     * wrap it in `runBlocking` on the main thread, where the prompt callbacks arrive. Concurrent
+     * callers queue behind one prompt. Cancelling the caller dismisses the prompt.
+     *
+     * @param subtitle Text under the title; the reason the user is being asked.
+     * @param allowDeviceCredentialFallback `true` also accepts PIN/pattern/password; `false` is
+     *        biometrics-only and adds a cancel button.
+     * @param title Prompt title; `null` or blank shows the app label.
+     * @param cancelLabel Cancel button text, used only when the fallback is off; `null` or blank
+     *        shows the system's localized Cancel.
+     * @param skipIfAuthorized Re-checked once this call holds the prompt slot; `true` skips the prompt.
+     * @param onAuthorized Runs after a successful prompt, before the slot is released.
+     * @return `true` after a successful prompt; `false` when [skipIfAuthorized] skipped it.
+     * @throws BiometricActivityNotFoundException if no `FragmentActivity` appears within the timeout
+     * @throws BiometricAuthException if authentication fails, is dismissed, or no prompt can be shown
      */
     suspend fun authenticate(
         subtitle: String,

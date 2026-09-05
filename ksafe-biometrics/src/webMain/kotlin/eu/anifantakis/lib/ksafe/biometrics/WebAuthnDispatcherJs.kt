@@ -1,7 +1,8 @@
 package eu.anifantakis.lib.ksafe.biometrics
 
-/** WebAuthn dispatcher JS for both web targets: an IIFE evaluating to `(op, arg) -> Promise<String>`.
- *  A `const val` because `js(...)`/`@JsFun(...)` need a constant; names no Kotlin identifiers (IR renames them). */
+/** WebAuthn dispatcher JS shared by both web targets: an IIFE evaluating to `(op, arg) -> Promise<String>`,
+ *  with the op and outcome strings listed on [webAuthnCall]. A `const val` because `js(...)` and `@JsFun(...)`
+ *  need a compile-time constant; it names no Kotlin identifiers, since the IR compiler renames them. */
 internal const val WEBAUTHN_DISPATCHER_JS = """
     (function() {
       var G = (typeof globalThis !== 'undefined') ? globalThis : self;

@@ -44,6 +44,7 @@ internal object BiometricSessionStore {
         }
     }
 
+    /** Revokes and forgets [scope]'s strict and permissive authorizations; null clears every scope. */
     fun clear(scope: String?) {
         // Revoke before removing entries, or an in-flight prompt's success re-seeds a cleared window.
         if (scope == null) {
