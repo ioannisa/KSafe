@@ -686,7 +686,7 @@ To wipe **everything** in an instance at once:
 ksafe.clearAll()   // suspend — removes every entry AND its encryption key
 ```
 
-`clearAll()` is destructive and irreversible: it clears all data for this instance and deletes every associated key from the OS key store. The data wipe fails loudly; the key deletions are best-effort — a platform-vault failure is logged rather than thrown, since the values are already gone and surviving key material only matters to out-of-store ciphertext copies (backups, quarantine files).
+`clearAll()` is destructive and irreversible: it clears the whole store — disk plus the caches of every live instance on this file (on web each instance still owns its own store handle) — and deletes every associated key from the OS key store. The data wipe fails loudly; the key deletions are best-effort — a platform-vault failure is logged rather than thrown, since the values are already gone and surviving key material only matters to out-of-store ciphertext copies (backups, quarantine files).
 
 ## Collecting Security Violations for the UI
 

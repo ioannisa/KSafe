@@ -346,6 +346,7 @@ private fun buildAppleKSafe(
         // release because KSafeCore.cancel() is idempotent.
         onCancel = { if (released.compareAndSet(false, true)) appleBackends.release(canonicalStorePath) },
     )
+    core.attachSiblings(backend.siblings)
 
     val protectionInfoSnapshot = KSafeProtectionInfo(
         intendedLevel = KSafeProtectionLevel.HARDWARE_BACKED,

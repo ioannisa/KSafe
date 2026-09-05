@@ -140,6 +140,14 @@ counter.value++
   DataStore's own read filter can drop that write's emission from a sibling that subscribed while
   it was in flight, leaving the new value invisible to that sibling until some later write
   happened to arrive. The storage layer is now shared per file, as it already was on JVM Desktop.
+- **`clearAll()` no longer leaves a wiped secret readable from another instance on the same
+  file.** The wipe cleared the disk and the calling instance's own caches, but every other live
+  `KSafe` on that file kept its in-memory copy — its cached ciphertext, the plaintext it had
+  already decrypted, and the entry's routing metadata — so after a logout wiped the store through
+  one instance, a sibling instance still handed the old token back for the rest of the process.
+  Sibling instances on the same store now have their caches, metadata and key generation cleared
+  as part of the wipe (Android, iOS/macOS and JVM Desktop; on web each instance still owns its own
+  store handle, so the singleton rule still applies there).
 
 ## [3.1.0] - 2026-08-24
 

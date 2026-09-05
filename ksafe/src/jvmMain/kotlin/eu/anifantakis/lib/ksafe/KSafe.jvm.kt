@@ -257,6 +257,7 @@ private fun buildJvmKSafe(
         masterAlias = masterAlias,
         onCancel = { if (released.compareAndSet(false, true)) jvmBackends.release(backendPath) },
     )
+    core.attachSiblings(backend.siblings)
 
     return KSafe(
         core = core,

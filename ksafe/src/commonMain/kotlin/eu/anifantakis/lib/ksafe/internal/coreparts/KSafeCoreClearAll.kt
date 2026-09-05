@@ -6,7 +6,7 @@ import eu.anifantakis.lib.ksafe.internal.KSafeCore.Companion.ownsPerEntryAlias
 import eu.anifantakis.lib.ksafe.internal.KeySafeMetadataManager
 import kotlinx.coroutines.CancellationException
 
-/** The wipe for [clearAll]; runs on the write consumer, serialized with other writes. */
+/** The wipe for [clearAll]; runs on the write consumer, serialized with other writes, and also wipes every sibling core's caches. */
 internal suspend fun KSafeCore.performClearAll() {
     // First: any cache merge whose snapshot predates this wipe must observe the bump and
     // redo itself, or it would republish the wiped state after clearAll returns.
@@ -69,9 +69,23 @@ internal suspend fun KSafeCore.performClearAll() {
     // storage.clear() wiped the persisted keygen state with everything else; a fresh
     // store starts over at the base generation.
     currentKeyGeneration.set(1)
+    siblings?.others(this)?.forEach { it.onSiblingClearAll() }
     // The wipe may have removed engine key records the explicit deletes above didn't
     // name (e.g. rotation-generation masters minted concurrently); an engine holding
     // them in an in-memory cache must drop it or it will keep encrypting with keys
     // that no longer exist on disk.
     swallowingNonCancellation { engine.onStoreCleared() }
+}
+
+/** `dirtyKeys`/`writeOwners` stay: the post-commit repair re-asserts an in-flight write via its owner token. */
+internal fun KSafeCore.onSiblingClearAll() {
+    while (true) {
+        val e = clearEpoch.get()
+        if (clearEpoch.compareAndSet(e, e + 1)) break
+    }
+    memoryCache.clear()
+    plaintextCache.clear()
+    protectionMap.clear()
+    encMetaMap.clear()
+    currentKeyGeneration.set(1)
 }

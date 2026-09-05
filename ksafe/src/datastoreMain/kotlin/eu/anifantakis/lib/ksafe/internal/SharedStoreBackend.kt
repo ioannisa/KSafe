@@ -19,6 +19,8 @@ internal abstract class SharedStoreBackend(val scope: CoroutineScope) {
     /** One commit mutex per physical store: serializes sibling cores' batch commits. */
     val commitMutex = Mutex()
 
+    val siblings = SiblingRegistry()
+
     /** Guarded by the owning registry's per-path lock. */
     var refCount: Int = 0
 

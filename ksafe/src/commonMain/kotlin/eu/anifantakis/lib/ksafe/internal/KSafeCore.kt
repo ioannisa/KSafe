@@ -63,6 +63,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
+import kotlin.concurrent.Volatile
 import kotlin.time.ComparableTimeMark
 import kotlin.time.Duration
 import kotlin.time.TimeSource
@@ -200,7 +201,8 @@ internal class KSafeCore(
     internal val keyGenerationReconciled = KSafeAtomicFlag(false)
 
     /**
-     * Bumped as [performClearAll]'s first action. Lets an unserialized cache merge (initial
+     * Bumped as [performClearAll]'s first action, and on every sibling core once the store is
+     * wiped. Lets an unserialized cache merge (initial
      * lazy load, rollback re-merge, collector emission) detect that a wipe landed after its
      * snapshot was taken and redo itself, instead of republishing pre-clear secrets into RAM.
      * Also captured by [rotateKeys] into each [PendingWrite.Rotate]: a wipe invalidates the
@@ -1391,6 +1393,15 @@ internal class KSafeCore(
         triggerLazyStartupCleanupOnce()
     }
 
+    @Volatile
+    internal var siblings: SiblingRegistry? = null
+        private set
+
+    internal fun attachSiblings(registry: SiblingRegistry) {
+        siblings = registry
+        registry.register(this)
+    }
+
     /**
      * Cancels both background scopes (write consumer + snapshot collector), releasing the
      * long-running infrastructure this core owns. Idempotent; after cancel the instance no
@@ -1399,6 +1410,7 @@ internal class KSafeCore(
      * coroutines (GC roots on Dispatchers.Default), growing the live-set unboundedly.
      */
     internal fun cancel() {
+        siblings?.unregister(this)
         // Cancel the scopes only — do NOT close writeChannel: closing it makes the consumer's
         // pending receive() throw ClosedReceiveChannelException (not a CancellationException),
         // which bubbles to the uncaught handler and surfaces in the next test. Cancelling the

@@ -283,6 +283,7 @@ private fun buildAndroidKSafe(
             if (released.compareAndSet(false, true)) backends.release(backendKey)
         },
     )
+    core.attachSiblings(backend.siblings)
 
     val protectionInfoSnapshot = KSafeProtectionInfo(
         intendedLevel = KSafeProtectionLevel.HARDWARE_BACKED,
