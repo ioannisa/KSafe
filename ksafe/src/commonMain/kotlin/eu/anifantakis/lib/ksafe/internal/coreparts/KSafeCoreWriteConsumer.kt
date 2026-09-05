@@ -149,10 +149,23 @@ internal fun KSafeCore.reclaimBatchOwnershipToSurvivors(
     }
 }
 
+/** One rolled-back op's optimistic slots, observed before its ownership was released. */
+private class RolledBackSlots(
+    val userKey: String,
+    val rawCacheKey: String,
+    val cachedValue: Any?,
+    val protectionLiteral: String?,
+    val meta: KSafeCore.EncMeta?,
+)
+
 internal suspend fun KSafeCore.rollbackOptimisticState(failedOps: Collection<PendingWrite>) {
-    var rolledBackAny = false
+    val rolledBack = mutableListOf<RolledBackSlots>()
     for (op in failedOps) {
         val key = op.userKey
+        // Observed BEFORE the release: a newer writer claims ownership before staging anything.
+        val cachedValue = memoryCache[op.rawCacheKey]
+        val protectionLiteral = protectionMap[key]
+        val meta = encMetaMap[key]
         // Gate the clear on an ATOMIC ownership release (CAS), not a plain read-then-clear.
         // A newer caller-thread write B claims `writeOwners[key]` BEFORE it adds its dirty flag
         // / optimistic value; a non-atomic `if (writeOwners[key] !== token)` read could pass on
@@ -162,7 +175,7 @@ internal suspend fun KSafeCore.rollbackOptimisticState(failedOps: Collection<Pen
         // post-commit repair uses). A failed op relinquishing ownership here is also correct: it
         // is no longer pending.
         if (!writeOwners.removeIf(key, op.writeToken)) continue
-        rolledBackAny = true
+        rolledBack += RolledBackSlots(key, op.rawCacheKey, cachedValue, protectionLiteral, meta)
         dirtyKeys.remove(valueRawKey(key))
         dirtyKeys.remove(legacyEncryptedRawKey(key))
         dirtyKeys.remove(key)
@@ -175,11 +188,25 @@ internal suspend fun KSafeCore.rollbackOptimisticState(failedOps: Collection<Pen
         plaintextCache.remove(legacyEncryptedRawKey(key))
         plaintextCache.remove(key)
     }
-    if (!rolledBackAny) return
+    if (rolledBack.isEmpty()) return
     runCatching {
         // Epoch BEFORE snapshot — the argument-order default would read it after.
         val epoch = clearEpoch.get()
         updateCache(storage.snapshot(), epoch)
     }
-        .onFailure { if (it is CancellationException) throw it }
+        .onFailure {
+            if (it is CancellationException) throw it
+            // The re-merge never read the disk, so drop what the failed write staged (under
+            // lazyLoad nothing else evicts it) and let the next merge repopulate from disk.
+            // Value-CAS'd, metadata coupled to the value drop, as in the post-commit repair.
+            for (slot in rolledBack) {
+                val dropped = slot.cachedValue != null &&
+                    memoryCache.removeIf(slot.rawCacheKey, slot.cachedValue)
+                if (!dropped && memoryCache.containsKey(slot.rawCacheKey)) continue
+                slot.protectionLiteral?.let { literal ->
+                    protectionMap.removeIf(slot.userKey, literal)
+                }
+                slot.meta?.let { m -> encMetaMap.removeIf(slot.userKey, m) }
+            }
+        }
 }

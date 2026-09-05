@@ -234,6 +234,16 @@ counter.value++
   later merge revisited it — reads served the pre-write value for the rest of the process while
   disk held the new one. The merge now stores a key only while its cache slot still holds what
   the check saw, so the racing write keeps its value.
+- **A failed write whose rollback cannot reach the disk no longer leaves its value in memory.**
+  Rolling a failed write back released the key and re-read the store to restore whatever was
+  really persisted, but that read fails in exactly the cases that matter — the generation read
+  that opens an encrypting batch is itself a store read, and a disk fault that fails the write
+  usually fails the read right after it. The never-persisted value then stayed cached (as
+  plaintext, in the encrypted slot) and, with `lazyLoad = true` and no collector to correct it,
+  was served for the rest of the process although nothing had been written. The rollback now
+  drops the failed write's own cache and metadata entries when the re-read fails, so the key
+  reads back as the caller's default instead of a value that was never written; a later merge
+  repopulates it from disk, and `getFlow`, which reads the store directly, is unaffected.
 
 ### Changed
 
