@@ -3,11 +3,13 @@ package eu.anifantakis.lib.ksafe
 import eu.anifantakis.lib.ksafe.internal.KeySafeMetadataManager
 import eu.anifantakis.lib.ksafe.internal.StorageOp
 import eu.anifantakis.lib.ksafe.internal.StoredValue
+import eu.anifantakis.lib.ksafe.internal.dataStoreBaseFileName
 import kotlinx.coroutines.test.runTest
 import java.io.File
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
@@ -111,9 +113,36 @@ class JvmAadBindingTest {
             ?: error("expected a non-null v3 AAD after rotation")
         val aadStr = aad.decodeToString()
         assertTrue(
-            aadStr.contains(tmp.absolutePath),
+            aadStr.contains(expectedStoreIdentity(tmp, "aad_dir")),
+            "live v3 AAD must bind the factory's store identity; got: $aadStr",
+        )
+        assertTrue(
+            aadStr.contains(tmp.name),
             "live v3 AAD must bind the baseDir path, not just the fileName; got: $aadStr",
         )
+
+        // Same fileName, different baseDir: the identity — and so the AAD — must not be shared.
+        val otherDir = File(tmp, "other").apply { mkdirs() }
+        val sibling = KSafe(fileName = "aad_dir", baseDir = otherDir)
+        sibling.put("token", "secret")
+        sibling.rotateKeys()
+        val siblingAad = sibling.core.aadForRead("token", KSafeProtection.DEFAULT)
+            ?: error("expected a non-null v3 AAD after rotation")
+        assertNotEquals(
+            aadStr, siblingAad.decodeToString(),
+            "two baseDirs holding the same fileName must not share one v3 AAD",
+        )
+        sibling.close()
         ksafe.close()
+    }
+
+    /** The identity the JVM factory derives for this store, spelled exactly as production does. */
+    private fun expectedStoreIdentity(baseDir: File, fileName: String): String {
+        val base = File(baseDir, dataStoreBaseFileName(fileName))
+        val home = System.getProperty("user.home")
+        return KeySafeMetadataManager.stableStoreIdentity(
+            realStorePath(base) ?: base.canonicalPath,
+            home?.let { realStorePath(File(it)) ?: File(it).canonicalPath },
+        )
     }
 }

@@ -14,17 +14,28 @@ internal const val DATASTORE_FILE_SUFFIX: String = ".preferences_pb"
 internal class StoreIdentity(val canonical: String, val fallback: String)
 
 /**
- * Derives both identities: the canonical pair resolves symlinks and relative segments in path and
- * home, so identity survives an OS relocation of the home; the fallback pair resolves neither.
+ * Derives both identities from the store's path spellings, most-resolved first: the real pair
+ * (where the platform can resolve links) then the canonical pair resolve symlinks and relative
+ * segments in path and home, so identity survives an OS relocation of the home; the raw pair
+ * resolves neither. The identity is the first spelling; the fallback is the first older spelling
+ * that differs, since a store shipped by an earlier build is bound to the best one IT could derive.
  */
 internal fun resolveStoreIdentity(
     canonicalPath: String,
     canonicalHome: String?,
     rawPath: String,
     rawHome: String?,
+    realPath: String? = null,
+    realHome: String? = null,
 ): StoreIdentity {
-    val canonical = KeySafeMetadataManager.stableStoreIdentity(canonicalPath, canonicalHome)
-    // A session that lost only one canonicalization wrote a third, mixed spelling — not reproduced.
-    val fallback = KeySafeMetadataManager.stableStoreIdentity(rawPath, rawHome)
-    return StoreIdentity(canonical, fallback.takeIf { it != canonical } ?: "")
+    val spellings = buildList {
+        if (realPath != null) add(realPath to realHome)
+        add(canonicalPath to canonicalHome)
+        add(rawPath to rawHome)
+    }
+    val identities = spellings.map { (path, home) -> KeySafeMetadataManager.stableStoreIdentity(path, home) }
+    val canonical = identities.first()
+    // Only one fallback slot exists, so the nearer spelling wins: a raw-bound entry needs a lost
+    // canonicalization AND a link, which no session has been seen to produce.
+    return StoreIdentity(canonical, identities.drop(1).firstOrNull { it != canonical }.orEmpty())
 }

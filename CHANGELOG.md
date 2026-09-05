@@ -308,6 +308,15 @@ counter.value++
   sweep-side collector treated a canonical record that says "plain" as absent, so a stale legacy
   protection record for the same key could make it look encrypted and be probed and reaped as an
   orphan. It now applies the cache's rule: a canonical record always wins over a legacy one.
+- **Windows: a store reached through a symlink or junction now resolves to the same identity as its
+  real path.** The identity bound into a rotated entry's authenticated envelope came from
+  `getCanonicalPath()`, which on Windows walks straight through a link rather than resolving it —
+  and the newer JDKs that do resolve one need the file to exist, which a store's base name never
+  does. One store reached both through a link (a redirected Documents folder, `mklink /J`) and
+  through its real path therefore carried two identities, so an entry written and rotated under one
+  spelling read back as its default under the other. The identity now follows the link-resolved real
+  path, and the previous spelling is kept as the fallback identity so entries already written under
+  it still decrypt.
 
 ### Changed
 

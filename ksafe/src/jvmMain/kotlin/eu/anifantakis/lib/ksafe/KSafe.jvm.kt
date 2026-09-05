@@ -134,6 +134,15 @@ private fun jvmKeyTier(engine: KSafeEncryption, protection: KSafeProtection?): K
     else -> KSafeKeyTier.SANDBOX_PROTECTED
 }
 
+/** Link-resolved spelling of a store path, or null. Windows' `getCanonicalPath()` walks through
+ *  symlinks and junctions; the base name is never a file, hence the parent's real path plus name. */
+internal fun realStorePath(file: File): String? {
+    runCatching { file.toPath().toRealPath().toString() }.getOrNull()?.let { return it }
+    val parent = file.parentFile ?: return null
+    val realParent = runCatching { parent.toPath().toRealPath().toString() }.getOrNull() ?: return null
+    return File(realParent, file.name).path
+}
+
 private fun buildJvmKSafe(
     fileName: String?,
     lazyLoad: Boolean,
@@ -195,18 +204,22 @@ private fun buildJvmKSafe(
     // or a second spelling breaks authentication. Every consumer must derive it the same way.
     val identityBaseFile = File(resolvedBaseDir, baseFileName)
     val rawUserHome = System.getProperty("user.home")
+    // A symlinked home (/var -> /private/var) never prefix-matches a canonical store path.
+    val canonicalUserHome = rawUserHome?.let { h -> runCatching { File(h).canonicalPath }.getOrDefault(h) }
     val storeIdentity = resolveStoreIdentity(
         canonicalPath = runCatching { identityBaseFile.canonicalPath }
             .getOrDefault(identityBaseFile.absolutePath),
-        // A symlinked home (/var -> /private/var) never prefix-matches a canonical store path.
-        canonicalHome = rawUserHome?.let { h -> runCatching { File(h).canonicalPath }.getOrDefault(h) },
+        canonicalHome = canonicalUserHome,
         rawPath = identityBaseFile.absolutePath,
         rawHome = rawUserHome,
+        realPath = realStorePath(identityBaseFile),
+        realHome = rawUserHome?.let { h -> realStorePath(File(h)) ?: canonicalUserHome },
     )
 
     // Canonical key, or two spellings of one file trip DataStore's multiple-instances fail-fast.
     val backendFile = File(storageDir, baseFileName)
-    val backendPath = runCatching { backendFile.canonicalPath }.getOrDefault(backendFile.absolutePath)
+    val backendPath = realStorePath(backendFile)
+        ?: runCatching { backendFile.canonicalPath }.getOrDefault(backendFile.absolutePath)
     val backend = jvmBackends.acquire(backendPath) { storageScope ->
         createJvmBackend(
             storageScope = storageScope,
@@ -359,7 +372,8 @@ internal fun importStoreFilesOnce(
 private val degradedCarryForwardSources = java.util.concurrent.ConcurrentHashMap<String, File>()
 
 private fun degradeMemoKey(dstDir: File, baseFileName: String): String =
-    runCatching { dstDir.canonicalPath }.getOrDefault(dstDir.absolutePath) + "|" + baseFileName
+    (realStorePath(dstDir) ?: runCatching { dstDir.canonicalPath }.getOrDefault(dstDir.absolutePath)) +
+        "|" + baseFileName
 
 internal fun clearCarryForwardDegradeMemoForTest() = degradedCarryForwardSources.clear()
 
