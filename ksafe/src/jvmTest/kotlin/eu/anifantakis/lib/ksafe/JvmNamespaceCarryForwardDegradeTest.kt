@@ -126,10 +126,11 @@ class JvmNamespaceCarryForwardDegradeTest {
             File(nsDir(), base + NAMESPACE_IMPORT_MARKER_SUFFIX).exists(),
             "a failed carry-forward must leave no import marker",
         )
-        assertTrue(
-            File(tmp, "$base$DATASTORE_FILE_SUFFIX").exists(),
-            "the session's writes must land in the source store",
-        )
+        // Presence, not a single sample: a store file is briefly unlinked while the backend
+        // renames its scratch file over it, and close() does not await the writes still draining.
+        awaitTrue("the session's writes must land in the source store") {
+            File(tmp, "$base$DATASTORE_FILE_SUFFIX").exists()
+        }
         assertTrue(
             log.contains("carry-forward", ignoreCase = true),
             "the degrade must be reported; stderr was: $log",
@@ -251,10 +252,9 @@ class JvmNamespaceCarryForwardDegradeTest {
             File(nsDir(), base + NAMESPACE_IMPORT_MARKER_SUFFIX).exists(),
             "the successful retry must leave the one-shot marker",
         )
-        assertTrue(
-            File(nsDir(), "$base$DATASTORE_FILE_SUFFIX").exists(),
-            "the successful retry must publish the store file",
-        )
+        awaitTrue("the successful retry must publish the store file") {
+            File(nsDir(), "$base$DATASTORE_FILE_SUFFIX").exists()
+        }
     }
 
     @Test

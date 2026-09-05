@@ -286,6 +286,13 @@ counter.value++
   PIN fallback for the whole process. The KDoc, `docs/BIOMETRICS.md` and the skill now say to probe
   from a composition or an Activity, and note that `verifyBiometric` waits for the host while this
   probe does not. No behaviour change.
+- **JVM: adding an `appNamespace` no longer risks stranding the un-namespaced data.** The
+  carry-forward decided what to copy from single `exists()` samples of the source directory, and
+  the underlying store rewrites its file by deleting it and renaming a scratch file into place — so
+  a sample landing in that window read as "there is nothing here", the import completed with
+  nothing copied, and the marker that ends the one-shot import was written anyway, skipping the
+  real data on every later launch. A file whose scratch sibling is present is now waited for, and
+  an import that found nothing leaves no marker so a later launch re-scans.
 
 ### Changed
 

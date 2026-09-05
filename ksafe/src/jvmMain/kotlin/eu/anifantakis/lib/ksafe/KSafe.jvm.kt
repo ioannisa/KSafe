@@ -288,9 +288,35 @@ private val storeCohortSuffixes = listOf(
     JSON_FALLBACK_SUFFIX,
 )
 
+/** androidx.datastore's write scratch file: `File(file.absolutePath + ".tmp")` in `FileStorage`. */
+private const val DATASTORE_SCRATCH_SUFFIX: String = ".tmp"
+
+private const val REWRITE_WINDOW_SAMPLES: Int = 10
+private const val REWRITE_WINDOW_SAMPLE_MS: Long = 10
+
+/**
+ * DataStore's JVM rewrite is unlink-then-rename: a live store file is briefly absent while its
+ * scratch sibling exists, and a single `exists()` sample there would read as "no data here".
+ */
+private fun cohortFilePresent(file: File): Boolean {
+    if (file.exists()) return true
+    val scratch = File(file.path + DATASTORE_SCRATCH_SUFFIX)
+    repeat(REWRITE_WINDOW_SAMPLES) {
+        if (!scratch.exists()) return false
+        try {
+            Thread.sleep(REWRITE_WINDOW_SAMPLE_MS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return file.exists()
+        }
+        if (file.exists()) return true
+    }
+    return false
+}
+
 /** The single directory a carry-forward publishes from: the first of [srcDirs] holding any cohort file. */
 internal fun selectCopyForwardSource(srcDirs: List<File>, baseFileName: String): File? =
-    srcDirs.firstOrNull { dir -> storeCohortSuffixes.any { File(dir, baseFileName + it).exists() } }
+    srcDirs.firstOrNull { dir -> storeCohortSuffixes.any { cohortFilePresent(File(dir, baseFileName + it)) } }
 
 /**
  * Copies one store's on-disk files into [dstDir] (existing destinations kept). Copy, never
@@ -321,8 +347,8 @@ internal fun copyStoreFilesForward(
     val staged = ArrayList<Pair<File, File>>()
     for (suffix in storeCohortSuffixes) {
         val dst = File(dstDir, baseFileName + suffix)
-        if (dst.exists()) continue
-        val src = File(srcDir, baseFileName + suffix).takeIf { it.exists() } ?: continue
+        if (cohortFilePresent(dst)) continue
+        val src = File(srcDir, baseFileName + suffix).takeIf { cohortFilePresent(it) } ?: continue
         val tmp = File(dstDir, dst.name + ".fwd-tmp")
         try {
             copy(src, tmp)
@@ -361,6 +387,8 @@ private fun storeCopy(): (File, File) -> Unit =
  * One-shot carry-forward: a marker written after a complete publish keeps a later clearAll() from
  * re-arming it. Returns true when [dstDir] holds the cohort — already imported, nothing to import,
  * or just published — and false when a source cohort exists and the publish failed.
+ * Finding nothing is deliberately NOT marked: it may be a store caught mid-rewrite, and a marker
+ * written on that reading would strand the un-namespaced data forever.
  */
 internal fun importStoreFilesOnce(
     srcDirs: List<File>,
@@ -372,7 +400,8 @@ internal fun importStoreFilesOnce(
     val marker = File(dstDir, baseFileName + NAMESPACE_IMPORT_MARKER_SUFFIX)
     if (marker.exists()) return true
     if (!copyStoreFilesForward(srcDirs, dstDir, baseFileName, rename, copy)) return false
-    runCatching { marker.createNewFile() }
+    val published = storeCohortSuffixes.any { cohortFilePresent(File(dstDir, baseFileName + it)) }
+    if (published) runCatching { marker.createNewFile() }
     return true
 }
 
