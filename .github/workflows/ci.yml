@@ -46,12 +46,14 @@ jobs:
       # public API drifts from the committed api/ dumps. After an intentional API change run
       # `./gradlew apiDump` on a Mac and commit the diff.
       #
-      # JVM half only. The klib half needs every Apple target COMPILED to read its API, and
-      # since the CryptoKit cinterop landed those can no longer be cross-compiled off a Mac —
-      # this host would produce a js/wasmJs-only dump and report the missing Apple entries as
-      # drift. It runs in the apple-native job instead, against a real Apple toolchain.
-      - name: JVM ABI check
-        run: ./gradlew jvmApiCheck --stacktrace
+      # JVM + Android halves only. The klib half needs every Apple target COMPILED to read its
+      # API, and since the CryptoKit cinterop landed those can no longer be cross-compiled off
+      # a Mac — this host would produce a js/wasmJs-only dump and report the missing Apple
+      # entries as drift. It runs in the apple-native job instead, against a real Apple
+      # toolchain. The Android half needs no setup step here: the runner image ships the
+      # Android SDK, which is what the android-firebase job's assemble step already relies on.
+      - name: JVM + Android ABI check
+        run: ./gradlew jvmApiCheck androidApiCheck --stacktrace
       # Only the fast, feature-relevant JVM unit test. The full :ksafe:jvmTest
       # suite is run by the separate (non-blocking) jvm-full-suite job — it
       # contains pre-existing stress tests that livelock on a 2-vCPU runner
@@ -341,12 +343,12 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v5
-      # The FULL ABI lock — JVM plus klib — lives here because only a Mac can compile the
-      # Apple targets the klib dump describes. The build job runs the JVM half for fast
-      # feedback; this is the one that guards the iOS/macOS/js/wasmJs surface, against a real
-      # Apple toolchain rather than a cross-compile. `./gradlew apiDump` on a Mac after an
-      # intentional change.
-      - name: Full ABI check (JVM + klib)
+      # The FULL ABI lock — JVM, Android and klib — lives here because only a Mac can compile
+      # the Apple targets the klib dump describes. The build job runs the JVM and Android
+      # halves for fast feedback; this is the one that guards the iOS/macOS/js/wasmJs surface,
+      # against a real Apple toolchain rather than a cross-compile. `./gradlew apiDump` on a
+      # Mac after an intentional change.
+      - name: Full ABI check (JVM + Android + klib)
         run: ./gradlew apiCheck --stacktrace
       - name: Native Apple tests (all 3 modules)
         run: >

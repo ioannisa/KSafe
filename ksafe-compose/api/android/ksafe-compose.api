@@ -1,0 +1,49 @@
+public final class eu/anifantakis/lib/ksafe/compose/KSafeComposeState : androidx/compose/runtime/MutableState, kotlin/properties/ReadWriteProperty {
+	public static final field $stable I
+	public fun <init> (Ljava/lang/Object;Lkotlin/jvm/functions/Function1;Landroidx/compose/runtime/SnapshotMutationPolicy;)V
+	public final fun attachWriteEchoTimeout (Lkotlinx/coroutines/CoroutineScope;J)V
+	public fun component1 ()Ljava/lang/Object;
+	public fun component2 ()Lkotlin/jvm/functions/Function1;
+	public final fun detachWriteEchoTimeout ()V
+	public final fun getBetweenCheckAndPublishForTest ()Lkotlin/jvm/functions/Function0;
+	public final fun getLastSyncedValue ()Ljava/lang/Object;
+	public fun getValue ()Ljava/lang/Object;
+	public fun getValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;)Ljava/lang/Object;
+	public final fun reconcileAfterFailedPersist (JLjava/lang/Object;)V
+	public final fun setBetweenCheckAndPublishForTest (Lkotlin/jvm/functions/Function0;)V
+	public fun setValue (Ljava/lang/Object;)V
+	public fun setValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;Ljava/lang/Object;)V
+	public final fun simulateStaleClobberForTest (Ljava/lang/Object;)V
+	public final fun updateFromFlow (Ljava/lang/Object;)V
+	public final fun updateFromStorage (Ljava/lang/Object;)V
+	public final fun writeTokenInFlight ()J
+}
+
+public final class eu/anifantakis/lib/ksafe/compose/KSafeComposeStateKt {
+	public static final field SELF_HEAL_TIMEOUT_MS J
+	public static final field WRITE_ECHO_TIMEOUT_MS J
+	public static final fun observeFromStorage (Leu/anifantakis/lib/ksafe/compose/KSafeComposeState;Lkotlinx/coroutines/flow/Flow;ZZJJLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun observeFromStorage$default (Leu/anifantakis/lib/ksafe/compose/KSafeComposeState;Lkotlinx/coroutines/flow/Flow;ZZJJLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final fun rememberKSafeStateImpl (Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;ZLandroidx/compose/runtime/SnapshotMutationPolicy;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function0;Landroidx/compose/runtime/Composer;I)Leu/anifantakis/lib/ksafe/compose/KSafeComposeState;
+}
+
+public final class eu/anifantakis/lib/ksafe/compose/KSafeComposeStateProvider {
+	public static final field $stable I
+	public fun <init> (Ljava/lang/String;Ljava/lang/Object;ZLandroidx/compose/runtime/SnapshotMutationPolicy;Ljava/lang/Object;Ljava/lang/Object;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function1;)V
+	public fun <init> (Ljava/lang/String;Ljava/lang/Object;ZLandroidx/compose/runtime/SnapshotMutationPolicy;Ljava/lang/Object;Ljava/lang/Object;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function3;Lkotlin/jvm/functions/Function1;)V
+	public fun <init> (Ljava/lang/String;Ljava/lang/Object;ZLandroidx/compose/runtime/SnapshotMutationPolicy;Ljava/lang/Object;Ljava/lang/Object;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function3;Lkotlin/jvm/functions/Function1;)V
+	public final fun provideDelegate (Ljava/lang/Object;Lkotlin/reflect/KProperty;Landroidx/compose/runtime/Composer;I)Leu/anifantakis/lib/ksafe/compose/KSafeComposeState;
+}
+
+public final class eu/anifantakis/lib/ksafe/compose/UiSecurityViolation {
+	public static final field $stable I
+	public fun <init> (Leu/anifantakis/lib/ksafe/SecurityViolation;)V
+	public final fun component1 ()Leu/anifantakis/lib/ksafe/SecurityViolation;
+	public final fun copy (Leu/anifantakis/lib/ksafe/SecurityViolation;)Leu/anifantakis/lib/ksafe/compose/UiSecurityViolation;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/compose/UiSecurityViolation;Leu/anifantakis/lib/ksafe/SecurityViolation;ILjava/lang/Object;)Leu/anifantakis/lib/ksafe/compose/UiSecurityViolation;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getViolation ()Leu/anifantakis/lib/ksafe/SecurityViolation;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+

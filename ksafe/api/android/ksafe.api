@@ -1,0 +1,764 @@
+public final class eu/anifantakis/lib/ksafe/KSafe {
+	public static final field Companion Leu/anifantakis/lib/ksafe/KSafe$Companion;
+	public fun <init> (Leu/anifantakis/lib/ksafe/internal/KSafeCore;Ljava/util/Set;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;)V
+	public synthetic fun <init> (Leu/anifantakis/lib/ksafe/internal/KSafeCore;Ljava/util/Set;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun clearAll (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun close ()V
+	public final fun delete (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun deleteDirect (Ljava/lang/String;)V
+	public final fun getCore ()Leu/anifantakis/lib/ksafe/internal/KSafeCore;
+	public final fun getDefaultWriteMode ()Leu/anifantakis/lib/ksafe/KSafeWriteMode;
+	public final fun getDeviceKeyStorages ()Ljava/util/Set;
+	public final fun getKeyInfo (Ljava/lang/String;)Leu/anifantakis/lib/ksafe/KSafeKeyInfo;
+	public final fun getOnClearAllCleanup ()Lkotlin/jvm/functions/Function1;
+	public final fun getProtectionInfo ()Leu/anifantakis/lib/ksafe/KSafeProtectionInfo;
+	public final fun getProtectionInfoProvider ()Lkotlin/jvm/functions/Function0;
+	public final fun rotateKeys (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafe$Companion {
+	public final fun getVERSION ()Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeAesKeySize : java/lang/Enum {
+	public static final field BITS_128 Leu/anifantakis/lib/ksafe/KSafeAesKeySize;
+	public static final field BITS_256 Leu/anifantakis/lib/ksafe/KSafeAesKeySize;
+	public final fun getBits ()I
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Leu/anifantakis/lib/ksafe/KSafeAesKeySize;
+	public static fun values ()[Leu/anifantakis/lib/ksafe/KSafeAesKeySize;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeConfig {
+	public fun <init> ()V
+	public fun <init> (IZLkotlinx/serialization/json/Json;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;)V
+	public synthetic fun <init> (IZLkotlinx/serialization/json/Json;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Leu/anifantakis/lib/ksafe/KSafeAesKeySize;ZLkotlinx/serialization/json/Json;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;I)V
+	public synthetic fun <init> (Leu/anifantakis/lib/ksafe/KSafeAesKeySize;ZLkotlinx/serialization/json/Json;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;IILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Leu/anifantakis/lib/ksafe/KSafeAesKeySize;
+	public final fun component2 ()Z
+	public final fun component3 ()Lkotlinx/serialization/json/Json;
+	public final fun component4 ()Ljava/lang/String;
+	public final fun component5 ()Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;
+	public final fun component6 ()I
+	public final fun copy (IZLkotlinx/serialization/json/Json;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;)Leu/anifantakis/lib/ksafe/KSafeConfig;
+	public final fun copy (Leu/anifantakis/lib/ksafe/KSafeAesKeySize;ZLkotlinx/serialization/json/Json;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;I)Leu/anifantakis/lib/ksafe/KSafeConfig;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/KSafeConfig;IZLkotlinx/serialization/json/Json;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;ILjava/lang/Object;)Leu/anifantakis/lib/ksafe/KSafeConfig;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/KSafeConfig;Leu/anifantakis/lib/ksafe/KSafeAesKeySize;ZLkotlinx/serialization/json/Json;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;IILjava/lang/Object;)Leu/anifantakis/lib/ksafe/KSafeConfig;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAesKeySize ()Leu/anifantakis/lib/ksafe/KSafeAesKeySize;
+	public final fun getAppNamespace ()Ljava/lang/String;
+	public final fun getJson ()Lkotlinx/serialization/json/Json;
+	public final fun getKeyRotationPolicy ()Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy;
+	public final fun getKeyRotationRetryAttempts ()I
+	public final fun getKeySize ()I
+	public final fun getRequireUnlockedDevice ()Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeDefaults {
+	public static final field INSTANCE Leu/anifantakis/lib/ksafe/KSafeDefaults;
+	public final fun getJson ()Lkotlinx/serialization/json/Json;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeDelegate : kotlin/properties/ReadWriteProperty {
+	public fun <init> (Leu/anifantakis/lib/ksafe/KSafe;Lkotlinx/serialization/KSerializer;Ljava/lang/Object;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeWriteMode;)V
+	public fun getValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;)Ljava/lang/Object;
+	public fun setValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;Ljava/lang/Object;)V
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeEncrypted {
+	public fun <init> (Leu/anifantakis/lib/ksafe/KSafe;Z)V
+	public synthetic fun <init> (Leu/anifantakis/lib/ksafe/KSafe;ZILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun delete (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun deleteDirect (Ljava/lang/String;)V
+	public final fun getKsafe ()Leu/anifantakis/lib/ksafe/KSafe;
+	public final fun getMode ()Leu/anifantakis/lib/ksafe/KSafeWriteMode;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeEncryptedProtection : java/lang/Enum {
+	public static final field DEFAULT Leu/anifantakis/lib/ksafe/KSafeEncryptedProtection;
+	public static final field HARDWARE_ISOLATED Leu/anifantakis/lib/ksafe/KSafeEncryptedProtection;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Leu/anifantakis/lib/ksafe/KSafeEncryptedProtection;
+	public static fun values ()[Leu/anifantakis/lib/ksafe/KSafeEncryptedProtection;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeFlowDelegate : kotlin/properties/ReadOnlyProperty {
+	public fun <init> (Leu/anifantakis/lib/ksafe/KSafe;Lkotlinx/serialization/KSerializer;Ljava/lang/Object;Ljava/lang/String;)V
+	public synthetic fun getValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;)Ljava/lang/Object;
+	public fun getValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;)Lkotlinx/coroutines/flow/Flow;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeHardwareIsolated {
+	public fun <init> (Leu/anifantakis/lib/ksafe/KSafe;Z)V
+	public synthetic fun <init> (Leu/anifantakis/lib/ksafe/KSafe;ZILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun delete (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun deleteDirect (Ljava/lang/String;)V
+	public final fun getKsafe ()Leu/anifantakis/lib/ksafe/KSafe;
+	public final fun getMode ()Leu/anifantakis/lib/ksafe/KSafeWriteMode;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeKeyInfo {
+	public fun <init> (Leu/anifantakis/lib/ksafe/KSafeProtection;Leu/anifantakis/lib/ksafe/KSafeKeyStorage;Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;I)V
+	public synthetic fun <init> (Leu/anifantakis/lib/ksafe/KSafeProtection;Leu/anifantakis/lib/ksafe/KSafeKeyStorage;Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;IILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Leu/anifantakis/lib/ksafe/KSafeProtection;
+	public final fun component2 ()Leu/anifantakis/lib/ksafe/KSafeKeyStorage;
+	public final fun component3 ()Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;
+	public final fun component4 ()I
+	public final fun copy (Leu/anifantakis/lib/ksafe/KSafeProtection;Leu/anifantakis/lib/ksafe/KSafeKeyStorage;Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;I)Leu/anifantakis/lib/ksafe/KSafeKeyInfo;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/KSafeKeyInfo;Leu/anifantakis/lib/ksafe/KSafeProtection;Leu/anifantakis/lib/ksafe/KSafeKeyStorage;Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;IILjava/lang/Object;)Leu/anifantakis/lib/ksafe/KSafeKeyInfo;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getKeyGeneration ()I
+	public final fun getLevel ()Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;
+	public final fun getProtection ()Leu/anifantakis/lib/ksafe/KSafeProtection;
+	public final fun getStorage ()Leu/anifantakis/lib/ksafe/KSafeKeyStorage;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class eu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy {
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy$MaxAge : eu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun copy-LRDsOJo (J)Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy$MaxAge;
+	public static synthetic fun copy-LRDsOJo$default (Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy$MaxAge;JILjava/lang/Object;)Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy$MaxAge;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMaxAge-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy$Never : eu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy {
+	public static final field INSTANCE Leu/anifantakis/lib/ksafe/KSafeKeyRotationPolicy$Never;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeKeyStorage : java/lang/Enum {
+	public static final field HARDWARE_BACKED Leu/anifantakis/lib/ksafe/KSafeKeyStorage;
+	public static final field HARDWARE_ISOLATED Leu/anifantakis/lib/ksafe/KSafeKeyStorage;
+	public static final field SOFTWARE Leu/anifantakis/lib/ksafe/KSafeKeyStorage;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Leu/anifantakis/lib/ksafe/KSafeKeyStorage;
+	public static fun values ()[Leu/anifantakis/lib/ksafe/KSafeKeyStorage;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeKt {
+	public static final fun getStateFlowRaw (Leu/anifantakis/lib/ksafe/KSafe;Ljava/lang/String;Ljava/lang/Object;Lkotlinx/serialization/KSerializer;Lkotlinx/coroutines/CoroutineScope;)Lkotlinx/coroutines/flow/StateFlow;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeMemoryPolicy : java/lang/Enum {
+	public static final field ENCRYPTED Leu/anifantakis/lib/ksafe/KSafeMemoryPolicy;
+	public static final field ENCRYPTED_WITH_TIMED_CACHE Leu/anifantakis/lib/ksafe/KSafeMemoryPolicy;
+	public static final field LAZY_PLAIN_TEXT Leu/anifantakis/lib/ksafe/KSafeMemoryPolicy;
+	public static final field PLAIN_TEXT Leu/anifantakis/lib/ksafe/KSafeMemoryPolicy;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Leu/anifantakis/lib/ksafe/KSafeMemoryPolicy;
+	public static fun values ()[Leu/anifantakis/lib/ksafe/KSafeMemoryPolicy;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeModeViewsKt {
+	public static final fun getEncrypted (Leu/anifantakis/lib/ksafe/KSafe;)Leu/anifantakis/lib/ksafe/KSafeEncrypted;
+	public static final fun getHardwareIsolated (Leu/anifantakis/lib/ksafe/KSafe;)Leu/anifantakis/lib/ksafe/KSafeHardwareIsolated;
+	public static final fun getPlain (Leu/anifantakis/lib/ksafe/KSafe;)Leu/anifantakis/lib/ksafe/KSafePlain;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeMutableStateFlow : kotlinx/coroutines/flow/MutableStateFlow {
+	public fun <init> (Ljava/lang/Object;Lkotlin/jvm/functions/Function1;)V
+	public fun collect (Lkotlinx/coroutines/flow/FlowCollector;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun compareAndSet (Ljava/lang/Object;Ljava/lang/Object;)Z
+	public fun emit (Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun getBetweenMarkAndPublishForTest ()Lkotlin/jvm/functions/Function0;
+	public fun getReplayCache ()Ljava/util/List;
+	public fun getSubscriptionCount ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun getValue ()Ljava/lang/Object;
+	public fun resetReplayCache ()V
+	public final fun setBetweenMarkAndPublishForTest (Lkotlin/jvm/functions/Function0;)V
+	public fun setValue (Ljava/lang/Object;)V
+	public final fun simulateStaleClobberForTest (Ljava/lang/Object;)V
+	public fun tryEmit (Ljava/lang/Object;)Z
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeMutableStateFlowDelegate : kotlin/properties/ReadOnlyProperty {
+	public fun <init> (Leu/anifantakis/lib/ksafe/KSafe;Lkotlinx/serialization/KSerializer;Ljava/lang/Object;Ljava/lang/String;Lkotlinx/coroutines/CoroutineScope;Leu/anifantakis/lib/ksafe/KSafeWriteMode;)V
+	public synthetic fun getValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;)Ljava/lang/Object;
+	public fun getValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;)Lkotlinx/coroutines/flow/MutableStateFlow;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafePlain {
+	public fun <init> (Leu/anifantakis/lib/ksafe/KSafe;)V
+	public final fun delete (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun deleteDirect (Ljava/lang/String;)V
+	public final fun getKsafe ()Leu/anifantakis/lib/ksafe/KSafe;
+	public final fun getMode ()Leu/anifantakis/lib/ksafe/KSafeWriteMode;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeProtection : java/lang/Enum {
+	public static final field DEFAULT Leu/anifantakis/lib/ksafe/KSafeProtection;
+	public static final field HARDWARE_ISOLATED Leu/anifantakis/lib/ksafe/KSafeProtection;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Leu/anifantakis/lib/ksafe/KSafeProtection;
+	public static fun values ()[Leu/anifantakis/lib/ksafe/KSafeProtection;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeProtectionInfo {
+	public static final field Companion Leu/anifantakis/lib/ksafe/KSafeProtectionInfo$Companion;
+	public fun <init> (Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;Ljava/lang/String;Ljava/util/List;Ljava/lang/String;)V
+	public synthetic fun <init> (Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;Ljava/lang/String;Ljava/util/List;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;
+	public final fun component2 ()Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;
+	public final fun component3 ()Ljava/lang/String;
+	public final fun component4 ()Ljava/util/List;
+	public final fun component5 ()Ljava/lang/String;
+	public final fun copy (Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;Ljava/lang/String;Ljava/util/List;Ljava/lang/String;)Leu/anifantakis/lib/ksafe/KSafeProtectionInfo;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/KSafeProtectionInfo;Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;Ljava/lang/String;Ljava/util/List;Ljava/lang/String;ILjava/lang/Object;)Leu/anifantakis/lib/ksafe/KSafeProtectionInfo;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCustody ()Ljava/lang/String;
+	public final fun getEffectiveLevel ()Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;
+	public final fun getIntendedLevel ()Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;
+	public final fun getKSafeVersion ()Ljava/lang/String;
+	public final fun getNotes ()Ljava/util/List;
+	public fun hashCode ()I
+	public final fun isEncryptionOperational ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeProtectionInfo$Companion {
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeProtectionLevel : java/lang/Enum {
+	public static final field HARDWARE_BACKED Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;
+	public static final field HARDWARE_ISOLATED Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;
+	public static final field SANDBOX_PROTECTED Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;
+	public static final field SOFTWARE Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;
+	public static fun values ()[Leu/anifantakis/lib/ksafe/KSafeProtectionLevel;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeReference : kotlin/properties/ReadWriteProperty {
+	public fun <init> (Leu/anifantakis/lib/ksafe/KSafe;Lkotlinx/serialization/KSerializer;Ljava/lang/Object;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeWriteMode;)V
+	public final fun getKey ()Ljava/lang/String;
+	public final fun getValue ()Ljava/lang/Object;
+	public fun getValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;)Ljava/lang/Object;
+	public final fun setValue (Ljava/lang/Object;)V
+	public fun setValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;Ljava/lang/Object;)V
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeRotationResult {
+	public fun <init> (IIII)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun component3 ()I
+	public final fun component4 ()I
+	public final fun copy (IIII)Leu/anifantakis/lib/ksafe/KSafeRotationResult;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/KSafeRotationResult;IIIIILjava/lang/Object;)Leu/anifantakis/lib/ksafe/KSafeRotationResult;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFailed ()I
+	public final fun getKeyGeneration ()I
+	public final fun getRotated ()I
+	public final fun getSkipped ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeSecretKt {
+	public static final fun getOrCreateSecret (Leu/anifantakis/lib/ksafe/KSafe;Ljava/lang/String;ILeu/anifantakis/lib/ksafe/KSafeEncryptedProtection;ZLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun getOrCreateSecret$default (Leu/anifantakis/lib/ksafe/KSafe;Ljava/lang/String;ILeu/anifantakis/lib/ksafe/KSafeEncryptedProtection;ZLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeSecurityPolicy {
+	public static final field Companion Leu/anifantakis/lib/ksafe/KSafeSecurityPolicy$Companion;
+	public fun <init> ()V
+	public fun <init> (Leu/anifantakis/lib/ksafe/SecurityAction;Leu/anifantakis/lib/ksafe/SecurityAction;Leu/anifantakis/lib/ksafe/SecurityAction;Leu/anifantakis/lib/ksafe/SecurityAction;Lkotlin/jvm/functions/Function1;)V
+	public synthetic fun <init> (Leu/anifantakis/lib/ksafe/SecurityAction;Leu/anifantakis/lib/ksafe/SecurityAction;Leu/anifantakis/lib/ksafe/SecurityAction;Leu/anifantakis/lib/ksafe/SecurityAction;Lkotlin/jvm/functions/Function1;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Leu/anifantakis/lib/ksafe/SecurityAction;
+	public final fun component2 ()Leu/anifantakis/lib/ksafe/SecurityAction;
+	public final fun component3 ()Leu/anifantakis/lib/ksafe/SecurityAction;
+	public final fun component4 ()Leu/anifantakis/lib/ksafe/SecurityAction;
+	public final fun component5 ()Lkotlin/jvm/functions/Function1;
+	public final fun copy (Leu/anifantakis/lib/ksafe/SecurityAction;Leu/anifantakis/lib/ksafe/SecurityAction;Leu/anifantakis/lib/ksafe/SecurityAction;Leu/anifantakis/lib/ksafe/SecurityAction;Lkotlin/jvm/functions/Function1;)Leu/anifantakis/lib/ksafe/KSafeSecurityPolicy;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/KSafeSecurityPolicy;Leu/anifantakis/lib/ksafe/SecurityAction;Leu/anifantakis/lib/ksafe/SecurityAction;Leu/anifantakis/lib/ksafe/SecurityAction;Leu/anifantakis/lib/ksafe/SecurityAction;Lkotlin/jvm/functions/Function1;ILjava/lang/Object;)Leu/anifantakis/lib/ksafe/KSafeSecurityPolicy;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDebugBuild ()Leu/anifantakis/lib/ksafe/SecurityAction;
+	public final fun getDebuggerAttached ()Leu/anifantakis/lib/ksafe/SecurityAction;
+	public final fun getEmulator ()Leu/anifantakis/lib/ksafe/SecurityAction;
+	public final fun getOnViolation ()Lkotlin/jvm/functions/Function1;
+	public final fun getRootedDevice ()Leu/anifantakis/lib/ksafe/SecurityAction;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeSecurityPolicy$Companion {
+	public final fun getDefault ()Leu/anifantakis/lib/ksafe/KSafeSecurityPolicy;
+	public final fun getStrict ()Leu/anifantakis/lib/ksafe/KSafeSecurityPolicy;
+	public final fun getWarnOnly ()Leu/anifantakis/lib/ksafe/KSafeSecurityPolicy;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeStateFlowDelegate : kotlin/properties/ReadOnlyProperty {
+	public fun <init> (Leu/anifantakis/lib/ksafe/KSafe;Lkotlinx/serialization/KSerializer;Ljava/lang/Object;Ljava/lang/String;Lkotlinx/coroutines/CoroutineScope;)V
+	public synthetic fun getValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;)Ljava/lang/Object;
+	public fun getValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;)Lkotlinx/coroutines/flow/StateFlow;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeWritableFlowDelegate : kotlin/properties/ReadOnlyProperty {
+	public fun <init> (Leu/anifantakis/lib/ksafe/KSafe;Lkotlinx/serialization/KSerializer;Ljava/lang/Object;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeWriteMode;)V
+	public fun getValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;)Leu/anifantakis/lib/ksafe/WritableKSafeFlow;
+	public synthetic fun getValue (Ljava/lang/Object;Lkotlin/reflect/KProperty;)Ljava/lang/Object;
+}
+
+public abstract interface class eu/anifantakis/lib/ksafe/KSafeWriteMode {
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeWriteMode$Encrypted : eu/anifantakis/lib/ksafe/KSafeWriteMode {
+	public fun <init> ()V
+	public fun <init> (Leu/anifantakis/lib/ksafe/KSafeEncryptedProtection;Z)V
+	public synthetic fun <init> (Leu/anifantakis/lib/ksafe/KSafeEncryptedProtection;ZILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Leu/anifantakis/lib/ksafe/KSafeEncryptedProtection;
+	public final fun component2 ()Z
+	public final fun copy (Leu/anifantakis/lib/ksafe/KSafeEncryptedProtection;Z)Leu/anifantakis/lib/ksafe/KSafeWriteMode$Encrypted;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/KSafeWriteMode$Encrypted;Leu/anifantakis/lib/ksafe/KSafeEncryptedProtection;ZILjava/lang/Object;)Leu/anifantakis/lib/ksafe/KSafeWriteMode$Encrypted;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getProtection ()Leu/anifantakis/lib/ksafe/KSafeEncryptedProtection;
+	public final fun getRequireUnlockedDevice ()Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeWriteMode$Plain : eu/anifantakis/lib/ksafe/KSafeWriteMode {
+	public static final field INSTANCE Leu/anifantakis/lib/ksafe/KSafeWriteMode$Plain;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafeWriteModeKt {
+	public static final fun toProtection (Leu/anifantakis/lib/ksafe/KSafeWriteMode;)Leu/anifantakis/lib/ksafe/KSafeProtection;
+}
+
+public final class eu/anifantakis/lib/ksafe/KSafe_androidKt {
+	public static final field KEY_ALIAS_PREFIX Ljava/lang/String;
+	public static final fun KSafe-mLShkvk (Landroid/content/Context;Ljava/lang/String;ZLeu/anifantakis/lib/ksafe/KSafeMemoryPolicy;Leu/anifantakis/lib/ksafe/KSafeConfig;Leu/anifantakis/lib/ksafe/KSafeSecurityPolicy;JZLjava/io/File;Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;)Leu/anifantakis/lib/ksafe/KSafe;
+	public static synthetic fun KSafe-mLShkvk$default (Landroid/content/Context;Ljava/lang/String;ZLeu/anifantakis/lib/ksafe/KSafeMemoryPolicy;Leu/anifantakis/lib/ksafe/KSafeConfig;Leu/anifantakis/lib/ksafe/KSafeSecurityPolicy;JZLjava/io/File;Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;ILjava/lang/Object;)Leu/anifantakis/lib/ksafe/KSafe;
+	public static final fun KSafe-zIkEtRU (Landroid/content/Context;Ljava/lang/String;ZLeu/anifantakis/lib/ksafe/KSafeMemoryPolicy;Leu/anifantakis/lib/ksafe/KSafeConfig;Leu/anifantakis/lib/ksafe/KSafeSecurityPolicy;JZLjava/io/File;)Leu/anifantakis/lib/ksafe/KSafe;
+	public static synthetic fun KSafe-zIkEtRU$default (Landroid/content/Context;Ljava/lang/String;ZLeu/anifantakis/lib/ksafe/KSafeMemoryPolicy;Leu/anifantakis/lib/ksafe/KSafeConfig;Leu/anifantakis/lib/ksafe/KSafeSecurityPolicy;JZLjava/io/File;ILjava/lang/Object;)Leu/anifantakis/lib/ksafe/KSafe;
+}
+
+public final class eu/anifantakis/lib/ksafe/SecurityAction : java/lang/Enum {
+	public static final field BLOCK Leu/anifantakis/lib/ksafe/SecurityAction;
+	public static final field IGNORE Leu/anifantakis/lib/ksafe/SecurityAction;
+	public static final field WARN Leu/anifantakis/lib/ksafe/SecurityAction;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Leu/anifantakis/lib/ksafe/SecurityAction;
+	public static fun values ()[Leu/anifantakis/lib/ksafe/SecurityAction;
+}
+
+public final class eu/anifantakis/lib/ksafe/SecurityViolation : java/lang/Enum {
+	public static final field DebugBuild Leu/anifantakis/lib/ksafe/SecurityViolation;
+	public static final field DebuggerAttached Leu/anifantakis/lib/ksafe/SecurityViolation;
+	public static final field Emulator Leu/anifantakis/lib/ksafe/SecurityViolation;
+	public static final field RootedDevice Leu/anifantakis/lib/ksafe/SecurityViolation;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Leu/anifantakis/lib/ksafe/SecurityViolation;
+	public static fun values ()[Leu/anifantakis/lib/ksafe/SecurityViolation;
+}
+
+public final class eu/anifantakis/lib/ksafe/SecurityViolationException : java/lang/RuntimeException {
+	public fun <init> (Leu/anifantakis/lib/ksafe/SecurityViolation;)V
+	public final fun getViolation ()Leu/anifantakis/lib/ksafe/SecurityViolation;
+}
+
+public final class eu/anifantakis/lib/ksafe/WritableKSafeFlow : kotlinx/coroutines/flow/Flow {
+	public fun <init> (Lkotlinx/coroutines/flow/Flow;Lkotlin/jvm/functions/Function1;)V
+	public fun collect (Lkotlinx/coroutines/flow/FlowCollector;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun set (Ljava/lang/Object;)V
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/AndroidKeystoreEncryption : eu/anifantakis/lib/ksafe/internal/KSafeEncryption {
+	public static final field Companion Leu/anifantakis/lib/ksafe/internal/AndroidKeystoreEncryption$Companion;
+	public fun <init> (Leu/anifantakis/lib/ksafe/KSafeConfig;Leu/anifantakis/lib/ksafe/internal/WrappedDekStore;ZLkotlin/jvm/functions/Function1;)V
+	public synthetic fun <init> (Leu/anifantakis/lib/ksafe/KSafeConfig;Leu/anifantakis/lib/ksafe/internal/WrappedDekStore;ZLkotlin/jvm/functions/Function1;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun decrypt (Ljava/lang/String;[BLjava/lang/Boolean;[B)[B
+	public fun decryptSuspend (Ljava/lang/String;[BLjava/lang/Boolean;[BLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun deleteKey (Ljava/lang/String;)V
+	public fun deleteKeySuspend (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun encrypt (Ljava/lang/String;[BZLjava/lang/Boolean;[B)[B
+	public fun encryptSuspend (Ljava/lang/String;[BZLjava/lang/Boolean;[BLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun isDekCachedForTest (Ljava/lang/String;)Z
+	public fun migrateLegacyKeysSuspend (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun onStoreCleared ()V
+	public fun prewarmDekReadIfPresent (Ljava/lang/String;Ljava/lang/Boolean;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun prewarmKey (Ljava/lang/String;ZLjava/lang/Boolean;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun updateKeyAccessibility (Ljava/lang/String;Z)V
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/AndroidKeystoreEncryption$Companion {
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/DataStoreStorage : eu/anifantakis/lib/ksafe/internal/KSafePlatformStorage {
+	public fun <init> (Landroidx/datastore/core/DataStore;)V
+	public fun applyBatch (Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun clear (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun getDataStore ()Landroidx/datastore/core/DataStore;
+	public fun snapshot (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun snapshotFlow ()Lkotlinx/coroutines/flow/Flow;
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/KSafeAtomicFlag {
+	public fun <init> (Z)V
+	public final fun compareAndSet (ZZ)Z
+	public final fun get ()Z
+	public final fun set (Z)V
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/KSafeAtomicInt {
+	public fun <init> (I)V
+	public final fun compareAndSet (II)Z
+	public final fun get ()I
+	public final fun set (I)V
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/KSafeConcurrentMap {
+	public fun <init> ()V
+	public final fun clear ()V
+	public final fun containsKey (Ljava/lang/String;)Z
+	public final fun get (Ljava/lang/String;)Ljava/lang/Object;
+	public final fun putIfAbsent (Ljava/lang/String;Ljava/lang/Object;)Ljava/lang/Object;
+	public final fun remove (Ljava/lang/String;)Ljava/lang/Object;
+	public final fun removeIf (Ljava/lang/String;Ljava/lang/Object;)Z
+	public final fun replaceIf (Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;)Z
+	public final fun set (Ljava/lang/String;Ljava/lang/Object;)V
+	public final fun snapshot ()Ljava/util/Map;
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/KSafeConcurrentSet {
+	public fun <init> ()V
+	public final fun add (Ljava/lang/Object;)Z
+	public final fun contains (Ljava/lang/Object;)Z
+	public final fun remove (Ljava/lang/Object;)Z
+	public final fun snapshot ()Ljava/util/Set;
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/KSafeConcurrent_jvmKt {
+	public static final fun getDecryptFlowContext ()Lkotlin/coroutines/CoroutineContext;
+	public static final fun runBlockingOnPlatform (Lkotlin/jvm/functions/Function1;)Ljava/lang/Object;
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/KSafeCore {
+	public static final field Companion Leu/anifantakis/lib/ksafe/internal/KSafeCore$Companion;
+	public static final field NULL_SENTINEL Ljava/lang/String;
+	public synthetic fun <init> (Leu/anifantakis/lib/ksafe/internal/KSafePlatformStorage;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Lkotlinx/coroutines/sync/Mutex;Lkotlin/jvm/functions/Function0;Leu/anifantakis/lib/ksafe/KSafeConfig;Leu/anifantakis/lib/ksafe/KSafeMemoryPolicy;JLkotlin/jvm/functions/Function3;Lkotlin/jvm/functions/Function3;Lkotlin/jvm/functions/Function2;ZLkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;Ljava/lang/String;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function0;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Leu/anifantakis/lib/ksafe/internal/KSafePlatformStorage;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Lkotlinx/coroutines/sync/Mutex;Lkotlin/jvm/functions/Function0;Leu/anifantakis/lib/ksafe/KSafeConfig;Leu/anifantakis/lib/ksafe/KSafeMemoryPolicy;JLkotlin/jvm/functions/Function3;Lkotlin/jvm/functions/Function3;Lkotlin/jvm/functions/Function2;ZLkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;Ljava/lang/String;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun aadForRead (Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeProtection;)[B
+	public final fun aliasForRead (Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeProtection;)Ljava/lang/String;
+	public final fun aliasForWrite (Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeProtection;ZI)Ljava/lang/String;
+	public static synthetic fun aliasForWrite$default (Leu/anifantakis/lib/ksafe/internal/KSafeCore;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeProtection;ZIILjava/lang/Object;)Ljava/lang/String;
+	public final fun clearAll (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun defaultEncryptedMode ()Leu/anifantakis/lib/ksafe/KSafeWriteMode;
+	public final fun delete (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun deleteDirect (Ljava/lang/String;)V
+	public final fun detectProtection (Ljava/lang/String;)Leu/anifantakis/lib/ksafe/KSafeProtection;
+	public final fun ensureCacheReadySuspend (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun getCacheInitialized ()Leu/anifantakis/lib/ksafe/internal/KSafeAtomicFlag;
+	public final fun getCommitMutex ()Lkotlinx/coroutines/sync/Mutex;
+	public final fun getCurrentKeyGeneration ()Leu/anifantakis/lib/ksafe/internal/KSafeAtomicInt;
+	public final fun getDirectRaw (Ljava/lang/String;Ljava/lang/Object;Lkotlinx/serialization/KSerializer;)Ljava/lang/Object;
+	public final fun getDirtyKeys ()Leu/anifantakis/lib/ksafe/internal/KSafeConcurrentSet;
+	public final fun getEncMetaMap ()Leu/anifantakis/lib/ksafe/internal/KSafeConcurrentMap;
+	public final fun getEngine ()Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;
+	public final fun getFallbackStoreIdentity ()Ljava/lang/String;
+	public final fun getFlowRaw (Ljava/lang/String;Ljava/lang/Object;Lkotlinx/serialization/KSerializer;)Lkotlinx/coroutines/flow/Flow;
+	public final fun getHasAnyEncryptedKey ()Leu/anifantakis/lib/ksafe/internal/KSafeAtomicFlag;
+	public final fun getJson ()Lkotlinx/serialization/json/Json;
+	public final fun getKeyAlias ()Lkotlin/jvm/functions/Function1;
+	public final fun getKeyInfo (Ljava/lang/String;)Leu/anifantakis/lib/ksafe/KSafeKeyInfo;
+	public final fun getKeyNamespace ()Ljava/lang/String;
+	public final fun getMasterAlias ()Lkotlin/jvm/functions/Function1;
+	public final fun getMemoryCache ()Leu/anifantakis/lib/ksafe/internal/KSafeConcurrentMap;
+	public final fun getMemoryPolicy ()Leu/anifantakis/lib/ksafe/KSafeMemoryPolicy;
+	public final fun getPlaintextCache ()Leu/anifantakis/lib/ksafe/internal/KSafeConcurrentMap;
+	public final fun getPlaintextCacheTtl-UwyO8pc ()J
+	public final fun getPostCommitRepairHook ()Lkotlin/jvm/functions/Function1;
+	public final fun getProtectionMap ()Leu/anifantakis/lib/ksafe/internal/KSafeConcurrentMap;
+	public final fun getRaw (Ljava/lang/String;Ljava/lang/Object;Lkotlinx/serialization/KSerializer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun getStorage ()Leu/anifantakis/lib/ksafe/internal/KSafePlatformStorage;
+	public final fun getStoreIdentity ()Ljava/lang/String;
+	public final fun legacyEncryptedRawKey (Ljava/lang/String;)Ljava/lang/String;
+	public final fun perEntryAlias (Ljava/lang/String;I)Ljava/lang/String;
+	public final fun putDirectRaw (Ljava/lang/String;Ljava/lang/Object;Leu/anifantakis/lib/ksafe/KSafeWriteMode;Lkotlinx/serialization/KSerializer;)V
+	public final fun putDirectRaw (Ljava/lang/String;Ljava/lang/Object;Leu/anifantakis/lib/ksafe/KSafeWriteMode;Lkotlinx/serialization/KSerializer;Lkotlin/jvm/functions/Function1;)V
+	public final fun putRaw (Ljava/lang/String;Ljava/lang/Object;Leu/anifantakis/lib/ksafe/KSafeWriteMode;Lkotlinx/serialization/KSerializer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun rotateKeys (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun setPostCommitRepairHook (Lkotlin/jvm/functions/Function1;)V
+	public final fun strictPerEntryAlias (Ljava/lang/String;I)Ljava/lang/String;
+	public final fun updateCache (Ljava/util/Map;ILkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun updateCache$default (Leu/anifantakis/lib/ksafe/internal/KSafeCore;Ljava/util/Map;ILkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun valueRawKey (Ljava/lang/String;)Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/KSafeCore$CachedPlaintext {
+	public fun <init> (Ljava/lang/String;Lkotlin/time/ComparableTimeMark;)V
+	public final fun getExpiresAt ()Lkotlin/time/ComparableTimeMark;
+	public final fun getValue ()Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/KSafeCore$Companion {
+	public final fun aliasWithGeneration (Ljava/lang/String;I)Ljava/lang/String;
+	public final fun decodePlainString (Ljava/lang/String;)Ljava/lang/String;
+	public final fun encodePlainString (Ljava/lang/String;)Ljava/lang/String;
+	public final fun isNullSentinel (Ljava/lang/Object;)Z
+	public final fun perEntryAliasWithGeneration (Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;)Ljava/lang/String;
+	public final fun strictPerEntryAliasWithGeneration (Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;)Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/KSafeCore$EncMeta {
+	public fun <init> (IZIZ)V
+	public synthetic fun <init> (IZIZILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()I
+	public final fun component2 ()Z
+	public final fun component3 ()I
+	public final fun component4 ()Z
+	public final fun copy (IZIZ)Leu/anifantakis/lib/ksafe/internal/KSafeCore$EncMeta;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/internal/KSafeCore$EncMeta;IZIZILjava/lang/Object;)Leu/anifantakis/lib/ksafe/internal/KSafeCore$EncMeta;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getEnvelopeVersion ()I
+	public final fun getKeyGeneration ()I
+	public final fun getRequireUnlockedDevice ()Z
+	public final fun getStrictAliasVariant ()Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class eu/anifantakis/lib/ksafe/internal/KSafeEncryption {
+	public abstract fun decrypt (Ljava/lang/String;[BLjava/lang/Boolean;[B)[B
+	public static synthetic fun decrypt$default (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;Ljava/lang/String;[BLjava/lang/Boolean;[BILjava/lang/Object;)[B
+	public fun decryptSuspend (Ljava/lang/String;[BLjava/lang/Boolean;[BLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun decryptSuspend$default (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;Ljava/lang/String;[BLjava/lang/Boolean;[BLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public abstract fun deleteKey (Ljava/lang/String;)V
+	public fun deleteKeySuspend (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun encrypt (Ljava/lang/String;[BZLjava/lang/Boolean;[B)[B
+	public static synthetic fun encrypt$default (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;Ljava/lang/String;[BZLjava/lang/Boolean;[BILjava/lang/Object;)[B
+	public fun encryptSuspend (Ljava/lang/String;[BZLjava/lang/Boolean;[BLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun encryptSuspend$default (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;Ljava/lang/String;[BZLjava/lang/Boolean;[BLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public fun migrateLegacyKeysSuspend (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun onStoreCleared ()V
+	public fun prewarmDekReadIfPresent (Ljava/lang/String;Ljava/lang/Boolean;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun prewarmDekReadIfPresent$default (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;Ljava/lang/String;Ljava/lang/Boolean;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public fun prewarmKey (Ljava/lang/String;ZLjava/lang/Boolean;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun prewarmKey$default (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;Ljava/lang/String;ZLjava/lang/Boolean;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public fun updateKeyAccessibility (Ljava/lang/String;Z)V
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/KSafeEncryption$DefaultImpls {
+	public static synthetic fun decrypt$default (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;Ljava/lang/String;[BLjava/lang/Boolean;[BILjava/lang/Object;)[B
+	public static fun decryptSuspend (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;Ljava/lang/String;[BLjava/lang/Boolean;[BLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun decryptSuspend$default (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;Ljava/lang/String;[BLjava/lang/Boolean;[BLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static fun deleteKeySuspend (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun encrypt$default (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;Ljava/lang/String;[BZLjava/lang/Boolean;[BILjava/lang/Object;)[B
+	public static fun encryptSuspend (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;Ljava/lang/String;[BZLjava/lang/Boolean;[BLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun encryptSuspend$default (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;Ljava/lang/String;[BZLjava/lang/Boolean;[BLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static fun migrateLegacyKeysSuspend (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static fun onStoreCleared (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;)V
+	public static fun prewarmDekReadIfPresent (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;Ljava/lang/String;Ljava/lang/Boolean;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun prewarmDekReadIfPresent$default (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;Ljava/lang/String;Ljava/lang/Boolean;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static fun prewarmKey (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;Ljava/lang/String;ZLjava/lang/Boolean;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun prewarmKey$default (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;Ljava/lang/String;ZLjava/lang/Boolean;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static fun updateKeyAccessibility (Leu/anifantakis/lib/ksafe/internal/KSafeEncryption;Ljava/lang/String;Z)V
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/KSafeInitLock {
+	public fun <init> ()V
+	public final fun withLock (Lkotlin/jvm/functions/Function0;)Ljava/lang/Object;
+}
+
+public abstract interface class eu/anifantakis/lib/ksafe/internal/KSafePlatformStorage {
+	public abstract fun applyBatch (Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun clear (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun snapshot (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun snapshotFlow ()Lkotlinx/coroutines/flow/Flow;
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/KSafePlatformStorageKt {
+	public static final fun primitiveToStoredValue (Ljava/lang/Object;)Leu/anifantakis/lib/ksafe/internal/StoredValue;
+	public static final fun toCacheValue (Leu/anifantakis/lib/ksafe/internal/StoredValue;)Ljava/lang/Object;
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/KSafeSecureRandom_jvmKt {
+	public static final fun secureRandomBytes (I)[B
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/KSafeSerializerUtilKt {
+	public static final fun builtInPrimitiveKindOrNull (Lkotlinx/serialization/KSerializer;)Lkotlinx/serialization/descriptors/PrimitiveKind;
+	public static final fun isStringSerializer (Lkotlinx/serialization/KSerializer;)Z
+	public static final fun jsonDecode (Lkotlinx/serialization/json/Json;Lkotlinx/serialization/KSerializer;Ljava/lang/String;)Ljava/lang/Object;
+	public static final fun jsonEncode (Lkotlinx/serialization/json/Json;Lkotlinx/serialization/KSerializer;Ljava/lang/Object;)Ljava/lang/String;
+	public static final fun primitiveKindOrNull (Lkotlinx/serialization/KSerializer;)Lkotlinx/serialization/descriptors/PrimitiveKind;
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/KeySafeMetadataManager {
+	public static final field ACCESS_POLICY_UNLOCKED Ljava/lang/String;
+	public static final field ENVELOPE_VERSION_LATEST I
+	public static final field ENVELOPE_VERSION_MAX_KNOWN I
+	public static final field ENVELOPE_VERSION_V1 I
+	public static final field ENVELOPE_VERSION_V2 I
+	public static final field ENVELOPE_VERSION_V3 I
+	public static final field INSTANCE Leu/anifantakis/lib/ksafe/internal/KeySafeMetadataManager;
+	public static final field KEYGEN_RAW_KEY Ljava/lang/String;
+	public static final field LEGACY_ENCRYPTED_PREFIX Ljava/lang/String;
+	public static final field LEGACY_PROTECTION_PREFIX Ljava/lang/String;
+	public static final field LEGACY_PROTECTION_SUFFIX Ljava/lang/String;
+	public static final field MAX_KEY_GENERATION I
+	public static final field META_PREFIX Ljava/lang/String;
+	public static final field META_SUFFIX Ljava/lang/String;
+	public static final field VALUE_PREFIX Ljava/lang/String;
+	public final fun aadFor (Ljava/lang/String;Ljava/lang/String;Leu/anifantakis/lib/ksafe/KSafeProtection;ZI)[B
+	public final fun accessPolicyFor (Z)Ljava/lang/String;
+	public final fun buildMetadataJson (Leu/anifantakis/lib/ksafe/KSafeProtection;Ljava/lang/String;IIZ)Ljava/lang/String;
+	public static synthetic fun buildMetadataJson$default (Leu/anifantakis/lib/ksafe/internal/KeySafeMetadataManager;Leu/anifantakis/lib/ksafe/KSafeProtection;Ljava/lang/String;IIZILjava/lang/Object;)Ljava/lang/String;
+	public final fun checkKnownEnvelopeVersion (ILjava/lang/String;)V
+	public final fun classifyStorageEntry (Ljava/lang/String;Ljava/lang/String;Lkotlin/jvm/functions/Function1;Ljava/util/Map;Ljava/util/Map;)Leu/anifantakis/lib/ksafe/internal/KeySafeMetadataManager$ClassifiedStorageEntry;
+	public final fun collectMetadata (Ljava/lang/Iterable;Lkotlin/jvm/functions/Function1;)Ljava/util/Map;
+	public static synthetic fun collectMetadata$default (Leu/anifantakis/lib/ksafe/internal/KeySafeMetadataManager;Ljava/lang/Iterable;Lkotlin/jvm/functions/Function1;ILjava/lang/Object;)Ljava/util/Map;
+	public final fun envelopeVersionForWrite (I)I
+	public final fun extractProtectionLiteral (Ljava/lang/String;)Ljava/lang/String;
+	public final fun isCanonicalValueEncrypted (Ljava/lang/String;)Z
+	public final fun isInternalStorageKey (Ljava/lang/String;)Z
+	public final fun isReservedNamespaceKey (Ljava/lang/String;)Z
+	public final fun isReservedUserKey (Ljava/lang/String;)Z
+	public final fun legacyEncryptedRawKey (Ljava/lang/String;)Ljava/lang/String;
+	public final fun legacyProtectionRawKey (Ljava/lang/String;)Ljava/lang/String;
+	public final fun metadataRawKey (Ljava/lang/String;)Ljava/lang/String;
+	public final fun parseAccessPolicy (Ljava/lang/String;)Ljava/lang/String;
+	public final fun parseEnvelopeVersion (Ljava/lang/String;)I
+	public final fun parseKeyGeneration (Ljava/lang/String;)I
+	public final fun parseKeyGenerationTimestamp (Ljava/lang/String;)Ljava/lang/Long;
+	public final fun parseProtection (Ljava/lang/String;)Leu/anifantakis/lib/ksafe/KSafeProtection;
+	public final fun parseRequireUnlockedDevice (Ljava/lang/String;)Z
+	public final fun parseStrictAliasVariant (Ljava/lang/String;)Z
+	public final fun protectionToLiteral (Leu/anifantakis/lib/ksafe/KSafeProtection;)Ljava/lang/String;
+	public final fun requireWritableUserKey (Ljava/lang/String;)V
+	public final fun stableStoreIdentity (Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;
+	public final fun tryExtractCanonicalMetadataKey (Ljava/lang/String;)Ljava/lang/String;
+	public final fun tryExtractCanonicalValueKey (Ljava/lang/String;)Ljava/lang/String;
+	public final fun tryExtractLegacyEncryptedKey (Ljava/lang/String;)Ljava/lang/String;
+	public final fun tryExtractLegacyProtectionKey (Ljava/lang/String;)Ljava/lang/String;
+	public final fun valueRawKey (Ljava/lang/String;)Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/KeySafeMetadataManager$ClassifiedStorageEntry {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Z)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Z
+	public final fun copy (Ljava/lang/String;Ljava/lang/String;Z)Leu/anifantakis/lib/ksafe/internal/KeySafeMetadataManager$ClassifiedStorageEntry;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/internal/KeySafeMetadataManager$ClassifiedStorageEntry;Ljava/lang/String;Ljava/lang/String;ZILjava/lang/Object;)Leu/anifantakis/lib/ksafe/internal/KeySafeMetadataManager$ClassifiedStorageEntry;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCacheKey ()Ljava/lang/String;
+	public final fun getEncrypted ()Z
+	public final fun getUserKey ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class eu/anifantakis/lib/ksafe/internal/StorageOp {
+	public abstract fun getRawKey ()Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/StorageOp$Delete : eu/anifantakis/lib/ksafe/internal/StorageOp {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Leu/anifantakis/lib/ksafe/internal/StorageOp$Delete;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/internal/StorageOp$Delete;Ljava/lang/String;ILjava/lang/Object;)Leu/anifantakis/lib/ksafe/internal/StorageOp$Delete;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getRawKey ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/StorageOp$Put : eu/anifantakis/lib/ksafe/internal/StorageOp {
+	public fun <init> (Ljava/lang/String;Leu/anifantakis/lib/ksafe/internal/StoredValue;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Leu/anifantakis/lib/ksafe/internal/StoredValue;
+	public final fun copy (Ljava/lang/String;Leu/anifantakis/lib/ksafe/internal/StoredValue;)Leu/anifantakis/lib/ksafe/internal/StorageOp$Put;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/internal/StorageOp$Put;Ljava/lang/String;Leu/anifantakis/lib/ksafe/internal/StoredValue;ILjava/lang/Object;)Leu/anifantakis/lib/ksafe/internal/StorageOp$Put;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getRawKey ()Ljava/lang/String;
+	public final fun getValue ()Leu/anifantakis/lib/ksafe/internal/StoredValue;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class eu/anifantakis/lib/ksafe/internal/StoredValue {
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/StoredValue$BoolVal : eu/anifantakis/lib/ksafe/internal/StoredValue {
+	public fun <init> (Z)V
+	public final fun component1 ()Z
+	public final fun copy (Z)Leu/anifantakis/lib/ksafe/internal/StoredValue$BoolVal;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/internal/StoredValue$BoolVal;ZILjava/lang/Object;)Leu/anifantakis/lib/ksafe/internal/StoredValue$BoolVal;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getValue ()Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/StoredValue$DoubleVal : eu/anifantakis/lib/ksafe/internal/StoredValue {
+	public fun <init> (D)V
+	public final fun component1 ()D
+	public final fun copy (D)Leu/anifantakis/lib/ksafe/internal/StoredValue$DoubleVal;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/internal/StoredValue$DoubleVal;DILjava/lang/Object;)Leu/anifantakis/lib/ksafe/internal/StoredValue$DoubleVal;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getValue ()D
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/StoredValue$FloatVal : eu/anifantakis/lib/ksafe/internal/StoredValue {
+	public fun <init> (F)V
+	public final fun component1 ()F
+	public final fun copy (F)Leu/anifantakis/lib/ksafe/internal/StoredValue$FloatVal;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/internal/StoredValue$FloatVal;FILjava/lang/Object;)Leu/anifantakis/lib/ksafe/internal/StoredValue$FloatVal;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getValue ()F
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/StoredValue$IntVal : eu/anifantakis/lib/ksafe/internal/StoredValue {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Leu/anifantakis/lib/ksafe/internal/StoredValue$IntVal;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/internal/StoredValue$IntVal;IILjava/lang/Object;)Leu/anifantakis/lib/ksafe/internal/StoredValue$IntVal;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getValue ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/StoredValue$LongVal : eu/anifantakis/lib/ksafe/internal/StoredValue {
+	public fun <init> (J)V
+	public final fun component1 ()J
+	public final fun copy (J)Leu/anifantakis/lib/ksafe/internal/StoredValue$LongVal;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/internal/StoredValue$LongVal;JILjava/lang/Object;)Leu/anifantakis/lib/ksafe/internal/StoredValue$LongVal;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getValue ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/internal/StoredValue$Text : eu/anifantakis/lib/ksafe/internal/StoredValue {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Leu/anifantakis/lib/ksafe/internal/StoredValue$Text;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/internal/StoredValue$Text;Ljava/lang/String;ILjava/lang/Object;)Leu/anifantakis/lib/ksafe/internal/StoredValue$Text;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getValue ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+

@@ -222,6 +222,17 @@ counter.value++
   store already stranded this way by 3.0.0 or 3.1.0 is not repaired: its namespaced store file
   already exists, so the retry still skips it.
 
+### Changed
+
+- **The Android public API now has an ABI baseline that `apiCheck` enforces.** The binary
+  compatibility validator only registers its Android dump for a compilation named `release`,
+  and the Android multiplatform library plugin names that compilation `main` — so it registered
+  no Android task at all, and the committed dumps described every target except Android. The
+  `KSafe(context, …)` factory (whose `Duration` parameter puts a hash of the whole parameter list
+  into its JVM name, so any change silently renames it) and the biometrics module's
+  `BiometricHelper` surface were outside the lock, and `:ksafe-compose` had no Android baseline
+  at all. They are now dumped to `api/android/` and compared on every `check`.
+
 ## [3.1.0] - 2026-08-24
 
 ### Added

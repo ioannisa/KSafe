@@ -1,0 +1,55 @@
+public final class eu/anifantakis/lib/ksafe/biometrics/BiometricActivityNotFoundException : java/lang/Exception {
+	public fun <init> (Ljava/lang/String;)V
+}
+
+public final class eu/anifantakis/lib/ksafe/biometrics/BiometricAuthException : java/lang/Exception {
+	public fun <init> (Ljava/lang/String;)V
+}
+
+public final class eu/anifantakis/lib/ksafe/biometrics/BiometricAuthorizationDuration {
+	public fun <init> (JLjava/lang/String;)V
+	public synthetic fun <init> (JLjava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()J
+	public final fun component2 ()Ljava/lang/String;
+	public final fun copy (JLjava/lang/String;)Leu/anifantakis/lib/ksafe/biometrics/BiometricAuthorizationDuration;
+	public static synthetic fun copy$default (Leu/anifantakis/lib/ksafe/biometrics/BiometricAuthorizationDuration;JLjava/lang/String;ILjava/lang/Object;)Leu/anifantakis/lib/ksafe/biometrics/BiometricAuthorizationDuration;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDuration ()J
+	public final fun getScope ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class eu/anifantakis/lib/ksafe/biometrics/BiometricHelper {
+	public static final field INSTANCE Leu/anifantakis/lib/ksafe/biometrics/BiometricHelper;
+	public final fun authenticate (Ljava/lang/String;ZLjava/lang/String;Ljava/lang/String;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun authenticate$default (Leu/anifantakis/lib/ksafe/biometrics/BiometricHelper;Ljava/lang/String;ZLjava/lang/String;Ljava/lang/String;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun getActivityWaitTimeoutMs ()J
+	public final fun getConfirmationRequired ()Z
+	public final fun getCurrentActivity ()Landroidx/fragment/app/FragmentActivity;
+	public final fun hasUsableFragmentActivity ()Z
+	public final fun init (Landroid/app/Application;)V
+	public final fun setActivityWaitTimeoutMs (J)V
+	public final fun setConfirmationRequired (Z)V
+}
+
+public final class eu/anifantakis/lib/ksafe/biometrics/KSafeBiometrics {
+	public static final field INSTANCE Leu/anifantakis/lib/ksafe/biometrics/KSafeBiometrics;
+	public final fun biometricsAvailable (ZLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun biometricsAvailable$default (Leu/anifantakis/lib/ksafe/biometrics/KSafeBiometrics;ZLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun biometricsAvailableDirect (ZLkotlin/jvm/functions/Function1;)V
+	public static synthetic fun biometricsAvailableDirect$default (Leu/anifantakis/lib/ksafe/biometrics/KSafeBiometrics;ZLkotlin/jvm/functions/Function1;ILjava/lang/Object;)V
+	public final fun clearBiometricAuth (Ljava/lang/String;)V
+	public static synthetic fun clearBiometricAuth$default (Leu/anifantakis/lib/ksafe/biometrics/KSafeBiometrics;Ljava/lang/String;ILjava/lang/Object;)V
+	public final fun getDefaultCancelLabel ()Ljava/lang/String;
+	public final fun getDefaultReason ()Ljava/lang/String;
+	public final fun getDefaultTitle ()Ljava/lang/String;
+	public final fun setDefaultCancelLabel (Ljava/lang/String;)V
+	public final fun setDefaultReason (Ljava/lang/String;)V
+	public final fun setDefaultTitle (Ljava/lang/String;)V
+	public final fun verifyBiometric (Ljava/lang/String;Leu/anifantakis/lib/ksafe/biometrics/BiometricAuthorizationDuration;ZLjava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun verifyBiometric$default (Leu/anifantakis/lib/ksafe/biometrics/KSafeBiometrics;Ljava/lang/String;Leu/anifantakis/lib/ksafe/biometrics/BiometricAuthorizationDuration;ZLjava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun verifyBiometricDirect (Ljava/lang/String;Leu/anifantakis/lib/ksafe/biometrics/BiometricAuthorizationDuration;ZLjava/lang/String;Ljava/lang/String;Lkotlin/jvm/functions/Function1;)V
+	public static synthetic fun verifyBiometricDirect$default (Leu/anifantakis/lib/ksafe/biometrics/KSafeBiometrics;Ljava/lang/String;Leu/anifantakis/lib/ksafe/biometrics/BiometricAuthorizationDuration;ZLjava/lang/String;Ljava/lang/String;Lkotlin/jvm/functions/Function1;ILjava/lang/Object;)V
+}
+
