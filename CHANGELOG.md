@@ -177,6 +177,16 @@ counter.value++
   edit was made from it, and the following save overwrote what was really stored. The re-read now
   carries that last in-sync value as its own fallback, so an unresolvable read still yields it
   while a stored value equal to the default comes back as itself.
+- **`asMutableStateFlow` no longer keeps showing a write that failed before it left the caller's
+  thread.** A write whose persist fails is reverted to the durable value, but that revert was
+  driven only by the core's asynchronous failure callback. A serializer that throws — a special
+  float under a stricter `Json`, a polymorphic subtype missing from the serializers module — fails
+  before the core has created anything that callback could travel through, so it never fired. The
+  flow had already published the value to every collector and armed its echo guard, and nothing
+  arriving from storage could clear either: the only value storage could still emit was the
+  durable one, which is exactly what the guard suppressed. The phantom outlived the failure while
+  `getDirect` on the same key returned the value still on disk. Such a failure now reconciles the
+  flow the same way an asynchronous one does, and still propagates to the caller.
 
 ## [3.1.0] - 2026-08-24
 

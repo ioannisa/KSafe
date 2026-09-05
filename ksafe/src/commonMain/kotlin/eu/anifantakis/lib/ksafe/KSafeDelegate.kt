@@ -167,7 +167,8 @@ inline fun <reified T> KSafe.asStateFlow(
  * While one of your own writes is still propagating to disk, lagging disk emissions
  * are suppressed so they can't momentarily revert it; external reflection resumes
  * once the observed flow catches up with the written value. A write whose persist
- * fails is reverted to the durable value (see [reconcileAfterFailedPersist]).
+ * fails is reverted to the durable value (see [reconcileAfterFailedPersist]); a failure
+ * raised before the write leaves the caller's thread reconciles the same way, then propagates.
  */
 @OptIn(
     ExperimentalCoroutinesApi::class,
@@ -350,16 +351,23 @@ internal class KSafeMutableStateFlowDelegate<T>(
 
             lateinit var msf: KSafeMutableStateFlow<T>
             msf = KSafeMutableStateFlow(initial) { newValue ->
-                ksafe.core.putDirectRaw(actualKey, newValue, mode, serializer, onWriteFailed = {
-                    // The write never became durable and the core already rolled back, so no
-                    // echo is coming — re-read the durable value and reconcile. The fallback is
-                    // the last in-sync value, NOT defaultValue: on a locked device the entry
-                    // cannot be decrypted and the read returns the fallback verbatim, so the
-                    // default would publish "empty" over a value that is intact on disk.
+                // The write never became durable, so no echo is coming — re-read the durable
+                // value and reconcile. The fallback is
+                // the last in-sync value, NOT defaultValue: on a locked device the entry
+                // cannot be decrypted and the read returns the fallback verbatim, so the
+                // default would publish "empty" over a value that is intact on disk.
+                val reconcile: (Throwable) -> Unit = {
                     @Suppress("UNCHECKED_CAST")
                     val durable = ksafe.core.getDirectRaw(actualKey, msf.lastSyncedValue, serializer) as T
                     msf.reconcileAfterFailedPersist(newValue, durable)
-                })
+                }
+                try {
+                    ksafe.core.putDirectRaw(actualKey, newValue, mode, serializer, onWriteFailed = reconcile)
+                } catch (e: Throwable) {
+                    // A throwing serializer fails before the core can report through onWriteFailed.
+                    reconcile(e)
+                    throw e
+                }
             }
 
             // getFlowRaw retries transient decrypt failures internally, so a locked-device
