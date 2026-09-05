@@ -29,7 +29,13 @@ import kotlin.reflect.KProperty
 private const val NO_WRITE_TOKEN = 0L
 
 /**
- * A KSafe-persisted Compose [MutableState]: writes go through [valueSaver].
+ * A KSafe-backed Compose [MutableState], the state behind [rememberKSafeState] and
+ * [mutableStateOf]. Reads serve the in-memory value; setting a non-equivalent value publishes
+ * it at once and hands it to [valueSaver] to persist. The library's savers revert the value to
+ * what storage holds when a persist fails. Also a property delegate, and destructurable like
+ * `MutableState`.
+ * @param initialValue Value until storage reports otherwise.
+ * @param valueSaver Called with each accepted write to persist it.
  * @param policy Gates recomposition and persistence; equivalent values are not persisted.
  */
 @OptIn(ExperimentalAtomicApi::class)
@@ -94,7 +100,10 @@ class KSafeComposeState<T>(
             }
         }
 
-    /** Cold-start self-heal: applies a stored value without persisting, unless a write is unresolved. */
+    /**
+     * Cold-start self-heal: applies a stored value without persisting, unless a write is
+     * unresolved.
+     */
     @PublishedApi internal fun updateFromStorage(newValue: T) {
         if (awaitingWriteEcho || unresolvedWrite.load() != null) return
         betweenCheckAndPublishForTest?.invoke()
@@ -108,6 +117,7 @@ class KSafeComposeState<T>(
         }
     }
 
+    /** Test hook run between the guard check and the publish in [updateFromStorage]. */
     @PublishedApi internal var betweenCheckAndPublishForTest: (() -> Unit)? = null
 
     /** Applies a flow emission without persisting; only the stale pre-write snapshot is dropped. */
@@ -146,6 +156,7 @@ class KSafeComposeState<T>(
         if (awaitingWriteEcho) armWriteEchoTimeout(writeEchoGeneration)
     }
 
+    /** Drops the timeout scope when observation ends; later writes arm no timeout. */
     @PublishedApi internal fun detachWriteEchoTimeout() {
         writeEchoTimeoutScope = null
     }
@@ -189,6 +200,7 @@ class KSafeComposeState<T>(
 
     internal var betweenGateAndPublishForTest: (() -> Unit)? = null
 
+    /** Test hook: publishes [staleValue] as a stale emission would, bypassing every guard. */
     @PublishedApi internal fun simulateStaleClobberForTest(staleValue: T) {
         _internalState.value = staleValue
     }
@@ -206,7 +218,7 @@ class KSafeComposeState<T>(
 }
 
 /**
- * How long the cold-start self-heal waits for the first stored value — on WASM the initial
+ * How long the cold-start self-heal waits for the first stored value — on web the initial
  * synchronous read returns the default while WebCrypto is still decrypting.
  */
 @PublishedApi
@@ -218,7 +230,8 @@ internal const val WRITE_ECHO_TIMEOUT_MS: Long = 5_000L
 
 /**
  * Observation lifecycle shared by [mutableStateOf] and [rememberKSafeState]: collects the flow
- * indefinitely when [observeExternalChanges], else a [coldStart] takes the first emission.
+ * indefinitely when [observeExternalChanges], else a [coldStart] takes the first emission within
+ * [selfHealTimeoutMs]; a warm start without observation returns at once.
  */
 @PublishedApi
 internal suspend fun <T> KSafeComposeState<T>.observeFromStorage(
@@ -244,7 +257,9 @@ internal suspend fun <T> KSafeComposeState<T>.observeFromStorage(
 
 
 /**
- * Creates a KSafe-persisted Compose [MutableState] using [structuralEqualityPolicy].
+ * Delegate for a class/ViewModel property backed by a KSafe key, with [structuralEqualityPolicy].
+ * See the overload taking a [SnapshotMutationPolicy] for the full contract.
+ * @param defaultValue Value when the key holds nothing.
  * @param key Storage key; the property name when null.
  * @param mode Defaults to encrypted, inheriting `KSafeConfig.requireUnlockedDevice`.
  * @param scope When provided, external changes to the stored value propagate into the state.
@@ -264,13 +279,17 @@ inline fun <reified T> KSafe.mutableStateOf(
     )
 
 /**
- * Creates a KSafe-persisted Compose [MutableState] for class/ViewModel properties: initialized
- * from storage when the delegate is created, changes persisted back. Not `remember`-wrapped —
- * use [rememberKSafeState] inside a `@Composable` body.
+ * Delegate for a class/ViewModel property backed by a KSafe key:
+ * `var token by ksafe.mutableStateOf("")`. The initial value is read from storage when the
+ * delegate is created (blocking once on a cold cache; on web the default until the cache is
+ * ready, then self-healed). Each non-equivalent assignment updates the state at once and
+ * persists in the background; a persist that fails logs and reverts the state to the stored
+ * value. Not `remember`-wrapped — use [rememberKSafeState] inside a `@Composable` body.
+ * @param defaultValue Value when the key holds nothing.
  * @param key Storage key; the property name when null.
  * @param mode Defaults to encrypted, inheriting `KSafeConfig.requireUnlockedDevice`.
  * @param scope When provided, external changes propagate into the state; null runs only the
- * cold-start self-heal.
+ *   cold-start self-heal.
  * @param policy Gates recomposition and persistence; equivalent values are not persisted.
  */
 inline fun <reified T> KSafe.mutableStateOf(
@@ -357,9 +376,13 @@ inline fun <reified T> KSafe.mutableStateOf(
 
 /**
  * Composable-scoped persistent state — the `rememberSaveable` analogue for KSafe, surviving app
- * restarts. Use with `by` inside a `@Composable` body; leaving the composition cancels its
- * storage observation. Defaults to [KSafeWriteMode.Plain].
+ * restarts. Use with `by` inside a `@Composable` body: `var n by ksafe.rememberKSafeState(0)`.
+ * The state is remembered per key, instance, mode, policy and default; leaving the composition
+ * cancels its storage observation. A persist that fails logs and reverts the state to the
+ * stored value.
+ * @param defaultValue Value when the key holds nothing.
  * @param key Storage key; the property name when omitted.
+ * @param mode Defaults to [KSafeWriteMode.Plain], unlike [mutableStateOf].
  * @param observeExternalChanges When `true`, external writes to the key propagate into this
  *   state; `false` (default) runs only the cold-start self-heal.
  * @param policy Gates recomposition and persistence; equivalent values are not persisted.
@@ -445,6 +468,10 @@ class KSafeComposeStateProvider<T> @PublishedApi internal constructor(
         { resolvedKey, newValue, _ -> writeValue(resolvedKey, newValue) }, flowProvider,
     )
 
+    /**
+     * Resolves the key (explicit, else the property name), remembers the state and starts its
+     * storage observation in a [LaunchedEffect].
+     */
     @Composable
     operator fun provideDelegate(
         thisRef: Any?,
@@ -466,6 +493,10 @@ class KSafeComposeStateProvider<T> @PublishedApi internal constructor(
     }
 }
 
+/**
+ * Remembers a [KSafeComposeState] keyed on every parameter it binds and runs [observeFromStorage]
+ * in a [LaunchedEffect]; the saver reverts a failed persist to the durable value.
+ */
 @PublishedApi
 @Composable
 internal fun <T> rememberKSafeStateImpl(
