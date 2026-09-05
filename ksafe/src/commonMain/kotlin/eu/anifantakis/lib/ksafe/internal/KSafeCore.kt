@@ -456,11 +456,12 @@ internal class KSafeCore(
         }
 
         /**
-         * Deletes superseded MASTER generations (below [newGeneration]) that no persisted
-         * entry references. MUST run on the consumer: serialized with every write, so no
-         * batch can be lazily minting/encrypting under an old master while this deletes it —
-         * the unserialized variant could delete a key between a concurrent batch's mint and
-         * its commit, making an acknowledged write unreadable after restart. A stale-
+         * Deletes superseded MASTER generations (below [newGeneration]) that neither a
+         * persisted entry nor a live sibling core's cache still references. MUST run on the
+         * consumer: serialized with every write, so no batch can be lazily minting/encrypting
+         * under an old master while this deletes it — the unserialized variant could delete a
+         * key between a concurrent batch's mint and its commit, making an acknowledged write
+         * unreadable after restart. A stale-
          * generation write processed AFTER this sweep self-heals (its encrypt lazily mints a
          * fresh key under the old alias and its ciphertext decrypts with it).
          */

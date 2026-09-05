@@ -49,6 +49,44 @@ private fun KSafeCore.encryptedEntryRecordOps(op: EncryptingWrite, base64: Strin
         buildMetaJson(op.protection, op.requireUnlockedDevice, op.keyGeneration),
     )
 
+/**
+ * Moves ANOTHER live core's cached copy onto a just-committed rotation: its own writes stay dirty,
+ * so left alone it decrypts a superseded generation under a reclaimed master and serves the default
+ * from then on. CAS'd on the pre-rotation ciphertext, so an optimistic write is never overwritten.
+ */
+private fun KSafeCore.adoptRotatedEntry(op: PendingWrite.Rotate, newBase64: String) {
+    val ownerAtStart = writeOwners[op.userKey]
+    val old = encMetaMap[op.userKey] ?: return
+    if (old.keyGeneration >= op.keyGeneration ||
+        old.requireUnlockedDevice != op.requireUnlockedDevice ||
+        KeySafeMetadataManager.parseProtection(protectionMap[op.userKey]) != op.protection
+    ) return
+    val adopted = if (cacheHoldsCiphertext || op.requireUnlockedDevice) {
+        memoryCache.replaceIf(op.rawCacheKey, op.expectedOldCiphertext, newBase64)
+    } else {
+        memoryCache[op.rawCacheKey] == op.jsonString
+    }
+    if (adopted) {
+        val bumped = encMetaForWrite(op.protection, op.requireUnlockedDevice, op.keyGeneration)
+        encMetaMap.replaceIf(op.userKey, old, bumped)
+        if (writeOwners[op.userKey] !== ownerAtStart) encMetaMap.replaceIf(op.userKey, bumped, old)
+    }
+}
+
+/**
+ * The aliases this core's RAM still decrypts through. Its own writes stay dirty, so its cache may
+ * legitimately hold an older generation than disk — reaping one defaults every value it holds.
+ */
+private fun KSafeCore.inUseAliases(): Set<String> {
+    val protections = protectionMap.snapshot()
+    val aliases = mutableSetOf<String>()
+    for ((userKey, meta) in encMetaMap.snapshot()) {
+        val protection = KeySafeMetadataManager.parseProtection(protections[userKey]) ?: continue
+        aliases += aliasForRawMeta(userKey, protection, meta)
+    }
+    return aliases
+}
+
 internal suspend fun KSafeCore.processWrites(batchIn: List<PendingWrite>) {
     // The PERSISTED generation is the authority; the local atomic is only its cache.
     // One suspend disk read, exactly when it's needed: the first batch on an instance
@@ -580,6 +618,7 @@ internal suspend fun KSafeCore.processWrites(batchIn: List<PendingWrite>) {
                             }
                         }
                 }
+                siblings?.others(this)?.forEach { it.adoptRotatedEntry(op, newBase64) }
             }
             is PendingWrite.SetKeyGeneration -> {
                 // Monotonic, matching updateCache's snapshot load.
@@ -622,6 +661,9 @@ internal suspend fun KSafeCore.processWrites(batchIn: List<PendingWrite>) {
                         KeySafeMetadataManager.parseKeyGeneration(rawMeta),
                     )
                 }
+                // Another live core on this store may still route through an older master —
+                // its own writes are dirty, so no snapshot can show them.
+                siblings?.others(this)?.forEach { referencedAliases += it.inUseAliases() }
                 val candidateAliases = mutableSetOf<String>()
                 for (requireUnlocked in listOf(false, true)) {
                     for (generation in 1 until op.newGeneration) {
@@ -654,6 +696,7 @@ internal suspend fun KSafeCore.processWrites(batchIn: List<PendingWrite>) {
             val prot = KeySafeMetadataManager.parseProtection(literal) ?: continue
             liveAliases += aliasForRead(liveKey, prot)
         }
+        siblings?.others(this)?.forEach { liveAliases += it.inUseAliases() }
         for (alias in aliasesToDelete) {
             if (alias in liveAliases) continue
             deleteEngineKeyBestEffort(

@@ -148,6 +148,15 @@ counter.value++
   Sibling instances on the same store now have their caches, metadata and key generation cleared
   as part of the wipe (Android, iOS/macOS and JVM Desktop; on web each instance still owns its own
   store handle, so the singleton rule still applies there).
+- **`rotateKeys()` on one instance no longer turns another instance's own writes into their
+  default values.** A rotation re-encrypts every stored entry under a new key generation and then
+  reclaims the superseded one, but a second live `KSafe` on the same file kept holding the previous
+  generation's ciphertext in memory — so under the ciphertext-at-rest memory policies every value
+  that instance had written itself read back as its default for the rest of the process. Rotating
+  an entry now also moves a sibling instance's cached copy onto the new generation, and the
+  superseded-key sweep keeps a key alive while any live instance still reads through it (Android,
+  iOS/macOS and JVM Desktop; on web each instance still owns its own store handle, so the
+  singleton rule still applies there).
 
 ## [3.1.0] - 2026-08-24
 

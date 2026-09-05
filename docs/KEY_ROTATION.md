@@ -234,8 +234,11 @@ after a successful resume. A `MaxAge`-started pass keeps its corresponding
 - **Downgrading below 3.0.0 after a rotation (or after any 3.0.0 strict `HARDWARE_ISOLATED` write) is destructive — back up first.** A 2.2.x binary can't resolve generation-suffixed or strict-variant keys, and its startup **orphan sweep permanently deletes the rows and metadata** it can't decrypt — typically on the first launch. Upgrading back restores access only if that sweep never ran. Never-rotated stores with no strict writes are unaffected (generation 1 uses the exact same key names as 2.2.x). Treat the first rotation and the first strict write as one-way doors.
 - **Multiple instances / processes on the same file:** public KSafe instances in the same
   process share the backend's commit mutex, so their entry commits and key sweeps are
-  serialized; duplicate resume attempts are idempotent. A mutex cannot cross an OS-process
-  boundary, however. Do not rotate the same physical store concurrently from an app process
+  serialized; duplicate resume attempts are idempotent. In-process siblings also keep their
+  own writes readable across a rotation, and a key a live sibling still reads through is left
+  alone by the sweep and reaped by a later pass once that sibling has adopted or closed.
+  A mutex cannot cross an OS-process boundary, however.
+  Do not rotate the same physical store concurrently from an app process
   and an extension/widget/second process; nominate one process for manual and `MaxAge`
   rotation.
 - **`clearAll()`** wipes every generation's keys (best-effort: a platform-vault deletion failure is logged, not thrown — the data wipe itself fails loudly) and resets the store to generation 1. A rotation pass still in flight when the wipe lands is fenced: its remaining entries are reported `skipped` and nothing from the pre-wipe pass is stamped onto the reset store.
