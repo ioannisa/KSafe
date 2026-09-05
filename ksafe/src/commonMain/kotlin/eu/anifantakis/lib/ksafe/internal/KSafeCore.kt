@@ -234,6 +234,12 @@ internal class KSafeCore(
     /** Test-only seam fired after the read write-back's guard passes and before it stores; null in production. */
     internal var sideCacheWriteBackHook: (() -> Unit)? = null
 
+    /** Test-only seam fired with a user key after the merge's dirty check and before its cache store; null in production. */
+    internal var cacheMergeStoreHook: ((String) -> Unit)? = null
+
+    /** Test-only twin of [cacheMergeStoreHook] for the merge's encMetaMap store; null in production. */
+    internal var cacheMergeMetaStoreHook: ((String) -> Unit)? = null
+
     /** `true` when the primary [memoryCache] holds Base64 ciphertext at rest. */
     internal val cacheHoldsCiphertext: Boolean =
         memoryPolicy == KSafeMemoryPolicy.ENCRYPTED ||

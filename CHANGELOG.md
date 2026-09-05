@@ -227,6 +227,13 @@ counter.value++
   served the caller's default over live persisted data, and the first read-modify-write overwrote
   it. The preload now always runs on web, where reading `localStorage` is synchronous and there is
   nothing to defer; `lazyLoad` is accepted for API parity and documented as ignored there.
+- **A write landing mid-merge can no longer be pinned under the value it replaced.** When a
+  snapshot from disk was merged into the cache, each key was stored right after checking that no
+  write was in flight for it; a `putDirect` arriving between those two steps had its value
+  overwritten by the older disk value, and because the key counted as in-flight from then on, no
+  later merge revisited it — reads served the pre-write value for the rest of the process while
+  disk held the new one. The merge now stores a key only while its cache slot still holds what
+  the check saw, so the racing write keeps its value.
 
 ### Changed
 
