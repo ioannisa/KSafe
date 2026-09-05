@@ -128,6 +128,12 @@ counter.value++
   as the runtime failure it is: custody degrades to the software vault and the store keeps
   working, while reads still report the vault as unavailable rather than the key as missing, so
   the startup sweep leaves existing ciphertext intact.
+- **JVM: `KSafeSecurityPolicy`'s debug-build probe no longer reports every launch as a debug
+  build.** The probe relied on Kotlin's `assert`, which evaluates its argument even when
+  assertions are disabled, so it returned `true` on every JVM. `Strict` and `WarnOnly` policies
+  reported a `DebugBuild` violation on every desktop launch, and a `BLOCK` action refused to
+  construct `KSafe` at all. The probe now asks the JVM whether assertions are enabled for the
+  class, which is `false` in a normal production launch and honours `-ea`/`-da`.
 
 ## [3.1.0] - 2026-08-24
 

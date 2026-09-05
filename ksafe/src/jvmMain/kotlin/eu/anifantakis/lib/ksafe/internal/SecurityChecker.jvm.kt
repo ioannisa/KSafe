@@ -29,16 +29,11 @@ internal actual object SecurityChecker {
         }
     }
 
-    /** Approximates a debug build by whether assertions are enabled. */
-    actual fun isDebugBuild(): Boolean {
-        return try {
-            var assertionsEnabled = false
-            @Suppress("KotlinConstantConditions", "UNUSED_VALUE")
-            assert(true.also { assertionsEnabled = true })
-            assertionsEnabled
-        } catch (_: Throwable) {
-            false
-        }
+    /** Approximates a debug build by whether the JVM enables assertions (`-ea`) for this class. */
+    actual fun isDebugBuild(): Boolean = try {
+        SecurityChecker::class.java.desiredAssertionStatus()
+    } catch (_: Throwable) {
+        false
     }
 
     actual fun isEmulator(): Boolean = false

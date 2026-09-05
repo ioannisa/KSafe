@@ -3,6 +3,7 @@ package eu.anifantakis.lib.ksafe
 import eu.anifantakis.lib.ksafe.internal.SecurityChecker
 import eu.anifantakis.lib.ksafe.internal.validateSecurityPolicy
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 
@@ -31,9 +32,21 @@ class JvmSecurityCheckerTest {
     }
 
     @Test
-    fun securityChecker_isDebugBuild_returnsBoolean() {
-        val result = SecurityChecker.isDebugBuild()
-        assertIs<Boolean>(result)
+    fun securityChecker_isDebugBuild_matchesTheJvmAssertionStatus() {
+        assertEquals(SecurityChecker::class.java.desiredAssertionStatus(), SecurityChecker.isDebugBuild())
+    }
+
+    @Test
+    fun securityChecker_isDebugBuild_isFalseWhenAssertionsAreDisabledForTheClass() {
+        val cls = SecurityChecker::class.java
+        val before = cls.desiredAssertionStatus()
+        cls.classLoader.setClassAssertionStatus(cls.name, false)
+        try {
+            assertFalse(cls.desiredAssertionStatus(), "precondition: the loader must honour the per-class switch")
+            assertFalse(SecurityChecker.isDebugBuild(), "no -ea for this class means not a debug build")
+        } finally {
+            cls.classLoader.setClassAssertionStatus(cls.name, before)
+        }
     }
 
     @Test
