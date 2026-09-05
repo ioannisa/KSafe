@@ -154,7 +154,7 @@ internal object WebKeyStoreJsSource {
       var keyOf = function(name) { if (mem.has(name)) return Promise.resolve(mem.get(name));
         return idbGet(name).then(function(k) { if (k) mem.set(name, k); return k; }); };
       var enc = function(name, dataB64, aadB64) { return keyOf(name).then(function(k) {
-        if (!k) throw new Error('KSafe: ${KSafeEngineMessage.WEB_KEY_MISSING}: ' + name);
+        if (!k) throw new Error('${KSafeEngineMessage.WEB_KEY_MISSING_PREFIX}' + name);
         var iv = G.crypto.getRandomValues(new Uint8Array(12));
         var params = aadB64 ? { name: 'AES-GCM', iv: iv, additionalData: b2u(aadB64) } : { name: 'AES-GCM', iv: iv };
         return requireSubtle().encrypt(params, k, b2u(dataB64)).then(function(ctBuf) {
@@ -165,7 +165,7 @@ internal object WebKeyStoreJsSource {
           // still orphans that one write (reclaimed by the startup orphan sweep); closing it
           // fully needs Web Locks held across delete vs encrypt+commit.
           return idbGet(name).then(function(live) {
-            if (!live) { mem['delete'](name); throw new Error('KSafe: ${KSafeEngineMessage.WEB_KEY_MISSING}: ' + name); }
+            if (!live) { mem['delete'](name); throw new Error('${KSafeEngineMessage.WEB_KEY_MISSING_PREFIX}' + name); }
             var ct = new Uint8Array(ctBuf);
             var out = new Uint8Array(iv.length + ct.length);
             out.set(iv, 0); out.set(ct, iv.length);
@@ -174,7 +174,7 @@ internal object WebKeyStoreJsSource {
         });
       }); };
       var dec = function(name, dataB64, aadB64) { return keyOf(name).then(function(k) {
-        if (!k) throw new Error('KSafe: ${KSafeEngineMessage.WEB_KEY_MISSING}: ' + name);
+        if (!k) throw new Error('${KSafeEngineMessage.WEB_KEY_MISSING_PREFIX}' + name);
         var all = b2u(dataB64); var iv = all.slice(0, 12); var ct = all.slice(12);
         var params = aadB64 ? { name: 'AES-GCM', iv: iv, additionalData: b2u(aadB64) } : { name: 'AES-GCM', iv: iv };
         return requireSubtle().decrypt(params, k, ct).then(function(ptBuf) { return u2b(ptBuf); });

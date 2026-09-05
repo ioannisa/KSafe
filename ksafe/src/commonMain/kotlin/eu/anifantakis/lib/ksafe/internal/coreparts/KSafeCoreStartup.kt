@@ -6,7 +6,6 @@ import eu.anifantakis.lib.ksafe.internal.KSafeCore
 import eu.anifantakis.lib.ksafe.internal.KSafeCore.Companion.aliasWithGeneration
 import eu.anifantakis.lib.ksafe.internal.KSafeCore.Companion.encMetaFromRaw
 import eu.anifantakis.lib.ksafe.internal.KSafeCore.EncMeta
-import eu.anifantakis.lib.ksafe.internal.KSafeEngineMessage
 import eu.anifantakis.lib.ksafe.internal.KSafeSecretSlots
 import eu.anifantakis.lib.ksafe.internal.KeySafeMetadataManager
 import eu.anifantakis.lib.ksafe.internal.StorageOp
@@ -168,11 +167,7 @@ internal suspend fun KSafeCore.cleanupOrphanedCiphertext() {
                         null
                     } catch (e: Throwable) {
                         if (e is CancellationException) throw e
-                        val msg = e.message.orEmpty()
-                        if (msg.contains(KSafeEngineMessage.NO_KEY, true) ||
-                            msg.contains(KSafeEngineMessage.KEY_NOT_FOUND, true) ||
-                            msg.contains(KSafeEngineMessage.WEB_KEY_MISSING, true)
-                        ) c else null
+                        if (isOrphanProbeFailure(e)) c else null
                     }
                 }
             }

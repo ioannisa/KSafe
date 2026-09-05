@@ -1,6 +1,7 @@
 package eu.anifantakis.lib.ksafe
 
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
+import eu.anifantakis.lib.ksafe.internal.KSafeEngineMessage
 import eu.anifantakis.lib.ksafe.internal.coreparts.lockedDecryptRetryBackoffMs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -73,7 +74,7 @@ class JvmFlowRecoversAfterLockedDecryptTest {
             aad: ByteArray?,
         ): ByteArray {
             decryptCalls.incrementAndGet()
-            if (fail) throw IllegalStateException("No encryption key found for identifier: $identifier")
+            if (fail) throw IllegalStateException(KSafeEngineMessage.noKeyFound(identifier))
             return xor.decrypt(identifier, data, requireUnlockedDevice, aad)
         }
 

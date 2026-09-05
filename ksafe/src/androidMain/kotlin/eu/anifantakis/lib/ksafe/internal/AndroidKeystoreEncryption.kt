@@ -224,7 +224,7 @@ internal class AndroidKeystoreEncryption(
         // Wrapped DEK present but KEK absent (e.g. Auto Backup restore onto an empty Keystore):
         // mint a fresh DEK. A transient "device is locked" ISE must NOT trigger destructive
         // regen — rethrow so the write retries with data intact.
-        if (e.message?.contains(KSafeEngineMessage.NO_KEY, ignoreCase = true) == true) {
+        if (KSafeEngineMessage.isDefinitiveKeyMiss(e.message)) {
             regenerateDek(alias, deleteKek = false, requireUnlockedDevice = null)
         } else {
             throw e
@@ -287,7 +287,7 @@ internal class AndroidKeystoreEncryption(
                         true
                     } catch (t: IllegalStateException) {
                         // KEK absent = definitive; a transient "device is locked" ISE must not destroy.
-                        t.message?.contains(KSafeEngineMessage.NO_KEY, ignoreCase = true) == true
+                        KSafeEngineMessage.isDefinitiveKeyMiss(t.message)
                     } catch (_: Throwable) {
                         false // unknown ⇒ preserve
                     }
@@ -314,7 +314,7 @@ internal class AndroidKeystoreEncryption(
                 // or the orphan sweep would reap a valid legacy entry as missing-key. Gated on
                 // the canonical missing-DEK message so the transient "device is locked" ISE
                 // still propagates unchanged.
-                if (e.message?.contains(KSafeEngineMessage.NO_KEY, ignoreCase = true) == true) {
+                if (KSafeEngineMessage.isDefinitiveKeyMiss(e.message)) {
                     legacyOrRethrow(e)
                 } else {
                     throw e
@@ -567,7 +567,7 @@ internal class AndroidKeystoreEncryption(
                 } catch (e: IllegalStateException) {
                     // KEK absent → fall through to recreate. A TRANSIENT "device is locked" ISE must
                     // NOT destroy/recreate: rethrow so the caller retries with the stored DEK intact.
-                    if (e.message?.contains(KSafeEngineMessage.NO_KEY, ignoreCase = true) != true) throw e
+                    if (!KSafeEngineMessage.isDefinitiveKeyMiss(e.message)) throw e
                 }
             }
             discardDek(alias)

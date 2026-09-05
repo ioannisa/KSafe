@@ -14,13 +14,19 @@ internal fun isRotationRetryable(e: Throwable): Boolean =
     isTransientDecryptFailure(e) ||
         e.message?.contains(KSafeEngineMessage.VAULT_UNAVAILABLE, ignoreCase = true) == true
 
+/**
+ * The orphan sweep's verdict on a decrypt probe: only the anchored canonical miss reclaims the
+ * ciphertext; a transient fault, a vault outage or an unrecognised error preserves the entry.
+ */
+internal fun isOrphanProbeFailure(e: Throwable): Boolean =
+    KSafeEngineMessage.isDefinitiveKeyMiss(e.message)
+
 internal fun isTransientDecryptFailure(e: Throwable): Boolean {
     val msg = e.message ?: return false
     // KSafe's OWN definitive results (key absent, vault unavailable) are never retryable —
     // exclude them first so a store literally named "keystore" doesn't get its missing-key
     // reads misclassified as a retryable hiccup and throw instead of returning the default.
-    if (msg.contains(KSafeEngineMessage.NO_KEY, ignoreCase = true) ||
-        msg.contains(KSafeEngineMessage.KEY_NOT_FOUND, ignoreCase = true) ||
+    if (KSafeEngineMessage.isDefinitiveKeyMiss(msg) ||
         msg.contains(KSafeEngineMessage.VAULT_UNAVAILABLE, ignoreCase = true)
     ) {
         return false

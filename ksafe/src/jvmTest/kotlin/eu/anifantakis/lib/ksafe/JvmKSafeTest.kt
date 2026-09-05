@@ -4,6 +4,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.edit
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
+import eu.anifantakis.lib.ksafe.internal.KSafeEngineMessage
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
@@ -252,7 +253,7 @@ class JvmKSafeTest : KSafeTest() {
             ): ByteArray = delegate.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
 
             override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray {
-                if (failOnDecrypt) throw IllegalStateException("No encryption key found")
+                if (failOnDecrypt) throw IllegalStateException(KSafeEngineMessage.noKeyFound(identifier))
                 return delegate.decrypt(identifier, data)
             }
 
@@ -305,7 +306,7 @@ class JvmKSafeTest : KSafeTest() {
             ): ByteArray = delegate.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
 
             override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray {
-                if (failOnDecrypt) throw IllegalStateException("No encryption key found")
+                if (failOnDecrypt) throw IllegalStateException(KSafeEngineMessage.noKeyFound(identifier))
                 return delegate.decrypt(identifier, data)
             }
 

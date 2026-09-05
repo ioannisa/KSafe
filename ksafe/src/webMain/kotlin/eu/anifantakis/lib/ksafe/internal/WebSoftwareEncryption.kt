@@ -216,8 +216,9 @@ internal class WebSoftwareEncryption(
         ensureKey(alias)
     }
 
+    // Kotlin/Wasm re-wraps the JS error, so the branded opening is matched wherever it lands.
     private fun isWebKeyMissing(e: Throwable): Boolean =
-        e.message?.contains(KSafeEngineMessage.WEB_KEY_MISSING, ignoreCase = true) == true
+        e.message?.contains(KSafeEngineMessage.WEB_KEY_MISSING_PREFIX, ignoreCase = true) == true
 
     override fun encrypt(
         identifier: String,

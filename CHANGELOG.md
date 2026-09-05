@@ -244,6 +244,18 @@ counter.value++
   drops the failed write's own cache and metadata entries when the re-read fails, so the key
   reads back as the caller's default instead of a value that was never written; a later merge
   repopulates it from disk, and `getFlow`, which reads the store directly, is unaffected.
+- **A key whose own name reads like an error message can no longer decide that entry's fate.**
+  KSafe tells "this key is gone for good" apart from "the vault is busy, come back later" by
+  reading the engine's failure message, and it searched for the phrases anywhere in the text —
+  while the messages themselves quote the key: a Keychain account, a JVM alias, an IndexedDB
+  record name. A key called something like `api key not found counter` therefore turned its own
+  transient vault outage into a permanent-loss verdict, and the startup sweep deleted ciphertext
+  a healthy vault would have read back on the next launch. The phrases are now recognised only in
+  their branded `KSafe: ` opening, so quoted key names are just text; the same anchoring also
+  teaches the retry classifier about a dead browser key, which a store or key named `keystore`
+  could previously disguise as a passing hiccup that a `Flow` would retry forever. The trade is
+  deliberate and one-directional: a platform error that says "key not found" in its own wording,
+  without KSafe's opening, is now left alone rather than reclaimed.
 
 ### Changed
 

@@ -1,6 +1,7 @@
 package eu.anifantakis.lib.ksafe
 
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
+import eu.anifantakis.lib.ksafe.internal.KSafeEngineMessage
 import eu.anifantakis.lib.ksafe.internal.KSafeInitLock
 
 /**
@@ -52,7 +53,7 @@ internal open class StatefulFakeEncryption : KSafeEncryption {
         // Same phrasing as the real engines' definitive missing-key failure, so the orphan
         // classifier and rotation treat it as permanent, not transient.
         val keyId = lock.withLock { keysByAlias[identifier] }
-            ?: throw IllegalStateException("No encryption key found for alias '$identifier'")
+            ?: throw IllegalStateException(KSafeEngineMessage.noKeyFound(identifier))
         check(data.size >= 8) { "corrupt ciphertext for '$identifier'" }
         val mintedWith = intFrom(data, 0)
         check(mintedWith == keyId) {
