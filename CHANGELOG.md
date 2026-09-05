@@ -304,6 +304,10 @@ counter.value++
   entry was marked encrypted while its ciphertext slot was still empty, so a read arriving in that
   window was routed to the empty slot and served the default; both write paths now stage through
   one shared step that writes the value first.
+- **The startup sweeps read an entry's recorded protection the same way the cache does.** The
+  sweep-side collector treated a canonical record that says "plain" as absent, so a stale legacy
+  protection record for the same key could make it look encrypted and be probed and reaped as an
+  orphan. It now applies the cache's rule: a canonical record always wins over a legacy one.
 
 ### Changed
 

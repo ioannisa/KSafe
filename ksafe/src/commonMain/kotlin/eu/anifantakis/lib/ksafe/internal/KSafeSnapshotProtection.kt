@@ -3,25 +3,16 @@ package eu.anifantakis.lib.ksafe.internal
 import eu.anifantakis.lib.ksafe.KSafeProtection
 
 /**
- * User key → recorded protection off a raw snapshot; canonical `__ksafe_meta_*__` records win over
- * legacy `__ksafe_prot_*__` ones. Shared by the core and Apple orphan sweeps: a divergent copy
- * makes one reap what the other keeps.
+ * User key → recorded protection off a raw snapshot, with [KeySafeMetadataManager.collectMetadata]'s
+ * canonical-over-legacy rule; the core and Apple sweeps must reap and keep the same entries.
  */
 internal fun protectionByKeyFromSnapshot(
     snapshot: Map<String, StoredValue>,
 ): Map<String, KSafeProtection> {
-    val protectionByKey = mutableMapOf<String, KSafeProtection>()
-    for ((rawKey, value) in snapshot) {
-        val text = (value as? StoredValue.Text)?.value ?: continue
-        KeySafeMetadataManager.tryExtractCanonicalMetadataKey(rawKey)?.let { userKey ->
-            KeySafeMetadataManager.parseProtection(text)?.let { protectionByKey[userKey] = it }
-            return@let
-        }
-        KeySafeMetadataManager.tryExtractLegacyProtectionKey(rawKey)?.let { userKey ->
-            if (!protectionByKey.containsKey(userKey)) {
-                KeySafeMetadataManager.parseProtection(text)?.let { protectionByKey[userKey] = it }
-            }
-        }
+    val entries = snapshot.mapNotNull { (rawKey, value) -> (value as? StoredValue.Text)?.let { rawKey to it.value } }
+    val out = mutableMapOf<String, KSafeProtection>()
+    for ((userKey, literal) in KeySafeMetadataManager.collectMetadata(entries)) {
+        KeySafeMetadataManager.parseProtection(literal)?.let { out[userKey] = it }
     }
-    return protectionByKey
+    return out
 }
