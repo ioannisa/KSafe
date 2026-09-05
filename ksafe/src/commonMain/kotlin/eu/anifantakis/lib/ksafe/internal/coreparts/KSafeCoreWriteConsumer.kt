@@ -93,7 +93,7 @@ internal suspend fun KSafeCore.processBatch(batch: List<PendingWrite>) {
     if (failure != null) {
         deferreds.forEach { it.completeExceptionally(failure) }
         // Fire-and-forget callers have no deferred to fail; notify their callbacks (the
-        // optimistic rollback already ran inside processWrites' catch). runCatching so a
+        // optimistic rollback already ran inside processBatchBody). runCatching so a
         // callback can never wedge the write consumer.
         val cause: Throwable = failure
         batch.forEach { op -> op.onWriteFailed?.let { cb -> runCatching { cb(cause) } } }
@@ -108,7 +108,15 @@ internal suspend fun KSafeCore.processBatchBody(batch: List<PendingWrite>) {
     // later writes survive — FIFO ordering keeps an earlier put from resurrecting data.
     val lastClear = batch.indexOfLast { it is PendingWrite.ClearAll }
     if (lastClear >= 0) {
-        performClearAll()
+        try {
+            performClearAll()
+        } catch (e: Throwable) {
+            if (e is CancellationException) throw e
+            // Nothing in this batch is durable, so both sides of the boundary roll back.
+            reclaimBatchOwnershipToSurvivors(batch, batch)
+            rollbackOptimisticState(batch)
+            throw e
+        }
         val after = batch.subList(lastClear + 1, batch.size)
         if (after.isNotEmpty()) processWrites(after)
         return

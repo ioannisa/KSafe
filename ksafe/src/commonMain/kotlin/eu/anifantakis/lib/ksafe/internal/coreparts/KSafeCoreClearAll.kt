@@ -14,22 +14,28 @@ internal suspend fun KSafeCore.performClearAll() {
         val e = clearEpoch.get()
         if (clearEpoch.compareAndSet(e, e + 1)) break
     }
-    // Per-entry engine keys are deleted BEFORE clearing protectionMap (the key
-    // inventory). Only entries that provably USED a per-entry alias are swept:
-    // v2+ DEFAULT entries ride the shared master (deleted below), and issuing the
-    // no-op delete anyway would destroy a sibling store's live key when a dotted
-    // user key collides with that store's alias namespace.
+    // The key inventory, captured before the maps are cleared below.
     val protectionSnapshot = protectionMap.snapshot()
-    // Captured before the map clears below: an entry can legitimately record a generation
-    // ABOVE the store's (a write that raced an earlier clearAll under the old clamp-free
-    // code), and its master would otherwise survive this wipe's 1..current sweep.
+    val encMetaSnapshot = encMetaMap.snapshot()
+    // An entry can legitimately record a generation ABOVE the store's (a write that raced an
+    // earlier clearAll under the old clamp-free code), and its master would otherwise survive
+    // this wipe's 1..current sweep.
     var maxRecordedGeneration = currentKeyGeneration.get()
-    for (meta in encMetaMap.snapshot().values) {
+    for (meta in encMetaSnapshot.values) {
         if (meta.keyGeneration > maxRecordedGeneration) maxRecordedGeneration = meta.keyGeneration
     }
+    // No key material is reclaimed until the data wipe itself succeeds.
+    storage.clear()
+    memoryCache.clear()
+    plaintextCache.clear()
+    protectionMap.clear()
+    encMetaMap.clear()
+    // Only entries that provably USED a per-entry alias are swept: v2+ DEFAULT entries ride
+    // the shared master (deleted below), and issuing the no-op delete anyway would destroy a
+    // sibling store's live key when a dotted user key collides with that store's alias namespace.
     for ((userKey, literal) in protectionSnapshot) {
         val protection = KeySafeMetadataManager.parseProtection(literal) ?: continue
-        val meta = encMetaMap[userKey]
+        val meta = encMetaSnapshot[userKey]
         val usedPerEntryAlias = ownsPerEntryAlias(
             protection,
             meta?.envelopeVersion ?: KeySafeMetadataManager.ENVELOPE_VERSION_V1,
@@ -49,11 +55,6 @@ internal suspend fun KSafeCore.performClearAll() {
             )
         }
     }
-    storage.clear()
-    memoryCache.clear()
-    plaintextCache.clear()
-    protectionMap.clear()
-    encMetaMap.clear()
     // Drop the master keys — every generation up to the highest one any entry recorded
     // (not just the store's), so a rotated store's superseded-but-not-yet-swept keys and
     // an above-store-generation straggler's master can't outlive a full wipe.

@@ -198,6 +198,14 @@ counter.value++
   occupying the origin's quota and `rotateKeys()` reporting it failed. The web engine now
   pre-warms read-only: a store with no key yet simply pays the key generation on its first
   encrypted write, and a plain-only store writes nothing to IndexedDB at all.
+- **A `clearAll()` that fails now leaves the store exactly as it was.** When the wipe itself threw
+  — a full disk or an I/O error while the store file was being rewritten — the caller got the
+  exception, but two things had already gone wrong behind it. Every write sharing the wipe's batch
+  kept its never-persisted value in memory under a dirty flag nothing ever cleared, so reads served
+  a value that was not on disk for the rest of the session, and the per-entry encryption keys had
+  already been deleted before the wipe was attempted, leaving `HARDWARE_ISOLATED` entries, and
+  entries written by pre-2.x releases, that survived on disk permanently undecryptable. The keys are now reclaimed only after the data wipe
+  succeeds, and a failed wipe rolls back the whole batch's in-memory state.
 
 ## [3.1.0] - 2026-08-24
 

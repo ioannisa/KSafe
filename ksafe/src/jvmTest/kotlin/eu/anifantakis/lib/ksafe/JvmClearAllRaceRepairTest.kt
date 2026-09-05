@@ -6,7 +6,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Locks in: a put ordered AFTER an in-flight clearAll (logout-then-write-fresh-state) is readable once committed — the wipe clears the write's optimistic in-memory state, so the owner-gated post-commit repair restores it via atomic putIfAbsent.
+ * Locks in: a put ordered AFTER an in-flight clearAll (logout-then-write-fresh-state) is readable once committed, whatever the wipe left of its optimistic in-memory state.
  */
 class JvmClearAllRaceRepairTest {
 
@@ -35,8 +35,8 @@ class JvmClearAllRaceRepairTest {
         // the pre-wipe step our racing put hooks into.
         ksafe.put("seed", "seed-value", KSafeWriteMode.Encrypted())
 
-        // The racing put: issued while performClearAll runs, BEFORE the cache wipe. Its optimistic
-        // state is set and then wiped, and the op is ordered after the clearAll (it must survive).
+        // The racing put: issued while performClearAll runs, after the cache wipe but before the
+        // generation reset, and ordered after the clearAll — it must commit and stay readable.
         engine.onDeleteKey = {
             ksafe.putDirect("fresh", "fresh-value", mode)
         }
