@@ -28,7 +28,6 @@ jobs:
   # ---------------------------------------------------------------------------
   build:
     name: Build + fast JVM tests
-    if: false  # TEMP: only the JVM suites run until they are fully green
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -80,7 +79,6 @@ jobs:
   # ---------------------------------------------------------------------------
   torture:
     name: Torture — randomized concurrency
-    if: false  # TEMP: only the JVM suites run until they are fully green
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -226,7 +224,6 @@ jobs:
   # ---------------------------------------------------------------------------
   modules:
     name: Compose + Biometrics (js + wasmJs)
-    if: false  # TEMP: only the JVM suites run until they are fully green
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -263,7 +260,6 @@ jobs:
   # ---------------------------------------------------------------------------
   web:
     name: Web browser tests (js + wasmJs)
-    if: false  # TEMP: only the JVM suites run until they are fully green
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -296,7 +292,6 @@ jobs:
   # ---------------------------------------------------------------------------
   keyvault-linux:
     name: Key vault IT — Linux Secret Service (Java ${{ matrix.java }})
-    if: false  # TEMP: only the JVM suites run until they are fully green
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -346,7 +341,6 @@ jobs:
   # ---------------------------------------------------------------------------
   keyvault-windows:
     name: Key vault IT — Windows DPAPI (Java ${{ matrix.java }})
-    if: false  # TEMP: only the JVM suites run until they are fully green
     runs-on: windows-latest
     timeout-minutes: 30
     strategy:
@@ -381,7 +375,6 @@ jobs:
   # ---------------------------------------------------------------------------
   keyvault-macos:
     name: Key vault IT — macOS Keychain (Java ${{ matrix.java }})
-    if: false  # TEMP: only the JVM suites run until they are fully green
     runs-on: macos-latest
     timeout-minutes: 30
     strategy:
@@ -423,7 +416,6 @@ jobs:
   # ---------------------------------------------------------------------------
   apple:
     name: Apple native (macosArm64 + iosSimulatorArm64)
-    if: false  # TEMP: only the JVM suites run until they are fully green
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
@@ -483,7 +475,7 @@ jobs:
   # ---------------------------------------------------------------------------
   android-firebase:
     name: Android instrumented (Firebase Test Lab, real device)
-    if: false  # TEMP: only the JVM suites run until they are fully green
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     continue-on-error: true
