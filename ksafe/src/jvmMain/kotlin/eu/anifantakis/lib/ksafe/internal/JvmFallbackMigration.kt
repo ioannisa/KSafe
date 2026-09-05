@@ -22,14 +22,15 @@ private const val WHOLE_VAULT_READ_PROBE_ALIAS = "__ksafe_migration_readability_
 
 internal const val JSON_FALLBACK_SUFFIX: String = ".ksafe.json"
 
-// The factory spells these too: its clearAll sweep must delete the `.migrated` archive (plaintext
-// key map), and its appNamespace copy-forward must carry both or a drained fallback is re-drained.
+// The factory's clearAll sweep must delete the `.migrated` archive (it holds the plaintext key map),
+// and its appNamespace copy-forward must carry both markers or a drained fallback is re-drained.
 internal const val FALLBACK_MIGRATED_SUFFIX: String = ".migrated"
 internal const val FALLBACK_MIGRATION_PENDING_SUFFIX: String = ".migration-pending"
 
 /**
  * One-time drain of the software JSON fallback into the OS-backed DataStore, archiving the source as
  * `*.migrated`. A transient vault failure applies nothing and blocks archiving, so a later launch retries.
+ * Never throws: a failed drain must not block store construction.
  */
 internal fun migrateJsonFallbackToOsBacked(
     config: KSafeConfig,
@@ -82,8 +83,8 @@ internal fun migrateJsonFallbackToOsBacked(
                     )
                     reEncryptAll(source, sourceEngine, target, targetEngine, keyAlias, masterAlias, storeIdentity, fallbackStoreIdentity, keyNamespace, priorTargetState, unknownRetryBaseline, sourceKeyStoreReadable)
                 }.getOrElse {
-                    // Transient, not escaping: with no marker the next launch reruns as a first
-                    // attempt and rolls newer OS writes back.
+                    // Counted transient rather than thrown: with no pending marker the next launch
+                    // reruns as a first attempt and rolls newer OS writes back.
                     MigrationResult(migrated = 0, permanentlySkipped = 0, transientFailed = 1)
                 }
             } finally {
@@ -185,7 +186,7 @@ private suspend fun reEncryptAll(
         if (priorTargetState != null &&
             nowFingerprint != (priorTargetState[valueKey] ?: ABSENT_FINGERPRINT)
         ) {
-            // Newer user write, so the fallback is superseded. Resolved, not failed.
+            // Newer user write, so the fallback is superseded; not counted as a failure.
             continue
         }
         // With no baseline, any non-absent value could be a newer write: migrate what's missing only.
@@ -242,7 +243,6 @@ private suspend fun reEncryptAll(
         val aad = KSafeCore.aadForEnvelope(
             storeIdentity, userKey, protection, requireUnlocked, generation, version,
         )
-        // The pre-canonicalization identity an older build may have bound this entry under.
         val fallbackAad = if (fallbackStoreIdentity.isNotEmpty() && fallbackStoreIdentity != storeIdentity) {
             KSafeCore.aadForEnvelope(
                 fallbackStoreIdentity, userKey, protection, requireUnlocked, generation, version,
@@ -321,7 +321,7 @@ internal fun archiveOrMark(
     val archived = File(f.parentFile, f.name + FALLBACK_MIGRATED_SUFFIX)
     if (archived.isFile) {
         // A second fallback period was drained and the marker name is taken: drop the redundant
-        // source and bump the marker past it, or the mtime gate keeps re-draining stale fallback.
+        // source and bump the marker past it, or the factory's mtime gate keeps re-draining it.
         if (f.exists()) {
             runCatching { f.delete() }
             runCatching { archived.setLastModified(System.currentTimeMillis()) }

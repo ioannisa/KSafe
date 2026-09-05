@@ -68,8 +68,8 @@ internal actual class KSafeConcurrentSet<T : Any> actual constructor() {
 internal actual fun <T> runBlockingOnPlatform(block: suspend () -> T): T =
     error("runBlockingOnPlatform is not available on the web target; the web cache must be pre-populated synchronously.")
 
-// A dispatcher hop would break the synchronous cold-start getFlow().first() self-heal, so
-// getFlowRaw runs inline on the collector.
+// A hop through the browser event loop would delay the first emission that ksafe-compose's
+// cold-start `getFlow().first()` self-heal waits on, so getFlowRaw runs inline on the collector.
 @PublishedApi
 internal actual val decryptFlowContext: kotlin.coroutines.CoroutineContext =
     kotlin.coroutines.EmptyCoroutineContext

@@ -12,8 +12,8 @@ internal object JvmAesGcm {
     const val TRANSFORMATION: String = "AES/GCM/NoPadding"
 }
 
-// Lock objects rather than intern()ed alias strings: a dynamic key set would grow the string pool
-// without bound.
+// Per-alias monitors for key resolution. Lock objects rather than intern()ed alias strings: a
+// dynamic key set would grow the string pool without bound.
 internal class AliasLocks {
     private val locks = ConcurrentHashMap<String, Any>()
 

@@ -53,10 +53,24 @@ internal fun encodeBase64(bytes: ByteArray): String = KSafeBase64.encode(bytes)
 internal fun decodeBase64(encoded: String): ByteArray = KSafeBase64.decode(encoded)
 
 /**
- * Creates a JVM [KSafe] storing data under [baseDir] (default `~/.eu_anifantakis_ksafe`, 0700).
+ * Creates a JVM [KSafe]: a DataStore file under [baseDir], with the AES key held in the OS secret
+ * store (DPAPI, login Keychain, Secret Service) or in software when none is reachable — see
+ * [KSafe.protectionInfo]. Without `sun.misc.Unsafe` (a trimmed jlink runtime) data goes to a
+ * software-encrypted JSON file instead, with a one-time notice.
  *
  * Key material is scoped to [fileName] (and [KSafeConfig.appNamespace]), not [baseDir]: two
  * instances sharing a [fileName] share one key, so give independent stores distinct names.
+ *
+ * @param fileName Store name (lowercase letters, digits, underscores; starts with a letter); `null` = default store.
+ * @param lazyLoad `true` defers the disk preload (and its startup sweep) to the first access.
+ * @param memoryPolicy How decrypted values are held in RAM.
+ * @param config Key size, unlock policy, serializer, namespace and rotation settings.
+ * @param securityPolicy Runtime checks, run once in this call; a BLOCK match throws here.
+ * @param plaintextCacheTtl Plaintext cache lifetime under [KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE].
+ * @param baseDir Data directory, created 0700 if missing; default `~/.eu_anifantakis_ksafe`. An
+ *   [KSafeConfig.appNamespace] adds a subdirectory under it.
+ * @throws IllegalArgumentException if [fileName] is malformed.
+ * @throws SecurityViolationException if [securityPolicy] blocks.
  */
 fun KSafe(
     fileName: String? = null,
@@ -77,7 +91,8 @@ fun KSafe(
     testEngine = null,
 )
 
-/** Test variant: accepts a pre-built [KSafeEncryption] engine. */
+/** Test variant taking a pre-built [KSafeEncryption]; always uses the DataStore backend and skips
+ *  the JSON-fallback migration. */
 @PublishedApi
 internal fun KSafe(
     fileName: String? = null,
@@ -453,8 +468,7 @@ private fun createJvmBackend(
 private fun deleteResidualFallbackFiles(
     storageDir: File,
     baseFileName: String,
-    // The JSON backend's live files are wiped on the write consumer; deleting them from the
-    // caller thread would race a concurrent write, so that backend excludes them.
+    // Files the JSON backend wipes on the write consumer instead.
     exclude: Set<String> = emptySet(),
 ) {
     runCatching {
@@ -555,17 +569,19 @@ private fun secureDirectory(file: File) {
     }
 }
 
+/** Test seam: the backing DataStore. Fails (bad cast) on the JSON-file fallback backend. */
 @PublishedApi
 internal val KSafe.dataStore: DataStore<Preferences>
     get() = (core.storage as DataStoreStorage).dataStore
 
+/** Test seam: the live encryption engine. */
 @PublishedApi
 internal val KSafe.engine: KSafeEncryption
     get() = core.engine
 
+/** Test seam: refreshes the in-memory cache from [prefs]. Blocks the caller; JVM crypto is synchronous. */
 @PublishedApi
 internal fun KSafe.updateCache(prefs: Preferences) {
     val out = toStoredMap(prefs)
-    // updateCache is suspend only for web's async decrypt; JVM crypto is blocking.
     kotlinx.coroutines.runBlocking { core.updateCache(out) }
 }

@@ -12,11 +12,21 @@ private val secretMutex = Mutex()
 
 /**
  * Returns (and on first use creates) a cryptographically secure random secret of [size] bytes for
- * [key], stored under KSafe's encryption. [key] must be stable for the app's lifetime.
+ * [key], stored encrypted in a reserved `ksafe_secret…` slot. Use it for a value the app must
+ * reproduce exactly later, such as a SQLCipher passphrase. Concurrent calls are serialized, so two
+ * first calls for one [key] yield the same secret.
  *
  * Never silently rotated: if a secret exists but cannot be read back this throws instead of minting
- * a new one, which would orphan everything encrypted under it.
- * @throws IllegalStateException if a secret for [key] exists but cannot be read back.
+ * a new one, which would orphan everything encrypted under it. [KSafe.rotateKeys] keeps the value.
+ *
+ * @param key Logical name; must be stable for the app's lifetime.
+ * @param size Length in bytes; 32 = 256-bit.
+ * @param protection Storage tier; [KSafeEncryptedProtection.HARDWARE_ISOLATED] degrades to the
+ *   platform default where no security chip exists.
+ * @param requireUnlockedDevice Readable only while the device is unlocked; enforced on Android and Apple only.
+ * @throws IllegalArgumentException if [key] is blank or [size] is not positive.
+ * @throws IllegalStateException if a secret for [key] exists but cannot be read back; fix the vault
+ *   or key problem and retry, or `delete` the slot named in the message to discard it.
  */
 suspend fun KSafe.getOrCreateSecret(
     key: String = "main_db",

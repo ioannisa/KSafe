@@ -73,7 +73,7 @@ internal fun KSafeCore.startBackgroundCollector() {
     }
 }
 
-/** Access-policy migration, orphan sweep and legacy key migration; best-effort, runs once. */
+/** One-shot, best-effort: access-policy migration, orphan sweep, legacy key migration, rotation. */
 internal suspend fun KSafeCore.runOneTimeStartupCleanup() {
     if (!startupCleanupDone.compareAndSet(false, true)) return
     swallowingNonCancellation { migrateAccessPolicy(::isUserKeyDirty) }
@@ -134,8 +134,9 @@ internal suspend fun KSafeCore.cleanupOrphanedCiphertext() {
             async {
                 gate.withPermit {
                     try {
-                        // Probe with the entry's own unlock policy — a locked-device probe throws
-                        // transient, not "key not found". Not decryptEntry: its retry repeats it.
+                        // Probe with the entry's own unlock policy: a locked-device probe throws
+                        // transient, not "key not found". Not decryptEntry — its legacy-identity
+                        // retry would only repeat the same missing-key verdict.
                         val route = decryptRoute(c.userKey, c.protection, c.meta)
                         engine.decryptSuspend(
                             route.alias,

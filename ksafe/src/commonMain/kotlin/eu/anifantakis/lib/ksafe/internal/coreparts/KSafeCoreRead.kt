@@ -99,7 +99,8 @@ internal fun KSafeCore.ensureCacheReadyBlocking() {
     try {
         runBlockingOnPlatform {
             if (!cacheInitialized.get()) {
-                // Epoch BEFORE snapshot — the argument-order default would read it after.
+                // Epoch read before the snapshot: the parameter default would read it after, and a
+                // clearAll landing between the two would have its wiped secrets republished.
                 val epoch = clearEpoch.get()
                 updateCache(storage.snapshot(), epoch)
             }

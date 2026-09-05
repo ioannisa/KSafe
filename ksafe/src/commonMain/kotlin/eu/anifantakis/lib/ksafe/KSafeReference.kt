@@ -5,23 +5,27 @@ import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
 
 /**
- * The handle returned by `ksafe(default, key)` and the mode-typed views' `invoke`. Use it as a
- * delegate (`var counter by ksafe(0)`), where the property name becomes the key, or directly
- * through [value], which needs an explicit [key] and throws [IllegalStateException] without one.
+ * The handle returned by `ksafe(default, key)` and the mode views' `invoke`. Use it as a delegate
+ * (`var counter by ksafe(0)`), where the property name becomes the key, or keep it in a `val` and
+ * go through [value], which needs an explicit [key]. Reads come from the cache via
+ * [KSafe.getDirect], blocking once while it loads and returning the default when nothing is
+ * stored; writes go through [KSafe.putDirect] in the mode the handle was created with.
  */
 class KSafeReference<T> @PublishedApi internal constructor(
     private val ksafe: KSafe,
     private val serializer: KSerializer<T>,
     private val defaultValue: T,
-    /** The storage key, or null when the handle is delegate-only. */
+    /** The storage key, or `null` when the handle is delegate-only and the property name is used
+     *  instead. */
     val key: String?,
     private val mode: KSafeWriteMode,
 ) : ReadWriteProperty<Any?, T> {
 
     /**
-     * The persisted value, or the creation-time default. Setting persists fire-and-forget.
-     * A change here recomposes nothing — in composition use `:ksafe-compose` or
-     * `asStateFlow().collectAsState()`.
+     * The stored value, or the creation-time default. Setting persists fire-and-forget. Both
+     * throw [IllegalStateException] when the handle was created without a [key]. A change here
+     * recomposes nothing; in composition use `rememberKSafeState` from `:ksafe-compose` or
+     * collect [KSafe.getStateFlow].
      */
     var value: T
         get() = read(requireKey())

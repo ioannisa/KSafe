@@ -10,7 +10,8 @@ import eu.anifantakis.lib.ksafe.internal.KeySafeMetadataManager
 import eu.anifantakis.lib.ksafe.internal.StoredValue
 import kotlinx.coroutines.CancellationException
 
-/** Whether a write keys under the strict alias VARIANT; [aliasForWrite] must agree with it. */
+/** Whether a write keys under the strict per-entry alias. [aliasForWrite] must branch on the same
+ *  rule, or the record names a key that does not hold the entry. */
 internal fun strictAliasVariantFor(protection: KSafeProtection?, requireUnlockedDevice: Boolean): Boolean =
     protection == KSafeProtection.HARDWARE_ISOLATED && requireUnlockedDevice
 
@@ -67,8 +68,8 @@ internal fun KSafeCore.buildMetaJson(
 }
 
 /**
- * Every per-entry alias [userKey] may still own. Both spellings are enumerated — a tighten that
- * minted the strict variant and then failed to commit leaves a key under it.
+ * Every per-entry alias [userKey] may still own, for a sweep to delete. The strict spelling is
+ * listed too: a tighten that minted it and then failed to commit leaves a key under it.
  */
 internal fun KSafeCore.perEntryAliasesThrough(
     userKey: String,
@@ -81,7 +82,8 @@ internal fun KSafeCore.perEntryAliasesThrough(
     val out = ArrayList<String>(topGeneration * 2)
     for (generation in 1..topGeneration) {
         out += perEntryAlias(userKey, generation)
-        // Rotation keeps a strict entry strict even where a new user write could not mint that spelling.
+        // The prune asks what a new user write can mint; rotation copies the entry's own policy, so
+        // a strict entry stays strict even on web and must be listed from its record.
         if (strictAliasVariantReachable || entryUsedStrictAlias) {
             out += strictPerEntryAlias(userKey, generation)
         }
@@ -125,7 +127,8 @@ internal fun KSafeCore.aadForRawMeta(
 ): ByteArray? =
     aadForEnvelope(storeIdentity, userKey, protection, requireUnlocked, keyGeneration, envelopeVersion)
 
-/** Fallback-identity AAD for an entry; null when there is no distinct identity to retry under. */
+/** Fallback-identity AAD for an entry; null when there is no distinct identity to retry under,
+ *  or the entry predates AAD. */
 internal fun KSafeCore.fallbackAadFor(
     userKey: String, protection: KSafeProtection?, requireUnlocked: Boolean,
     keyGeneration: Int, envelopeVersion: Int,
@@ -179,7 +182,8 @@ internal fun KSafeCore.decryptRoute(
     )
 }
 
-/** The fallback-identity retry policy, shared by the suspending and the blocking read path. */
+/** The fallback-identity retry, shared by the suspending and the blocking read path. Any failure
+ *  retries: a failure unrelated to AAD (missing key) recurs on the retry and propagates from it. */
 internal inline fun decryptUnderRoute(
     route: DecryptRoute,
     ciphertext: ByteArray,

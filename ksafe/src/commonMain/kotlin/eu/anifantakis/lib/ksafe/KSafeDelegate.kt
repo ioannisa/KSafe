@@ -19,7 +19,8 @@ import kotlin.properties.ReadOnlyProperty
 import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
 
-/** Superseded by [KSafeReference]; kept so already-inlined call sites keep linking. */
+/** Superseded by [KSafeReference]; kept for binary compatibility with code compiled against
+ *  older releases. */
 @PublishedApi
 internal class KSafeDelegate<T>(
     private val ksafe: KSafe,
@@ -39,8 +40,15 @@ internal class KSafeDelegate<T>(
 }
 
 /**
- * Property-delegate access to KSafe via [KSafe.getDirect]/[KSafe.putDirect]. The returned
- * [KSafeReference] can also be held in a `val` and read through [KSafeReference.value].
+ * Property delegate over [KSafe.getDirect]/[KSafe.putDirect]: `var token by ksafe("")`. Reads
+ * come from the cache (blocking once while it loads) and return the default when nothing is
+ * stored; writes are fire-and-forget, and a failed persist is rolled back and logged. The
+ * returned [KSafeReference] can also be kept in a `val` and used through [KSafeReference.value],
+ * which needs an explicit [key].
+ *
+ * @param defaultValue Returned while nothing readable is stored under the key.
+ * @param key Storage key; `null` uses the delegated property's name.
+ * @param mode Write mode; defaults to [KSafe.defaultWriteMode] (encrypted, with the instance's unlock policy).
  */
 inline operator fun <reified T> KSafe.invoke(
     defaultValue: T,
@@ -48,6 +56,7 @@ inline operator fun <reified T> KSafe.invoke(
     mode: KSafeWriteMode = core.defaultEncryptedMode()
 ): KSafeReference<T> = KSafeReference(this, serializer<T>(), defaultValue, key, mode)
 
+/** Delegate behind [KSafe.asFlow]; builds its [Flow] once, on first access. */
 @PublishedApi
 internal class KSafeFlowDelegate<T>(
     private val ksafe: KSafe,
@@ -63,6 +72,7 @@ internal class KSafeFlowDelegate<T>(
     }
 }
 
+/** Delegate behind [KSafe.asStateFlow]; builds its [StateFlow] once, on first access. */
 @PublishedApi
 internal class KSafeStateFlowDelegate<T>(
     private val ksafe: KSafe,
@@ -79,23 +89,36 @@ internal class KSafeStateFlowDelegate<T>(
     }
 }
 
-/** Read-only delegate backed by [KSafe.getFlow]; the property name is the key unless [key] is given. */
+/**
+ * Read-only delegate yielding the cold [Flow] of [KSafe.getFlow]: `val token by ksafe.asFlow("")`.
+ * The flow is built once, on first access, and needs no scope. On Web only writes made through
+ * this same instance are observed.
+ *
+ * @param defaultValue Emitted while nothing is stored under the key.
+ * @param key Storage key; `null` uses the delegated property's name.
+ */
 inline fun <reified T> KSafe.asFlow(
     defaultValue: T,
     key: String? = null,
 ): ReadOnlyProperty<Any?, Flow<T>> = KSafeFlowDelegate(this, serializer(), defaultValue, key)
 
-/** A cold [Flow] you can also write to; [set] persists. No sync getter: a cold web cache read returns the default. */
+/**
+ * The cold [Flow] returned by [KSafe.asWritableFlow]: collect it to observe the stored value,
+ * call [set] to persist a new one. There is no synchronous getter, since on Web a read before
+ * the cache has loaded would return the default; collect for the current value.
+ */
 class WritableKSafeFlow<T> @PublishedApi internal constructor(
     private val source: Flow<T>,
     private val writer: (T) -> Unit,
 ) : Flow<T> by source {
-    /** Persists [value]; collectors see it on the next emission. */
+    /** Persists [value] fire-and-forget in the delegate's write mode; collectors see it on the
+     *  next emission. */
     fun set(value: T) {
         writer(value)
     }
 }
 
+/** Delegate behind [KSafe.asWritableFlow]; builds its [WritableKSafeFlow] once, on first access. */
 @PublishedApi
 internal class KSafeWritableFlowDelegate<T>(
     private val ksafe: KSafe,
@@ -121,8 +144,13 @@ internal class KSafeWritableFlowDelegate<T>(
 }
 
 /**
- * Delegate backed by a [WritableKSafeFlow]; property name is the key unless [key] is given, and
- * [mode] defaults to encrypted. On Web, only writes through this same [KSafe] instance are seen.
+ * Delegate yielding a [WritableKSafeFlow]: collect it to observe, [WritableKSafeFlow.set] to
+ * write. Needs no scope, since the flow is cold and writes are fire-and-forget. On Web only
+ * writes made through this same instance are observed.
+ *
+ * @param defaultValue Emitted while nothing is stored under the key.
+ * @param key Storage key; `null` uses the delegated property's name.
+ * @param mode Write mode for [WritableKSafeFlow.set]; defaults to [KSafe.defaultWriteMode].
  */
 inline fun <reified T> KSafe.asWritableFlow(
     defaultValue: T,
@@ -131,7 +159,15 @@ inline fun <reified T> KSafe.asWritableFlow(
 ): ReadOnlyProperty<Any?, WritableKSafeFlow<T>> =
     KSafeWritableFlowDelegate(this, serializer(), defaultValue, key, mode)
 
-/** Delegate backed by [KSafe.getStateFlow]; property name is the key unless [key] is given, initial value read synchronously. */
+/**
+ * Delegate yielding the hot [StateFlow] of [KSafe.getStateFlow], shared eagerly in [scope]. The
+ * initial value is read synchronously via [KSafe.getDirect], so no brief default is emitted
+ * first; that read blocks once if the cache is still loading.
+ *
+ * @param defaultValue Reported while nothing is stored under the key.
+ * @param scope Keeps the flow collecting; cancel it to stop observing.
+ * @param key Storage key; `null` uses the delegated property's name.
+ */
 inline fun <reified T> KSafe.asStateFlow(
     defaultValue: T,
     scope: CoroutineScope,
@@ -262,6 +298,8 @@ internal class KSafeMutableStateFlow<T>(
     }
 }
 
+/** Delegate behind [KSafe.asMutableStateFlow]; builds the flow and starts its observer once, on
+ *  first access. */
 @PublishedApi
 internal class KSafeMutableStateFlowDelegate<T>(
     private val ksafe: KSafe,
@@ -313,8 +351,15 @@ internal class KSafeMutableStateFlowDelegate<T>(
 }
 
 /**
- * Delegate backed by a [MutableStateFlow] that persists every write; property name is the key
- * unless [key] is given, external changes are reflected in [scope], [mode] defaults to encrypted.
+ * Delegate yielding a [MutableStateFlow] that persists every write (fire-and-forget, in [mode])
+ * and reflects changes made elsewhere through an observer running in [scope]. Disk emissions
+ * lagging behind an in-flight write are suppressed, and a write whose persist fails reverts to
+ * the stored value. On Web only writes made through this same instance are observed.
+ *
+ * @param defaultValue Initial value while nothing is stored under the key.
+ * @param scope Runs the observer; cancel it to stop reflecting external changes.
+ * @param key Storage key; `null` uses the delegated property's name.
+ * @param mode Write mode; defaults to [KSafe.defaultWriteMode].
  */
 inline fun <reified T> KSafe.asMutableStateFlow(
     defaultValue: T,
@@ -324,6 +369,8 @@ inline fun <reified T> KSafe.asMutableStateFlow(
 ): ReadOnlyProperty<Any?, MutableStateFlow<T>> =
     KSafeMutableStateFlowDelegate(this, serializer(), defaultValue, key, scope, mode)
 
+/** Deprecated form of [invoke] taking a `Boolean` instead of a [KSafeWriteMode]; `true` maps to
+ *  [KSafe.defaultWriteMode]. */
 @Deprecated(
     "Replace \"encrypted\" parameter with \"mode\" parameter.\n\nGuideline: [Deprecated] -> [New]:\nencrypted=true -> KSafeWriteMode.Encrypted()\nencrypted=false -> KSafeWriteMode.Plain",
     ReplaceWith("invoke(defaultValue, key, if (encrypted) KSafeWriteMode.Encrypted() else KSafeWriteMode.Plain)")

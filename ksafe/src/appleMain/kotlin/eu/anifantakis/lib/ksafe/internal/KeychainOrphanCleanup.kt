@@ -39,7 +39,8 @@ import kotlin.experimental.ExperimentalNativeApi
 import kotlin.native.OsFamily
 import kotlin.native.Platform
 
-/** Only safe where the Keychain is app-private; on macOS it is the shared per-user login keychain. */
+/** Only safe where the Keychain is app-private; on macOS it is the shared login keychain, so a
+ *  sweep there would reap other apps' keys. */
 @OptIn(ExperimentalNativeApi::class)
 internal fun keychainOrphanSweepEnabled(osFamily: OsFamily): Boolean =
     osFamily != OsFamily.MACOSX
@@ -81,8 +82,8 @@ internal suspend fun cleanupOrphanedKeychainEntries(
         }) { dict ->
             val account = dict.objectForKey(kSecAttrAccount as Any) as? String
             if (account != null) {
-                // Never reap a root key with a byte-identical dotted account. Consequence: a named
-                // store's orphans are never reaped and stay as harmless litter.
+                // ownedKeyIds = validKeys: a root key with a byte-identical dotted account is never
+                // reaped, so a named store's orphans are never reaped either and stay as litter.
                 val orphan =
                     keychainOrphanKeyId(account, prefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight, ownedKeyIds = validKeys)
                         ?: keychainOrphanKeyId(account, sePrefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight, ownedKeyIds = validKeys)

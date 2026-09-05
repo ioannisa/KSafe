@@ -27,7 +27,6 @@ internal object KSafeSecretSlots {
 
 private val STORE_FILE_NAME_PATTERN = Regex("[a-z][a-z0-9_]*")
 
-/** Validates a factory `fileName`; null (the default store) is always accepted. */
 internal fun requireValidStoreFileName(fileName: String?) {
     if (fileName != null && !fileName.matches(STORE_FILE_NAME_PATTERN)) {
         throw IllegalArgumentException(
@@ -75,8 +74,8 @@ internal object KSafeAliasGrammar {
         Regex.escape(FINGERPRINT_SEGMENT) + """([0-9a-f]{$FINGERPRINT_HEX_LENGTH})"""
 }
 
-/** The two alias spellings KSafe files keys under. The factory, the fallback migration and the
- *  Keychain sweep must derive byte-identical aliases, so all three come from here. */
+/** The two alias spellings KSafe files keys under. The platform factories and the Keychain sweep
+ *  must derive byte-identical aliases, so both come from here. */
 internal object KSafeAliasFormat {
     /** Dotted spelling for stores that namespace by service identity: `eu.anifantakis.ksafe[.fileName].key`. */
     fun dotted(fileName: String?, key: String): String =

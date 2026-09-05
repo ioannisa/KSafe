@@ -16,9 +16,10 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
 /**
- * Stores [fresh] only while the slot still holds [observed]: writers set their dirty flag first, so
- * a racer fails this CAS. A racer that wrote a value equal to [observed] loses too — undoing after
- * the store would instead lose the commoner racer that wrote the disk value.
+ * Stores [fresh] only while the slot still holds [observed]. Callers read [observed] BEFORE their
+ * dirty check: writers set dirty before touching the maps, so a write that slips past the check
+ * has changed the slot and fails this CAS. A racer that wrote a value equal to [observed] loses;
+ * undoing after the store would instead lose the commoner racer that wrote the disk value.
  */
 private fun <V : Any> KSafeConcurrentMap<V>.storeUnclaimed(key: String, observed: V?, fresh: V): Boolean =
     if (observed == null) putIfAbsent(key, fresh) == null else replaceIf(key, observed, fresh)
@@ -53,7 +54,7 @@ internal suspend fun KSafeCore.updateCacheOnce(snapshot: Map<String, StoredValue
         accept = { userKey -> !isDirtyForUserKey(userKey) }
     ).toMutableMap()
 
-    // encMetaMap is populated BEFORE the decrypt pass — aliasForRead consults it.
+    // encMetaMap is populated BEFORE the entry pass: the strict check and each decrypt read it.
     for ((userKey, rawMeta) in protectionByKey) {
         if (KeySafeMetadataManager.parseProtection(rawMeta) == null) continue
         val observed = encMetaMap[userKey]

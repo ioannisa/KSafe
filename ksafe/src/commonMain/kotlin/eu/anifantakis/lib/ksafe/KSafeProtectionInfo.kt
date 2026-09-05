@@ -3,8 +3,9 @@ package eu.anifantakis.lib.ksafe
 import eu.anifantakis.lib.ksafe.internal.KSafeProtectionNotes
 
 /**
- * The encryption-key custody this [KSafe] instance is actually running with, including any
- * fallback negotiated at construction.
+ * The encryption-key custody a [KSafe] instance is actually running with, including any
+ * fallback negotiated at construction or later. Read it from [KSafe.protectionInfo]; for one
+ * entry's key use [KSafe.getKeyInfo].
  */
 data class KSafeProtectionInfo(
     /**

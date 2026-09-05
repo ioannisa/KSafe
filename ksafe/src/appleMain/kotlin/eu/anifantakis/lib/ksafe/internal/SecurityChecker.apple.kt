@@ -33,7 +33,8 @@ internal actual object SecurityChecker {
     @OptIn(ExperimentalNativeApi::class)
     private val isMacOs: Boolean = Platform.osFamily == OsFamily.MACOSX
 
-    /** An iOS binary on an Apple Silicon Mac: probes match the real macOS filesystem, [isMacOs] is false. */
+    /** An iOS binary on an Apple Silicon Mac: the probes match the real macOS filesystem while [isMacOs]
+     *  is false. `isiOSAppOnMac` only exists from iOS 14, hence the selector guard. */
     @OptIn(ExperimentalForeignApi::class)
     private val isIosAppOnMac: Boolean = try {
         val info = NSProcessInfo.processInfo

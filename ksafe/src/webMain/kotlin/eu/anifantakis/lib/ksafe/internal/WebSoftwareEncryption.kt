@@ -227,6 +227,7 @@ internal class WebSoftwareEncryption(
      *  left exposed for keys never read again. */
     override suspend fun migrateLegacyKeysSuspend() {
         val legacyPrefix = "$storagePrefix$KEY_PREFIX"
+        // Collected first: ensureKey scrubs entries, which shifts localStorage indices mid-scan.
         val aliases = buildList {
             for (i in 0 until localStorageLength()) {
                 val full = localStorageKey(i) ?: continue

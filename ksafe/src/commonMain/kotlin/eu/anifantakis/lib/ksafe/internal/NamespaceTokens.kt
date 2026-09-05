@@ -1,12 +1,13 @@
 package eu.anifantakis.lib.ksafe.internal
 
 /** Character class and length cap an `appNamespace` may keep. Shared with the frozen legacy
- *  spellings, which reproduce shipped on-disk identities — widening one copy strands data. */
+ *  spelling, which must reproduce shipped on-disk identities — widening either strands data. */
 internal val NAMESPACE_SANITIZE_REGEX = Regex("[^A-Za-z0-9._-]")
 internal const val NAMESPACE_TOKEN_MAX_LENGTH: Int = 120
 
 /** FNV-1a 64-bit parameters, shared by [namespaceCollisionDigest] (UTF-8 bytes) and
- *  `KSafeCore.aliasFingerprint` (UTF-16 code units); the two hashes stay separate. */
+ *  `KSafeCore.aliasFingerprint` (UTF-16 code units); both spell on-disk identities, so neither
+ *  may adopt the other's input encoding. */
 internal const val FNV1A_64_OFFSET_BASIS: Long = -0x340d631b7bdddcdbL
 internal const val FNV1A_64_PRIME: Long = 0x100000001b3L
 

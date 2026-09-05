@@ -80,6 +80,7 @@ internal class MacosKeychainKeyVault(
             null, null,
             itemRef,
         )
+        // Best-effort: if the old item survives, put()'s add fails and reports it.
         if (status == ERR_SEC_ITEM_NOT_FOUND || status != ERR_SEC_SUCCESS) return
         val ref = itemRef.value ?: return
         try {

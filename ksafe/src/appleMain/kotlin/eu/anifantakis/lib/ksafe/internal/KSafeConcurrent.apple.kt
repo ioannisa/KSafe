@@ -27,7 +27,8 @@ internal actual class KSafeInitLock actual constructor() {
     }
 }
 
-// AtomicInt, not AtomicReference<Boolean>: boxed Booleans have no stable identity on Kotlin/Native.
+// AtomicInt, not AtomicReference<Boolean>: boxed Booleans have no stable identity on Kotlin/Native,
+// so an identity-based CAS on them can fail.
 @PublishedApi
 internal actual class KSafeAtomicFlag actual constructor(initial: Boolean) {
     private val ref = AtomicInt(if (initial) 1 else 0)

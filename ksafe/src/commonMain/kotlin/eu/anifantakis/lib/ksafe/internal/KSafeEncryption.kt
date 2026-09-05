@@ -36,7 +36,7 @@ internal interface KSafeEncryption {
     /** A graceful no-op when the key doesn't exist. */
     fun deleteKey(identifier: String)
 
-    /** Only meaningful on iOS: Android keys are policy-immutable and JVM has no lock state. */
+    /** Only the Apple engine overrides this: Android keys are policy-immutable and JVM has no lock state. */
     fun updateKeyAccessibility(identifier: String, requireUnlocked: Boolean) { /* no-op by default */ }
 
     /**

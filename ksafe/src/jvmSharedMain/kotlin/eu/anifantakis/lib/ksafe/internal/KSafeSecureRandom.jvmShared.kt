@@ -1,4 +1,5 @@
-// See KSafeConcurrent.jvmShared.kt — same ABI-stability pin for the moved facade.
+// The facade class name is public JVM ABI, so it stays `KSafeSecureRandom_jvmKt` whatever this
+// file is called.
 @file:JvmName("KSafeSecureRandom_jvmKt")
 
 package eu.anifantakis.lib.ksafe.internal

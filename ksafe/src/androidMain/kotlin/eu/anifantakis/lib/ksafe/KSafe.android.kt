@@ -42,6 +42,8 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
+/** Leading segment of every Android Keystore alias KSafe creates, so its keys can be told apart
+ *  from the app's own. */
 const val KEY_ALIAS_PREFIX: String = KSAFE_OS_STORE_IDENTITY
 
 // One DataStore and one engine per file, or sibling DEK caches diverge from the on-disk DEK slot.
@@ -83,12 +85,29 @@ private fun isKeyActuallyStrongBox(alias: String?): Boolean? {
 }
 
 /**
- * Android factory for [KSafe]. [fileName] (lowercase letters / digits / underscores, null for the
- * default) is the key-isolation boundary: aliases are scoped by it alone, so instances differing
- * only in [baseDir] share key material and one's `clearAll()` deletes the key the other needs.
- * [baseDir] overrides the `.preferences_pb` directory — null (recommended) uses the app-private
- * path; a custom dir is not sandbox-isolated, so never point it at external storage. [useStrongBox]
- * is deprecated; use `KSafeProtection.HARDWARE_ISOLATED` per property.
+ * Creates an Android [KSafe]: a DataStore file in the app-private directory (or [baseDir]) with
+ * keys held in the Android Keystore. Returns at once; the file loads in the background unless
+ * [lazyLoad] is set. Instances on the same file share one backend, so keep one per file and call
+ * [KSafe.close] only when re-creating it mid-process.
+ *
+ * @param context Any context; only the application context is retained.
+ * @param fileName Store name (a lowercase letter, then lowercase letters, digits or underscores);
+ *   null for the default store. Also the key-isolation boundary: Keystore aliases are scoped by
+ *   [fileName] alone, so two instances differing only in [baseDir] share key material and one's
+ *   [KSafe.clearAll] deletes the key the other still needs.
+ * @param lazyLoad Skips the background preload; the first read then blocks once to load the file.
+ * @param memoryPolicy How decrypted values are held in RAM; see [KSafeMemoryPolicy].
+ * @param config AES key size, serializer, default unlock policy and key rotation; see [KSafeConfig].
+ * @param securityPolicy Rooted-device, debugger, debug-build and emulator checks, run once here.
+ * @param plaintextCacheTtl Lifetime of the plaintext side cache; only used under
+ *   [KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE].
+ * @param useStrongBox Deprecated: promotes every DEFAULT encrypted write to
+ *   [KSafeEncryptedProtection.HARDWARE_ISOLATED]. Request it per write, or via [KSafeHardwareIsolated].
+ * @param baseDir Directory for the `.preferences_pb` file, created if missing. Null (recommended)
+ *   uses the sandboxed app-private path; a custom directory is not sandbox-isolated, so never point
+ *   it at external storage.
+ * @throws IllegalArgumentException if [fileName] is malformed.
+ * @throws SecurityViolationException if a [securityPolicy] check set to [SecurityAction.BLOCK] fires.
  */
 fun KSafe(
     context: Context,
@@ -113,6 +132,7 @@ fun KSafe(
     testEngine = null,
 )
 
+/** Test variant of [KSafe]: uses [testEngine] in place of the Android Keystore engine. */
 @PublishedApi
 internal fun KSafe(
     context: Context,
@@ -182,7 +202,8 @@ private fun buildAndroidKSafe(
     // dir while the Keystore keys survive, so every rotated entry's AAD would fail after a move.
     val storeIdentity = resolveStoreIdentity(
         canonicalPath = backendKey,
-        // /data/user/0/<pkg> is a symlink to /data/data/<pkg>: a canonical path never prefix-matches the raw dataDir.
+        // /data/user/0/<pkg> is a symlink to /data/data/<pkg>: a canonical path never
+        // prefix-matches the raw dataDir.
         canonicalHome = runCatching { File(rawDataDir).canonicalPath }.getOrDefault(rawDataDir),
         rawPath = datastorePath,
         rawHome = rawDataDir,

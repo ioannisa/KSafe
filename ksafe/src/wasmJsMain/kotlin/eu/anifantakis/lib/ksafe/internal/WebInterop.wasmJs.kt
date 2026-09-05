@@ -20,6 +20,7 @@ private external fun _localStorageLength(): Int
 @JsFun("(index) => { const k = window.localStorage.key(index); return k === null ? null : k; }")
 private external fun _localStorageKey(index: Int): String?
 
+// Kotlin/Wasm marshals Long as BigInt.
 @JsFun("() => { return BigInt(Date.now()); }")
 private external fun _currentTimeMillis(): Long
 

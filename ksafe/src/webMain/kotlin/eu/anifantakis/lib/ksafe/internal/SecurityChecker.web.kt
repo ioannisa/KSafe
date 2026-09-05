@@ -1,6 +1,6 @@
 package eu.anifantakis.lib.ksafe.internal
 
-/** None of these checks apply in a browser. */
+/** A browser exposes no root, debugger or emulator signal, so every check reports clean. */
 internal actual object SecurityChecker {
     actual fun isDeviceRooted(): Boolean = false
     actual fun isDebuggerAttached(): Boolean = false

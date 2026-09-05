@@ -25,7 +25,10 @@ internal object KSafeEngineMessage {
 
     private val DEFINITIVE_MISS = listOf(NO_KEY, KEY_NOT_FOUND, WEB_KEY_MISSING).map { BRAND + it }
 
-    /** Brand-anchored: Wasm re-wraps errors, and an unanchored phrase could match a caller's key. */
+    /**
+     * `contains`, not `startsWith`: Kotlin/Wasm re-wraps JS errors. Anchored on the brand so a
+     * caller's key name quoted in another message can't match a miss phrase.
+     */
     fun isDefinitiveKeyMiss(message: String?): Boolean {
         val msg = message ?: return false
         return DEFINITIVE_MISS.any { msg.contains(it, ignoreCase = true) }

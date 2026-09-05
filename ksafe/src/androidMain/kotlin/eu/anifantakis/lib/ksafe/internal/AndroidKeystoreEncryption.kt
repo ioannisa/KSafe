@@ -50,8 +50,8 @@ internal class AndroidKeystoreEncryption(
 
     private val aliasLocks = AliasLocks()
 
-    /** Bumped before `clearAll` wipes the wrapped-DEK records, or an insert racing the wipe
-     *  re-caches a DEK whose record is gone and later writes are unreadable after relaunch. */
+    /** Purge fence for [dekCache]: an insert whose store read predates a clearAll must not land after
+     *  the cache clear, or it re-caches a DEK whose record is gone and later writes die on relaunch. */
     private val dekCacheEpoch = AtomicLong(0)
 
     private fun cacheDek(alias: String, dek: ByteArray, epochAtRead: Long) =
@@ -84,6 +84,7 @@ internal class AndroidKeystoreEncryption(
     }
 
     override fun onStoreCleared() {
+        // Bump before the clear, or an in-flight insert passes the fence with the old epoch.
         dekCacheEpoch.addAndFetch(1)
         dekCache.clear()
     }
@@ -123,7 +124,6 @@ internal class AndroidKeystoreEncryption(
         runCatching { getExistingDek(identifier, requireUnlockedDevice) }
     }
 
-    /** Test-only: whether a DEK for [alias] is warm in the in-process cache. */
     @PublishedApi
     internal fun isDekCachedForTest(alias: String): Boolean = dekCache[alias] != null
 
@@ -182,6 +182,7 @@ internal class AndroidKeystoreEncryption(
         // would destroy legacy TEE ciphertext encrypted directly under it.
         regenerateDek(alias, deleteKek = false, requireUnlockedDevice = null)
     } catch (e: IllegalArgumentException) {
+        // Malformed wrapped-DEK record (bad Base64, or too short for IV+tag): same as a corrupt DEK.
         regenerateDek(alias, deleteKek = false, requireUnlockedDevice = null)
     } catch (e: IndexOutOfBoundsException) {
         regenerateDek(alias, deleteKek = false, requireUnlockedDevice = null)
@@ -210,7 +211,6 @@ internal class AndroidKeystoreEncryption(
     }
 
     override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray {
-        // Kotlin has no multi-catch, so the clauses below stay separate; their BODY is one thing.
         fun legacyOrRethrow(original: Throwable): ByteArray =
             try {
                 decryptLegacy(identifier, data, requireUnlockedDevice, aad)
@@ -303,7 +303,7 @@ internal class AndroidKeystoreEncryption(
     }
 
     private fun decryptWithDek(alias: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray? = null): ByteArray {
-        val dek = getExistingDek(alias, requireUnlockedDevice) // throws "No encryption key found" if the DEK is absent
+        val dek = getExistingDek(alias, requireUnlockedDevice)
         val cipher = Cipher.getInstance(JvmAesGcm.TRANSFORMATION)
         val spec = GCMParameterSpec(JvmAesGcm.TAG_LENGTH_BITS, data, DEK_HEADER_LEN, JvmAesGcm.IV_LENGTH_BYTES)
         cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(dek, KEY_ALGORITHM), spec)
@@ -400,6 +400,8 @@ internal class AndroidKeystoreEncryption(
                 keyGenerator.init(builder.build())
                 keyGenerator.generateKey()
             } catch (e: StrongBoxUnavailableException) {
+                // Degrades to the TEE instead of failing; the reported tier comes from probing the
+                // key afterwards (KSafe.android's isKeyActuallyStrongBox), not from this request.
                 builder.setIsStrongBoxBacked(false)
                 keyGenerator.init(builder.build())
                 keyGenerator.generateKey()

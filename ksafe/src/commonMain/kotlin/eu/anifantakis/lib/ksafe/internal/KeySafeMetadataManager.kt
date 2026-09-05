@@ -7,16 +7,19 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
-/** The whole vocabulary of pre-JSON (≤ 1.x) metadata; every parser short-circuits on this same set. */
+/**
+ * The whole vocabulary of pre-JSON (≤ 1.x) metadata: a bare protection literal, no fields.
+ * [parseProtection] spells the same three in its `when`; the two must stay in step.
+ */
 private val LEGACY_PROTECTION_LITERALS = setOf("NONE", "DEFAULT", "HARDWARE_ISOLATED")
 
-/**
- * A fast path, not a correctness guard: every field parser's null branch answers the same.
- * [parseProtection] is the exception — it maps these literals instead of discarding them.
- */
 private fun isLegacyProtectionLiteral(raw: String): Boolean = raw in LEGACY_PROTECTION_LITERALS
 
-/** One entry's metadata parsed once, or null when it is absent, a legacy literal, or not a JSON object. */
+/**
+ * One entry's metadata parsed once, or null when it is absent, a legacy literal, or not a JSON
+ * object. Every field reader's null default is right for a legacy literal; only [parseProtection]
+ * and [extractProtectionLiteral] map the literal itself, and both check for it before parsing.
+ */
 internal fun parseMetaObject(raw: String?): JsonObject? {
     if (raw == null) return null
     if (isLegacyProtectionLiteral(raw)) return null
@@ -71,6 +74,7 @@ internal object KeySafeMetadataManager {
     internal const val ENVELOPE_VERSION_V2 = 2
     @PublishedApi
     internal const val ENVELOPE_VERSION_V3 = 3
+    // Not the highest version: the default for plaintext and generation-1 writes, see envelopeVersionForWrite.
     @PublishedApi
     internal const val ENVELOPE_VERSION_LATEST = ENVELOPE_VERSION_V2
 
@@ -137,8 +141,8 @@ internal object KeySafeMetadataManager {
     private val MASTERS = "(${KSafeReservedKeys.MASTER}|${KSafeReservedKeys.MASTER_LOCKED})"
 
     /**
-     * Master sentinels (± generation suffix) whose per-entry alias is the store's master alias.
-     * Matched exact, not by prefix — the rotation sweep's alias math relies on that.
+     * Master sentinels (± generation suffix), whose per-entry alias would be the store's master
+     * alias. Exact match, not prefix.
      */
     private val RESERVED_USER_KEY = Regex("$MASTERS(${KSafeAliasGrammar.GENERATION_PATTERN})?")
 
@@ -338,8 +342,8 @@ internal object KeySafeMetadataManager {
     @PublishedApi
     internal fun isCanonicalValueEncrypted(rawMeta: String?): Boolean {
         if (parseProtection(rawMeta) != null) return true
-        if (rawMeta == null) return true                // absent → fail closed to decrypt
-        if (rawMeta == "NONE") return false             // legacy literal, explicitly plaintext
+        if (rawMeta == null) return true
+        if (rawMeta == "NONE") return false
         return metaField(parseMetaObject(rawMeta), "p") != "NONE"
     }
 
@@ -386,7 +390,10 @@ internal object KeySafeMetadataManager {
         }
     }
 
-    /** A malformed record also lacks a readable `r`, so it must fail closed rather than pass as migration evidence. */
+    /**
+     * Exactly the 3.0 record shape: `g` and `ts` only, both valid. A malformed record also lacks a
+     * readable `r`, so it must fail closed rather than pass as migration evidence.
+     */
     internal fun isLegacy30KeyGenerationState(raw: String?): Boolean {
         val meta = parseMetaObject(raw) ?: return false
         if (meta.keys != setOf("g", "ts")) return false
@@ -396,7 +403,6 @@ internal object KeySafeMetadataManager {
         return true
     }
 
-    /** True only for the one lifecycle value this release owns as an unfinished pass. */
     internal fun parseKeyRotationInProgress(raw: String?): Boolean =
         parseKeyRotationLifecycle(raw) == 1
 

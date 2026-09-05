@@ -4,7 +4,8 @@ import eu.anifantakis.lib.ksafe.KSafeProtection
 
 /**
  * User key → recorded protection off a raw snapshot; canonical `__ksafe_meta_*__` records win over
- * legacy ones. Shared so the core and Apple sweeps cannot disagree on what a live entry is.
+ * legacy `__ksafe_prot_*__` ones. Shared by the core and Apple orphan sweeps: a divergent copy
+ * makes one reap what the other keeps.
  */
 internal fun protectionByKeyFromSnapshot(
     snapshot: Map<String, StoredValue>,

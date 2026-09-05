@@ -10,11 +10,12 @@ import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.usePinned
 
-/** Apple AES-GCM via the CryptoKit bridge. Persisted framing: nonce(12) || ciphertext || tag(16). */
+/** AES-GCM via the CryptoKit bridge. Frozen on-disk framing: nonce(12) || ciphertext || tag(16). */
 internal object AppleAesGcm {
     internal const val NONCE_SIZE_BYTES: Int = 12
     internal const val TAG_SIZE_BYTES: Int = 16
 
+    // Mirrors the codes in KSafeCryptoKitBridge.swift; any other value is a generic failure.
     private const val STATUS_SUCCESS: Int = 0
     private const val STATUS_INVALID_ARGUMENT: Int = 1
     private const val STATUS_AUTHENTICATION_FAILED: Int = 2
@@ -140,6 +141,7 @@ internal object AppleAesGcm {
     private inline fun <T> ByteArray?.withUBytePointer(
         block: (CPointer<UByteVar>?) -> T,
     ): T {
+        // An empty array has no element to pin; the bridge takes a null pointer with count 0.
         if (this == null || isEmpty()) return block(null)
         return usePinned { pinned -> block(pinned.addressOf(0).reinterpret()) }
     }

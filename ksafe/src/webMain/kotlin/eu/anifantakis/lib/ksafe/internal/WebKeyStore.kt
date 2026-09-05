@@ -1,7 +1,7 @@
 package eu.anifantakis.lib.ksafe.internal
 
 // Non-extractable AES-GCM key storage for the web (WebCrypto + IndexedDB): raw key material never
-// reaches JS. Framing is a 12-byte random IV before `ciphertext‖tag` — frozen, older data uses it.
+// reaches JS. Framing is a 12-byte random IV before `ciphertext‖tag` — frozen, shipped data uses it.
 
 /**
  * Ensures key state for [idbName], migrating [legacyRawKeyB64] if given. [mintIfAbsent] false

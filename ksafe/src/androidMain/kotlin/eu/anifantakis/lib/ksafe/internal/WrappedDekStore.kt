@@ -23,7 +23,8 @@ internal interface WrappedDekStore {
 
 /**
  * [WrappedDekStore] over the safe's own DataStore. The engine's crypto is synchronous, so
- * [runBlocking] bridges the suspend storage API; DataStore's own scope keeps that deadlock-free.
+ * [runBlocking] bridges the suspend storage API; DataStore's actor runs on its own IO scope,
+ * so blocking the caller cannot deadlock it.
  */
 internal class DataStoreDekStore(
     private val storage: KSafePlatformStorage,

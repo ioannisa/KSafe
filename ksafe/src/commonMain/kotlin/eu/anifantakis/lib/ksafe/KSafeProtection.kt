@@ -1,8 +1,10 @@
 package eu.anifantakis.lib.ksafe
 
-/** Read-time protection tier reported by KSafe metadata APIs; for writes use [KSafeWriteMode]. */
+/** Tier an encrypted entry was written under, as reported by [KSafeKeyInfo.protection]; choose
+ *  it at write time through [KSafeWriteMode.Encrypted]. */
 enum class KSafeProtection {
-    /** Platform-default AES-GCM; see [KSafeConfig.aesKeySize]. */
+    /** The platform's default key store: Android Keystore, Apple Keychain, OS vault or
+     *  browser-origin key on JVM and web. AES-GCM with [KSafeConfig.aesKeySize]. */
     DEFAULT,
 
     /**

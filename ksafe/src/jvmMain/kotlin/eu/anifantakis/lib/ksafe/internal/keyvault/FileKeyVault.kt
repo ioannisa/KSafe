@@ -100,12 +100,13 @@ internal class FileKeyVault(
                 PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")),
             ).toFile()
         } catch (_: UnsupportedOperationException) {
-            // Non-POSIX filesystem (Windows): no perm-on-create; the 0700 parent dir protects it.
+            // Non-POSIX filesystem (Windows): no perms on create; the file inherits the parent directory's ACL.
             File.createTempFile(file.name, KEY_VAULT_TEMP_SUFFIX, parent)
         }
     }
 
     private companion object {
+        // Best-effort: a directory cannot be opened as a channel on Windows.
         fun fsyncDirectory(dir: File) {
             runCatching {
                 java.nio.channels.FileChannel.open(dir.toPath(), java.nio.file.StandardOpenOption.READ)

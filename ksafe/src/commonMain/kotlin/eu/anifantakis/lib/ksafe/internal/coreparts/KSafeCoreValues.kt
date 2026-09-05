@@ -19,15 +19,16 @@ internal fun KSafeCore.convertStoredValue(storedValue: Any?, defaultValue: Any?,
     if (isNullSentinel(storedValue)) return nullOrDefault(defaultValue, serializer)
 
     // Dispatch on the serializer's kind, not defaultValue's class: survives a null default and is
-    // JS-safe (`0f is Int` on Kotlin/JS). Built-ins only; a custom primitive serializer stays JSON.
+    // JS-safe (`0f is Int` on Kotlin/JS). Built-ins only: a custom serializer with a primitive
+    // descriptor is written as JSON and must decode in the else branch, or the reified cast throws.
     return when (builtInPrimitiveKindOrNull(serializer)) {
         kotlinx.serialization.descriptors.PrimitiveKind.BOOLEAN -> when (storedValue) {
             is Boolean -> storedValue
             is String -> storedValue.toBooleanStrictOrNull() ?: defaultValue
             else -> defaultValue
         }
-        // Numeric kinds coerce across Int/Long/Float/Double so a key's declared type can change between
-        // app versions; out-of-range or fractional reads fall back to the default rather than truncate.
+        // Numeric kinds coerce across Int/Long/Float/Double so a key's declared type can change
+        // between app versions; out-of-range or fractional reads yield the default, never truncate.
         kotlinx.serialization.descriptors.PrimitiveKind.INT -> when (storedValue) {
             is Int -> storedValue
             is Long -> if (storedValue in Int.MIN_VALUE..Int.MAX_VALUE) storedValue.toInt() else defaultValue
@@ -60,9 +61,9 @@ internal fun KSafeCore.convertStoredValue(storedValue: Any?, defaultValue: Any?,
         }
         kotlinx.serialization.descriptors.PrimitiveKind.DOUBLE -> when (storedValue) {
             is Double -> storedValue
-            is Float -> storedValue.toDouble()   // widening — lossless
-            is Int -> storedValue.toDouble()     // exact — Int fits Double's 53-bit mantissa
-            is Long -> storedValue.toDouble()    // representable; magnitudes > 2^53 lose precision (expected)
+            is Float -> storedValue.toDouble()
+            is Int -> storedValue.toDouble()
+            is Long -> storedValue.toDouble()
             is String -> storedValue.toDoubleOrNull() ?: defaultValue
             else -> defaultValue
         }

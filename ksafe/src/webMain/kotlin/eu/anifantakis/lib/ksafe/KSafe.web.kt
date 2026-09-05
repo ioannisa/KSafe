@@ -23,11 +23,22 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Web (wasmJs + js) factory for [KSafe].
+ * Web (wasmJs + js) factory for [KSafe]: values live in the origin's `localStorage`, encrypted
+ * with a non-extractable WebCrypto key kept in IndexedDB.
  *
- * WebCrypto is async-only, so `memoryPolicy` and `lazyLoad` are ignored: values are decrypted in a
- * background preload and cached as plaintext. A `getDirect` racing that preload returns
- * `defaultValue` — call [awaitCacheReady] first for a deterministic first read.
+ * WebCrypto is async-only, so `lazyLoad`, `memoryPolicy` and `plaintextCacheTtl` are ignored:
+ * every value is decrypted in a background preload and cached as plaintext. A `getDirect` racing
+ * that preload returns `defaultValue` — call [awaitCacheReady] first for a deterministic first
+ * read. The browser has no device lock, so `requireUnlockedDevice` has no effect. Without
+ * `crypto.subtle` (a non-secure context) encrypted reads and writes fail; [KSafe.protectionInfo]
+ * reports which case applies.
+ *
+ * @param fileName Store name — lowercase letters, digits and underscores, starting with a letter;
+ *   null selects the default store.
+ * @param config Encryption settings; `appNamespace` separates same-origin apps sharing a name.
+ * @param securityPolicy Environment checks run here; a `BLOCK` action throws
+ *   [SecurityViolationException].
+ * @throws IllegalArgumentException for an invalid [fileName].
  */
 @Suppress("UNUSED_PARAMETER")
 fun KSafe(
@@ -45,6 +56,7 @@ fun KSafe(
     testEngine = null,
 )
 
+/** Test entry: the public factory with an injected encryption engine. */
 @Suppress("UNUSED_PARAMETER")
 @PublishedApi
 internal fun KSafe(
@@ -63,7 +75,7 @@ internal fun KSafe(
     testEngine = testEngine,
 )
 
-/** Without `crypto.subtle` the non-extractable IndexedDB key cannot exist and every decrypt fails. */
+/** No `crypto.subtle` means no non-extractable IndexedDB key, so every decrypt fails. */
 private fun webKeyTier(protection: KSafeProtection?): KSafeKeyTier = when {
     protection == null -> KSafeKeyTier.SOFTWARE
     !webCryptoSubtleAvailable() -> KSafeKeyTier.SOFTWARE
@@ -89,7 +101,7 @@ private fun buildWebKSafe(
     val nsSegment: String = if (appNs != null) "$appNs@" else ""
     val storagePrefix: String = if (fileName != null) "ksafe.$nsSegment${fileName}:" else "ksafe.$nsSegment:"
 
-    // The older lossy segment. Runs FIRST: it was the ACTIVE prefix until the upgrade, so it holds
+    // The older lossy segment. Runs first: it was the active prefix until the upgrade, so it holds
     // the newest data. Source retained — a colliding sibling namespace may still need it.
     val legacyLossyNs: String? = legacyLossyWebNamespaceToken(config.appNamespace)?.takeIf { it != appNs }
     val lossyMigratedMarker = "ksafe.__nslossymigrated__.$nsSegment${fileName ?: ""}"
@@ -105,7 +117,7 @@ private fun buildWebKSafe(
     // KSafe() and KSafe("default") share `ksafe_default_`, so neither may delete it.
     val legacyPrefixShared: Boolean = webSharesDefaultLegacyPrefix(fileName)
 
-    // The flat layout has no namespace segment, so it is a shared source: MOVE it only when this
+    // The flat layout has no namespace segment, so it is a shared source: move it only when this
     // store owns it alone. Marker-gated either way, or a re-run copies a stranded entry back into
     // a store the user has since wiped; the marker sits outside storagePrefix, beyond clearAll().
     val legacyMigratedMarker = "ksafe.__legacymigrated__.$nsSegment${fileName ?: ""}"
@@ -189,6 +201,9 @@ private fun buildWebKSafe(
     )
 }
 
-/** Suspends until the cache is loaded from localStorage, decrypting every encrypted value. Call
- *  before `getDirect` or a Compose delegate for a deterministic first read. */
+/**
+ * Suspends until the cache is loaded from `localStorage` and every encrypted value is decrypted.
+ * Call at startup, before `getDirect` or a Compose delegate, for a deterministic first read.
+ * Web only: the other targets preload synchronously and need no such call.
+ */
 suspend fun KSafe.awaitCacheReady() = core.ensureCacheReadySuspend()

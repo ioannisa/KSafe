@@ -8,77 +8,88 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlin.properties.ReadOnlyProperty
 
 /**
- * A view sharing [ksafe]'s store and cache, whose every write is [KSafeWriteMode.Plain].
- * Write-side only: reads carry no mode and auto-detect each entry's protection. Store-wide
- * operations (rotateKeys, clearAll, close, protectionInfo, …) live on [ksafe].
+ * A view over [ksafe] whose every write is [KSafeWriteMode.Plain], so a call site has no `mode`
+ * argument to get wrong. Inject it where a component should only store non-secret preferences.
+ * Views share the store and cache: a value written here is immediately visible through [ksafe]
+ * and every other view.
+ *
+ * Write-side only: reads carry no mode and auto-detect each entry's protection, so [get] also
+ * returns values another handle wrote encrypted. Store-wide operations ([KSafe.rotateKeys],
+ * [KSafe.clearAll], [KSafe.close], [KSafe.protectionInfo], …) live on [ksafe].
+ *
+ * @property ksafe The underlying instance; store-wide operations go through it.
  */
 @Stable
 class KSafePlain(val ksafe: KSafe) {
 
-    /** Always [KSafeWriteMode.Plain]. */
+    /** The mode every write through this view uses: always [KSafeWriteMode.Plain]. */
     val mode: KSafeWriteMode get() = KSafeWriteMode.Plain
 
-    /** Suspend write in this view's [mode]. See [KSafe.put]. */
+    /** Persists [value] in this view's [mode], suspending until committed. See [KSafe.put]. */
     suspend inline fun <reified T> put(key: String, value: T) =
         ksafe.put(key, value, KSafeWriteMode.Plain)
 
-    /** Fire-and-forget write in this view's [mode]. See [KSafe.putDirect]. */
+    /** Fire-and-forget write in this view's [mode], with an optimistic cache update. See [KSafe.putDirect]. */
     inline fun <reified T> putDirect(key: String, value: T) =
         ksafe.putDirect(key, value, KSafeWriteMode.Plain)
 
-    /** Fire-and-forget write with a failure callback. See [KSafe.putDirect]. */
+    /** [putDirect] plus [onWriteFailed], called once if the background persist fails. See [KSafe.putDirect]. */
     inline fun <reified T> putDirect(key: String, value: T, noinline onWriteFailed: (Throwable) -> Unit) =
         ksafe.putDirect(key, value, KSafeWriteMode.Plain, onWriteFailed)
 
-    /** Suspend read; protection is auto-detected. See [KSafe.get]. */
+    /** Suspending read; the entry's protection is auto-detected, whichever handle wrote it.
+     *  See [KSafe.get]. */
     suspend inline fun <reified T> get(key: String, defaultValue: T): T =
         ksafe.get(key, defaultValue)
 
-    /** Cache read; protection is auto-detected. See [KSafe.getDirect]. */
+    /** Cache read, blocking once while the cache loads; protection is auto-detected. See [KSafe.getDirect]. */
     inline fun <reified T> getDirect(key: String, defaultValue: T): T =
         ksafe.getDirect(key, defaultValue)
 
-    /** Cold observable read. See [KSafe.getFlow]. */
+    /** Cold [Flow] of the value and its updates. See [KSafe.getFlow]. */
     inline fun <reified T> getFlow(key: String, defaultValue: T): Flow<T> =
         ksafe.getFlow(key, defaultValue)
 
-    /** Hot observable read. See [KSafe.getStateFlow]. */
+    /** Hot [StateFlow] shared eagerly in [scope]. See [KSafe.getStateFlow]. */
     inline fun <reified T> getStateFlow(key: String, defaultValue: T, scope: CoroutineScope): StateFlow<T> =
         ksafe.getStateFlow(key, defaultValue, scope)
 
-    /** Removes the value and its key material. See [KSafe.delete]. */
+    /** Removes the value and its key material, suspending until done. See [KSafe.delete]. */
     suspend fun delete(key: String) = ksafe.delete(key)
 
-    /** Fire-and-forget removal. See [KSafe.deleteDirect]. */
+    /** Fire-and-forget removal; the cache updates now. See [KSafe.deleteDirect]. */
     fun deleteDirect(key: String) = ksafe.deleteDirect(key)
 
-    /** Delegate, or a direct handle via [KSafeReference.value]; [key] defaults to the property name. */
+    /** Property delegate, or a handle used via [KSafeReference.value] when [key] is given; writes
+     *  use this view's [mode]. See [KSafe.invoke]. */
     inline operator fun <reified T> invoke(
         defaultValue: T,
         key: String? = null,
     ): KSafeReference<T> = ksafe.invoke(defaultValue, key, KSafeWriteMode.Plain)
 
-    /** Read-only cold-Flow delegate. See [KSafe.asFlow]. */
+    /** Read-only delegate yielding a cold [Flow]. See [KSafe.asFlow]. */
     inline fun <reified T> asFlow(
         defaultValue: T,
         key: String? = null,
     ): ReadOnlyProperty<Any?, Flow<T>> = ksafe.asFlow(defaultValue, key)
 
-    /** Writable cold-Flow delegate; `set` writes use this view's [mode]. See [KSafe.asWritableFlow]. */
+    /** Delegate yielding a [WritableKSafeFlow]; [WritableKSafeFlow.set] writes in this view's [mode].
+     *  See [KSafe.asWritableFlow]. */
     inline fun <reified T> asWritableFlow(
         defaultValue: T,
         key: String? = null,
     ): ReadOnlyProperty<Any?, WritableKSafeFlow<T>> =
         ksafe.asWritableFlow(defaultValue, key, KSafeWriteMode.Plain)
 
-    /** Read-only StateFlow delegate. See [KSafe.asStateFlow]. */
+    /** Read-only delegate yielding a hot [StateFlow] shared in [scope]. See [KSafe.asStateFlow]. */
     inline fun <reified T> asStateFlow(
         defaultValue: T,
         scope: CoroutineScope,
         key: String? = null,
     ): ReadOnlyProperty<Any?, StateFlow<T>> = ksafe.asStateFlow(defaultValue, scope, key)
 
-    /** MutableStateFlow delegate; writes use this view's [mode]. See [KSafe.asMutableStateFlow]. */
+    /** Delegate yielding a persisting [MutableStateFlow]; writes use this view's [mode].
+     *  See [KSafe.asMutableStateFlow]. */
     inline fun <reified T> asMutableStateFlow(
         defaultValue: T,
         scope: CoroutineScope,
@@ -89,8 +100,13 @@ class KSafePlain(val ksafe: KSafe) {
 
 /**
  * Like [KSafePlain], but every write is [KSafeWriteMode.Encrypted] at the
- * [KSafeEncryptedProtection.DEFAULT] tier. [requireUnlockedDevice] defaults to the
- * instance's own policy, so this view matches a modeless `ksafe.put`.
+ * [KSafeEncryptedProtection.DEFAULT] tier. Inject it where a component stores secrets that
+ * need no hardware isolation.
+ *
+ * @property ksafe The underlying instance; store-wide operations go through it.
+ * @param requireUnlockedDevice Unlock policy for every write; defaults to [ksafe]'s own
+ *   ([KSafeConfig.requireUnlockedDevice]), so this view writes exactly like a modeless `ksafe.put`.
+ *   See [KSafeWriteMode.Encrypted.requireUnlockedDevice] for the platform caveats.
  */
 @Stable
 class KSafeEncrypted(
@@ -99,71 +115,75 @@ class KSafeEncrypted(
         (ksafe.defaultWriteMode as? KSafeWriteMode.Encrypted)?.requireUnlockedDevice ?: false,
 ) {
 
-    /** Always `Encrypted(DEFAULT, requireUnlockedDevice)`. */
+    /** The mode every write through this view uses: `Encrypted(DEFAULT, requireUnlockedDevice)`. */
     val mode: KSafeWriteMode = KSafeWriteMode.Encrypted(
         protection = KSafeEncryptedProtection.DEFAULT,
         requireUnlockedDevice = requireUnlockedDevice,
     )
 
-    /** Suspend write in this view's [mode]. See [KSafe.put]. */
+    /** Persists [value] in this view's [mode], suspending until committed. See [KSafe.put]. */
     suspend inline fun <reified T> put(key: String, value: T) = ksafe.put(key, value, mode)
 
-    /** Fire-and-forget write in this view's [mode]. See [KSafe.putDirect]. */
+    /** Fire-and-forget write in this view's [mode], with an optimistic cache update. See [KSafe.putDirect]. */
     inline fun <reified T> putDirect(key: String, value: T) = ksafe.putDirect(key, value, mode)
 
-    /** Fire-and-forget write with a failure callback. See [KSafe.putDirect]. */
+    /** [putDirect] plus [onWriteFailed], called once if the background persist fails. See [KSafe.putDirect]. */
     inline fun <reified T> putDirect(key: String, value: T, noinline onWriteFailed: (Throwable) -> Unit) =
         ksafe.putDirect(key, value, mode, onWriteFailed)
 
-    /** Suspend read; protection is auto-detected. See [KSafe.get]. */
+    /** Suspending read; the entry's protection is auto-detected, whichever handle wrote it.
+     *  See [KSafe.get]. */
     suspend inline fun <reified T> get(key: String, defaultValue: T): T =
         ksafe.get(key, defaultValue)
 
-    /** Cache read; protection is auto-detected. See [KSafe.getDirect]. */
+    /** Cache read, blocking once while the cache loads; protection is auto-detected. See [KSafe.getDirect]. */
     inline fun <reified T> getDirect(key: String, defaultValue: T): T =
         ksafe.getDirect(key, defaultValue)
 
-    /** Cold observable read. See [KSafe.getFlow]. */
+    /** Cold [Flow] of the value and its updates. See [KSafe.getFlow]. */
     inline fun <reified T> getFlow(key: String, defaultValue: T): Flow<T> =
         ksafe.getFlow(key, defaultValue)
 
-    /** Hot observable read. See [KSafe.getStateFlow]. */
+    /** Hot [StateFlow] shared eagerly in [scope]. See [KSafe.getStateFlow]. */
     inline fun <reified T> getStateFlow(key: String, defaultValue: T, scope: CoroutineScope): StateFlow<T> =
         ksafe.getStateFlow(key, defaultValue, scope)
 
-    /** Removes the value and its key material. See [KSafe.delete]. */
+    /** Removes the value and its key material, suspending until done. See [KSafe.delete]. */
     suspend fun delete(key: String) = ksafe.delete(key)
 
-    /** Fire-and-forget removal. See [KSafe.deleteDirect]. */
+    /** Fire-and-forget removal; the cache updates now. See [KSafe.deleteDirect]. */
     fun deleteDirect(key: String) = ksafe.deleteDirect(key)
 
-    /** Delegate, or a direct handle via [KSafeReference.value]; [key] defaults to the property name. */
+    /** Property delegate, or a handle used via [KSafeReference.value] when [key] is given; writes
+     *  use this view's [mode]. See [KSafe.invoke]. */
     inline operator fun <reified T> invoke(
         defaultValue: T,
         key: String? = null,
     ): KSafeReference<T> = ksafe.invoke(defaultValue, key, mode)
 
-    /** Read-only cold-Flow delegate. See [KSafe.asFlow]. */
+    /** Read-only delegate yielding a cold [Flow]. See [KSafe.asFlow]. */
     inline fun <reified T> asFlow(
         defaultValue: T,
         key: String? = null,
     ): ReadOnlyProperty<Any?, Flow<T>> = ksafe.asFlow(defaultValue, key)
 
-    /** Writable cold-Flow delegate; `set` writes use this view's [mode]. See [KSafe.asWritableFlow]. */
+    /** Delegate yielding a [WritableKSafeFlow]; [WritableKSafeFlow.set] writes in this view's [mode].
+     *  See [KSafe.asWritableFlow]. */
     inline fun <reified T> asWritableFlow(
         defaultValue: T,
         key: String? = null,
     ): ReadOnlyProperty<Any?, WritableKSafeFlow<T>> =
         ksafe.asWritableFlow(defaultValue, key, mode)
 
-    /** Read-only StateFlow delegate. See [KSafe.asStateFlow]. */
+    /** Read-only delegate yielding a hot [StateFlow] shared in [scope]. See [KSafe.asStateFlow]. */
     inline fun <reified T> asStateFlow(
         defaultValue: T,
         scope: CoroutineScope,
         key: String? = null,
     ): ReadOnlyProperty<Any?, StateFlow<T>> = ksafe.asStateFlow(defaultValue, scope, key)
 
-    /** MutableStateFlow delegate; writes use this view's [mode]. See [KSafe.asMutableStateFlow]. */
+    /** Delegate yielding a persisting [MutableStateFlow]; writes use this view's [mode].
+     *  See [KSafe.asMutableStateFlow]. */
     inline fun <reified T> asMutableStateFlow(
         defaultValue: T,
         scope: CoroutineScope,
@@ -175,8 +195,13 @@ class KSafeEncrypted(
 /**
  * Like [KSafePlain], but every write requests [KSafeEncryptedProtection.HARDWARE_ISOLATED]
  * (StrongBox / Secure Enclave). A request, not a guarantee: without that hardware KSafe
- * degrades to the next-best custody and reports it via [KSafe.protectionInfo]. Slower than
+ * falls back to the next-best custody and reports it via [KSafe.protectionInfo]. Slower than
  * the DEFAULT tier, so reserve it for master passphrases and identity keys.
+ *
+ * @property ksafe The underlying instance; store-wide operations go through it.
+ * @param requireUnlockedDevice Unlock policy for every write; defaults to [ksafe]'s own
+ *   ([KSafeConfig.requireUnlockedDevice]). See [KSafeWriteMode.Encrypted.requireUnlockedDevice]
+ *   for the platform caveats.
  */
 @Stable
 class KSafeHardwareIsolated(
@@ -185,71 +210,75 @@ class KSafeHardwareIsolated(
         (ksafe.defaultWriteMode as? KSafeWriteMode.Encrypted)?.requireUnlockedDevice ?: false,
 ) {
 
-    /** Always `Encrypted(HARDWARE_ISOLATED, requireUnlockedDevice)`. */
+    /** The mode every write through this view uses: `Encrypted(HARDWARE_ISOLATED, requireUnlockedDevice)`. */
     val mode: KSafeWriteMode = KSafeWriteMode.Encrypted(
         protection = KSafeEncryptedProtection.HARDWARE_ISOLATED,
         requireUnlockedDevice = requireUnlockedDevice,
     )
 
-    /** Suspend write in this view's [mode]. See [KSafe.put]. */
+    /** Persists [value] in this view's [mode], suspending until committed. See [KSafe.put]. */
     suspend inline fun <reified T> put(key: String, value: T) = ksafe.put(key, value, mode)
 
-    /** Fire-and-forget write in this view's [mode]. See [KSafe.putDirect]. */
+    /** Fire-and-forget write in this view's [mode], with an optimistic cache update. See [KSafe.putDirect]. */
     inline fun <reified T> putDirect(key: String, value: T) = ksafe.putDirect(key, value, mode)
 
-    /** Fire-and-forget write with a failure callback. See [KSafe.putDirect]. */
+    /** [putDirect] plus [onWriteFailed], called once if the background persist fails. See [KSafe.putDirect]. */
     inline fun <reified T> putDirect(key: String, value: T, noinline onWriteFailed: (Throwable) -> Unit) =
         ksafe.putDirect(key, value, mode, onWriteFailed)
 
-    /** Suspend read; protection is auto-detected. See [KSafe.get]. */
+    /** Suspending read; the entry's protection is auto-detected, whichever handle wrote it.
+     *  See [KSafe.get]. */
     suspend inline fun <reified T> get(key: String, defaultValue: T): T =
         ksafe.get(key, defaultValue)
 
-    /** Cache read; protection is auto-detected. See [KSafe.getDirect]. */
+    /** Cache read, blocking once while the cache loads; protection is auto-detected. See [KSafe.getDirect]. */
     inline fun <reified T> getDirect(key: String, defaultValue: T): T =
         ksafe.getDirect(key, defaultValue)
 
-    /** Cold observable read. See [KSafe.getFlow]. */
+    /** Cold [Flow] of the value and its updates. See [KSafe.getFlow]. */
     inline fun <reified T> getFlow(key: String, defaultValue: T): Flow<T> =
         ksafe.getFlow(key, defaultValue)
 
-    /** Hot observable read. See [KSafe.getStateFlow]. */
+    /** Hot [StateFlow] shared eagerly in [scope]. See [KSafe.getStateFlow]. */
     inline fun <reified T> getStateFlow(key: String, defaultValue: T, scope: CoroutineScope): StateFlow<T> =
         ksafe.getStateFlow(key, defaultValue, scope)
 
-    /** Removes the value and its key material. See [KSafe.delete]. */
+    /** Removes the value and its key material, suspending until done. See [KSafe.delete]. */
     suspend fun delete(key: String) = ksafe.delete(key)
 
-    /** Fire-and-forget removal. See [KSafe.deleteDirect]. */
+    /** Fire-and-forget removal; the cache updates now. See [KSafe.deleteDirect]. */
     fun deleteDirect(key: String) = ksafe.deleteDirect(key)
 
-    /** Delegate, or a direct handle via [KSafeReference.value]; [key] defaults to the property name. */
+    /** Property delegate, or a handle used via [KSafeReference.value] when [key] is given; writes
+     *  use this view's [mode]. See [KSafe.invoke]. */
     inline operator fun <reified T> invoke(
         defaultValue: T,
         key: String? = null,
     ): KSafeReference<T> = ksafe.invoke(defaultValue, key, mode)
 
-    /** Read-only cold-Flow delegate. See [KSafe.asFlow]. */
+    /** Read-only delegate yielding a cold [Flow]. See [KSafe.asFlow]. */
     inline fun <reified T> asFlow(
         defaultValue: T,
         key: String? = null,
     ): ReadOnlyProperty<Any?, Flow<T>> = ksafe.asFlow(defaultValue, key)
 
-    /** Writable cold-Flow delegate; `set` writes use this view's [mode]. See [KSafe.asWritableFlow]. */
+    /** Delegate yielding a [WritableKSafeFlow]; [WritableKSafeFlow.set] writes in this view's [mode].
+     *  See [KSafe.asWritableFlow]. */
     inline fun <reified T> asWritableFlow(
         defaultValue: T,
         key: String? = null,
     ): ReadOnlyProperty<Any?, WritableKSafeFlow<T>> =
         ksafe.asWritableFlow(defaultValue, key, mode)
 
-    /** Read-only StateFlow delegate. See [KSafe.asStateFlow]. */
+    /** Read-only delegate yielding a hot [StateFlow] shared in [scope]. See [KSafe.asStateFlow]. */
     inline fun <reified T> asStateFlow(
         defaultValue: T,
         scope: CoroutineScope,
         key: String? = null,
     ): ReadOnlyProperty<Any?, StateFlow<T>> = ksafe.asStateFlow(defaultValue, scope, key)
 
-    /** MutableStateFlow delegate; writes use this view's [mode]. See [KSafe.asMutableStateFlow]. */
+    /** Delegate yielding a persisting [MutableStateFlow]; writes use this view's [mode].
+     *  See [KSafe.asMutableStateFlow]. */
     inline fun <reified T> asMutableStateFlow(
         defaultValue: T,
         scope: CoroutineScope,
@@ -258,11 +287,11 @@ class KSafeHardwareIsolated(
         ksafe.asMutableStateFlow(defaultValue, scope, key, mode)
 }
 
-/** A [KSafePlain] view over this instance; each access allocates a new one. */
+/** A new [KSafePlain] view over this instance on every access. */
 val KSafe.plain: KSafePlain get() = KSafePlain(this)
 
-/** A [KSafeEncrypted] view over this instance, inheriting its unlock policy. */
+/** A new [KSafeEncrypted] view over this instance on every access, using its unlock policy. */
 val KSafe.encrypted: KSafeEncrypted get() = KSafeEncrypted(this)
 
-/** A [KSafeHardwareIsolated] view over this instance, inheriting its unlock policy. */
+/** A new [KSafeHardwareIsolated] view over this instance on every access, using its unlock policy. */
 val KSafe.hardwareIsolated: KSafeHardwareIsolated get() = KSafeHardwareIsolated(this)

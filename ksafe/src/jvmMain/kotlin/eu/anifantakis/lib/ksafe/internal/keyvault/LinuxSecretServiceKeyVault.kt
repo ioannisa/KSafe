@@ -70,7 +70,7 @@ internal class LinuxSecretServiceKeyVault(
         }
     }
 
-    // Fresh SecretSchema per call: avoids shared mutable native state, keeping key ops thread-safe.
+    // A fresh struct per call: it is native memory, and one shared across threads races on write().
     private fun schema(): SecretSchema {
         val s = SecretSchema()
         s.name = SCHEMA_NAME
@@ -82,7 +82,8 @@ internal class LinuxSecretServiceKeyVault(
         return s
     }
 
-    /** Mirrors the layout of `SecretSchema` from `<libsecret/secret-schema.h>`. */
+    /** Mirrors the layout of `SecretSchema` from `<libsecret/secret-schema.h>`: 32 inline
+     *  attribute slots, then the reserved tail. Any drift misreads the struct natively. */
     @Structure.FieldOrder(
         "name", "flags", "attributes",
         "reserved", "reserved1", "reserved2", "reserved3",

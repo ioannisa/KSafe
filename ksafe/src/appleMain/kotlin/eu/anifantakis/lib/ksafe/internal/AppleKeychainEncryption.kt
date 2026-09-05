@@ -110,7 +110,10 @@ internal class AppleKeychainEncryption(
     private val config: KSafeConfig = KSafeConfig(),
     private val serviceName: String = SERVICE_NAME,
     keychainStore: AppleKeychainStore? = null,
-    /** Simulator-only escape hatch for an entitlement-blocked Keychain; null everywhere else. */
+    /**
+     * Simulator-only escape hatch for an entitlement-blocked Keychain. Off when a test fake is
+     * injected; those tests supply their own.
+     */
     private val simulatorFallback: SimulatorFallbackKeyStore? =
         if (keychainStore == null && SecurityChecker.isEmulator()) {
             FileSimulatorFallbackKeyStore(serviceName)
@@ -202,7 +205,10 @@ internal class AppleKeychainEncryption(
             errSecParam.toLong(),  // -50: the blob is not a valid envelope for this key
         )
 
-        /** True only on positive proof; an unknown code or an untagged CFError must not destroy the SE key pair. */
+        /**
+         * True only on positive proof: an unknown code or an untagged CFError must not destroy
+         * the SE key pair.
+         */
         internal fun isProvablyCorruptEnvelope(message: String?): Boolean {
             val code = OSSTATUS_TAG.find(message ?: return false)?.groupValues?.get(1)?.toLongOrNull()
             return code != null && code in CORRUPT_ENVELOPE_OSSTATUS
@@ -390,7 +396,8 @@ internal class AppleKeychainEncryption(
     ): ByteArray {
         // Bounded retry for a sibling clearAll racing this encrypt: the key bytes resolve, the
         // Keychain item is deleted, and the acknowledged ciphertext would be unreadable next
-        // launch. Unchanged epoch = no deletion; a bump re-reads and re-encrypts under the winner.
+        // launch. Unchanged epoch = no deletion. After a bump, same bytes = the deletion hit
+        // another alias; otherwise loop and re-encrypt under the winner.
         repeat(2) {
             val epochAtResolve = keyBytesCacheEpoch.load()
             val keyBytes = getOrCreateKeychainKey(identifier, hardwareIsolated, requireUnlockedDevice)
@@ -565,6 +572,7 @@ internal class AppleKeychainEncryption(
         // Read-only: no keyResolutionLock (that guards the create-vs-create clobber); concurrent
         // decrypts converge on the thread-safe keyBytesCache.
         cachedKeyBytesOrEvict(keyId, requireUnlockedDevice)?.let { return it }
+        // Taken before the Keychain read, or a purge racing that read goes unseen.
         val epochAtRead = keyBytesCacheEpoch.load()
 
         // A minted Simulator fallback key wins over the Keychain for good, even once the
@@ -592,8 +600,8 @@ internal class AppleKeychainEncryption(
         return bytes
     }
 
-    // With [hardwareIsolated] the key is SE-wrapped; failures on an existing key propagate, only
-    // genuine SE-unavailable errors fall back to plain.
+    // With [hardwareIsolated] the key is SE-wrapped. Failures on an existing key propagate; only
+    // an SE that cannot be used at all falls back to plain.
     @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     internal fun getOrCreateKeychainKey(
         keyId: String,
@@ -606,6 +614,7 @@ internal class AppleKeychainEncryption(
             if (requireUnlockedDevice != true) {
                 keyBytesCache[keyId]?.let { return@withKeyResolutionLock it }
             }
+            // Taken before the Keychain read; deleteKey does not take this lock.
             val epochAtRead = keyBytesCacheEpoch.load()
 
             val bytes = if (hardwareIsolated) {
@@ -787,6 +796,7 @@ internal class AppleKeychainEncryption(
     }
 
     private fun handleAccessibilityUpdateStatus(status: Int, what: String) {
+        // Not-found is done: an alias holds either the plain item or the SE pair, never all three.
         if (status == errSecSuccess || status == errSecItemNotFound) return
         when (status) {
             errSecInteractionNotAllowed -> throw IllegalStateException(

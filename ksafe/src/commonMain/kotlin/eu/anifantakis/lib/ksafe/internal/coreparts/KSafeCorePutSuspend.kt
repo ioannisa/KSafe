@@ -17,7 +17,8 @@ internal fun KSafeCore.stageDelete(
     key: String,
     completion: CompletableDeferred<Unit>? = null,
 ): PendingWrite.Delete {
-    // Rollback token claimed before any optimistic mutation.
+    // Token and dirty flag before any optimistic mutation: the cache merge checks dirty after
+    // sampling a slot, so a write staged in this order always beats a racing merge.
     val writeToken = Any().also { writeOwners[key] = it }
     val rawKey = key
     val encKeyName = legacyEncryptedRawKey(key)
@@ -50,7 +51,7 @@ internal fun KSafeCore.stagePlainWrite(
     completion: CompletableDeferred<Unit>? = null,
     onWriteFailed: ((Throwable) -> Unit)? = null,
 ): PendingWrite.Plain {
-    // Rollback token claimed before any optimistic mutation.
+    // Token and dirty flag before any optimistic mutation; see stageDelete.
     val writeToken = Any().also { writeOwners[key] = it }
     val supersededGen =
         if (deleteTargetsPerEntryAlias(key)) maxOf(encMetaMap[key]?.keyGeneration ?: 1, 1) else 0
@@ -94,7 +95,7 @@ internal suspend fun KSafeCore.putEncryptedSuspend(
     // Serialize first: a throwing serializer must leave no trace.
     val jsonString = if (value == null) NULL_SENTINEL else jsonEncode(json, serializer, value)
 
-    // Rollback token claimed before any optimistic mutation.
+    // Token and dirty flag before any optimistic mutation; see stageDelete.
     val writeToken = Any().also { writeOwners[key] = it }
     val rawCacheKey = legacyEncryptedRawKey(key)
     dirtyKeys.add(rawCacheKey)

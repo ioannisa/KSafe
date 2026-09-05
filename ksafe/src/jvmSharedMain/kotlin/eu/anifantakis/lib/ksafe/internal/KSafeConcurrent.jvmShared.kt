@@ -1,6 +1,5 @@
-// Pinned to the facade name this file had while it lived in jvmMain: the top-level members
-// below are @PublishedApi, so the class name is part of the published JVM ABI and a rename
-// on the source-set move would break already-compiled callers for no gain.
+// The facade class name is published JVM ABI (the top-level members are @PublishedApi), so it
+// stays `KSafeConcurrent_jvmKt` whatever this file is called.
 @file:JvmName("KSafeConcurrent_jvmKt")
 
 package eu.anifantakis.lib.ksafe.internal

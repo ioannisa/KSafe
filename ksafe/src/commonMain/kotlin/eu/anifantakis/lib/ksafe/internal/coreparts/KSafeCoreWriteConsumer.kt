@@ -134,11 +134,13 @@ private class RolledBackSlots(
     val meta: KSafeCore.EncMeta?,
 )
 
+/** Reverts failed writes' optimistic state and re-merges from disk, only for keys they still own. */
 internal suspend fun KSafeCore.rollbackOptimisticState(failedOps: Collection<PendingWrite>) {
     val rolledBack = mutableListOf<RolledBackSlots>()
     for (op in failedOps) {
         val key = op.userKey
-        // Read before the release: a newer writer claims ownership before it stages anything.
+        // Read before the release: once ownership is gone a newer writer may stage its value, and
+        // the CAS drop below would then take that value instead of this op's.
         val cachedValue = memoryCache[op.rawCacheKey]
         val protectionLiteral = protectionMap[key]
         val meta = encMetaMap[key]

@@ -29,7 +29,10 @@ internal interface JvmKeyVault {
 
     fun delete(alias: String)
 
-    /** Wipes every key this vault owns. Default no-op: an OS-backed vault is shared machine-wide. */
+    /**
+     * Wipes every key this vault owns. Default no-op: an OS-backed vault is shared machine-wide,
+     * and the DataStore vault lives in the store file `clearAll` already emptied.
+     */
     fun clearAll() { }
 }
 
@@ -88,11 +91,14 @@ internal class DataStoreKeyVault(
     }
 }
 
-/** Holds the active [JvmKeyVault]. An OS vault must pass a self-test, so a broken keyring degrades. */
+/**
+ * Picks and holds the active [JvmKeyVault]. An OS vault is accepted only after a canary
+ * round-trip ([selfTest]); each failure mode has its own fail-safe flag below.
+ */
 internal class JvmKeyVaultProvider(
     /** Backs the legacy vault and OS-vault detection; null on the JSON-file fallback path. */
     dataStore: DataStore<Preferences>? = null,
-    /** Namespaces the OS-vault destination only; the legacy vault stays un-namespaced. */
+    /** Namespaces the OS-vault destination only; the legacy vault keeps its frozen layout. */
     private val appNamespace: String = "",
     /** Read-only migration source, never deleted: a not-yet-upgraded sibling may still own its keys. */
     private val legacyAppNamespace: String? = null,
@@ -106,7 +112,7 @@ internal class JvmKeyVaultProvider(
     private val osCandidateForTest: JvmKeyVault? = null,
     /** Test seam: stands in for the lazily-built legacy-namespace twin (see [legacyProbes]). */
     private val legacyNamespaceCandidateForTest: JvmKeyVault? = null,
-    /** Test seam: the namespace the twin stands for; [DEFAULT_JVM_NAMESPACE] must not be deleted. */
+    /** Test seam: the namespace the twin stands for; null = derived, see [mayReclaimFrom]. */
     private val legacyNamespaceNameForTest: String? = null,
     /** Test seam: legacy-namespace twins paired with their namespace, in probe order. */
     private val legacyNamespaceCandidatesForTest: List<Pair<JvmKeyVault, String?>>? = null,
@@ -123,7 +129,10 @@ internal class JvmKeyVaultProvider(
         }
     )
 
-    /** OS bridge dead in-process: nothing reachable can be overwritten, so [legacy] is a safe home. */
+    /**
+     * The OS vault's native bridge died in-process (JNA [LinkageError]): nothing reachable can be
+     * overwritten, so [active] switches to [legacy] for good.
+     */
     private val degraded = AtomicBoolean(false)
 
     /**
@@ -135,7 +144,7 @@ internal class JvmKeyVaultProvider(
     /** Software opt-out: reads report "unavailable" (OS-only ciphertext may remain), minting is allowed. */
     private val softwareOptOut = AtomicBoolean(false)
 
-    /** Must follow [degraded] / [osVaultSelfTestFailed]: [pick] writes them on a self-test failure. */
+    /** Declared after the three flags above: [pick] writes them, so an earlier init would NPE. */
     private val picked: JvmKeyVault =
         forced ?: if (dataStore != null) pick(dataStore) else legacy
 
@@ -146,7 +155,10 @@ internal class JvmKeyVaultProvider(
     val hasDegraded: Boolean
         get() = degraded.get() || osVaultSelfTestFailed.get() || softwareOptOut.get()
 
-    /** Unavailable since construction: a key minted into the legacy source is overwritten next launch. */
+    /**
+     * OS vault present but unreachable since construction: minting into the legacy source is
+     * forbidden, or the next healthy launch's legacy-first migration overwrites the real OS key.
+     */
     val osVaultUnavailable: Boolean
         get() = osVaultSelfTestFailed.get()
 
@@ -224,13 +236,17 @@ internal class JvmKeyVaultProvider(
             legacyAppNamespace,
             shadowedAppNamespaces,
         ).mapNotNull { ns ->
-            // Tagged with the shared default: the one tag mayReclaimFrom always refuses.
+            // Shadowed namespaces carry the shared-default tag, so mayReclaimFrom never deletes
+            // from them.
             val tag = if (ns in shadowedAppNamespaces) DEFAULT_JVM_NAMESPACE else ns
             (if (factory != null) factory(ns) else buildOsVault(os, ns, dataStoreForTwin))?.let { it to tag }
         }
     }
 
-    /** False where a live owner may remain: recovery copies from that namespace but never deletes. */
+    /**
+     * False where a live owner may remain: recovery copies from that namespace but never deletes.
+     * A null namespace is a derived one (test seams), which has no other owner.
+     */
     private fun mayReclaimFrom(sourceNamespace: String?): Boolean =
         sourceNamespace != DEFAULT_JVM_NAMESPACE &&
             (sourceNamespace == null || sourceNamespace != legacyAppNamespace)

@@ -201,7 +201,8 @@ internal class JvmSoftwareEncryption(
     private fun resolveKeyVia(active: JvmKeyVault, alias: String, create: Boolean): SecretKey? {
         val keyBytes: ByteArray? =
             if (active !== vaults.legacy) {
-                // An app upgrading off the old launcher-derived namespace finds its keys only there.
+                // Last probe before "no key found": keys from an older namespace (launcher-derived,
+                // shadowed) live only there and are migrated in on a hit.
                 migrateLegacyLocked(alias)
                     ?: active.get(alias)
                     ?: vaults.recoverFromLegacyNamespace(alias)

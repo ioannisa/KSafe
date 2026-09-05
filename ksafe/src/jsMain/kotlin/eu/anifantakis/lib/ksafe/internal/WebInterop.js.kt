@@ -3,8 +3,6 @@ package eu.anifantakis.lib.ksafe.internal
 import kotlinx.browser.localStorage
 import kotlin.js.Date
 
-/** Kotlin/JS actuals for the web-interop surface. */
-
 @PublishedApi
 internal actual fun localStorageGet(key: String): String? = localStorage.getItem(key)
 

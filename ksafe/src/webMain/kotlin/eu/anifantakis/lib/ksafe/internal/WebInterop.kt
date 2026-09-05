@@ -1,7 +1,5 @@
 package eu.anifantakis.lib.ksafe.internal
 
-// Browser localStorage and clock expects; wasmJs and js each bind them their own way.
-
 @PublishedApi
 internal expect fun localStorageGet(key: String): String?
 
@@ -17,7 +15,6 @@ internal expect fun localStorageLength(): Int
 @PublishedApi
 internal expect fun localStorageKey(index: Int): String?
 
-/** Current epoch time in milliseconds. */
 @PublishedApi
 internal expect fun currentTimeMillisWeb(): Long
 

@@ -50,6 +50,7 @@ import kotlin.time.Duration.Companion.seconds
 
 private const val SERVICE_NAME = KSAFE_OS_STORE_IDENTITY
 
+/** Keychain service name and alias prefix every KSafe store on this device shares. */
 @PublishedApi
 internal const val KEY_PREFIX = KSAFE_OS_STORE_IDENTITY
 
@@ -61,6 +62,18 @@ private fun isSimulator(): Boolean =
  * Creates a [KSafe] for Apple targets: DataStore storage under `NSApplicationSupportDirectory`
  * (or [directory]), keys held device-only in the Keychain. [fileName], not [directory], is the
  * key-isolation boundary — same-[fileName] instances share Keychain keys, so keep one per file.
+ * Under a [securityPolicy] with a BLOCK action a detected violation throws
+ * [SecurityViolationException] here.
+ * @param fileName Store name (lowercase letter, then lowercase letters, digits or underscores);
+ *   null is the default store. Anything else throws [IllegalArgumentException].
+ * @param lazyLoad Skip the background cache load at construction; the first read loads it
+ *   instead ([KSafe.getDirect] blocks, [KSafe.get] suspends).
+ * @param plaintextCacheTtl Lifetime of a decrypted value under
+ *   [KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE]; unused by the other policies.
+ * @param useSecureEnclave Deprecated: promotes every DEFAULT-tier encrypted write to
+ *   HARDWARE_ISOLATED. Request it per write with [KSafeWriteMode.Encrypted] instead.
+ * @param directory Absolute directory for the store file; null uses Application Support and also
+ *   migrates a legacy Documents-directory file. A custom directory skips the Keychain orphan sweep.
  */
 fun KSafe(
     fileName: String? = null,
@@ -83,6 +96,7 @@ fun KSafe(
     testEngine = null,
 )
 
+/** Test variant: accepts a pre-built [KSafeEncryption] engine in place of the Keychain. */
 @PublishedApi
 internal fun KSafe(
     fileName: String? = null,

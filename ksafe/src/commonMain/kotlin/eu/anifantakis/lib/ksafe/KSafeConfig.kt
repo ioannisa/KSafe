@@ -22,16 +22,17 @@ enum class KSafeAesKeySize(
  *
  * @property aesKeySize Key size for newly created keys; existing keys keep theirs until rotation.
  * @property requireUnlockedDevice Default unlock policy for encrypted writes made without an
- *   explicit [KSafeWriteMode]; no effect on JVM. On Android before API 35, removing the lock
- *   screen can silently delete such keys (the values self-heal to their defaults).
+ *   explicit [KSafeWriteMode]; no effect on JVM or web. On Android before API 35, removing the
+ *   lock screen can silently delete such keys (the values self-heal to their defaults).
  * @property json Serializer for user payloads; changing it can make stored non-primitive values
  *   unreadable.
- * @property appNamespace App-unique id (e.g. reverse-DNS) namespacing the key destination on
+ * @property appNamespace App-unique id (e.g. reverse-DNS) namespacing both data and keys on
  *   JVM and Web, where the OS store / origin storage is shared. No effect on Android/iOS.
  * @property keyRotationPolicy When to start a fresh key generation automatically; on-demand
  *   rotation is always available via [KSafe.rotateKeys].
  * @property keyRotationRetryAttempts Automatic next-instance retries after a completed rotation
  *   left retryable skipped entries. Each new instance consumes at most one; 0 disables them.
+ * @throws IllegalArgumentException if [keyRotationRetryAttempts] is negative.
  */
 data class KSafeConfig(
     val aesKeySize: KSafeAesKeySize = KSafeAesKeySize.BITS_256,
@@ -54,7 +55,10 @@ data class KSafeConfig(
     )
     val keySize: Int get() = aesKeySize.bits
 
-    /** `Int`-typed constructor kept for compatibility; [keySize] must be 128 or 256. */
+    /**
+     * `Int`-typed constructor kept for compatibility; a [keySize] other than 128 or 256 throws
+     * [IllegalArgumentException].
+     */
     @Deprecated(
         "Use the aesKeySize parameter with KSafeAesKeySize. Removed in 4.0.0.",
         ReplaceWith(
@@ -76,7 +80,10 @@ data class KSafeConfig(
         keyRotationPolicy = keyRotationPolicy,
     )
 
-    /** `Int`-typed `copy`; selected only when [keySize] is passed, so `copy()` reaches the generated one. */
+    /**
+     * `Int`-typed `copy`; selected only when [keySize] is passed, so `copy()` reaches the
+     * generated one.
+     */
     @Deprecated(
         "Use copy(aesKeySize = …) with KSafeAesKeySize. Removed in 4.0.0.",
         ReplaceWith("copy(aesKeySize = KSafeAesKeySize.BITS_256)"),

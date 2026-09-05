@@ -23,7 +23,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
-/** One entry's committed state, emitted as one unit: a leftover legacy record reads back first. */
+/** One entry's committed state as one unit: a legacy record left beside the canonical one reads
+ *  back first and ignores the metadata that routes the decrypt. */
 private fun KSafeCore.entryRecordOps(
     key: String,
     value: StoredValue,
@@ -43,7 +44,8 @@ private fun KSafeCore.encryptedEntryRecordOps(op: EncryptingWrite, base64: Strin
         buildMetaJson(op.protection, op.requireUnlockedDevice, op.keyGeneration),
     )
 
-/** Adopts a committed rotation into a sibling core's cache; CAS'd, so its own writes survive. */
+/** Moves a sibling core's cached entry onto a committed rotation, or it keeps decrypting through a
+ *  master the sweep will reclaim. CAS'd, so the sibling's own writes survive. */
 private fun KSafeCore.adoptRotatedEntry(op: PendingWrite.Rotate, newBase64: String) {
     val ownerAtStart = writeOwners[op.userKey]
     val old = encMetaMap[op.userKey] ?: return
@@ -59,11 +61,13 @@ private fun KSafeCore.adoptRotatedEntry(op: PendingWrite.Rotate, newBase64: Stri
     if (adopted) {
         val bumped = encMetaForWrite(op.protection, op.requireUnlockedDevice, op.keyGeneration)
         encMetaMap.replaceIf(op.userKey, old, bumped)
+        // A write that claimed the key mid-adopt set a value-equal meta; hand its routing back.
         if (writeOwners[op.userKey] !== ownerAtStart) encMetaMap.replaceIf(op.userKey, bumped, old)
     }
 }
 
-/** Aliases this core's RAM still decrypts through; reaping one defaults every value it holds. */
+/** Aliases this core's cache still decrypts through — its dirty writes may lag disk — so reaping
+ *  one defaults every value it holds. */
 private fun KSafeCore.inUseAliases(): Set<String> {
     val protections = protectionMap.snapshot()
     val aliases = mutableSetOf<String>()
@@ -75,9 +79,9 @@ private fun KSafeCore.inUseAliases(): Set<String> {
 }
 
 internal suspend fun KSafeCore.processWrites(batchIn: List<PendingWrite>) {
-    // The PERSISTED generation is the authority; the local atomic is only its cache. Re-read on the
-    // first batch, on any generation write, and — with no snapshot collector to see a sibling's
-    // rotation — on every lazyLoad batch that encrypts. Serialized under commitMutex.
+    // Disk holds the authoritative generation; the local atomic only caches it. Re-read it while
+    // unreconciled, on any generation write, and — lazyLoad has no collector to see a sibling's
+    // rotation — on every lazyLoad batch that encrypts, or keys mint under a superseded generation.
     var persistedKeygenRaw: String? = null
     val refreshForLazyEncrypt = lazyLoad && batchIn.any { it is EncryptingWrite }
     if (!keyGenerationReconciled.get() ||
@@ -125,8 +129,9 @@ internal suspend fun KSafeCore.processWrites(batchIn: List<PendingWrite>) {
         // state, so it would pass and commit a re-encryption of the erased value.
         if (op is PendingWrite.Rotate && finalByKey.containsKey(op.userKey)) continue
         val existing = finalByKey[op.userKey]
-        // Higher generation wins regardless of queue order, or a later, lower adoption write
-        // displaces a rotation bump while both awaiters are acknowledged.
+        // Two generation records: the higher wins regardless of queue order, or a later, lower
+        // adoption write displaces a rotation bump while both awaiters are acknowledged; at a tie
+        // the in-progress bump wins.
         if (op is PendingWrite.SetKeyGeneration &&
             existing is PendingWrite.SetKeyGeneration
         ) {
@@ -276,9 +281,10 @@ internal suspend fun KSafeCore.processWrites(batchIn: List<PendingWrite>) {
                 appliedRotations += key
             }
             is PendingWrite.SetKeyGeneration -> {
-                // Never write a generation below what a sibling persisted, and keep the existing
-                // birth timestamp when the generation doesn't move (a re-stamp must not reset the
-                // MaxAge clock). A clearAll removes the record entirely, so its reset still passes.
+                // Never write a generation below what a sibling persisted. At the same generation
+                // write only to adopt a legacy record, repair a missing timestamp, or claim a
+                // retry — never to re-stamp, which would reset the MaxAge clock. A clearAll removes
+                // the record entirely, so its reset still passes.
                 val persistedGen = KeySafeMetadataManager.parseKeyGeneration(persistedKeygenRaw)
                 val persistedTs = KeySafeMetadataManager.parseKeyGenerationTimestamp(persistedKeygenRaw)
                 val persistedLifecycle =
@@ -549,6 +555,7 @@ internal suspend fun KSafeCore.processWrites(batchIn: List<PendingWrite>) {
                     )
                 }
             }
+            // A delete wants the wiped state; nothing to re-assert.
             is PendingWrite.Delete, is PendingWrite.ClearAll -> Unit
         }
     }

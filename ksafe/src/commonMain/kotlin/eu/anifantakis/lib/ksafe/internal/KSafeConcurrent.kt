@@ -86,8 +86,9 @@ internal class KSafeLazyRef<T : Any> {
 }
 
 /**
- * Inserts [value] into a key cache guarded by the wipe fence [epoch]. [epochAtRead] must be
- * captured BEFORE the read that produced [value], or a wipe racing that read goes unseen.
+ * Inserts [value] into a key cache guarded by the wipe fence [epoch], which a wipe bumps BEFORE it
+ * removes the persisted records. [epochAtRead] must be captured BEFORE the read that produced
+ * [value], or a wipe racing that read goes unseen and the cache serves key material with no record.
  */
 @OptIn(ExperimentalAtomicApi::class)
 internal fun <V : Any> insertUnderPurgeFence(

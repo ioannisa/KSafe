@@ -165,10 +165,11 @@ internal class KSafeCore(
      *  failed write may only roll back state it still owns. Not wiped by clearAll. */
     internal val writeOwners = KSafeConcurrentMap<Any>()
 
+    // Test-only interleaving seams; null in production.
     @PublishedApi
     internal var postCommitRepairHook: ((String) -> Unit)? = null
 
-    /** Test-only seam fired with a batch's keys after applyBatch. Runs under commitMutex: never call a suspend write from it. */
+    /** Fired with a batch's keys after applyBatch, under commitMutex: never call a suspend write from it. */
     internal var postApplyBatchHook: ((Set<String>) -> Unit)? = null
 
     internal var sideCacheWriteBackHook: (() -> Unit)? = null
@@ -340,8 +341,6 @@ internal class KSafeCore(
         ) : PendingWrite() {
             override val userKey: String get() = "__ksafe_sweep_masters__"
 
-            // Must equal [userKey]: the coalescer keys ops by userKey while the batch boundary
-            // recognises them by rawCacheKey.
             override val rawCacheKey: String get() = userKey
             override val writeToken: Any get() = this // never rolled back per-key
         }
@@ -519,6 +518,7 @@ internal class KSafeCore(
                     val now = ksafeEpochMillis()
                     val bornAt = KeySafeMetadataManager.parseKeyGenerationTimestamp(raw)
                     if (bornAt == null) {
+                        // Unknown age: start the clock now rather than rotate on first sight.
                         val stamped = CompletableDeferred<Unit>()
                         writeChannel.send(
                             PendingWrite.SetKeyGeneration(
@@ -744,8 +744,8 @@ internal class KSafeCore(
             encMetaMap[key] = encMetaForWrite(protection, requireUnlockedDevice, writeKeyGeneration)
             hasAnyEncryptedKey.set(true)
 
-            // Plain→encrypted transition: evict the stale plain slot, which the eviction sweep
-            // never reclaims, or a plaintext copy of the now-encrypted secret lingers in RAM.
+            // Plain→encrypted: evict the stale plain slot now — dirty flags never clear on success,
+            // so the merge's eviction sweep skips it and a plaintext copy of the secret lingers in RAM.
             memoryCache.remove(key)
             plaintextCache.remove(key)
 
@@ -794,7 +794,6 @@ internal class KSafeCore(
 
     suspend fun delete(key: String) {
         KeySafeMetadataManager.requireWritableUserKey(key)
-        // Route through the coalescer so concurrent deletes + writes share batches.
         val deferred = CompletableDeferred<Unit>()
         writeChannel.send(stageDelete(key, completion = deferred))
         deferred.await()
@@ -869,6 +868,8 @@ internal class KSafeCore(
                 bumped.await()
                 next
             }
+            // The persisted budget wins over the configured one, except that a configured 0
+            // disables retries outright.
             val retriesAfterThisPass =
                 if (resuming) {
                     KeySafeMetadataManager.parseKeyRotationRetryAttempts(keygenRaw)
@@ -1140,7 +1141,8 @@ internal class KSafeCore(
         @PublishedApi
         internal fun isNullSentinel(value: Any?): Boolean = value == NULL_SENTINEL
 
-        // Escapes the one plaintext String that would otherwise be read back as null.
+        // Prefixes a plaintext String equal to the sentinel (or already carrying this prefix), so
+        // decode never mistakes it for a stored null.
         private const val NULL_ESCAPE_PREFIX: String = "\u0000__KSAFE_ESC__\u0000"
 
         @PublishedApi
@@ -1212,7 +1214,8 @@ internal class KSafeCore(
             )
 
         /** Whether an entry with this routing owns a per-entry engine key instead of riding the shared
-         *  master. Resolve "no recorded protection" to false first: aliases collide across stores. */
+         *  master. Callers treat a missing recorded protection as false: a dotted key's alias can
+         *  equal another store's live key. */
         internal fun ownsPerEntryAlias(protection: KSafeProtection, envelopeVersion: Int): Boolean =
             protection == KSafeProtection.HARDWARE_ISOLATED ||
                 envelopeVersion < KeySafeMetadataManager.ENVELOPE_VERSION_V2

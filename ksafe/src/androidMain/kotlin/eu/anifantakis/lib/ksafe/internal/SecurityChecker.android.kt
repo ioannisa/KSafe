@@ -6,8 +6,9 @@ import android.os.Debug
 import java.io.File
 
 /**
- * Best-effort: hiding tools bypass it, and the sandbox hides `su` from the file probes — the
- * build-signal checks survive it. Use Play Integrity where it matters.
+ * Best-effort: hiding tools bypass it, and the app sandbox hides `su` from the file probes
+ * (`File.exists` reads false under SELinux); the build-signal checks survive that. Use Play
+ * Integrity where it matters.
  */
 internal actual object SecurityChecker {
 

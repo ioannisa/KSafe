@@ -12,7 +12,6 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.Flow
 
-/** [KSafePlatformStorage] backed by a Jetpack `DataStore<Preferences>`. */
 @PublishedApi
 internal class DataStoreStorage(
     @PublishedApi internal val dataStore: DataStore<Preferences>,
@@ -62,7 +61,8 @@ internal class DataStoreStorage(
 
 }
 
-/** A DataStore [Preferences] snapshot as the core's storage-neutral map. */
+/** The one Preferences → storage-map conversion; the relay and the JVM test seam must agree on
+ *  which entry types survive it. */
 internal fun toStoredMap(prefs: Preferences): Map<String, StoredValue> {
     val raw = prefs.asMap()
     val out = HashMap<String, StoredValue>(raw.size)
