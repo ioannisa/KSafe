@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import eu.anifantakis.lib.ksafe.internal.DATASTORE_FILE_SUFFIX
 import eu.anifantakis.lib.ksafe.internal.DataStoreStorage
+import eu.anifantakis.lib.ksafe.internal.KSafePlatformStorage
 import eu.anifantakis.lib.ksafe.internal.AppleKeyCustody
 import eu.anifantakis.lib.ksafe.internal.AppleKeychainEncryption
 import eu.anifantakis.lib.ksafe.internal.KSAFE_OS_STORE_IDENTITY
@@ -115,6 +116,7 @@ internal fun KSafe(
  *  one file and frees it only once the owning scope's Job completes. */
 private class AppleBackend(
     val dataStore: DataStore<Preferences>,
+    val storage: KSafePlatformStorage,
     scope: CoroutineScope,
 ) : SharedStoreBackend(scope)
 
@@ -230,10 +232,11 @@ private fun buildAppleKSafe(
             scope = scope,
             produceFile = { datastoreFilePath.toPath() },
         )
-        AppleBackend(dataStore, scope)
+        // Per file, not per instance: its commit relay must reach every sibling's collector.
+        AppleBackend(dataStore, DataStoreStorage(dataStore), scope)
     }
     val dataStore: DataStore<Preferences> = backend.dataStore
-    val storage = DataStoreStorage(dataStore)
+    val storage = backend.storage
 
     // One engine per file so co-existing same-file instances don't race master-key creation.
     val engine: KSafeEncryption =

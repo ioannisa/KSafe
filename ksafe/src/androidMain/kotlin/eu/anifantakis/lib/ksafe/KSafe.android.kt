@@ -15,6 +15,7 @@ import eu.anifantakis.lib.ksafe.internal.BACKEND_TEARDOWN_TIMEOUT_MS
 import eu.anifantakis.lib.ksafe.internal.DATASTORE_FILE_SUFFIX
 import eu.anifantakis.lib.ksafe.internal.DataStoreDekStore
 import eu.anifantakis.lib.ksafe.internal.DataStoreStorage
+import eu.anifantakis.lib.ksafe.internal.KSafePlatformStorage
 import eu.anifantakis.lib.ksafe.internal.KSAFE_OS_STORE_IDENTITY
 import eu.anifantakis.lib.ksafe.internal.KSafeAliasFormat
 import eu.anifantakis.lib.ksafe.internal.KSafeCore
@@ -50,6 +51,7 @@ const val KEY_ALIAS_PREFIX: String = KSAFE_OS_STORE_IDENTITY
  */
 private class AndroidBackend(
     val dataStore: DataStore<Preferences>,
+    val storage: KSafePlatformStorage,
     scope: CoroutineScope,
 ) : SharedStoreBackend(scope)
 
@@ -225,13 +227,14 @@ private fun buildAndroidKSafe(
             scope = scope,
             produceFile = { datastoreFile },
         )
-        AndroidBackend(dataStore, scope)
+        // Per file, not per instance: its commit relay must reach every sibling's collector.
+        AndroidBackend(dataStore, DataStoreStorage(dataStore), scope)
     }
 
     // The base alias (un-suffixed relaxed master — the only alias that used the DEK before key
     // rotation existed) MUST match masterAlias(false) below, so its record stays on the historical
     // fixed key and existing installs upgrade with zero migration.
-    val storage = DataStoreStorage(backend.dataStore)
+    val storage = backend.storage
     val relaxedMasterBaseAlias = KSafeAliasFormat.dotted(fileName, KSafeReservedKeys.MASTER)
     val engine: KSafeEncryption = testEngine
         ?: backend.engineOrCreate {

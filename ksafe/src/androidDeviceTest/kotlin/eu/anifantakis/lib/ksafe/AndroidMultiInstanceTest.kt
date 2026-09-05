@@ -3,6 +3,7 @@ package eu.anifantakis.lib.ksafe
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
@@ -12,6 +13,7 @@ import kotlinx.coroutines.withTimeout
 import org.junit.Test
 import org.junit.runner.RunWith
 import kotlin.test.assertEquals
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -32,6 +34,50 @@ class AndroidMultiInstanceTest {
      */
     private suspend fun awaitSibling(sibling: KSafe, key: String, expected: String): String =
         withTimeout(10.seconds) { sibling.getFlow(key, "").first { it == expected } }
+
+    @Test
+    fun twoInstances_sameFile_shareOneStorage() = runBlocking {
+        val file = uniqueFile()
+        val a = KSafe(context, fileName = file, lazyLoad = true)
+        val b = KSafe(context, fileName = file, lazyLoad = true)
+        try {
+            // A private storage per instance means a private commit relay, so a commit through one
+            // never reaches the other.
+            assertSame(a.core.storage, b.core.storage, "same-file instances must share one storage layer")
+        } finally {
+            a.close()
+            b.clearAll(); b.close()
+        }
+    }
+
+    @Test
+    fun writeOnOneInstance_reachesASiblingAlreadyCollecting() = runBlocking {
+        val file = uniqueFile()
+        val a = KSafe(context, fileName = file, lazyLoad = true)
+        val b = KSafe(context, fileName = file, lazyLoad = true)
+        try {
+            val seen = mutableListOf<String>()
+            val collecting = CompletableDeferred<Unit>()
+            val observed = CompletableDeferred<Unit>()
+            val job = launch(Dispatchers.Default) {
+                b.getFlow("k", "").collect {
+                    seen += it
+                    collecting.complete(Unit)
+                    if (it == "v1") observed.complete(Unit)
+                }
+            }
+            collecting.await()
+
+            a.put("k", "v1")
+
+            withTimeout(5.seconds) { observed.await() }
+            assertTrue("v1" in seen, "a sibling collector must observe another instance's write")
+            job.cancel()
+        } finally {
+            a.close()
+            b.clearAll(); b.close()
+        }
+    }
 
     @Test
     fun clearAllOnOneInstance_thenWriteOnAnother_survivesRestart() = runBlocking {

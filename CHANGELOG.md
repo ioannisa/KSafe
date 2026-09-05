@@ -134,6 +134,12 @@ counter.value++
   reported a `DebugBuild` violation on every desktop launch, and a `BLOCK` action refused to
   construct `KSafe` at all. The probe now asks the JVM whether assertions are enabled for the
   class, which is `false` in a normal production launch and honours `-ea`/`-da`.
+- **Android and iOS/macOS: a second `KSafe` on the same file no longer misses another instance's
+  write.** Each instance built its own storage layer over the shared DataStore, and with it its
+  own commit relay, so a write committed through one instance was never announced to the other.
+  DataStore's own read filter can drop that write's emission from a sibling that subscribed while
+  it was in flight, leaving the new value invisible to that sibling until some later write
+  happened to arrive. The storage layer is now shared per file, as it already was on JVM Desktop.
 
 ## [3.1.0] - 2026-08-24
 
