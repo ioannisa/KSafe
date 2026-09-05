@@ -66,14 +66,14 @@ private fun KSafeCore.adoptRotatedEntry(op: PendingWrite.Rotate, newBase64: Stri
     }
 }
 
-/** Aliases this core's cache still decrypts through — its dirty writes may lag disk — so reaping
- *  one defaults every value it holds. */
+/** Aliases this core's cache still decrypts through; reaping one defaults every value it holds.
+ *  Driven by the protection map: a legacy record has no meta entry, and that absence is its routing. */
 private fun KSafeCore.inUseAliases(): Set<String> {
-    val protections = protectionMap.snapshot()
+    val metas = encMetaMap.snapshot()
     val aliases = mutableSetOf<String>()
-    for ((userKey, meta) in encMetaMap.snapshot()) {
-        val protection = KeySafeMetadataManager.parseProtection(protections[userKey]) ?: continue
-        aliases += aliasForRawMeta(userKey, protection, meta)
+    for ((userKey, literal) in protectionMap.snapshot()) {
+        val protection = KeySafeMetadataManager.parseProtection(literal) ?: continue
+        aliases += aliasForRawMeta(userKey, protection, metas[userKey])
     }
     return aliases
 }
@@ -564,11 +564,7 @@ internal suspend fun KSafeCore.processWrites(batchIn: List<PendingWrite>) {
     // set reflects this batch's rotations: no deletion may destroy an alias a CURRENT entry still
     // resolves to, which for hardware-backed keys is unrecoverable.
     if (aliasesToDelete.isNotEmpty()) {
-        val liveAliases = mutableSetOf<String>()
-        for ((liveKey, literal) in protectionMap.snapshot()) {
-            val prot = KeySafeMetadataManager.parseProtection(literal) ?: continue
-            liveAliases += aliasForRead(liveKey, prot)
-        }
+        val liveAliases = inUseAliases().toMutableSet()
         siblings?.others(this)?.forEach { liveAliases += it.inUseAliases() }
         for (alias in aliasesToDelete) {
             if (alias in liveAliases) continue

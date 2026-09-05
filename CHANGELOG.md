@@ -293,6 +293,13 @@ counter.value++
   nothing copied, and the marker that ends the one-shot import was written anyway, skipping the
   real data on every later launch. A file whose scratch sibling is present is now waited for, and
   an import that found nothing leaves no marker so a later launch re-scans.
+- **A sibling instance's legacy-format entries are now counted when a key is reclaimed.** An entry
+  written by a pre-2.0 release carries no metadata record, so the instance holding it in memory
+  knows only its protection literal — and the check that asks a sibling which keys it still reads
+  through looked only at the metadata, so those entries were invisible. Another instance on the
+  same store could then destroy the key a sibling's legacy value decrypted through, turning that
+  value into its default. Both the sibling check and the instance's own live-key check now derive
+  the answer the same way reads do.
 
 ### Changed
 

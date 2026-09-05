@@ -1,12 +1,15 @@
 package eu.anifantakis.lib.ksafe
 
+import eu.anifantakis.lib.ksafe.internal.StorageOp
 import eu.anifantakis.lib.ksafe.internal.StoredValue
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.io.File
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
@@ -214,6 +217,46 @@ class JvmSiblingRotationTest {
             b.rotateKeys()
 
             assertEquals("T", a.getDirect("token", ""), "a still-referenced per-entry alias must survive the rotation")
+        } finally {
+            a.close(); b.close()
+        }
+    }
+
+    /**
+     * The legacy twin: an `encrypted_`-prefixed record carries no metadata, so the sibling's RAM
+     * routes it through a per-entry alias that only its protection literal names. Whatever reclaims
+     * that alias must still count it as in use.
+     */
+    @Test
+    fun staleSiblingCopyOfALegacyEntry_survivesTheKeyReclaim() = runBlocking {
+        val engine = StatefulFakeEncryption()
+        val b = newKSafe("sibrotlegacy", engine)
+        // No collector, so nothing refreshes the legacy copy out from under the assertions.
+        val a = newKSafe("sibrotlegacy", engine, lazyLoad = true)
+        try {
+            assertRealSiblings(a, b)
+            val legacyAlias = b.core.perEntryAlias("token", 1)
+            b.core.storage.applyBatch(
+                listOf(
+                    StorageOp.Put(
+                        b.core.legacyEncryptedRawKey("token"),
+                        StoredValue.Text(encodeBase64(engine.encrypt(legacyAlias, "\"T\"".encodeToByteArray()))),
+                    )
+                )
+            )
+            // b must have merged it, or its write finds no per-entry alias to supersede.
+            withTimeout(5.seconds) { while (b.core.protectionMap["token"] == null) delay(10) }
+
+            assertEquals("T", a.getDirect("token", ""), "precondition: the instance serves the legacy entry")
+            assertNull(a.core.encMetaMap["token"], "precondition: a legacy record leaves no encMetaMap entry")
+
+            b.put("token", "T2") // moves the entry onto the master and reclaims the legacy alias
+
+            assertTrue(
+                legacyAlias in engine.liveAliases(),
+                "a legacy alias a sibling still reads through must survive: ${engine.liveAliases()}",
+            )
+            assertEquals("T", a.getDirect("token", ""), "the instance must still serve its legacy copy")
         } finally {
             a.close(); b.close()
         }
