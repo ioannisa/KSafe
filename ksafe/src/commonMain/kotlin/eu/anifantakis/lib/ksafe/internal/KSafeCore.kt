@@ -12,11 +12,9 @@ import eu.anifantakis.lib.ksafe.KSafeRotationResult
 import eu.anifantakis.lib.ksafe.KSafeWriteMode
 import eu.anifantakis.lib.ksafe.KSafeBase64
 import eu.anifantakis.lib.ksafe.internal.coreparts.aliasForRawMeta
-import eu.anifantakis.lib.ksafe.internal.coreparts.capturePerEntryAliasChange
 import eu.anifantakis.lib.ksafe.internal.coreparts.convertStoredValue
 import eu.anifantakis.lib.ksafe.internal.coreparts.decryptEntry
 import eu.anifantakis.lib.ksafe.internal.coreparts.drainRemaining
-import eu.anifantakis.lib.ksafe.internal.coreparts.encMetaForWrite
 import eu.anifantakis.lib.ksafe.internal.coreparts.encodePlainValue
 import eu.anifantakis.lib.ksafe.internal.coreparts.ensureCacheReadyBlocking
 import eu.anifantakis.lib.ksafe.internal.coreparts.isRotationRetryable
@@ -33,6 +31,7 @@ import eu.anifantakis.lib.ksafe.internal.coreparts.raiseToAtLeast
 import eu.anifantakis.lib.ksafe.internal.coreparts.resolveFromCache
 import eu.anifantakis.lib.ksafe.internal.coreparts.retryingTransientReads
 import eu.anifantakis.lib.ksafe.internal.coreparts.stageDelete
+import eu.anifantakis.lib.ksafe.internal.coreparts.stageEncryptedWrite
 import eu.anifantakis.lib.ksafe.internal.coreparts.stagePlainWrite
 import eu.anifantakis.lib.ksafe.internal.coreparts.startBackgroundCollector
 import eu.anifantakis.lib.ksafe.internal.coreparts.startWriteConsumer
@@ -730,43 +729,9 @@ internal class KSafeCore(
             // Serialize FIRST: a throwing serializer must leave no trace — once the ownership
             // token, dirty flag or routing metadata are touched, nothing repairs them.
             val jsonString = if (value == null) NULL_SENTINEL else jsonEncode(json, serializer, value)
-
-            // Claim rollback ownership before any optimistic mutation, so a concurrently-failing
-            // older write for this key can no longer revert what is set below.
-            val writeToken = Any().also { writeOwners[key] = it }
-            val rawCacheKey = legacyEncryptedRawKey(key)
-            dirtyKeys.add(rawCacheKey)
-
-            val writeKeyGeneration = currentKeyGeneration.get()
-            val supersededAlias = capturePerEntryAliasChange(key, protection, requireUnlockedDevice, writeKeyGeneration)
-            memoryCache[rawCacheKey] = jsonString
-            protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(protection)
-            encMetaMap[key] = encMetaForWrite(protection, requireUnlockedDevice, writeKeyGeneration)
-            hasAnyEncryptedKey.set(true)
-
-            // Plain→encrypted: evict the stale plain slot now — dirty flags never clear on success,
-            // so the merge's eviction sweep skips it and a plaintext copy of the secret lingers in RAM.
-            memoryCache.remove(key)
-            plaintextCache.remove(key)
-
-            // Strict entries never enter the plaintext side cache (that would defeat the lock
-            // policy in memory); a non-strict→strict rewrite evicts any prior entry.
-            if (usesPlaintextSideCache) {
-                if (requireUnlockedDevice) plaintextCache.remove(rawCacheKey)
-                else plaintextCache[rawCacheKey] = CachedPlaintext(jsonString, plaintextExpiry())
-            }
-
             writeChannel.trySend(
-                PendingWrite.Encrypted(
-                    userKey = key,
-                    rawCacheKey = rawCacheKey,
-                    jsonString = jsonString,
-                    protection = protection,
-                    requireUnlockedDevice = requireUnlockedDevice,
-                    writeToken = writeToken,
-                    keyGeneration = writeKeyGeneration,
-                    supersededAliases = listOfNotNull(supersededAlias),
-                    onWriteFailed = onWriteFailed,
+                stageEncryptedWrite(
+                    key, jsonString, protection, requireUnlockedDevice, onWriteFailed = onWriteFailed,
                 )
             )
         } else {

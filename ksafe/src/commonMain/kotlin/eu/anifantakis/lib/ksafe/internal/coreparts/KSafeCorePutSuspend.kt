@@ -76,6 +76,51 @@ internal fun KSafeCore.stagePlainWrite(
     )
 }
 
+/** Optimistic encrypted-write state plus the op to enqueue; the caller passes the encoded value. */
+internal fun KSafeCore.stageEncryptedWrite(
+    key: String,
+    jsonString: String,
+    protection: KSafeProtection,
+    requireUnlockedDevice: Boolean,
+    completion: CompletableDeferred<Unit>? = null,
+    onWriteFailed: ((Throwable) -> Unit)? = null,
+): PendingWrite.Encrypted {
+    // Token and dirty flag before any optimistic mutation; see stageDelete.
+    val writeToken = Any().also { writeOwners[key] = it }
+    val rawCacheKey = legacyEncryptedRawKey(key)
+    dirtyKeys.add(rawCacheKey)
+    val writeKeyGeneration = currentKeyGeneration.get()
+    val supersededAlias = capturePerEntryAliasChange(key, protection, requireUnlockedDevice, writeKeyGeneration)
+
+    // Value before the routing literal, or a concurrent read is routed to a still-empty slot.
+    memoryCache[rawCacheKey] = jsonString
+    protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(protection)
+    encMetaMap[key] = encMetaForWrite(protection, requireUnlockedDevice, writeKeyGeneration)
+    hasAnyEncryptedKey.set(true)
+
+    // Plain→encrypted: drop the bare-key plain slot a prior plaintext write left in RAM.
+    memoryCache.remove(key)
+    plaintextCache.remove(key)
+    // Strict entries never enter the plaintext side cache, and a rewrite into strict evicts it.
+    if (usesPlaintextSideCache) {
+        if (requireUnlockedDevice) plaintextCache.remove(rawCacheKey)
+        else plaintextCache[rawCacheKey] = CachedPlaintext(jsonString, plaintextExpiry())
+    }
+
+    return PendingWrite.Encrypted(
+        userKey = key,
+        rawCacheKey = rawCacheKey,
+        jsonString = jsonString,
+        protection = protection,
+        requireUnlockedDevice = requireUnlockedDevice,
+        writeToken = writeToken,
+        keyGeneration = writeKeyGeneration,
+        supersededAliases = listOfNotNull(supersededAlias),
+        completion = completion,
+        onWriteFailed = onWriteFailed,
+    )
+}
+
 /** Encodes once, so the cache and the batch share one representation even for a loose serializer. */
 internal fun KSafeCore.encodePlainValue(value: Any?, serializer: KSerializer<*>): Any =
     if (value == null) NULL_SENTINEL
@@ -94,39 +139,9 @@ internal suspend fun KSafeCore.putEncryptedSuspend(
 ) {
     // Serialize first: a throwing serializer must leave no trace.
     val jsonString = if (value == null) NULL_SENTINEL else jsonEncode(json, serializer, value)
-
-    // Token and dirty flag before any optimistic mutation; see stageDelete.
-    val writeToken = Any().also { writeOwners[key] = it }
-    val rawCacheKey = legacyEncryptedRawKey(key)
-    dirtyKeys.add(rawCacheKey)
-    val writeKeyGeneration = currentKeyGeneration.get()
-    val supersededAlias = capturePerEntryAliasChange(key, protection, requireUnlockedDevice, writeKeyGeneration)
-    protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(protection)
-    encMetaMap[key] = encMetaForWrite(protection, requireUnlockedDevice, writeKeyGeneration)
-    hasAnyEncryptedKey.set(true)
-    memoryCache[rawCacheKey] = jsonString
-    // Plain→encrypted: drop the bare-key plain slot a prior plaintext write left in RAM.
-    memoryCache.remove(key)
-    plaintextCache.remove(key)
-    // Strict entries never enter the plaintext side cache, and a rewrite into strict evicts it.
-    if (usesPlaintextSideCache) {
-        if (requireUnlockedDevice) plaintextCache.remove(rawCacheKey)
-        else plaintextCache[rawCacheKey] = CachedPlaintext(jsonString, plaintextExpiry())
-    }
-
     val deferred = CompletableDeferred<Unit>()
     writeChannel.send(
-        PendingWrite.Encrypted(
-            userKey = key,
-            rawCacheKey = rawCacheKey,
-            jsonString = jsonString,
-            protection = protection,
-            requireUnlockedDevice = requireUnlockedDevice,
-            writeToken = writeToken,
-            keyGeneration = writeKeyGeneration,
-            supersededAliases = listOfNotNull(supersededAlias),
-            completion = deferred,
-        )
+        stageEncryptedWrite(key, jsonString, protection, requireUnlockedDevice, completion = deferred)
     )
     deferred.await()
 }

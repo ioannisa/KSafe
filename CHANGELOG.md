@@ -300,6 +300,10 @@ counter.value++
   same store could then destroy the key a sibling's legacy value decrypted through, turning that
   value into its default. Both the sibling check and the instance's own live-key check now derive
   the answer the same way reads do.
+- **A suspending encrypted write no longer publishes its routing metadata before its value.** The
+  entry was marked encrypted while its ciphertext slot was still empty, so a read arriving in that
+  window was routed to the empty slot and served the default; both write paths now stage through
+  one shared step that writes the value first.
 
 ### Changed
 
