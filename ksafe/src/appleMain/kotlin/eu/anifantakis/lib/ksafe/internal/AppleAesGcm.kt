@@ -10,14 +10,7 @@ import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.usePinned
 
-/**
- * KSafe-owned Apple AES-GCM adapter.
- *
- * The primitive stays in Apple's CryptoKit through the bundled Swift bridge; this Kotlin layer
- * owns the persisted framing and keeps it byte-compatible with every KSafe release:
- *
- * `12-byte nonce || ciphertext || 16-byte authentication tag`.
- */
+/** Apple AES-GCM via the CryptoKit bridge. Persisted framing: nonce(12) || ciphertext || tag(16). */
 internal object AppleAesGcm {
     internal const val NONCE_SIZE_BYTES: Int = 12
     internal const val TAG_SIZE_BYTES: Int = 16

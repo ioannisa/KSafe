@@ -9,9 +9,8 @@ import eu.anifantakis.lib.ksafe.internal.jsonDecode
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.KSerializer
 
-// A stored explicit null (NULL_SENTINEL) resolves to null only when the caller's T is nullable;
-// for a non-nullable T it yields the caller's default. Returning a bare null for a non-nullable
-// T passes the erased `as T` cast and defers an NPE to an unrelated later use site.
+// A stored null resolves to null only for a nullable T: a bare null passes the erased `as T` cast
+// and defers an NPE to an unrelated later use site.
 internal fun nullOrDefault(defaultValue: Any?, serializer: KSerializer<*>): Any? =
     if (serializer.descriptor.isNullable) null else defaultValue
 
@@ -19,23 +18,16 @@ internal fun KSafeCore.convertStoredValue(storedValue: Any?, defaultValue: Any?,
     if (storedValue == null) return defaultValue
     if (isNullSentinel(storedValue)) return nullOrDefault(defaultValue, serializer)
 
-    // Dispatch on the serializer's primitive kind, not defaultValue's runtime class: that
-    // survives a null default and is JS-safe (on Kotlin/JS `0f is Int` is true). Built-in
-    // primitives ONLY — a custom serializer with a primitive descriptor (Duration, Uuid,
-    // datetime) is JSON-encoded by the write path, so it must round-trip through the JSON
-    // else-branch; the primitive fast-path would return stored JSON verbatim and the
-    // caller's reified cast would throw CCE.
+    // Dispatch on the serializer's kind, not defaultValue's class: survives a null default and is
+    // JS-safe (`0f is Int` on Kotlin/JS). Built-ins only; a custom primitive serializer stays JSON.
     return when (builtInPrimitiveKindOrNull(serializer)) {
         kotlinx.serialization.descriptors.PrimitiveKind.BOOLEAN -> when (storedValue) {
             is Boolean -> storedValue
             is String -> storedValue.toBooleanStrictOrNull() ?: defaultValue
             else -> defaultValue
         }
-        // Numeric kinds coerce across the whole Int/Long/Float/Double matrix so a key's
-        // declared type can change between app versions without losing data: coerce when the
-        // value is faithfully representable, else fall back to the default (out-of-range or
-        // fractional reads) rather than silently truncating or wrapping. Widening conversions
-        // are exact or lose only precision at large magnitudes.
+        // Numeric kinds coerce across Int/Long/Float/Double so a key's declared type can change between
+        // app versions; out-of-range or fractional reads fall back to the default rather than truncate.
         kotlinx.serialization.descriptors.PrimitiveKind.INT -> when (storedValue) {
             is Int -> storedValue
             is Long -> if (storedValue in Int.MIN_VALUE..Int.MAX_VALUE) storedValue.toInt() else defaultValue
@@ -56,15 +48,11 @@ internal fun KSafeCore.convertStoredValue(storedValue: Any?, defaultValue: Any?,
         }
         kotlinx.serialization.descriptors.PrimitiveKind.FLOAT -> when (storedValue) {
             is Float -> storedValue
-            // Narrowing Double -> Float, mirroring the Long -> Int guard: a finite
-            // Double that overflows Float's range falls back to the default rather
-            // than silently becoming Infinity.
+            // A finite Double that overflows Float falls back instead of becoming Infinity.
             is Double -> {
                 val f = storedValue.toFloat()
                 if (f.isInfinite() && storedValue.isFinite()) defaultValue else f
             }
-            // Int / Long -> Float never overflows Float's range; large magnitudes
-            // lose precision, which is the expected narrowing cost.
             is Int -> storedValue.toFloat()
             is Long -> storedValue.toFloat()
             is String -> storedValue.toFloatOrNull() ?: defaultValue
@@ -83,12 +71,8 @@ internal fun KSafeCore.convertStoredValue(storedValue: Any?, defaultValue: Any?,
             else -> defaultValue
         }
         else -> {
-            // Complex `@Serializable` type — expect a JSON string. A non-String here is a
-            // genuine type mismatch (a primitive persisted via KSafeWriteMode.Plain, read back
-            // after the key's declared type changed to a complex type across app versions), so
-            // fall back to the default like every other mismatch arm above. Returning the raw
-            // primitive instead would flow into the caller's reified `... as T` cast and throw
-            // ClassCastException, crashing the property access / collecting scope.
+            // Complex `@Serializable` type — expect a JSON string. A raw primitive here would
+            // flow into the caller's reified `as T` cast and throw CCE, so fall back instead.
             if (storedValue !is String) return defaultValue
             if (storedValue == NULL_SENTINEL) return null
             try {
@@ -101,16 +85,10 @@ internal fun KSafeCore.convertStoredValue(storedValue: Any?, defaultValue: Any?,
     }
 }
 
-/**
- * Returns this Double as a Long if it is finite, has no fractional part, and
- * fits within Long's range; otherwise null. Used for decimal -> integer reads
- * (see [convertStoredValue]) so a fractional or out-of-range decimal falls back
- * to the caller's default instead of being silently truncated or wrapped.
- */
+/** This Double as a Long when it is finite, integral and in range; null otherwise. */
 private fun Double.toLongExactOrNull(): Long? {
     if (!isFinite() || this != kotlin.math.floor(this)) return null
-    // Long.MAX_VALUE.toDouble() rounds up to 2^63 (out of Long range), so the
-    // upper bound is strict; Long.MIN_VALUE (-2^63) is exactly representable.
+    // Long.MAX_VALUE.toDouble() rounds up to 2^63, so the upper bound is strict.
     if (this < Long.MIN_VALUE.toDouble() || this >= Long.MAX_VALUE.toDouble()) return null
     return toLong()
 }

@@ -16,14 +16,8 @@ import java.io.InputStream
 import java.io.OutputStream
 
 /**
- * [KSafePlatformStorage] for the JVM fallback that avoids `sun.misc.Unsafe`.
- *
- * DataStore Preferences' protobuf hard-requires `sun.misc.Unsafe`, which a `jlink`-trimmed
- * runtime (omitting `jdk.unsupported`) crashes on. This keeps DataStore's file machinery
- * (atomic writes, corruption handling, fsync) but swaps in a plain JSON serializer.
- *
- * Uses `datastore-core`'s `java.io` [Serializer] path, not okio: okio 3.x's multi-release
- * jar fails bytecode verification (`VerifyError: Bad return type`) on the jlink-trimmed runtime.
+ * [KSafePlatformStorage] for the JVM: DataStore's file machinery with a plain JSON serializer over
+ * `java.io` streams, since Preferences' protobuf and okio 3.x both break on a `jlink`-trimmed JRE.
  */
 @PublishedApi
 internal class DataStoreJsonStorage(
@@ -67,7 +61,6 @@ internal class DataStoreJsonStorage(
         commits.publish(dataStore.updateData { emptyMap() })
     }
 
-    /** JSON `Map<String,String>` serializer over `java.io` streams — no protobuf, no okio. */
     internal object JsonMapSerializer : Serializer<Map<String, String>> {
         private val json = Json { encodeDefaults = true }
         private val mapSer = MapSerializer(String.serializer(), String.serializer())
@@ -75,15 +68,12 @@ internal class DataStoreJsonStorage(
         override val defaultValue: Map<String, String> = emptyMap()
 
         override suspend fun readFrom(input: InputStream): Map<String, String> {
-            // A mid-read IOException must propagate, not return emptyMap: datastore-core
-            // caches readFrom's result as current state, so emptying here lets the next
-            // write wipe every entry over a transient hiccup. (Missing file never reaches
-            // here — datastore-core yields defaultValue for FileNotFoundException.)
+            // A mid-read IOException must propagate: datastore-core caches readFrom's result as
+            // current state, so emptying here lets the next write wipe every entry.
             val text = input.readBytes().decodeToString()
             return try {
                 if (text.isBlank()) emptyMap() else json.decodeFromString(mapSer, text)
             } catch (e: SerializationException) {
-                // Non-blank but unparseable = real corruption; route to corruptionHandler.
                 throw CorruptionException("KSafe JSON store is corrupt: unparseable content", e)
             }
         }

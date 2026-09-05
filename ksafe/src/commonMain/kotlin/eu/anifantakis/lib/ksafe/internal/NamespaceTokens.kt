@@ -1,40 +1,20 @@
 package eu.anifantakis.lib.ksafe.internal
 
-/**
- * The character class an `appNamespace` may keep, and the length it is capped at. Shared with the
- * FROZEN legacy spellings ([legacyLossyNamespaceToken], the JVM data-directory token) — those
- * reproduce shipped on-disk identities byte-for-byte, so a widened class or a raised cap in one
- * copy alone would strand a shipped app's data. The three PIPELINES deliberately differ; only
- * these two literals are shared.
- */
+/** Character class and length cap an `appNamespace` may keep. Shared with the frozen legacy
+ *  spellings, which reproduce shipped on-disk identities — widening one copy strands data. */
 internal val NAMESPACE_SANITIZE_REGEX = Regex("[^A-Za-z0-9._-]")
 internal const val NAMESPACE_TOKEN_MAX_LENGTH: Int = 120
 
-/**
- * FNV-1a 64-bit parameters, spelled once. KSafe hashes two different domains with them
- * ([namespaceCollisionDigest] over UTF-8 bytes, `KSafeCore.aliasFingerprint` over UTF-16 code
- * units) — the two functions must stay apart, but the constants they share should not be
- * discoverable only under one of two number bases.
- */
+/** FNV-1a 64-bit parameters, shared by [namespaceCollisionDigest] (UTF-8 bytes) and
+ *  `KSafeCore.aliasFingerprint` (UTF-16 code units); the two hashes stay separate. */
 internal const val FNV1A_64_OFFSET_BASIS: Long = -0x340d631b7bdddcdbL
 internal const val FNV1A_64_PRIME: Long = 0x100000001b3L
 
-/** Width of a 64-bit FNV-1a digest rendered as zero-padded lowercase hex. */
 internal const val FNV1A_64_HEX_LENGTH: Int = 16
 
 /**
- * The single canonical `appNamespace` normalization, shared by every consumer of the token
- * (JVM data directory + OS-vault namespace, web data prefix + IndexedDB key prefix).
- *
- * Deliberate equivalences first — whitespace padding and leading dots are cosmetic, so
- * `" foo "`, `".foo"`, and `"foo"` must agree (and stripping leading dots means the token is
- * never `"."`/`".."` → no path traversal). After that the mapping must be injective: invalid
- * characters collapse to `_` and the token is capped at 120 chars, so without a
- * disambiguator two DIFFERENT configured ids (`"a/b"` vs `"a?b"`, or two long ids sharing a
- * 120-char prefix) would silently share data slots and key custody — one store could read,
- * overwrite, or `clearAll()` the other. A lossy token therefore carries a digest of the
- * pre-sanitization id; an already-clean token is unchanged, so documented usage needs no
- * migration.
+ * The one canonical `appNamespace` normalization. Leading dots are stripped so the token is never
+ * `.`/`..`; a lossy sanitize or cap gets a digest suffix, or two ids could share data and keys.
  */
 internal fun canonicalNamespaceToken(raw: String?): String? {
     if (raw == null) return null
@@ -46,11 +26,8 @@ internal fun canonicalNamespaceToken(raw: String?): String? {
     return "$sanitized-${namespaceCollisionDigest(normalized)}"
 }
 
-/**
- * 64-bit FNV-1a over the UTF-8 bytes, as 16 lowercase hex chars. Keeps accidentally-colliding
- * sanitized namespaces distinct; not a cryptographic boundary — the namespace is chosen by the
- * app's own developer, so there is no adversarial-collision threat to defend against.
- */
+/** 64-bit FNV-1a over the UTF-8 bytes, as 16 lowercase hex chars. Keeps colliding sanitized
+ *  namespaces distinct; not a cryptographic boundary. */
 internal fun namespaceCollisionDigest(s: String): String {
     var hash = FNV1A_64_OFFSET_BASIS
     for (byte in s.encodeToByteArray()) {

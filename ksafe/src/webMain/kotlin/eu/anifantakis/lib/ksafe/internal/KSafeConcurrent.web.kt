@@ -1,10 +1,6 @@
 package eu.anifantakis.lib.ksafe.internal
 
-/**
- * Browsers execute JS/Wasm on a single main thread, so these "concurrent"
- * primitives are just unsynchronised wrappers. Keeping them behind the same
- * interface means [KSafeCore] compiles unchanged on the web target.
- */
+// Browsers run JS/Wasm on one thread, so these "concurrent" primitives are plain wrappers.
 
 @PublishedApi
 internal actual class KSafeAtomicFlag actual constructor(initial: Boolean) {
@@ -72,14 +68,12 @@ internal actual class KSafeConcurrentSet<T : Any> actual constructor() {
 internal actual fun <T> runBlockingOnPlatform(block: suspend () -> T): T =
     error("runBlockingOnPlatform is not available on the web target; the web cache must be pre-populated synchronously.")
 
-// Single-threaded web: no worker thread to off-load decrypt to, and a dispatcher hop would break
-// the synchronous cold-start getFlow().first() self-heal. EmptyCoroutineContext keeps getFlowRaw
-// running inline on the collector.
+// A dispatcher hop would break the synchronous cold-start getFlow().first() self-heal, so
+// getFlowRaw runs inline on the collector.
 @PublishedApi
 internal actual val decryptFlowContext: kotlin.coroutines.CoroutineContext =
     kotlin.coroutines.EmptyCoroutineContext
 
-// Single-threaded: no lock needed, just run the block.
 @PublishedApi
 internal actual class KSafeInitLock actual constructor() {
     actual fun <R> withLock(block: () -> R): R = block()

@@ -1,29 +1,25 @@
 package eu.anifantakis.lib.ksafe
 
-/** Action to take when a security violation is detected. */
+/** What to do when a security violation is detected. */
 enum class SecurityAction {
-    /** Ignore the violation and continue normally. */
     IGNORE,
 
-    /** Allow the operation but invoke the [KSafeSecurityPolicy.onViolation] callback. */
+    /** Continue, but invoke [KSafeSecurityPolicy.onViolation]. */
     WARN,
 
-    /** Block the operation and throw [SecurityViolationException]. */
+    /** Throw [SecurityViolationException]. */
     BLOCK
 }
 
-/** Types of security violations that can be detected. */
+/** Threats KSafe can detect. */
 enum class SecurityViolation {
-    /** Device is rooted (Android) or jailbroken (iOS). */
+    /** Rooted (Android) or jailbroken (iOS). */
     RootedDevice,
 
-    /** A debugger is attached to the process. */
     DebuggerAttached,
 
-    /** App is running a debug build. */
     DebugBuild,
 
-    /** App is running on an emulator/simulator. */
     Emulator
 }
 
@@ -32,15 +28,8 @@ class SecurityViolationException(
     val violation: SecurityViolation
 ) : RuntimeException("Security violation: ${violation.name}")
 
-/**
- * Security policy for KSafe — detection and handling of threats such as
- * rooted/jailbroken devices, debugger attachment, and emulator usage.
- *
- * All actions default to [SecurityAction.IGNORE] for backwards compatibility.
- *
- * @property onViolation Invoked when a violation is detected under WARN or
- *   BLOCK — before throwing (BLOCK) or continuing (WARN).
- */
+/** Detection and handling of rooted devices, debuggers, debug builds and emulators. Every action
+ *  defaults to [SecurityAction.IGNORE]; [onViolation] fires under WARN and BLOCK. */
 data class KSafeSecurityPolicy(
     val rootedDevice: SecurityAction = SecurityAction.IGNORE,
     val debuggerAttached: SecurityAction = SecurityAction.IGNORE,
@@ -49,7 +38,6 @@ data class KSafeSecurityPolicy(
     val onViolation: ((SecurityViolation) -> Unit)? = null
 ) {
     companion object {
-        /** All checks ignored. */
         val Default = KSafeSecurityPolicy()
 
         /** Blocks on rooted devices and debuggers; warns on debug build / emulator. */

@@ -41,9 +41,8 @@ internal class DataStoreStorage(
     }
 
     private fun writeOne(prefs: MutablePreferences, rawKey: String, value: StoredValue) {
-        // A Preferences.Key is identified by (name, type), so purge every same-name
-        // entry first — otherwise a value written under a different type survives
-        // (e.g. plaintext lingering on disk after a plain→encrypted switch).
+        // A Preferences.Key is (name, type), so purge every same-name entry first, or plaintext
+        // written under another type lingers on disk after a plain→encrypted switch.
         removeByName(prefs, rawKey)
         when (value) {
             is StoredValue.BoolVal -> prefs[booleanPreferencesKey(rawKey)] = value.value
@@ -55,7 +54,6 @@ internal class DataStoreStorage(
         }
     }
 
-    /** Removes every typed [Preferences.Key] with this name (one can exist per type). */
     @Suppress("UNCHECKED_CAST")
     private fun removeByName(prefs: MutablePreferences, rawKey: String) {
         val matches = prefs.asMap().keys.filter { it.name == rawKey }
@@ -64,11 +62,7 @@ internal class DataStoreStorage(
 
 }
 
-/**
- * A DataStore [Preferences] snapshot as the core's storage-neutral map. Written once because both
- * readers of a `Preferences` snapshot — this storage's own relay and the JVM test-support cache
- * refresh — must agree on which entry types survive the conversion.
- */
+/** A DataStore [Preferences] snapshot as the core's storage-neutral map. */
 internal fun toStoredMap(prefs: Preferences): Map<String, StoredValue> {
     val raw = prefs.asMap()
     val out = HashMap<String, StoredValue>(raw.size)

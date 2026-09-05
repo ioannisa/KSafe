@@ -1,17 +1,13 @@
 package eu.anifantakis.lib.ksafe
 
-/**
- * Read-time protection tier reported by KSafe metadata / key-info APIs. For
- * writes, use [KSafeWriteMode] ([KSafeWriteMode.Plain] / [KSafeWriteMode.Encrypted]).
- */
+/** Read-time protection tier reported by KSafe metadata APIs; for writes use [KSafeWriteMode]. */
 enum class KSafeProtection {
-    /** Platform-default AES-GCM (256-bit key by default; see [KSafeConfig.aesKeySize]). */
+    /** Platform-default AES-GCM; see [KSafeConfig.aesKeySize]. */
     DEFAULT,
 
     /**
-     * Hardware-isolated encryption via a dedicated security chip: Android StrongBox
-     * (falls back to TEE), iOS Secure Enclave (falls back to Keychain); JVM/WASM fall
-     * back to [DEFAULT].
+     * Dedicated security chip where available — Android StrongBox, iOS Secure Enclave — falling back
+     * to the TEE / Keychain when it is not, and to [DEFAULT] on JVM and WASM.
      */
     HARDWARE_ISOLATED
 }

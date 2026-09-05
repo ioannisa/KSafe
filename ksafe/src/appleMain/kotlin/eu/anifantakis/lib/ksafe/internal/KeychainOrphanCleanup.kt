@@ -39,24 +39,14 @@ import kotlin.experimental.ExperimentalNativeApi
 import kotlin.native.OsFamily
 import kotlin.native.Platform
 
-/**
- * The sweep is only safe where the Keychain is app-private (iOS/tvOS/watchOS sandbox). On
- * macOS items share the per-user login keychain with no app identity in the namespace, so a
- * sweep would delete other KSafe-using apps' keys. Pure so it's testable without a Keychain.
- */
+/** Only safe where the Keychain is app-private; on macOS it is the shared per-user login keychain. */
 @OptIn(ExperimentalNativeApi::class)
 internal fun keychainOrphanSweepEnabled(osFamily: OsFamily): Boolean =
     osFamily != OsFamily.MACOSX
 
 /**
- * iOS-only Keychain orphan sweep (no-op on macOS via [keychainOrphanSweepEnabled]): the
- * Keychain survives app uninstall, so this deletes items the library wrote whose DataStore
- * counterpart no longer exists. Scans generic-password items AND SE-held `kSecClassKey` EC
- * keys, so a crash between SE key creation and wrapped-key storage is still cleaned up.
- *
- * [reservedKeyIds] holds the shared master-key sentinels: no single user key references
- * them, so they never appear in the valid-key set — without this guard the sweep would
- * delete the master and render ALL `DEFAULT` ciphertext permanently undecryptable.
+ * Deletes Keychain items whose DataStore counterpart is gone (the Keychain survives uninstall).
+ * The [reservedKeyIds] master sentinels are skipped: reaping one leaves its entries undecryptable.
  */
 @OptIn(ExperimentalForeignApi::class, ExperimentalNativeApi::class)
 internal suspend fun cleanupOrphanedKeychainEntries(
@@ -76,15 +66,13 @@ internal suspend fun cleanupOrphanedKeychainEntries(
 
     val validKeys = keychainSweepValidKeys(snapshot, legacyEncryptedPrefix)
 
-    // Same producer the factory's aliases come from — a sweep that derived the base itself would
-    // reap live keys the moment the two spellings drifted.
+    // Same producer as the factory's aliases; two spellings drifting apart would reap live keys.
     val prefixWithDelimiter = "${KSafeAliasFormat.dottedBase(fileName)}."
     val sePrefixWithDelimiter = "$seKeyTagPrefix$prefixWithDelimiter"
 
     val orphanedKeyIds = mutableSetOf<KeychainOrphan>()
 
-    // Null value-callbacks: the dict won't retain values, so hold the bridged +1 across
-    // SecItemCopyMatching then CFRelease, or every probe leaks a CFString.
+    // Null value-callbacks: the dict won't retain, so hold the bridged +1 until after the query.
     val serviceRef = CFBridgingRetain(serviceName)
     try {
         forEachKeychainAttributeDict({ query ->
@@ -93,10 +81,8 @@ internal suspend fun cleanupOrphanedKeychainEntries(
         }) { dict ->
             val account = dict.objectForKey(kSecAttrAccount as Any) as? String
             if (account != null) {
-                // ownedKeyIds = validKeys: never reap a root key with a byte-identical dotted
-                // account. Deliberate consequence: a NAMED store's orphans (whose owner is by
-                // definition absent from validKeys) are never reaped — including strict-variant
-                // orphans — and remain safe litter; only the root sweep reclaims orphans.
+                // Never reap a root key with a byte-identical dotted account. Consequence: a named
+                // store's orphans are never reaped and stay as harmless litter.
                 val orphan =
                     keychainOrphanKeyId(account, prefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight, ownedKeyIds = validKeys)
                         ?: keychainOrphanKeyId(account, sePrefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight, ownedKeyIds = validKeys)
@@ -107,8 +93,7 @@ internal suspend fun cleanupOrphanedKeychainEntries(
         CFRelease(serviceRef)
     }
 
-    // Scan SE-held kSecClassKey EC keys: catches keys orphaned by a crash between SE key
-    // creation and wrapped-key storage (no matching generic-password item).
+    // SE keys can be orphaned by a crash between key creation and wrapped-key storage.
     forEachKeychainAttributeDict({ query ->
         CFDictionarySetValue(query, kSecClass, kSecClassKey)
         CFDictionarySetValue(query, kSecAttrKeyType, kSecAttrKeyTypeECSECPrimeRandom)
@@ -124,7 +109,6 @@ internal suspend fun cleanupOrphanedKeychainEntries(
             }
             val tag = tagBytes.decodeToString()
 
-            // SE tags: "se.{prefix}.{keyId}". ownedKeyIds = validKeys (see above).
             keychainOrphanKeyId(tag, sePrefixWithDelimiter, fileName, validKeys, reservedKeyIds, isInFlight, ownedKeyIds = validKeys)
                 ?.let { orphanedKeyIds.add(it) }
         }
@@ -143,21 +127,14 @@ internal suspend fun cleanupOrphanedKeychainEntries(
         return
     }
 
-    // Re-check the in-flight guard at DELETE time, not just at classify: sweep and writes run
-    // parallel on Native, so a `put` that re-used a key after classify but before this loop
-    // would lose its live key. Writes mark in-flight before commit, closing that window.
+    // Re-check in-flight at delete time: sweep and writes run in parallel on Native, so a `put`
+    // that re-used a key after classify would otherwise lose its live key.
     for (keyId in keychainOrphansToDelete(orphanedKeyIds, isInFlight)) {
         engine.deleteKeySuspend("$prefixWithDelimiter$keyId")
     }
 }
 
-/**
- * Enumerates every Keychain item matching the query [configure] completes, handing each item's
- * attribute dictionary to [onItem]. Written once because the mechanics between the two scans are
- * manual CoreFoundation refcounting — the query's own +1 and the result array's — and that is
- * exactly where a duplicated release becomes a leak or a double free. The caller keeps ownership
- * of anything it bridges into the query inside [configure].
- */
+/** Enumerates Keychain items matching [configure]'s query; the caller keeps ownership of whatever it bridges in. */
 @OptIn(ExperimentalForeignApi::class)
 private inline fun forEachKeychainAttributeDict(
     configure: (CFMutableDictionaryRef?) -> Unit,

@@ -17,41 +17,20 @@ import platform.Foundation.dataWithContentsOfFile
 import platform.Foundation.writeToFile
 import platform.posix.memcpy
 
-/**
- * Simulator-only escape hatch for an entitlement-blocked Keychain.
- *
- * An app with no signing team / no Keychain Sharing capability gets
- * `errSecMissingEntitlement` (-34018) from every Keychain call on the iOS Simulator.
- * When that exact status is hit *on the Simulator*, [AppleKeychainEncryption] falls
- * back to this store instead of failing every encrypted write.
- *
- * Security: the Simulator's Keychain is itself just a file on the host Mac — no SEP,
- * no hardware — so a sandbox-file key here is the same trust tier, not a downgrade of
- * anything real. Real devices never construct this store (the factory gate is
- * [SecurityChecker.isEmulator]), so on-device a -34018 still fails loudly.
- *
- * Precedence is sticky: once a fallback key exists for an alias it wins over the
- * Keychain unconditionally, so every run of an install decrypts with the same key even
- * if the entitlement problem is later fixed. The degrade is reported through
- * `KSafe.protectionInfo` (`apple_keychain_entitlement_missing`).
- */
+// Simulator-only escape hatch for an entitlement-blocked (-34018) Keychain: the Simulator's own
+// Keychain is just a file on the host Mac, so a sandbox-file key is the same trust tier. Never
+// built on a device. Sticky: once an alias has a fallback key it wins over the Keychain for good.
 internal interface SimulatorFallbackKeyStore {
-    /** Key bytes stored for [account], or null if none. */
     fun read(account: String): ByteArray?
 
-    /** Persists [bytes] for [account]. Throws if the bytes cannot be durably written. */
+    /** Throws if the bytes cannot be durably written. */
     fun write(account: String, bytes: ByteArray)
 
-    /** Removes the key for [account]. No-op if absent; never throws. */
+    /** No-op if absent; never throws. */
     fun delete(account: String)
 }
 
-/**
- * Production [SimulatorFallbackKeyStore]: one file per account under
- * `Application Support/<serviceName>.simfallback/`, named by the SHA-256 of the account
- * (accounts embed arbitrary user key strings, so they can't be used as file names
- * directly). Writes are atomic (`NSDataWritingAtomic` semantics via `writeToFile`).
- */
+// One file per account, named by SHA-256 because accounts embed arbitrary user key strings.
 @OptIn(ExperimentalForeignApi::class)
 internal class FileSimulatorFallbackKeyStore(
     private val serviceName: String,
@@ -80,8 +59,7 @@ internal class FileSimulatorFallbackKeyStore(
     @OptIn(ExperimentalForeignApi::class)
     override fun write(account: String, bytes: ByteArray) {
         val ok = autoreleasepool {
-            // Inside the pool: createDirectoryAtPath + filePath bridge Kotlin Strings to NSString,
-            // which would otherwise accumulate on the caller's pool during a tight write loop.
+            // Pooled: the bridged NSStrings would otherwise pile up on the caller's pool.
             NSFileManager.defaultManager.createDirectoryAtPath(
                 dirPath,
                 withIntermediateDirectories = true,
@@ -96,15 +74,14 @@ internal class FileSimulatorFallbackKeyStore(
                 nsData.writeToFile(filePath(account), atomically = true)
             }
         }
-        // Fail closed: a key that only exists in memory would make everything encrypted
-        // under it unreadable after the next relaunch.
+        // Fail closed: a key that lives only in memory makes its ciphertext unreadable after
+        // the next relaunch.
         if (!ok) throw IllegalStateException(
             "KSafe: failed to persist the Simulator fallback key for account $account"
         )
     }
 
     override fun delete(account: String) {
-        // Pool the bridged filePath NSString so a tight delete loop doesn't grow native memory.
         autoreleasepool {
             NSFileManager.defaultManager.removeItemAtPath(filePath(account), error = null)
         }

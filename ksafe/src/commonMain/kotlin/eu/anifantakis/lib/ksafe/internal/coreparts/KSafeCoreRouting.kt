@@ -10,19 +10,11 @@ import eu.anifantakis.lib.ksafe.internal.KeySafeMetadataManager
 import eu.anifantakis.lib.ksafe.internal.StoredValue
 import kotlinx.coroutines.CancellationException
 
-/**
- * Whether a write of this shape keys under the strict per-entry alias VARIANT. One producer for
- * the whole codebase: the boolean decides what an entry's metadata CLAIMS, while [aliasForWrite]'s
- * branch decides which alias the encrypt actually USES — a copy edited on only one side leaves an
- * entry naming a key that does not hold it.
- */
+/** Whether a write keys under the strict alias VARIANT; [aliasForWrite] must agree with it. */
 internal fun strictAliasVariantFor(protection: KSafeProtection?, requireUnlockedDevice: Boolean): Boolean =
     protection == KSafeProtection.HARDWARE_ISOLATED && requireUnlockedDevice
 
-/**
- * The routing record a write of this shape commits: envelope version, unlock policy, generation
- * and strict-alias variant always move together, so they are derived in one place.
- */
+/** The routing record a write commits; its four fields always move together. */
 internal fun encMetaForWrite(
     protection: KSafeProtection?,
     requireUnlockedDevice: Boolean,
@@ -34,10 +26,7 @@ internal fun encMetaForWrite(
     strictAliasVariant = strictAliasVariantFor(protection, requireUnlockedDevice),
 )
 
-/**
- * The routing a NO-record entry defaults to: a pre-v2 per-entry alias with no associated data.
- * Stated once so the read path and the alias path can never resolve a legacy entry differently.
- */
+/** The routing a NO-record entry defaults to: a pre-v2 per-entry alias, no associated data. */
 internal val NO_RECORD_META = EncMeta(
     envelopeVersion = KeySafeMetadataManager.ENVELOPE_VERSION_V1,
     requireUnlockedDevice = false,
@@ -47,11 +36,7 @@ internal val NO_RECORD_META = EncMeta(
 
 internal fun KSafeCore.metaRawKey(key: String): String = KeySafeMetadataManager.metadataRawKey(key)
 
-/**
- * Whether [snapshot] holds a value for [userKey] under ANY of the three layouts an entry can
- * occupy. A metadata record without one is the surviving half of a torn write: it describes
- * nothing readable, so no caller may treat it as evidence the entry exists.
- */
+/** Whether [snapshot] holds a value for [userKey]; a lone metadata record is a torn write. */
 internal fun KSafeCore.hasAnyValueRecord(
     snapshot: Map<String, StoredValue>,
     userKey: String,
@@ -77,38 +62,26 @@ internal fun KSafeCore.buildMetaJson(
             KeySafeMetadataManager.envelopeVersionForWrite(keyGeneration)
         } else KeySafeMetadataManager.ENVELOPE_VERSION_LATEST,
         keyGeneration = keyGeneration,
-        // Fully derived: every new strict HARDWARE_ISOLATED write keys under the strict
-        // alias variant (matches [aliasForWrite]'s routing — the two must never diverge).
         strictAliasVariant = strictAliasVariantFor(protection, requireUnlockedDevice == true),
     )
 }
 
 /**
- * Every per-entry alias [userKey] may still own, from generation 1 through the higher of its
- * recorded generation and the store's current one. Enumerated (never deleted here): a concurrent
- * rotation may have raised the store's generation after the caller sampled the entry's, stranding
- * the live alias, and an entry recorded ABOVE the store's generation keeps its own. Deleting an
- * absent generation is a no-op; generation 1 yields the bare alias.
- *
- * Both alias spellings are enumerated — a tighten that minted the strict variant and then failed
- * to commit leaves a key under it — except where the store's write path cannot reach that variant
- * at all ([KSafeCore.strictAliasVariantReachable]), since a delete is only free of charge on
- * platforms whose engine can no-op it.
- *
- * [entryUsedStrictAlias] overrides that prune from the entry's own recorded state. The prune asks
- * what a new USER write can carry, and rotation does not go through [KSafeCore.modeTransformer] —
- * it takes the unlock policy from the entry's metadata — so on web a legacy strict entry rotates
- * into a strict key the prune would then refuse to sweep.
+ * Every per-entry alias [userKey] may still own. Both spellings are enumerated — a tighten that
+ * minted the strict variant and then failed to commit leaves a key under it.
  */
 internal fun KSafeCore.perEntryAliasesThrough(
     userKey: String,
     recordedGeneration: Int,
     entryUsedStrictAlias: Boolean = false,
 ): List<String> {
+    // Both bounds: a concurrent rotation may have raised the store's generation past the sampled
+    // one, and an entry recorded above the store's generation keeps its own.
     val topGeneration = maxOf(recordedGeneration, currentKeyGeneration.get())
     val out = ArrayList<String>(topGeneration * 2)
     for (generation in 1..topGeneration) {
         out += perEntryAlias(userKey, generation)
+        // Rotation keeps a strict entry strict even where a new user write could not mint that spelling.
         if (strictAliasVariantReachable || entryUsedStrictAlias) {
             out += strictPerEntryAlias(userKey, generation)
         }
@@ -117,12 +90,8 @@ internal fun KSafeCore.perEntryAliasesThrough(
 }
 
 /**
- * Whether deleting [key] should sweep per-entry engine aliases: true only when THIS
- * store's recorded state proves the entry used one — HARDWARE_ISOLATED, or a legacy
- * pre-v2 envelope (whose DEFAULT entries also had per-entry keys). Must run BEFORE the
- * delete's optimistic map removal. False for plain, master-riding, or unknown entries:
- * their derived alias can be byte-identical to a sibling store's live key (a dotted
- * user key vs a named store), so "harmless no-op delete" is not a safe assumption.
+ * Whether deleting [key] sweeps per-entry aliases: true only when the record proves the entry used
+ * one — a derived alias can be another store's live key. Must run BEFORE the optimistic removal.
  */
 internal fun KSafeCore.deleteTargetsPerEntryAlias(key: String): Boolean {
     val protection = protectionMap[key]?.let { KeySafeMetadataManager.parseProtection(it) } ?: return false
@@ -133,16 +102,8 @@ internal fun KSafeCore.deleteTargetsPerEntryAlias(key: String): Boolean {
 }
 
 /**
- * Captures, at enqueue time (BEFORE the optimistic [encMetaMap] overwrite), the per-entry
- * alias the entry currently resolves to — but only when this write will move it to a
- * DIFFERENT alias: an unlock-policy transition, a legacy strict entry migrating to the
- * strict alias variant, or a per-entry entry rewritten onto a master alias. Gated on
- * proven per-entry-alias ownership ([deleteTargetsPerEntryAlias]): firing for a
- * master-riding entry would reclaim an alias this store may never have minted, and a
- * generation-1 dotted-key alias can be byte-identical to another store's live key. The
- * consumer re-compares against the alias the write ACTUALLY used (post-clamp) and
- * reclaims the old one only AFTER the commit, under the live-alias guard — never before
- * the write's own encrypt succeeds, so any failure leaves the previous value decryptable.
+ * The per-entry alias this write moves the entry off, captured BEFORE the optimistic [encMetaMap]
+ * overwrite; null if it stays. Reclaimed only after the commit, so a failure stays decryptable.
  */
 internal fun KSafeCore.capturePerEntryAliasChange(
     key: String,
@@ -164,8 +125,7 @@ internal fun KSafeCore.aadForRawMeta(
 ): ByteArray? =
     aadForEnvelope(storeIdentity, userKey, protection, requireUnlocked, keyGeneration, envelopeVersion)
 
-/** Fallback-identity AAD for an entry; null when there is no distinct fallback identity to
- *  retry under (or the entry is pre-v3). */
+/** Fallback-identity AAD for an entry; null when there is no distinct identity to retry under. */
 internal fun KSafeCore.fallbackAadFor(
     userKey: String, protection: KSafeProtection?, requireUnlocked: Boolean,
     keyGeneration: Int, envelopeVersion: Int,
@@ -183,11 +143,7 @@ internal class DecryptRoute(
     val fallbackAad: ByteArray?,
 )
 
-/**
- * Resolves everything a decrypt needs from ONE recorded routing record, so no call site
- * assembles a decrypt that reads under the wrong key or silently skips authentication.
- * Fails closed on a future envelope version before any of it is derived.
- */
+/** Everything a decrypt needs from ONE routing record; fails closed on a future envelope. */
 internal fun KSafeCore.decryptRoute(
     userKey: String,
     protection: KSafeProtection?,
@@ -211,8 +167,7 @@ internal fun KSafeCore.decryptRoute(
     )
 }
 
-/** [decryptRoute] for a caller holding a parsed record; a null [meta] is the no-record
- *  default (pre-v2 per-entry alias, no associated data). */
+/** [decryptRoute] for a parsed record; a null [meta] is the no-record default. */
 internal fun KSafeCore.decryptRoute(
     userKey: String,
     protection: KSafeProtection?,
@@ -224,12 +179,7 @@ internal fun KSafeCore.decryptRoute(
     )
 }
 
-/**
- * The fallback-identity retry policy, written once for both the suspending and the blocking
- * read path: an entry bound to the raw path spelling still reads, and a non-AAD failure
- * (missing key) fails identically on retry and propagates unchanged.
- * [decrypt] is the engine call the caller's context allows.
- */
+/** The fallback-identity retry policy, shared by the suspending and the blocking read path. */
 internal inline fun decryptUnderRoute(
     route: DecryptRoute,
     ciphertext: ByteArray,
@@ -248,8 +198,7 @@ internal inline fun decryptUnderRoute(
     }
 }
 
-/** The decrypt entry point for an entry whose recorded routing is known; a null [meta] is
- *  the no-record default (pre-v2 per-entry alias, no associated data). */
+/** Decrypts an entry whose recorded routing is known; a null [meta] is the no-record default. */
 internal suspend fun KSafeCore.decryptEntry(
     userKey: String,
     protection: KSafeProtection?,
@@ -273,8 +222,7 @@ internal fun KSafeCore.decryptEntryBlocking(
     meta?.requireUnlockedDevice == true,
 ) { alias, bytes, unlocked, aad -> engine.decrypt(alias, bytes, unlocked, aad = aad) }
 
-/** [aliasForRawMeta] for a caller holding a parsed record; a null [meta] is the no-record
- *  default (pre-v2 per-entry alias). */
+/** [aliasForRawMeta] for a parsed record; a null [meta] is the no-record default. */
 internal fun KSafeCore.aliasForRawMeta(
     userKey: String,
     protection: KSafeProtection?,
@@ -286,8 +234,7 @@ internal fun KSafeCore.aliasForRawMeta(
     )
 }
 
-/** [aliasForRead]'s twin for callers holding a snapshot's parsed meta instead of
- *  [encMetaMap] (getFlow emissions, the orphan probe, rotation). */
+/** [aliasForRead]'s twin for a caller holding a snapshot's parsed meta instead of [encMetaMap]. */
 internal fun KSafeCore.aliasForRawMeta(
     userKey: String,
     protection: KSafeProtection?,

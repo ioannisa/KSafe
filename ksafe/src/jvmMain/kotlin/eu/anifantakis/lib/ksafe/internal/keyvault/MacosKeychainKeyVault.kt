@@ -7,26 +7,14 @@ import com.sun.jna.ptr.IntByReference
 import com.sun.jna.ptr.PointerByReference
 import eu.anifantakis.lib.ksafe.internal.KSAFE_OS_STORE_IDENTITY
 
-/**
- * Fail closed: only `errSecSuccess` (0) is a success. `errSecDuplicateItem` (-25299) counts as
- * failure because [MacosKeychainKeyVault.put] is a delete-then-add upsert — a duplicate means the
- * delete didn't remove the old item and the new key was never stored, so swallowing it would report
- * success while silently losing the write.
- */
+// Fail closed: `put` is a delete-then-add upsert, so even errSecDuplicateItem means the delete
+// failed and the new key was never stored — swallowing it would report a lost write as success.
 internal fun macosKeychainAddIsFailure(status: Int): Boolean = status != 0
 
-/**
- * macOS key vault backed by the login Keychain via JNA bindings to `Security.framework`, using the
- * deprecated `SecKeychainAddGenericPassword` / `…Find…` / `…ItemDelete` generic-password API — far
- * simpler to bind than `SecItem*` (C strings vs. CoreFoundation dicts). Scope is the login Keychain,
- * not Secure Enclave (a JVM process can't reuse KSafe's Kotlin/Native SE path).
- */
+// Login Keychain via JNA, not the Secure Enclave. The deprecated generic-password API binds far
+// more simply than SecItem* (C strings vs CoreFoundation dicts).
 internal class MacosKeychainKeyVault(
-    /**
-     * App-isolation namespace: the generic-password **service** becomes `eu.anifantakis.ksafe.<ns>`
-     * to keep different apps' keys apart. Blank = the historical un-namespaced service. The account
-     * stays the bare alias.
-     */
+    // Service becomes eu.anifantakis.ksafe.<ns>; blank keeps the historical un-namespaced service.
     appNamespace: String = "",
 ) : JvmKeyVault {
 
@@ -49,9 +37,8 @@ internal class MacosKeychainKeyVault(
             null,
         )
         if (status == ERR_SEC_ITEM_NOT_FOUND) return null
-        // Any other non-success is a lookup FAILURE, not an absent key (e.g. a locked keychain):
-        // throw "key vault unavailable" so reads fall back to defaults, the orphan sweep leaves
-        // recoverable ciphertext intact, and writes fail closed instead of minting a divergent key.
+        // Any other non-success is a lookup failure, not an absent key: throwing keeps the orphan
+        // sweep off recoverable ciphertext and stops writes minting a divergent key.
         if (status != ERR_SEC_SUCCESS) {
             throw vaultUnavailable(
                 alias,
@@ -78,7 +65,6 @@ internal class MacosKeychainKeyVault(
             keyBytes.size, keyBytes,
             null,
         )
-        // Fail closed: see macosKeychainAddIsFailure.
         if (macosKeychainAddIsFailure(status)) {
             throw KeychainException("SecKeychainAddGenericPassword", status)
         }
@@ -99,10 +85,8 @@ internal class MacosKeychainKeyVault(
         try {
             SEC.SecKeychainItemDelete(ref)
         } finally {
-            // Find returns a +1-retained CFTypeRef via itemRef; ItemDelete unlinks the item but does
-            // NOT release that handle, so without CFRelease every delete leaks one native ref for the
-            // process lifetime. (SecKeychainItemFreeContent releases the password DATA buffer, not a
-            // SecKeychainItemRef — CFRelease is the correct release here.)
+            // Find returns a +1 CFTypeRef and ItemDelete does not release it, so without CFRelease
+            // every delete leaks a native ref for the process lifetime.
             CF.CFRelease(ref)
         }
     }

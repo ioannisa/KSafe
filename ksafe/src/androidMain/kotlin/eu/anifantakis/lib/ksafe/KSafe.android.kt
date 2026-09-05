@@ -44,11 +44,7 @@ import kotlin.time.Duration.Companion.seconds
 
 const val KEY_ALIAS_PREFIX: String = KSAFE_OS_STORE_IDENTITY
 
-/**
- * Per-datastore-path shared backend: every [KSafe] on one file shares a single [DataStore]
- * and [AndroidKeystoreEncryption] engine, so their in-memory DEK caches can't diverge from
- * the one on-disk wrapped-DEK slot (which would silently lose data).
- */
+// One DataStore and one engine per file, or sibling DEK caches diverge from the on-disk DEK slot.
 private class AndroidBackend(
     val dataStore: DataStore<Preferences>,
     val storage: KSafePlatformStorage,
@@ -63,18 +59,11 @@ private val backends = SharedBackendRegistry<AndroidBackend>(Dispatchers.IO) { p
     )
 }
 
-// Actual-custody probe results per alias. Safe to cache: a minted Keystore key never migrates
-// between security levels in place — rotation and self-heal mint under NEW aliases.
+// Safe to cache: a minted Keystore key never changes security level — rotation mints new aliases.
 private val strongBoxByAlias = ConcurrentHashMap<String, Boolean>()
 
-/**
- * Whether the Keystore key at [alias] actually resides in StrongBox — key creation can silently
- * fall back to the TEE ([android.security.keystore.StrongBoxUnavailableException]) or reuse a
- * pre-existing TEE key, so the requested tier alone can over-report. Only answerable on API 31+
- * (`KeyInfo.getSecurityLevel`; below that KeyInfo cannot tell StrongBox from TEE); `null` means
- * indeterminate (older API, absent alias, probe failure) and callers keep the documented
- * capability inference.
- */
+// Key creation can silently fall back to the TEE, so the requested tier alone over-reports.
+// Only answerable on API 31+; null means indeterminate and callers keep the capability inference.
 private fun isKeyActuallyStrongBox(alias: String?): Boolean? {
     if (alias == null || Build.VERSION.SDK_INT < 31) return null
     strongBoxByAlias[alias]?.let { return it }
@@ -94,23 +83,12 @@ private fun isKeyActuallyStrongBox(alias: String?): Boolean? {
 }
 
 /**
- * Android factory for [KSafe]; same call syntax as the pre-2.0 `KSafe(context, ...)` constructor.
- *
- * @param fileName Optional logical name (lowercase letters / digits / underscores) that
- *   differentiates instances in one process; null uses the default datastore name.
- *   **[fileName] is the key-isolation boundary on Android**: the Android Keystore is a single
- *   per-app store keyed by alias string, and KSafe's key aliases are scoped by [fileName]
- *   only (not [baseDir]). Two instances that must have INDEPENDENT keys and lifecycles must
- *   therefore use DISTINCT [fileName]s — two instances sharing a [fileName] but differing only
- *   in [baseDir] share the same Keystore key material, so one instance's `clearAll()` deletes
- *   the key the other still needs. (Their ciphertexts are still cryptographically isolated
- *   after a `rotateKeys()` via the v3 AAD, which binds the full store path.)
- * @param useStrongBox Deprecated — use `KSafeProtection.HARDWARE_ISOLATED` per property.
- * @param baseDir Optional override for the `.preferences_pb` directory. Null (recommended)
- *   uses the app-private path, where the sandbox enforces permissions. A custom dir is
- *   created if missing but not sandbox-isolated — never point it at external storage
- *   (SD card / `getExternalFilesDir()`) for sensitive data. Does NOT isolate key material —
- *   see [fileName].
+ * Android factory for [KSafe]. [fileName] (lowercase letters / digits / underscores, null for the
+ * default) is the key-isolation boundary: aliases are scoped by it alone, so instances differing
+ * only in [baseDir] share key material and one's `clearAll()` deletes the key the other needs.
+ * [baseDir] overrides the `.preferences_pb` directory — null (recommended) uses the app-private
+ * path; a custom dir is not sandbox-isolated, so never point it at external storage. [useStrongBox]
+ * is deprecated; use `KSafeProtection.HARDWARE_ISOLATED` per property.
  */
 fun KSafe(
     context: Context,
@@ -189,8 +167,6 @@ private fun buildAndroidKSafe(
 
     val baseFileName = dataStoreBaseFileName(fileName)
 
-    // Absolute path uniquely identifies a DataStore: same file → shared DataStore (avoids
-    // DataStore's "multiple active instances" error), different dir → separate DataStores.
     val datastoreFile: File = if (baseDir != null) {
         if (!baseDir.exists()) baseDir.mkdirs()
         File(baseDir, "$baseFileName$DATASTORE_FILE_SUFFIX")
@@ -199,27 +175,21 @@ private fun buildAndroidKSafe(
     }
 
     val datastorePath = datastoreFile.absolutePath
-    // Canonical spelling so a custom baseDir reached via a relative/symlinked/`..` path keeps one
-    // identity; also the registry key, so two spellings of one file share one DataStore.
+    // Canonical spelling, so two spellings of one file keep one identity and one DataStore.
     val backendKey = runCatching { datastoreFile.canonicalPath }.getOrDefault(datastorePath)
     val rawDataDir = context.applicationInfo.dataDir
-    // Home-relative v3 AAD identity, never the raw absolute path: moving the app to
-    // adoptable storage relocates its data dir (/data/user/0/<pkg> → /mnt/expand/<uuid>/…)
-    // while the AndroidKeyStore keys survive, so an absolute path would fail every rotated
-    // entry's AAD after the move and the orphan sweep would then delete it. A custom baseDir
-    // outside the data dir stays absolute (stableStoreIdentity's pass-through branch).
+    // Home-relative identity, never the raw absolute path: adoptable storage relocates the data
+    // dir while the Keystore keys survive, so every rotated entry's AAD would fail after a move.
     val storeIdentity = resolveStoreIdentity(
         canonicalPath = backendKey,
-        // /data/user/0/<pkg> is a symlink to /data/data/<pkg>, so a canonical path compared against
-        // the raw dataDir would never prefix-match and the identity would silently stay absolute.
+        // /data/user/0/<pkg> is a symlink to /data/data/<pkg>: a canonical path never prefix-matches the raw dataDir.
         canonicalHome = runCatching { File(rawDataDir).canonicalPath }.getOrDefault(rawDataDir),
         rawPath = datastorePath,
         rawHome = rawDataDir,
     )
     val backend = backends.acquire(backendKey) { scope ->
         val dataStore = PreferenceDataStoreFactory.create(
-            // Quarantine a corrupt .preferences_pb and continue from empty, rather than throwing on
-            // every read forever (which crashes the collector).
+            // Quarantine a corrupt file and continue from empty, instead of throwing on every read.
             corruptionHandler = ReplaceFileCorruptionHandler {
                 quarantineCorruptStoreFile(datastoreFile)
                 emptyPreferences()
@@ -231,9 +201,8 @@ private fun buildAndroidKSafe(
         AndroidBackend(dataStore, DataStoreStorage(dataStore), scope)
     }
 
-    // The base alias (un-suffixed relaxed master — the only alias that used the DEK before key
-    // rotation existed) MUST match masterAlias(false) below, so its record stays on the historical
-    // fixed key and existing installs upgrade with zero migration.
+    // Must match masterAlias(false) below: the un-suffixed relaxed master is the alias existing
+    // installs already hold, so they upgrade with no migration.
     val storage = backend.storage
     val relaxedMasterBaseAlias = KSafeAliasFormat.dotted(fileName, KSafeReservedKeys.MASTER)
     val engine: KSafeEncryption = testEngine
@@ -244,9 +213,7 @@ private fun buildAndroidKSafe(
             )
         }
 
-    // A `false` probe means the alias's key VERIFIABLY sits in the TEE (silent StrongBox
-    // fallback, or a tier-upgrade write reusing a pre-existing TEE key) — report the honest
-    // tier. `true`/`null` keep the capability inference the KDoc documents.
+    // A `false` probe means the key verifiably sits in the TEE; `true`/`null` keep the inference.
     fun resolveKeyTier(protection: KSafeProtection?, engineAlias: String?): KSafeKeyTier {
         if (protection == null) return KSafeKeyTier.SOFTWARE
         return if (protection == KSafeProtection.HARDWARE_ISOLATED && hasStrongBox &&
@@ -255,15 +222,12 @@ private fun buildAndroidKSafe(
         else KSafeKeyTier.HARDWARE_BACKED
     }
 
-    // Guards this instance to exactly one backend release (KSafeCore.cancel() is idempotent).
     val released = java.util.concurrent.atomic.AtomicBoolean(false)
 
     val core = KSafeCore(
-        // v3 AAD binds the FULL store path (baseDir + fileName), not just fileName: two instances
-        // sharing a fileName but differing in baseDir share key material (the alias is fileName-
-        // scoped — see factory KDoc), so the path binding cryptographically isolates their
-        // ciphertexts after rotation. The KEK alias stays fileName-scoped: a non-exportable
-        // Keystore key cannot move to a new alias without unrecoverable data loss.
+        // v3 AAD binds the FULL store path, not just fileName: instances sharing a fileName but
+        // differing in baseDir share key material, so the path binding isolates their ciphertexts.
+        // The KEK alias stays fileName-scoped — a Keystore key cannot move alias without data loss.
         storeIdentity = storeIdentity.canonical,
         fallbackStoreIdentity = storeIdentity.fallback,
         keyNamespace = fileName,
@@ -295,8 +259,6 @@ private fun buildAndroidKSafe(
         },
         notes = buildList {
             if (!hasStrongBox) add(KSafeProtectionNotes.ANDROID_STRONGBOX_ABSENT)
-            // Relaxed DEFAULT values use a TEE-wrapped DEK whose unwrapped bytes live in process
-            // memory after first use; HARDWARE_ISOLATED and strict masters keep keys in the TEE.
             add(KSafeProtectionNotes.ANDROID_RELAXED_DEFAULT_USES_SOFTWARE_DEK)
         },
     )

@@ -1,19 +1,11 @@
 package eu.anifantakis.lib.ksafe.internal
 
-/**
- * Non-extractable AES-GCM key storage for the web (wasmJs + js) over WebCrypto + IndexedDB. Keys
- * are generated/imported with `extractable = false` and persisted as live `CryptoKey` objects in
- * IndexedDB, so raw key material never reaches JS. Framing is a 12-byte random IV prepended to
- * `ciphertext‖tag` — the layout older versions wrote — so existing data still decrypts. Payloads
- * cross the interop boundary as Base64 so the js (`external`) / wasmJs (`@JsFun`) bindings stay
- * primitive-only.
- */
+// Non-extractable AES-GCM key storage for the web (WebCrypto + IndexedDB): raw key material never
+// reaches JS. Framing is a 12-byte random IV before `ciphertext‖tag` — frozen, older data uses it.
 
 /**
- * Ensures key state for [idbName], migrating [legacyRawKeyB64] into IndexedDB if provided. With
- * [mintIfAbsent] true (write path) a fresh non-extractable key is minted if none exists; false
- * (read path) never mints — an absent key is left absent so decrypt fails recoverably ("web key
- * missing") rather than minting one that can't decrypt the surviving ciphertext.
+ * Ensures key state for [idbName], migrating [legacyRawKeyB64] if given. [mintIfAbsent] false
+ * (read path) never mints: a fresh key could not decrypt surviving ciphertext.
  */
 @PublishedApi
 internal expect suspend fun webKeyEnsure(
@@ -24,14 +16,9 @@ internal expect suspend fun webKeyEnsure(
 )
 
 /**
- * Encrypts [plaintextB64]; returns Base64 of `IV ‖ ciphertext ‖ tag`.
- *
- * After encrypting, the key record is re-read and a vanished record (a cross-tab delete racing
- * this write) surfaces as "web key missing" — recoverable, the caller re-ensures and retries —
- * instead of returning ciphertext no key survives reload to decrypt. A delete landing between
- * that check and the caller's storage commit can still orphan the one racing write (reclaimed
- * by the startup orphan sweep); fully closing that window would take Web Locks held across
- * delete vs encrypt-plus-commit, deliberately not paid for a self-healing single-write race.
+ * Encrypts [plaintextB64] to Base64 `IV ‖ ciphertext ‖ tag`. The key record is re-read afterwards,
+ * so a cross-tab delete racing this write fails recoverably instead of persisting dead ciphertext.
+ * A delete landing after that check still orphans one write; the startup sweep reclaims it.
  */
 @PublishedApi
 internal expect suspend fun webKeyEncrypt(idbName: String, plaintextB64: String, aadB64: String? = null): String
@@ -41,10 +28,8 @@ internal expect suspend fun webKeyEncrypt(idbName: String, plaintextB64: String,
 internal expect suspend fun webKeyDecrypt(idbName: String, ivAndCipherB64: String, aadB64: String? = null): String
 
 /**
- * Copies the CryptoKey from [fromIdbName] to [toIdbName] only if [toIdbName] is absent and
- * [fromIdbName] exists (atomic `add`, never clobbering a concurrent writer). Migrates a
- * pre-`appNamespace` key to its namespaced name so data stays readable on upgrade; the source
- * is left in place (non-destructive).
+ * Copies the CryptoKey from [fromIdbName] to [toIdbName] only if the target is absent (atomic
+ * `add`, so a concurrent writer is never clobbered); the source is left in place.
  */
 @PublishedApi
 internal expect suspend fun webKeyCopyIfAbsent(fromIdbName: String, toIdbName: String)

@@ -68,74 +68,43 @@ import kotlin.time.ComparableTimeMark
 import kotlin.time.Duration
 import kotlin.time.TimeSource
 
-/** Marker that makes a transient decrypt failure resubscribe instead of terminating the flow. */
 private class TransientDecryptRetry(cause: Throwable) : Exception(cause)
 
-/**
- * Platform-independent orchestration engine between the public [KSafe] API and the
- * platform backends ([KSafePlatformStorage], [KSafeEncryption]). Owns the hot cache,
- * write coalescer, protection metadata, background preload, and orphan cleanup.
- */
+/** Platform-independent engine between the public [KSafe] API and the platform backends. Owns
+ *  the hot cache, write coalescer, protection metadata, preload, and orphan cleanup. */
 @PublishedApi
 internal class KSafeCore(
     @PublishedApi internal val storage: KSafePlatformStorage,
-    /**
-     * Stable store identity bound into the v3 authenticated envelope, supplied by the platform
-     * factory: the full absolute DataStore path on Android and Apple, the absolute
-     * File(resolvedBaseDir, baseFileName) path on JVM, and the normalized fileName ("" for the
-     * default store) on Web. Blocks cross-store ciphertext transplantation even where key material
-     * coincidentally coincides. Deliberately NOT the appNamespace: that may legitimately change
-     * across upgrades (the supported add-a-namespace-later migration), and its protection is the
-     * key separation it already enforces.
-     */
+    /** Stable store identity bound into the v3 authenticated envelope: the store's absolute path,
+     *  or the normalized fileName on Web. Blocks ciphertext transplanted from another store; not
+     *  the appNamespace, which may legitimately change across upgrades. */
     @PublishedApi internal val storeIdentity: String = "",
-    /**
-     * The v3 AAD identity entries carry when canonicalization was unavailable (the raw,
-     * non-canonical absolute-path spelling). Blank or equal to [storeIdentity] for the common case.
-     * When it differs — a custom baseDir reached under a relative/symlinked/`..` spelling, or a
-     * session where resolving the canonical path failed and the caller degraded to the raw one —
-     * v3 entries bound to that identity are retried under it before falling to defaults, and a
-     * subsequent write/rotation re-binds them to the canonical [storeIdentity].
-     */
+    /** Non-canonical identity spelling some v3 entries may be bound to; blank or equal to
+     *  [storeIdentity] in the common case. Retried on decrypt before falling back to defaults,
+     *  then re-bound to [storeIdentity] by the next write or rotation. */
     @PublishedApi internal val fallbackStoreIdentity: String = "",
-    /**
-     * The store's key-namespace token (the normalized fileName; null for the default store).
-     * Folded into the fingerprint of generation-suffixed per-entry aliases
-     * ([perEntryAliasWithGeneration]) so rotated aliases are store-distinct and can't be
-     * shadowed by another key's bare alias.
-     */
+    /** The store's key-namespace token (normalized fileName; null for the default store), folded
+     *  into rotated per-entry alias fingerprints so they cannot be shadowed across stores. */
     @PublishedApi internal val keyNamespace: String? = null,
-    /**
-     * Serializes batch commits (writes, clearAll, rotation CAS + sweeps) ACROSS same-file
-     * instances: the platform backends pass one mutex per physical store, so two live cores
-     * on one file can't interleave inside each other's snapshot→commit sequences. Single
-     * instances keep the private default (their one consumer already serializes).
-     */
+    /** Serializes batch commits across instances sharing one file: the backends pass one mutex
+     *  per store, so two cores cannot interleave each other's snapshot→commit sequences. */
     @PublishedApi internal val commitMutex: Mutex = Mutex(),
     /** Deferred so the platform shell can swap in a test engine after wiring. */
     engineProvider: () -> KSafeEncryption,
     private val config: KSafeConfig,
     @PublishedApi internal val memoryPolicy: KSafeMemoryPolicy,
     @PublishedApi internal val plaintextCacheTtl: Duration,
-    /**
-     * Storage tier reported by `getKeyInfo`; platform shells inspect StrongBox / Secure Enclave.
-     * `engineAlias` is the alias the entry's recorded envelope decrypts under (null for plain
-     * entries), so shells that can inspect the live key report its actual custody rather than
-     * inferring from the requested tier.
-     */
+    /** Storage tier reported by `getKeyInfo`. `engineAlias` is the alias the entry's envelope
+     *  decrypts under (null when plain), so shells can report the live key's real custody. */
     private val resolveKeyStorage: (userKey: String, protection: KSafeProtection?, engineAlias: String?) -> KSafeKeyStorage,
-    /** Per-key [KSafeProtectionLevel] reported by `getKeyInfo`; platform-specific, same
-     *  `engineAlias` contract as [resolveKeyStorage]. */
+    /** Per-key [KSafeProtectionLevel] reported by `getKeyInfo`; same `engineAlias` contract as [resolveKeyStorage]. */
     private val resolveKeyLevel: (userKey: String, protection: KSafeProtection?, engineAlias: String?) -> KSafeProtectionLevel,
     /** Per-platform migration hook run once before orphan cleanup (iOS accessibility tiers). */
     internal val migrateAccessPolicy: suspend (isUserKeyDirty: (String) -> Boolean) -> Unit = {},
     internal val lazyLoad: Boolean = false,
     /** Builds the per-entry Keystore/Keychain alias for a user key. */
     @PublishedApi internal val keyAlias: (userKey: String) -> String,
-    /**
-     * Master alias for the datastore, one per unlock policy (relaxed/strict). Holds the
-     * AES key shared by v2 DEFAULT entries; HARDWARE_ISOLATED entries use per-entry keys.
-     */
+    /** Master alias, one per unlock policy; holds the AES key shared by v2 DEFAULT entries. */
     @PublishedApi internal val masterAlias: (requireUnlockedDevice: Boolean) -> String,
     /** Prefix recognising legacy-format encrypted entries on disk (iOS overrides per filename). */
     internal val legacyEncryptedPrefix: String = KeySafeMetadataManager.LEGACY_ENCRYPTED_PREFIX,
@@ -159,56 +128,31 @@ internal class KSafeCore(
     @PublishedApi
     internal val protectionMap = KSafeConcurrentMap<String>()
 
-    /**
-     * Per-encrypted-key envelope info; tells the read path which alias decrypts the entry
-     * (v2 + DEFAULT routes to the master alias picked by `requireUnlockedDevice`, and
-     * [keyGeneration] picks the alias generation — 1 is the un-suffixed base every
-     * pre-rotation entry uses). Plain entries are never present.
-     */
+    /** Per-encrypted-key envelope info telling the read path which alias decrypts the entry.
+     *  Plain entries are never present. */
     @PublishedApi
     internal data class EncMeta(
         val envelopeVersion: Int,
         val requireUnlockedDevice: Boolean,
         val keyGeneration: Int = 1,
-        /**
-         * `true` when the entry's per-entry key lives under the strict alias variant
-         * ([strictPerEntryAlias]). 3.0.0+ strict `HARDWARE_ISOLATED` writes set it; entries
-         * written by released versions (or relaxed ones) stay `false` and keep decrypting
-         * under the bare per-entry alias.
-         */
+        /** `true` when the entry's key lives under the strict alias variant ([strictPerEntryAlias]). */
         val strictAliasVariant: Boolean = false,
     )
 
     @PublishedApi
     internal val encMetaMap = KSafeConcurrentMap<EncMeta>()
 
-    /**
-     * The key generation new writes encrypt under. 1 until the store is rotated; bumped by
-     * key rotation and kept in sync from the persisted [KeySafeMetadataManager.KEYGEN_RAW_KEY]
-     * entry on every snapshot merge (so a co-existing instance's rotation propagates here).
-     */
+    /** Generation new writes encrypt under; re-synced from the persisted keygen entry on every
+     *  snapshot merge, so a co-existing instance's rotation propagates here. */
     @PublishedApi
     internal val currentKeyGeneration = KSafeAtomicInt(1)
 
-    /**
-     * Whether [currentKeyGeneration] has been reconciled against SOME persisted snapshot (a
-     * cache merge, or the write consumer's first-batch read). Until then the local value is
-     * the constructor default `1`, NOT the store's authority — a cold/lazy instance's first
-     * write must not silently regress a rotated store's entries to generation 1 (dropping
-     * the v3 authenticated envelope). The write consumer performs a one-shot disk read when
-     * this is still false, keeping `putDirect` itself fire-and-forget.
-     */
+    /** False until [currentKeyGeneration] has been reconciled with a persisted snapshot; until then
+     *  the local `1` is a default, so the write consumer reads disk instead of regressing the store. */
     internal val keyGenerationReconciled = KSafeAtomicFlag(false)
 
-    /**
-     * Bumped as [performClearAll]'s first action, and on every sibling core once the store is
-     * wiped. Lets an unserialized cache merge (initial
-     * lazy load, rollback re-merge, collector emission) detect that a wipe landed after its
-     * snapshot was taken and redo itself, instead of republishing pre-clear secrets into RAM.
-     * Also captured by [rotateKeys] into each [PendingWrite.Rotate]: a wipe invalidates the
-     * pass's captured target generation, and every not-yet-committed entry re-encrypt must
-     * then be skipped instead of stamping the stale generation onto post-clear entries.
-     */
+    /** Bumped by [performClearAll] and on every sibling core: a cache merge or pending rotation
+     *  whose snapshot predates the wipe redoes or skips itself instead of republishing secrets. */
     internal val clearEpoch = KSafeAtomicInt(0)
 
     @PublishedApi
@@ -217,41 +161,31 @@ internal class KSafeCore(
     @PublishedApi
     internal val plaintextCache = KSafeConcurrentMap<CachedPlaintext>()
 
-    /**
-     * Latest write's identity token per user key, claimed before any optimistic mutation.
-     * A failed write may only roll back state it still owns — never state a newer
-     * in-flight write to the same key has since claimed. Not wiped by clearAll.
-     */
+    /** Latest write's identity token per user key, claimed before any optimistic mutation: a
+     *  failed write may only roll back state it still owns. Not wiped by clearAll. */
     internal val writeOwners = KSafeConcurrentMap<Any>()
 
-    /** Test-only seam invoked inside the post-commit repair; always `null` in production. */
     @PublishedApi
     internal var postCommitRepairHook: ((String) -> Unit)? = null
 
-    /** Test-only seam fired with a batch's keys after applyBatch; null in production. Runs under commitMutex: never call a suspend write from it. */
+    /** Test-only seam fired with a batch's keys after applyBatch. Runs under commitMutex: never call a suspend write from it. */
     internal var postApplyBatchHook: ((Set<String>) -> Unit)? = null
 
-    /** Test-only seam fired after the read write-back's guard passes and before it stores; null in production. */
     internal var sideCacheWriteBackHook: (() -> Unit)? = null
 
-    /** Test-only seam fired with a user key after the merge's dirty check and before its cache store; null in production. */
     internal var cacheMergeStoreHook: ((String) -> Unit)? = null
 
-    /** Test-only twin of [cacheMergeStoreHook] for the merge's encMetaMap store; null in production. */
     internal var cacheMergeMetaStoreHook: ((String) -> Unit)? = null
 
-    /** `true` when the primary [memoryCache] holds Base64 ciphertext at rest. */
     internal val cacheHoldsCiphertext: Boolean =
         memoryPolicy == KSafeMemoryPolicy.ENCRYPTED ||
             memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE ||
             memoryPolicy == KSafeMemoryPolicy.LAZY_PLAIN_TEXT
 
-    /** `true` for policies with the secondary [plaintextCache] (TTL-bounded or permanent). */
     internal val usesPlaintextSideCache: Boolean =
         memoryPolicy == KSafeMemoryPolicy.ENCRYPTED_WITH_TIMED_CACHE ||
             memoryPolicy == KSafeMemoryPolicy.LAZY_PLAIN_TEXT
 
-    /** Side-cache freshness: never expires under LAZY_PLAIN_TEXT, TTL-bounded otherwise. */
     internal fun plaintextStillValid(cached: CachedPlaintext): Boolean =
         memoryPolicy == KSafeMemoryPolicy.LAZY_PLAIN_TEXT ||
             TimeSource.Monotonic.markNow() < cached.expiresAt
@@ -263,17 +197,13 @@ internal class KSafeCore(
     @PublishedApi
     internal val cacheInitialized = KSafeAtomicFlag(false)
 
-    /**
-     * Set once an encrypted entry is ever seen; lets plaintext-only reads skip
-     * [detectProtection]'s map lookups. Monotonic — never reset.
-     */
+    /** Set once an encrypted entry is ever seen, so plaintext-only reads skip the map lookups.
+     *  Monotonic — never reset. */
     @PublishedApi
     internal val hasAnyEncryptedKey = KSafeAtomicFlag(false)
 
-    /**
-     * Raw cache keys with in-flight writes, in both canonical and legacy encrypted forms,
-     * so the background collector never stomps on an optimistic update.
-     */
+    /** Raw cache keys with in-flight writes, in both canonical and legacy encrypted forms, so
+     *  the background collector never stomps on an optimistic update. */
     @PublishedApi
     internal val dirtyKeys = KSafeConcurrentSet<String>()
 
@@ -286,13 +216,10 @@ internal class KSafeCore(
     internal val writeCoalesceWindowMs = 16L   // ~1 frame at 60 fps
     internal val maxBatchSize = 200
 
-    /**
-     * Caps concurrent encrypt/decrypt calls: overlapping keystore IPC pipelines well,
-     * but unbounded fan-out floods Binder / Keychain and over-subscribes the dispatcher.
-     */
+    /** Caps concurrent encrypt/decrypt calls: unbounded fan-out floods Binder / Keychain and
+     *  over-subscribes the dispatcher. */
     internal val maxParallelEncrypts = 8
 
-    /** Shape shared by the ops the consumer's encrypt phase processes (user writes + rotations). */
     internal interface EncryptingWrite {
         val userKey: String
         val jsonString: String
@@ -308,20 +235,12 @@ internal class KSafeCore(
         /** Non-null when a caller awaits the disk commit; completed (or failed) after applyBatch. */
         abstract val completion: CompletableDeferred<Unit>?
 
-        /**
-         * Identity token claimed in [writeOwners] before the issuing call's optimistic
-         * mutations; a failed write may roll back only while it is still the key's latest
-         * writer. Required (no default) so call sites can't enqueue an unregistered token.
-         */
+        /** Identity token claimed in [writeOwners] before the issuing call's optimistic
+         *  mutations; a failed write may roll back only while it is still the key's latest writer. */
         abstract val writeToken: Any
 
-        /**
-         * Failure notification for fire-and-forget callers: with [completion] null, a wrapper
-         * holding an optimistic value (e.g. asMutableStateFlow) otherwise gets no signal that
-         * its value never became durable. Invoked after the optimistic rollback, outside
-         * locks, exceptions swallowed; not invoked on close/cancel drains (close terminality
-         * is documented). Null everywhere else.
-         */
+        /** Failure notification for fire-and-forget callers, invoked after the optimistic
+         *  rollback, outside locks, exceptions swallowed; not on close/cancel drains. */
         open val onWriteFailed: ((Throwable) -> Unit)? get() = null
 
         data class Plain(
@@ -330,13 +249,8 @@ internal class KSafeCore(
             /** A primitive, the null sentinel, or pre-encoded JSON for complex types. */
             val value: Any,
             override val writeToken: Any,
-            /**
-             * The overwritten entry's recorded generation when it provably owned a per-entry
-             * engine alias (HARDWARE_ISOLATED or legacy pre-v2); 0 otherwise. Captured before
-             * the optimistic map wipe, like [Delete.keyGeneration]: without it an
-             * encrypted→plain overwrite forgets the old platform key ever existed, leaving it
-             * live for historical ciphertext copies and invisible to every later clearAll.
-             */
+            /** Generation of the overwritten entry when it owned a per-entry alias, 0 otherwise.
+             *  Captured before the optimistic map wipe, or the old platform key is left live. */
             val supersededPerEntryGeneration: Int = 0,
             /** Whether that superseded key lived under the strict alias variant; see [Delete.usedStrictAlias]. */
             val supersededStrictAlias: Boolean = false,
@@ -351,37 +265,18 @@ internal class KSafeCore(
             override val protection: KSafeProtection,
             override val requireUnlockedDevice: Boolean,
             override val writeToken: Any,
-            /**
-             * Captured at enqueue so the committed metadata, the encrypt alias, and the
-             * caller's optimistic [EncMeta] all name the same key — a rotation landing
-             * between enqueue and commit must not split them.
-             */
+            /** Captured at enqueue so the committed metadata, the encrypt alias and the caller's
+             *  optimistic [EncMeta] all name the same key if a rotation lands mid-write. */
             override val keyGeneration: Int = 1,
-            /**
-             * Per-entry aliases this write's entry PREVIOUSLY resolved to, when the write
-             * moves it to a different alias (an unlock-policy transition, or a legacy strict
-             * entry migrating to the strict alias variant). Captured at enqueue, BEFORE the
-             * optimistic [EncMeta] overwrite — by the time the consumer runs, the map
-             * already shows the new routing, so the transition is invisible there. A list so
-             * coalescing can accumulate every displaced write's capture (a tighten displaced
-             * by a further transition contributes its own superseded alias). The old aliases
-             * are reclaimed AFTER the commit through the guarded reclaim path; they are
-             * never touched before the write's own encrypt and commit succeed, so any
-             * failure leaves the previous value fully decryptable.
-             */
+            /** Per-entry aliases this entry previously resolved to, captured at enqueue before the
+             *  optimistic [EncMeta] overwrite hides them. Reclaimed only after this write commits. */
             val supersededAliases: List<String> = emptyList(),
             override val completion: CompletableDeferred<Unit>? = null,
             override val onWriteFailed: ((Throwable) -> Unit)? = null,
         ) : PendingWrite(), EncryptingWrite
 
-        /**
-         * One entry's key rotation: re-encrypts an already-decrypted payload under
-         * [keyGeneration] (the NEW generation). Never claims [writeOwners] and never touches
-         * optimistic state — it is not a user write. Committed ONLY if the entry's stored
-         * ciphertext still equals [expectedOldCiphertext] at commit time (CAS inside the
-         * serialized consumer), so a racing user write always wins and is never clobbered
-         * with a re-encrypt of the older value.
-         */
+        /** Re-encrypts one entry under the NEW [keyGeneration], committed only while the stored
+         *  ciphertext still equals [expectedOldCiphertext], so a racing user write always wins. */
         data class Rotate(
             override val userKey: String,
             override val rawCacheKey: String,
@@ -392,50 +287,29 @@ internal class KSafeCore(
             val expectedOldCiphertext: String,
             /** Superseded per-entry alias to delete after commit; null when it is a shared master (swept by the orchestrator). */
             val oldAliasToDelete: String?,
-            /**
-             * [clearEpoch] at the rotation pass's start. A clearAll landing between the pass's
-             * generation bump and this entry's commit resets the store (and its generation) —
-             * committing would stamp the stale target generation onto a post-clear store, so
-             * the consumer skips the op when the epoch (or the store generation) has moved.
-             */
+            /** [clearEpoch] at the pass's start: a clearAll landing mid-pass resets the store's
+             *  generation, so the consumer skips rather than stamp the stale target generation. */
             val expectedClearEpoch: Int,
-            /**
-             * The key's [writeOwners] token at rotation issue (null when never written this
-             * session). Plaintext-policy caches can't prove "entry untouched" via the
-             * ciphertext CAS, so the post-commit meta bump anchors on this instead: an
-             * unchanged token means no user write claimed the key since the rotation read it.
-             */
+            /** The key's [writeOwners] token at rotation issue. Plaintext-policy caches cannot use
+             *  the ciphertext CAS, so an unchanged token is what proves no user write intervened. */
             val ownerTokenAtIssue: Any? = null,
-            /** Set to true by the consumer iff the CAS passed and the rotation committed. */
             val applied: KSafeAtomicFlag = KSafeAtomicFlag(false),
             override val completion: CompletableDeferred<Unit>,
         ) : PendingWrite(), EncryptingWrite {
             override val writeToken: Any = Any() // unregistered — rollback machinery ignores rotations
         }
 
-        /**
-         * Persists a new store-level key generation (serialized with all writes, so every
-         * write ordered after it in the channel commits against the bumped state).
-         * [timestampMillis] is the generation's birth — the age the MaxAge policy measures.
-         */
+        /** Persists a new store-level key generation, serialized with all writes.
+         *  [timestampMillis] is the generation's birth — the age the MaxAge policy measures. */
         data class SetKeyGeneration(
             val generation: Int,
             val timestampMillis: Long,
-            /**
-             * True only for the generation bump that starts a rotation. Persisted with the
-             * bump, before any entry is touched, so a later instance can resume this exact
-             * generation after process death instead of incorrectly advancing to another one.
-             */
+            /** True only for the bump that starts a rotation, persisted before any entry is
+             *  touched, so a later instance resumes this exact generation after process death. */
             val rotationInProgress: Boolean = false,
-            /**
-             * True only when the next KSafe instance claims a normally-completed generation's
-             * persisted retry budget. The consumer changes `r:0,rp:N` to `r:1,rp:N-1` only
-             * while that exact state is still durable; decrement-before-work makes crashes
-             * unable to refill the budget, while the CAS lets same-file instances race without
-             * running duplicate work.
-             */
+            /** Claims a completed generation's retry budget: `r:0,rp:N` becomes `r:1,rp:N-1` only
+             *  while that state is durable, so neither a crash nor a sibling instance can repeat it. */
             val claimPendingRetry: Boolean = false,
-            /** Set by the consumer iff this lifecycle transition was durably applied. */
             val applied: KSafeAtomicFlag = KSafeAtomicFlag(false),
             override val completion: CompletableDeferred<Unit>,
         ) : PendingWrite() {
@@ -444,18 +318,12 @@ internal class KSafeCore(
             override val writeToken: Any get() = this // never rolled back per-key
         }
 
-        /**
-         * Changes the durable lifecycle marker from in-progress (`r:1`) to completed (`r:0`)
-         * after every entry commit and the superseded-master sweep have completed. The
-         * consumer applies it only while the persisted store is still at [generation], so a
-         * stale pass can never acknowledge a newer rotation as completed.
-         */
+        /** Flips the durable lifecycle marker from in-progress (`r:1`) to completed (`r:0`), only
+         *  while the store is still at [generation], so a stale pass cannot acknowledge a newer one. */
         data class CompleteKeyRotation(
             val generation: Int,
-            /**
-             * Persisted only when the pass returned normally with retryable (`skipped`)
-             * entries and another automatic attempt remains. Null means no pending retry.
-             */
+            /** Persisted only when the pass left retryable entries and an attempt remains;
+             *  null means no pending retry. */
             val retryAttemptsRemaining: Int? = null,
             override val completion: CompletableDeferred<Unit>,
         ) : PendingWrite() {
@@ -464,25 +332,16 @@ internal class KSafeCore(
             override val writeToken: Any get() = this // never rolled back per-key
         }
 
-        /**
-         * Deletes superseded MASTER generations (below [newGeneration]) that neither a
-         * persisted entry nor a live sibling core's cache still references. MUST run on the
-         * consumer: serialized with every write, so no batch can be lazily minting/encrypting
-         * under an old master while this deletes it — the unserialized variant could delete a
-         * key between a concurrent batch's mint and its commit, making an acknowledged write
-         * unreadable after restart. A stale-
-         * generation write processed AFTER this sweep self-heals (its encrypt lazily mints a
-         * fresh key under the old alias and its ciphertext decrypts with it).
-         */
+        /** Deletes superseded MASTER generations nothing still references. MUST run on the consumer:
+         *  unserialized it can delete a key mid-batch and leave an acknowledged write unreadable. */
         data class SweepSupersededMasters(
             val newGeneration: Int,
             override val completion: CompletableDeferred<Unit>,
         ) : PendingWrite() {
             override val userKey: String get() = "__ksafe_sweep_masters__"
 
-            // Must equal [userKey]: the coalescer keys ops by userKey and the batch boundary
-            // recognises them by rawCacheKey, so two literals would let this op key against itself
-            // inconsistently.
+            // Must equal [userKey]: the coalescer keys ops by userKey while the batch boundary
+            // recognises them by rawCacheKey.
             override val rawCacheKey: String get() = userKey
             override val writeToken: Any get() = this // never rolled back per-key
         }
@@ -491,32 +350,20 @@ internal class KSafeCore(
             override val userKey: String,
             override val rawCacheKey: String,
             override val writeToken: Any,
-            /**
-             * The entry's recorded generation, captured BEFORE the optimistic [encMetaMap]
-             * removal — by commit time the map no longer knows which alias the entry used.
-             */
+            /** The entry's recorded generation, captured BEFORE the optimistic [encMetaMap]
+             *  removal — by commit time the map no longer knows which alias the entry used. */
             val keyGeneration: Int = 1,
-            /**
-             * Whether the entry's recorded state proved it used a per-entry engine alias
-             * (HARDWARE_ISOLATED, or a legacy pre-v2 envelope), captured like [keyGeneration].
-             * Gates the engine-key sweep: deleting the alias of a plain, master-riding, or
-             * absent entry is not a harmless no-op — a dotted user key's alias can be
-             * byte-identical to another store's live key.
-             */
+            /** Whether the entry provably used a per-entry engine alias, captured like [keyGeneration].
+             *  Gates the key sweep: a dotted user key's alias can collide with another store's key. */
             val usedPerEntryAlias: Boolean = false,
-            /**
-             * Whether the entry's key lived under the strict alias variant, captured like
-             * [keyGeneration]. Widens the sweep past the prune that asks only what a new user
-             * write can reach — see [perEntryAliasesThrough].
-             */
+            /** Whether the entry's key lived under the strict alias variant, captured like
+             *  [keyGeneration]; widens the sweep past the reachability prune. */
             val usedStrictAlias: Boolean = false,
             override val completion: CompletableDeferred<Unit>? = null,
         ) : PendingWrite()
 
-        /**
-         * Routes [clearAll] through the write channel so the wipe is FIFO-serialized with
-         * concurrent writes; handled as a batch boundary in [processBatchBody].
-         */
+        /** Routes [clearAll] through the write channel so the wipe is FIFO-serialized with
+         *  concurrent writes; handled as a batch boundary in [processBatchBody]. */
         data class ClearAll(
             override val completion: CompletableDeferred<Unit>? = null,
         ) : PendingWrite() {
@@ -536,15 +383,9 @@ internal class KSafeCore(
     internal fun defaultEncryptedMode(): KSafeWriteMode =
         KSafeWriteMode.Encrypted(requireUnlockedDevice = config.requireUnlockedDevice)
 
-    /**
-     * Write alias: DEFAULT routes to the master alias for the unlock policy;
-     * HARDWARE_ISOLATED uses the per-entry alias — the strict variant when
-     * [requireUnlockedDevice] is set (3.0.0+), so a relaxed→strict rewrite never has to
-     * destroy the relaxed key before its own encrypt succeeds: the strict key is minted
-     * under a fresh alias, the commit lands, and only then is the old alias reclaimed.
-     * [keyGeneration] must be the generation recorded in the same write's metadata, so
-     * the entry always names the alias that decrypts it.
-     */
+    /** Write alias: DEFAULT rides the master alias for the unlock policy, HARDWARE_ISOLATED the
+     *  per-entry alias (strict variant when [requireUnlockedDevice], so a relaxed→strict rewrite
+     *  never destroys the old key first). [keyGeneration] must match the write's own metadata. */
     @PublishedApi
     internal fun aliasForWrite(
         userKey: String,
@@ -560,22 +401,8 @@ internal class KSafeCore(
             perEntryAlias(userKey, keyGeneration)
         }
 
-    /**
-     * Whether a new USER write in this store can land on the strict per-entry alias variant.
-     * Derived from [modeTransformer], the single place a platform vetoes an unlock policy: web
-     * strips `requireUnlockedDevice` before the entry's routing record is built (its strict read
-     * path needs a blocking decrypt async-only WebCrypto cannot serve).
-     *
-     * Not the whole answer to "can this store hold a strict key": rotation bypasses
-     * [modeTransformer] and takes the policy from the entry's own metadata, so a legacy web entry
-     * written before that veto rotates into one. Each sweep therefore ORs this with the entry's
-     * recorded `strictAliasVariant` — see `perEntryAliasesThrough`.
-     *
-     * Used ONLY to prune the delete/clearAll alias sweeps, where enumerating an unreachable
-     * spelling costs a pointless engine delete per generation (on web, a permanent `localStorage`
-     * tombstone against the origin's shared quota). Never consulted by the read or write routing,
-     * where dropping a spelling would strand data under an alias nothing resolves to.
-     */
+    /** Whether a new USER write here can land on the strict per-entry alias variant (web strips
+     *  `requireUnlockedDevice`). Prunes the delete/clearAll sweeps; routing uses every spelling. */
     internal val strictAliasVariantReachable: Boolean =
         (
             modeTransformer(
@@ -586,20 +413,15 @@ internal class KSafeCore(
             ) as? KSafeWriteMode.Encrypted
             )?.requireUnlockedDevice == true
 
-    /** Per-entry alias for [userKey] at [generation]; see [perEntryAliasWithGeneration]. */
     @PublishedApi
     internal fun perEntryAlias(userKey: String, generation: Int): String =
         perEntryAliasWithGeneration(keyAlias(userKey), generation, keyNamespace, userKey)
 
-    /** Strict per-entry alias variant; see [strictPerEntryAliasWithGeneration]. */
     @PublishedApi
     internal fun strictPerEntryAlias(userKey: String, generation: Int): String =
         strictPerEntryAliasWithGeneration(keyAlias(userKey), generation, keyNamespace, userKey)
 
-    /**
-     * AAD for reading [userKey] under its RECORDED envelope, built from the same [encMetaMap]
-     * fields the read path routes on; see [aadForEnvelope].
-     */
+    /** AAD for reading [userKey] under its RECORDED envelope; see [aadForEnvelope]. */
     @PublishedApi
     internal fun aadForRead(userKey: String, protection: KSafeProtection?): ByteArray? {
         val em = encMetaMap[userKey] ?: return null
@@ -609,34 +431,20 @@ internal class KSafeCore(
         )
     }
 
-    /** True when the store was reached under a non-canonical path spelling, so v3 entries bound
-     *  to the raw absolute-path identity need a decrypt fallback. */
     internal val hasFallbackIdentity: Boolean =
         fallbackStoreIdentity.isNotEmpty() && fallbackStoreIdentity != storeIdentity
 
-    /**
-     * Read alias from the entry's recorded envelope in [encMetaMap] — the safe per-entry
-     * default when no metadata is loaded yet. The entry's own recorded generation picks the
-     * alias generation, never the store's current one: a not-yet-rotated entry keeps decrypting
-     * under the key it was written with. Routing itself lives in [aliasForRecordedMeta].
-     */
+    /** Read alias from the entry's recorded envelope: its OWN generation picks the alias, never
+     *  the store's current one, so a not-yet-rotated entry keeps decrypting. */
     @PublishedApi
     internal fun aliasForRead(userKey: String, protection: KSafeProtection?): String =
         aliasForRawMeta(userKey, protection, encMetaMap[userKey])
 
-    /** Guards the one-time startup cleanup (collector first emission or lazy first access). */
     internal val startupCleanupDone = KSafeAtomicFlag(false)
     internal val lazyStartupCleanupLaunched = KSafeAtomicFlag(false)
 
-    /**
-     * Runs rotation maintenance once per startup, on the background scope — never blocking
-     * startup or reads. An interrupted pass is resumed at its already-persisted generation
-     * regardless of [KSafeConfig.keyRotationPolicy]. A normally completed pass that left
-     * retryable entries receives a bounded retry budget consumed one attempt per newly created
-     * KSafe instance. If MaxAge is already due on that next run, its fresh rotation supersedes
-     * the same-generation retry. The current instance never waits or loops after a normally
-     * completed pass.
-     */
+    /** Runs rotation maintenance once per startup on the background scope, never blocking reads. An
+     *  interrupted pass resumes at its persisted generation whatever the configured policy. */
     internal fun maybeScheduleKeyRotation() {
         val policy = config.keyRotationPolicy
         collectorScope.launch {
@@ -653,10 +461,8 @@ internal class KSafeCore(
                     error("KSafe: unsupported key-rotation retry marker; the store was left untouched")
                 }
                 if (KeySafeMetadataManager.isLegacy30KeyGenerationState(raw)) {
-                    // KSafe 3.0.0 persisted generation + timestamp but had no lifecycle
-                    // field. Absence is therefore proof of "old completed format", NEVER
-                    // proof of a crash. Adopt it as r:0 and deliberately stop here: no
-                    // resume, generation bump, entry rewrite, sweep, or same-launch MaxAge.
+                    // A missing lifecycle field is proof of the old completed format, never of a
+                    // crash: adopt it as r:0 and do nothing else this launch.
                     val adopted = CompletableDeferred<Unit>()
                     writeChannel.send(
                         PendingWrite.SetKeyGeneration(
@@ -769,18 +575,9 @@ internal class KSafeCore(
             dirtyKeys.contains(legacyEncryptedRawKey(userKey)) ||
             dirtyKeys.contains(userKey)
 
-    /**
-     * Merges an on-disk snapshot into the memory cache. Dirty (in-flight) keys
-     * are skipped so optimistic `putDirect` values are never clobbered by a
-     * stale DataStore emission.
-     *
-     * [epochAtSnapshot] must be read from [clearEpoch] BEFORE the snapshot was taken
-     * (capture-then-snapshot; an after-read reintroduces the race): a merge whose snapshot
-     * predates a concurrent [performClearAll] would republish wiped secrets into the caches
-     * AFTER clearAll returned — under lazyLoad nothing ever evicts them again. When the epoch
-     * moved mid-merge, the merge redoes itself from a fresh post-clear snapshot, whose empty
-     * valid-key set evicts anything the stale pass resurrected.
-     */
+    /** Merges an on-disk snapshot into the memory cache, skipping dirty (in-flight) keys.
+     *  [epochAtSnapshot] must be read from [clearEpoch] BEFORE the snapshot is taken, or a merge
+     *  predating a concurrent [performClearAll] republishes wiped secrets after it returned. */
     @PublishedApi
     internal suspend fun updateCache(
         snapshot: Map<String, StoredValue>,
@@ -791,22 +588,19 @@ internal class KSafeCore(
         var attempts = 0
         while (true) {
             updateCacheOnce(snap)
-            // Bounded: each retry needs ANOTHER clearAll to land mid-merge; the collector
-            // (eager mode) and the clear's own map wipe bound the residue if the cap trips.
+            // Bounded: each retry needs ANOTHER clearAll to land mid-merge, and the collector
+            // plus the clear's own map wipe bound the residue if the cap trips.
             if (clearEpoch.get() == epoch || ++attempts >= 3) return
             epoch = clearEpoch.get()
             snap = storage.snapshot()
         }
     }
 
-    /** Detects whether a stored key is encrypted: metadata map, then legacy heuristic. */
     @PublishedApi
     internal fun detectProtection(key: String): KSafeProtection? {
-        // No encrypted entry ever seen ⇒ definitely plaintext; skip the map lookups.
         if (!hasAnyEncryptedKey.get()) return null
 
-        // Metadata is authoritative (including the explicit "NONE" literal); the legacy
-        // heuristic applies only to keys never rewritten through the current format.
+        // Metadata is authoritative, including the explicit "NONE"; the heuristic is legacy-only.
         val meta = protectionMap[key]
         if (meta != null) return KeySafeMetadataManager.parseProtection(meta)
         return if (memoryCache.containsKey(legacyEncryptedRawKey(key))) KSafeProtection.DEFAULT else null
@@ -820,11 +614,8 @@ internal class KSafeCore(
             resolveFromCache(key, defaultValue, detected, serializer)
         } catch (e: Throwable) {
             if (e is CancellationException) throw e
-            // Non-suspend read path: resolveFromCache rethrows a TRANSIENT decrypt failure so a
-            // suspending caller can await unlock and retry, but getDirect (and the delegate /
-            // StateFlow / Compose seed sites funnelling here) has no retry seam and must return
-            // the default — letting it escape would crash property access / composition on a
-            // locked device. The suspend get() path (getRaw) still rethrows.
+            // Non-suspend read path: no retry seam here, so a transient decrypt failure returns
+            // the default rather than crash property access or composition. get() still rethrows.
             if (isTransientDecryptFailure(e)) defaultValue else throw e
         }
     }
@@ -838,12 +629,8 @@ internal class KSafeCore(
         }
     }
 
-    /**
-     * A transient decrypt failure (locked device / busy Keystore) never reaches collectors as a
-     * value or a throw: long-lived observers (viewModelScope / Recomposer) would crash and stop
-     * observing. The flow resubscribes on a slow backoff instead, so an observer seeded while
-     * the device was locked recovers on its own after unlock.
-     */
+    /** A transient decrypt failure never reaches collectors as a value or a throw — long-lived
+     *  observers would crash and stop observing; the flow resubscribes on a backoff instead. */
     @PublishedApi
     internal fun getFlowRaw(
         key: String,
@@ -851,13 +638,8 @@ internal class KSafeCore(
         serializer: KSerializer<*>,
     ): Flow<Any?> {
         return storage.snapshotFlow()
-            // Resubscribe on a transient upstream read error (e.g. Jetpack DataStore emitting an
-            // IOException into .data on a flaky read) exactly as the internal collector does —
-            // otherwise a single transient storage error terminates the user's flow exceptionally:
-            // the stateIn/observe scope's uncaught exception crashes on Android and freezes the
-            // StateFlow forever, while the internal collector silently keeps getDirect fresh and
-            // masks the cause. Placed BEFORE .map so only the storage read retries; per-emission
-            // decrypt failures are handled by the slower retryWhen below.
+            // Resubscribe on a transient upstream read error instead of terminating the user's
+            // flow exceptionally. Before .map, so only the storage read retries here.
             .retryingTransientReads { attempt, cause ->
                 ksafeLogWarning(
                     "KSafe: getFlow snapshot read failed (attempt $attempt, " +
@@ -870,10 +652,8 @@ internal class KSafeCore(
             val protection = KeySafeMetadataManager.parseProtection(metaRaw)
                 ?: when {
                     snapshot[legacyEncryptedRawKey(key)] != null -> KSafeProtection.DEFAULT
-                    // Fail closed, matching getDirect/classifyStorageEntry: a canonical value slot
-                    // with absent/tampered metadata holds ciphertext, so decrypt it rather than serve
-                    // base64 via the plaintext arm. Guarded on the canonical slot so flat pre-2.0
-                    // plaintext still resolves as plaintext.
+                    // Fail closed: a canonical value slot with absent or tampered metadata holds
+                    // ciphertext, so decrypt it rather than serve base64 as plaintext.
                     snapshot[valueRawKey(key)] != null &&
                         KeySafeMetadataManager.isCanonicalValueEncrypted(metaRaw) -> KSafeProtection.DEFAULT
                     else -> null
@@ -890,15 +670,8 @@ internal class KSafeCore(
                         ?: (snapshot[legacyEncryptedRawKey(key)] as? StoredValue.Text)?.value
                     if (enc != null) {
                         try {
-                            // Snapshot-based read: derive the alias from the meta we
-                            // just parsed, not from encMetaMap (which may lag behind
-                            // a freshly arrived snapshot). v2 + DEFAULT routes to the
-                            // master alias; everything else uses the per-entry alias.
-                            // Future-format entries fail closed to the default emission. The
-                            // recorded unlock policy travels with the routing, so a strict entry
-                            // bypasses the engine's in-memory key cache and the native store
-                            // enforces the lock on every emission; on a locked device the strict
-                            // decrypt throws transient and the flow resubscribes below.
+                            // Derive the alias from the meta just parsed, not from encMetaMap,
+                            // which may lag behind a freshly arrived snapshot.
                             val plainBytes = decryptEntry(
                                 key, protection, KSafeBase64.decode(enc), encMetaFromRaw(metaRaw),
                             )
@@ -914,15 +687,11 @@ internal class KSafeCore(
                 }
             }
         }
-            // Decrypt each snapshot off the collector's dispatcher: the .map above runs
-            // engine.decryptSuspend (on Android a blocking Binder round-trip to the Keystore),
-            // and stateIn collects on the caller's scope (often Main), so without flowOn every
-            // emission would run keystore IPC on the main thread → ANR. decryptFlowContext is
-            // Dispatchers.Default on JVM/Android/Apple, a no-op on single-threaded web; the
-            // cheap retry/distinctUntilChanged stay in the collector's context.
+            // Decrypt off the collector's dispatcher: .map does keystore IPC and stateIn usually
+            // collects on Main, so without flowOn every emission risks an ANR.
             .flowOn(decryptFlowContext)
-            // Placed AFTER flowOn so a retry re-collects the WHOLE upstream: storage re-delivers
-            // its current snapshot to the new collector, the only way to see the value without a write.
+            // AFTER flowOn so a retry re-collects the WHOLE upstream: storage re-delivers its
+            // current snapshot, the only way to see the value again without a write.
             .retryWhen { cause, attempt ->
                 if (cause !is TransientDecryptRetry) return@retryWhen false
                 if (attempt == 0L) {
@@ -942,11 +711,8 @@ internal class KSafeCore(
         putDirectRaw(key, value, mode, serializer, onWriteFailed = null)
     }
 
-    /**
-     * [putDirectRaw] plus a fire-and-forget failure notification (see
-     * [PendingWrite.onWriteFailed]). A separate overload — not an optional
-     * parameter on the original entry point — so its inline ABI stays untouched.
-     */
+    /** [putDirectRaw] plus a fire-and-forget failure notification; a separate overload rather
+     *  than a default parameter so the original entry point's inline ABI stays untouched. */
     @PublishedApi
     internal fun putDirectRaw(
         key: String,
@@ -961,15 +727,12 @@ internal class KSafeCore(
         val requireUnlockedDevice = mode is KSafeWriteMode.Encrypted && mode.requireUnlockedDevice
 
         if (protection != null) {
-            // Serialize FIRST: a throwing serializer must leave no trace. Once the
-            // ownership token, dirty flag, or routing metadata are touched, nothing
-            // repairs them — rollback covers only ops that reached a batch, and the
-            // cache merge skips dirty keys for the process lifetime.
+            // Serialize FIRST: a throwing serializer must leave no trace — once the ownership
+            // token, dirty flag or routing metadata are touched, nothing repairs them.
             val jsonString = if (value == null) NULL_SENTINEL else jsonEncode(json, serializer, value)
 
-            // Claim rollback ownership before any optimistic mutation, so a
-            // concurrently-failing older write for this key can no longer revert
-            // the state set below.
+            // Claim rollback ownership before any optimistic mutation, so a concurrently-failing
+            // older write for this key can no longer revert what is set below.
             val writeToken = Any().also { writeOwners[key] = it }
             val rawCacheKey = legacyEncryptedRawKey(key)
             dirtyKeys.add(rawCacheKey)
@@ -981,19 +744,13 @@ internal class KSafeCore(
             encMetaMap[key] = encMetaForWrite(protection, requireUnlockedDevice, writeKeyGeneration)
             hasAnyEncryptedKey.set(true)
 
-            // Plain→encrypted transition: a prior PLAINTEXT write of `key` populated the bare
-            // `key` cache slot, while encrypted writes live under `rawCacheKey`
-            // (= legacyEncryptedRawKey). The stale plain slot is otherwise never evicted — the
-            // eviction sweep skips it because its dirty flag is deliberately never cleared on
-            // success — so a plaintext copy of the now-encrypted secret would linger in RAM for
-            // the process lifetime, defeating the ENCRYPTED memory policy. Evict it here, mirroring
-            // deleteDirect. (rawCacheKey != key, so the freshly-set ciphertext slot is untouched.)
+            // Plain→encrypted transition: evict the stale plain slot, which the eviction sweep
+            // never reclaims, or a plaintext copy of the now-encrypted secret lingers in RAM.
             memoryCache.remove(key)
             plaintextCache.remove(key)
 
-            // Strict entries never enter the plaintext side cache (leaving plaintext in a
-            // never-expiring cache would defeat the lock policy in memory); a non-strict→strict
-            // rewrite also evicts any prior entry so stale plaintext doesn't linger.
+            // Strict entries never enter the plaintext side cache (that would defeat the lock
+            // policy in memory); a non-strict→strict rewrite evicts any prior entry.
             if (usesPlaintextSideCache) {
                 if (requireUnlockedDevice) plaintextCache.remove(rawCacheKey)
                 else plaintextCache[rawCacheKey] = CachedPlaintext(jsonString, plaintextExpiry())
@@ -1044,44 +801,23 @@ internal class KSafeCore(
     }
 
     suspend fun clearAll() {
-        // Populate the cache first so performClearAll() (which runs on the write
-        // consumer) can read protectionMap to learn which per-entry engine keys
-        // to delete — covers clearAll() on a fresh/lazyLoad instance, before the
-        // first snapshot has populated the map.
+        // Populate the cache first: performClearAll runs on the consumer and reads protectionMap
+        // to learn which per-entry engine keys to delete.
         ensureCacheReadySuspend()
-        // Route the wipe THROUGH the write channel (instead of clearing storage
-        // directly) so it is serialized with concurrent writes by the single
-        // consumer: a put/delete enqueued before this call is ordered before the
-        // wipe and can no longer be applied after it and resurrect data. Like the
-        // suspend put/delete paths, this awaits the consumer (don't call it on a
-        // closed instance).
+        // Route the wipe THROUGH the write channel so it is serialized with concurrent writes: a
+        // put enqueued before this call can no longer be applied after the wipe and resurrect data.
         val deferred = CompletableDeferred<Unit>()
         writeChannel.send(PendingWrite.ClearAll(completion = deferred))
         deferred.await()
     }
 
-    /** Single-flight guard for manual rotation, crash recovery, and pending retry. */
     private val rotationInFlight = KSafeAtomicFlag(false)
 
     private enum class RotateOutcome { ROTATED, SKIPPED, FAILED }
 
-    /**
-     * Re-encrypts every encrypted entry under a fresh key generation, then deletes every
-     * superseded key nothing references anymore.
-     *
-     * Resumable by design: each entry's metadata records the generation that decrypts it, so
-     * there is no all-or-nothing switch — a crash leaves a mixed-generation store where
-     * EVERYTHING stays readable. The generation state also carries a tiny lifecycle marker:
-     * the next KSafe instance automatically resumes the SAME target generation, including the
-     * final old-master cleanup, even under the default `Never` policy. A completed pass's
-     * retryable skipped entries remain readable on their old generation and are marked for a
-     * same-generation attempt by the next KSafe instance; definitive failures are left
-     * untouched for diagnosis/recovery. Legacy (v1-envelope) entries are upgraded as a side
-     * effect.
-     *
-     * Serialized against user writes through the write consumer: each entry commits under a
-     * CAS on its stored ciphertext, so a concurrent write always wins and is never clobbered.
-     */
+    /** Re-encrypts every encrypted entry under a fresh key generation, then deletes the
+     *  superseded keys. Resumable: each entry records the generation that decrypts it, so an
+     *  interrupted pass stays readable and the next instance finishes it; a live write wins. */
     suspend fun rotateKeys(): KSafeRotationResult {
         ensureCacheReadySuspend()
         check(rotationInFlight.compareAndSet(false, true)) {
@@ -1112,18 +848,15 @@ internal class KSafeCore(
                 }
             } else {
                 val next = currentKeyGeneration.get() + 1
-                // The generation is plaintext routing metadata bounded by
-                // parseKeyGeneration's clamp; refusing here keeps the increment from ever
-                // exceeding (or wrapping past) what the parsers and sweep loops accept.
+                // Refuse before the increment can exceed what the parsers and sweep loops accept.
                 check(next <= KeySafeMetadataManager.MAX_KEY_GENERATION) {
                     "KSafe: key rotation refused — the store is at generation " +
                         "${next - 1}, the maximum this format supports " +
                         "(${KeySafeMetadataManager.MAX_KEY_GENERATION})."
                 }
 
-                // Persist bump + recovery marker FIRST, through the consumer. Every write
-                // ordered after it uses the new generation, and a process death at any later
-                // instruction leaves enough durable state for the next instance to resume.
+                // Persist bump + recovery marker FIRST, through the consumer: every later write
+                // uses the new generation, and a crash leaves enough durable state to resume.
                 val bumped = CompletableDeferred<Unit>()
                 writeChannel.send(
                     PendingWrite.SetKeyGeneration(
@@ -1150,16 +883,11 @@ internal class KSafeCore(
         }
     }
 
-    /**
-     * Startup-only recovery. A simultaneous manual pass owns the instance guard and already
-     * covers the work, so startup quietly yields instead of surfacing the public API's
-     * concurrent-call exception.
-     */
+    /** Startup-only recovery; yields quietly when a manual pass already owns the guard. */
     private suspend fun resumeInterruptedRotation(): KSafeRotationResult? {
         if (!rotationInFlight.compareAndSet(false, true)) return null
         try {
-            // Re-check after taking the guard: another same-file instance may have completed
-            // the pass between startup's first snapshot and this coroutine being scheduled.
+            // Re-check under the guard: a sibling may have completed the pass since startup.
             val raw =
                 (storage.snapshot()[KeySafeMetadataManager.KEYGEN_RAW_KEY] as? StoredValue.Text)?.value
             if (!KeySafeMetadataManager.parseKeyRotationInProgress(raw)) return null
@@ -1175,20 +903,12 @@ internal class KSafeCore(
         }
     }
 
-    /**
-     * Startup-only retry for a normally completed pass that left retryable work. Claims the
-     * durable `r:0,rp:N -> r:1,rp:N-1` state, then retries only entries behind the current
-     * generation. It never creates another generation and never changes the generation-birth
-     * timestamp. Decrementing before the work makes the budget crash-safe.
-     *
-     * If the device is still locked, completion persists the remaining positive budget; this
-     * instance does not loop, and only the next KSafe instance may consume another attempt.
-     */
+    /** Startup-only retry for a completed pass that left retryable work: claims the durable
+     *  `r:0,rp:N -> r:1,rp:N-1` budget BEFORE the work, so a crash cannot refill it. */
     private suspend fun retryPendingRotationAtStartup(): KSafeRotationResult? {
         if (!rotationInFlight.compareAndSet(false, true)) return null
         try {
-            // Re-read after taking the instance guard. A manual pass or sibling instance may
-            // already have claimed/completed the store since startup's first snapshot.
+            // Re-read under the guard: a manual pass or sibling may already have claimed the store.
             val currentRaw =
                 (storage.snapshot()[KeySafeMetadataManager.KEYGEN_RAW_KEY] as? StoredValue.Text)?.value
             if (
@@ -1229,9 +949,7 @@ internal class KSafeCore(
         retryAttemptsRemainingOnSkip: Int = config.keyRotationRetryAttempts,
     ): KSafeRotationResult {
         val clearEpochAtStart = clearEpoch.get()
-        // Candidate set from a post-bump snapshot: encrypted entries still on an older
-        // generation (or a legacy envelope). Metadata is parsed from the same snapshot
-        // the ciphertext is read from, so alias derivation is self-consistent.
+        // Metadata and ciphertext come from one post-bump snapshot, so alias derivation agrees.
         data class Candidate(
             val userKey: String,
             val protection: KSafeProtection,
@@ -1262,9 +980,8 @@ internal class KSafeCore(
         var skipped = 0
         var failed = 0
 
-        // A chunk at a time, and the gate matches it, so [ROTATION_IN_FLIGHT] is the single
-        // bound on how much of the store is decrypted simultaneously — the property
-        // JvmRotationConcurrencyBoundTest pins.
+        // A chunk at a time, with a matching gate, so ROTATION_IN_FLIGHT is the single bound on
+        // how much of the store is decrypted simultaneously.
         for (chunk in candidates.chunked(ROTATION_IN_FLIGHT)) {
             val gate = Semaphore(ROTATION_IN_FLIGHT)
             val outcomes = coroutineScope {
@@ -1273,26 +990,22 @@ internal class KSafeCore(
                         gate.withPermit {
                             val oldAlias = aliasForRawMeta(c.userKey, c.protection, c.meta)
                             val plainBytes = try {
-                                // Future-format entries fail closed: counted failed (this
-                                // build can never rotate them), value left untouched.
+                                // Future-format entries fail closed: counted failed, value untouched.
                                 decryptEntry(
                                     c.userKey, c.protection,
                                     KSafeBase64.decode(c.ciphertextB64), c.meta,
                                 )
                             } catch (e: Throwable) {
                                 if (e is CancellationException) throw e
-                                // A locked strict entry OR a temporary key-store outage is
-                                // retried by the next rotation (the entry stays readable
-                                // under its recorded generation); only a definitive failure
-                                // (e.g. the key genuinely gone) is reported as failed.
+                                // A locked entry or a transient vault outage is retried by the
+                                // next pass; only a definitive failure counts as failed.
                                 return@withPermit if (isRotationRetryable(e)) {
                                     RotateOutcome.SKIPPED
                                 } else {
                                     RotateOutcome.FAILED
                                 }
                             }
-                            // The old per-entry key is superseded by this rotation; an old
-                            // MASTER is shared, so it is swept below only when unreferenced.
+                            // A superseded per-entry key dies here; a shared master is swept below.
                             val perEntryOldKey =
                                 ownsPerEntryAlias(c.protection, c.meta.envelopeVersion)
                             val op = PendingWrite.Rotate(
@@ -1318,8 +1031,7 @@ internal class KSafeCore(
                                 }
                             } catch (e: Throwable) {
                                 if (e is CancellationException) throw e
-                                // A transient re-encrypt failure (device locked mid-pass,
-                                // vault outage) is also a retry-later, not a failure.
+                                // A transient re-encrypt failure is a retry-later, not a failure.
                                 if (isRotationRetryable(e)) {
                                     RotateOutcome.SKIPPED
                                 } else {
@@ -1337,18 +1049,13 @@ internal class KSafeCore(
             }
         }
 
-        // Sweep superseded MASTER generations nothing references anymore — THROUGH the
-        // consumer, so the deletion is serialized with every write (see
-        // [PendingWrite.SweepSupersededMasters] for why an unserialized sweep can
-        // destroy an acknowledged concurrent write's key).
+        // Sweep superseded MASTER generations THROUGH the consumer, serialized with every write.
         val swept = CompletableDeferred<Unit>()
         writeChannel.send(PendingWrite.SweepSupersededMasters(newGeneration, swept))
         swept.await()
 
-        // Mark the lifecycle completed (`r:1` -> `r:0`) LAST. If the process dies before this
-        // durable write, the next instance repeats the idempotent remainder at this SAME
-        // generation. The consumer generation-CAS prevents an old pass acknowledging a newer
-        // pass as completed.
+        // Mark the lifecycle completed LAST: a crash before this durable write makes the next
+        // instance repeat the idempotent remainder at this SAME generation.
         val completed = CompletableDeferred<Unit>()
         writeChannel.send(
             PendingWrite.CompleteKeyRotation(
@@ -1372,16 +1079,13 @@ internal class KSafeCore(
         ensureCacheReadyBlocking()
         val hasEncrypted = memoryCache.containsKey(legacyEncryptedRawKey(key))
         val hasPlain = memoryCache.containsKey(key)
-        // An entry can EXIST on disk yet be absent from memoryCache: under PLAIN_TEXT, updateCache
-        // drops entries that fail to decrypt (locked device / corrupt blob) but still syncs their
-        // protection into protectionMap. Consult it too, so getOrCreateSecret doesn't mint a new
-        // secret over a still-present but unreadable one and orphan everything encrypted under it.
+        // An entry can exist on disk yet be absent from memoryCache (undecryptable entries are
+        // dropped), so consult protectionMap too or a new secret overwrites a live one.
         val hasMetadata = protectionMap.containsKey(key)
         if (!hasEncrypted && !hasPlain && !hasMetadata) return null
         val protection = KeySafeMetadataManager.parseProtection(protectionMap[key])
             ?: if (hasEncrypted) KSafeProtection.DEFAULT else null
-        // The same alias the read path decrypts under (recorded generation + master-vs-per-entry
-        // routing), so custody inspection looks at the key that actually serves this entry.
+        // The same alias the read path decrypts under, so custody inspection sees the live key.
         val engineAlias = protection?.let { aliasForRead(key, it) }
         @Suppress("DEPRECATION")
         return KSafeKeyInfo(
@@ -1412,47 +1116,31 @@ internal class KSafeCore(
         registry.register(this)
     }
 
-    /**
-     * Cancels both background scopes (write consumer + snapshot collector), releasing the
-     * long-running infrastructure this core owns. Idempotent; after cancel the instance no
-     * longer processes puts/reads. Mainly matters for test suites and code that re-creates
-     * KSafe mid-process: without it each abandoned instance is pinned in heap by its suspended
-     * coroutines (GC roots on Dispatchers.Default), growing the live-set unboundedly.
-     */
+    /** Cancels both background scopes; idempotent, and afterwards the instance no longer processes
+     *  puts or reads. Without it an abandoned instance stays pinned in heap by its coroutines. */
     internal fun cancel() {
         siblings?.unregister(this)
-        // Cancel the scopes only — do NOT close writeChannel: closing it makes the consumer's
-        // pending receive() throw ClosedReceiveChannelException (not a CancellationException),
-        // which bubbles to the uncaught handler and surfaces in the next test. Cancelling the
-        // scope already terminates the consumer, and the channel is then GC'd with the core.
+        // Cancel the scopes only — do NOT close writeChannel: a close makes the consumer's
+        // pending receive() throw ClosedReceiveChannelException at the uncaught handler.
         writeScope.cancel()
         collectorScope.cancel()
-        // The consumer is now cancelled, so any write still sitting in the channel will never
-        // be processed. Drain them and hand each waiting caller a cancellation — otherwise a
-        // suspend put/delete/clearAll await()ing its completion on a still-live scope hangs
-        // forever. (We still don't CLOSE the channel — see the note above.)
+        // The consumer is gone, so queued writes will never be processed: hand each waiting
+        // caller a cancellation, or a suspend put/delete/clearAll awaits forever.
         val teardown = CancellationException("KSafe was cancelled before this write was processed")
         writeChannel.drainRemaining { it.completion?.cancel(teardown) }
-        // Platform hook — cancels the DataStore scope and evicts Android's process-static
-        // DataStore cache; without it DataStore's coroutines pin the whole graph in heap.
+        // Platform hook — without it DataStore's coroutines pin the whole graph in heap.
         runCatching { onCancel() }
     }
 
     companion object {
-        /**
-         * Marker stored on disk when the caller persisted a `null`. Lets us tell
-         * "key not present" apart from "key present with null value".
-         */
+        /** Marker stored on disk for a persisted `null`, so "absent" and "null" stay distinct. */
         @PublishedApi
         internal const val NULL_SENTINEL: String = "__KSAFE_NULL_VALUE__"
 
         @PublishedApi
         internal fun isNullSentinel(value: Any?): Boolean = value == NULL_SENTINEL
 
-        // Escapes the one pathological plaintext String that collides with the null sentinel: a
-        // user value literally equal to NULL_SENTINEL (or already starting with this NUL-delimited
-        // marker, which no ordinary string does) would otherwise be stored raw and read back as
-        // null. Only the colliding values carry the prefix; every other string is stored verbatim.
+        // Escapes the one plaintext String that would otherwise be read back as null.
         private const val NULL_ESCAPE_PREFIX: String = "\u0000__KSAFE_ESC__\u0000"
 
         @PublishedApi
@@ -1463,41 +1151,19 @@ internal class KSafeCore(
         internal fun decodePlainString(stored: String): String =
             if (stored.startsWith(NULL_ESCAPE_PREFIX)) stored.removePrefix(NULL_ESCAPE_PREFIX) else stored
 
-        /**
-         * Alias for one key generation. Generation 1 is the un-suffixed base alias — the exact
-         * name every pre-rotation release used, so existing keys need no migration; rotated
-         * generations append `.gN`. Used directly only for MASTER aliases, whose sentinel
-         * segment is barred from user keys; per-entry aliases go through
-         * [perEntryAliasWithGeneration], which disambiguates the suffix.
-         */
+        /** Alias for one key generation; generation 1 is the un-suffixed base every pre-rotation
+         *  release used, so existing keys need no migration. MASTER aliases only — per-entry ones
+         *  go through [perEntryAliasWithGeneration]. */
         @PublishedApi
         internal fun aliasWithGeneration(baseAlias: String, generation: Int): String =
             if (generation <= 1) baseAlias
             else "$baseAlias${KSafeAliasGrammar.GENERATION_SEGMENT}$generation"
 
-        /**
-         * The routing record a snapshot's raw metadata resolves to — the same shape
-         * [encMetaMap] holds, so a snapshot-derived read routes exactly like a cached one.
-         */
-        /**
-         * How many entries [rotateKeys] may hold decrypted at once.
-         *
-         * Rotation is the one operation that puts entries in the clear without the caller asking
-         * for them, so this is a security bound first and a throughput knob second. It is
-         * deliberately NOT [maxParallelEncrypts]: that one sizes CPU-bound crypto, while a
-         * rotating entry spends its time waiting on a commit, and reusing it there throttled the
-         * write consumer to a fraction of the batch it will take.
-         *
-         * 64 is measured (Galaxy S24 Ultra): below it the commit count dominates, above it the
-         * curve flattens — a 500-entry store gains ~10% at 200 while four times as much of it
-         * sits decrypted.
-         */
+        /** How many entries [rotateKeys] may hold decrypted at once — a security bound first, a
+         *  throughput knob second. Not [maxParallelEncrypts], which sizes CPU-bound crypto. */
         internal const val ROTATION_IN_FLIGHT = 64
 
         internal fun encMetaFromRaw(rawMeta: String?): EncMeta {
-            // Parsed once for all four fields: the cold-start merge builds one of these per
-            // encrypted entry, and reading the fields one at a time re-parsed the same record
-            // four times over.
             val meta = parseMetaObject(rawMeta)
             return EncMeta(
                 envelopeVersion = KeySafeMetadataManager.envelopeVersionOf(meta),
@@ -1507,15 +1173,8 @@ internal class KSafeCore(
             )
         }
 
-        /**
-         * The alias an entry's RECORDED metadata resolves to: v2+ DEFAULT rides the master
-         * alias for the recorded unlock policy, a strict-variant entry uses its strict
-         * per-entry alias, and everything else (v1, HARDWARE_ISOLATED) uses the bare per-entry
-         * alias. Single producer for every read, sweep and migration — including the ones
-         * outside this class, which pass their own [masterAlias] / [keyAlias] / [keyNamespace].
-         * A divergent copy decrypts under the wrong key, which surfaces as a false orphan and
-         * then as a deleted entry.
-         */
+        /** The alias an entry's RECORDED metadata resolves to. Single producer for every read, sweep
+         *  and migration: a divergent copy decrypts under the wrong key and the entry looks orphaned. */
         internal fun aliasForRecordedMeta(
             userKey: String,
             protection: KSafeProtection?,
@@ -1537,13 +1196,8 @@ internal class KSafeCore(
                 perEntryAliasWithGeneration(keyAlias(userKey), keyGeneration, keyNamespace, userKey)
             }
 
-        /**
-         * The associated data an entry is authenticated under, gated on its envelope version:
-         * v3 binds identity + routing metadata, pre-v3 entries were encrypted without
-         * associated data and must decrypt without it. Every read, write, sweep and migration
-         * derives it here — a re-derived gate that misses one site silently drops
-         * authentication on that path.
-         */
+        /** The associated data an entry is authenticated under, gated on envelope version: v3 binds
+         *  identity + routing, pre-v3 decrypts without any. A re-derived copy drops authentication. */
         internal fun aadForEnvelope(
             identity: String,
             userKey: String,
@@ -1557,31 +1211,15 @@ internal class KSafeCore(
                 identity, userKey, protection, requireUnlockedDevice, keyGeneration,
             )
 
-        /**
-         * Whether an entry with this recorded routing owns a per-entry engine key instead of
-         * riding the shared master: HARDWARE_ISOLATED always, plus any legacy pre-v2 envelope
-         * (whose DEFAULT entries also had per-entry keys). Callers must resolve "no recorded
-         * protection" to false BEFORE asking — an unknown entry's derived alias can be
-         * byte-identical to a sibling store's live key.
-         */
+        /** Whether an entry with this routing owns a per-entry engine key instead of riding the shared
+         *  master. Resolve "no recorded protection" to false first: aliases collide across stores. */
         internal fun ownsPerEntryAlias(protection: KSafeProtection, envelopeVersion: Int): Boolean =
             protection == KSafeProtection.HARDWARE_ISOLATED ||
                 envelopeVersion < KeySafeMetadataManager.ENVELOPE_VERSION_V2
 
-        /**
-         * Per-entry alias for one key generation. Generation 1 stays the bare base alias
-         * (published pre-rotation format). Rotated generations append
-         * `.gN.__ksafe_gen__.h<fingerprint>`, where the fingerprint hashes the length-prefixed
-         * (store fileName, user key) pair: a plain `.gN` suffix made user key `"foo"` at
-         * generation 2 collide with user key `"foo.g2"` at generation 1 (same physical vault
-         * key — rotating or deleting one destroyed the other's), and made a default store's
-         * dotted key collide with a named store's key at every generation. The fingerprint alone
-         * still wasn't injective — the user key `"foo.g2.h<fp(ns,foo)>"` reproduced `"foo"`'s
-         * rotated alias verbatim as its bare alias — so the suffix also carries a
-         * `__ksafe_gen__` sentinel segment barred from user keys ([KeySafeMetadataManager.requireWritableUserKey]),
-         * mirroring the strict variant's `__ksafe_strict__`. Generation-1 aliases are the
-         * published format and keep their (documented) dotted-key collision.
-         */
+        /** Per-entry alias for one key generation. Generation 1 stays the bare base alias (the
+         *  published format, with its documented dotted-key collision); rotated ones add `.gN`, a
+         *  `__ksafe_gen__` sentinel barred from user keys, and a fingerprint that makes it injective. */
         @PublishedApi
         internal fun perEntryAliasWithGeneration(
             baseAlias: String,
@@ -1594,16 +1232,9 @@ internal class KSafeCore(
                 ".${KSafeReservedKeys.ROTATED_VARIANT}" +
                 "${KSafeAliasGrammar.FINGERPRINT_SEGMENT}${aliasFingerprint(keyNamespace, userKey)}"
 
-        /**
-         * Strict-variant per-entry alias (3.0.0+): the alias a strict `HARDWARE_ISOLATED`
-         * entry's key lives under, distinct from the relaxed [perEntryAliasWithGeneration]
-         * so an unlock-policy tighten mints its strict key under a FRESH alias instead of
-         * destroying the relaxed one first (the delete-first scheme lost the previous value
-         * on any failure between the delete and the durable commit). Always fingerprinted —
-         * the variant has no published pre-3.0.0 format to preserve — and suffixed with a
-         * `__ksafe_strict__` sentinel segment barred from user keys, so no dotted user key
-         * can collide with it.
-         */
+        /** The alias a strict `HARDWARE_ISOLATED` entry's key lives under, distinct from the
+         *  relaxed [perEntryAliasWithGeneration] so an unlock-policy tighten mints its strict key
+         *  under a FRESH alias instead of destroying the relaxed one first. */
         @PublishedApi
         internal fun strictPerEntryAliasWithGeneration(
             baseAlias: String,
@@ -1616,18 +1247,13 @@ internal class KSafeCore(
                 "${KSafeAliasGrammar.FINGERPRINT_SEGMENT}${aliasFingerprint(keyNamespace, userKey)}"
         }
 
-        /**
-         * FNV-1a 64-bit over the length-prefixed identity; fixed-width lowercase hex.
-         * Internal (not private): the Keychain orphan classification verifies a candidate
-         * owner against a parsed strict-variant suffix with it — a `.gN` run before the
-         * sentinel is ambiguous (generation suffix vs literal user-key characters), and
-         * only the fingerprint can say which owner the key actually belongs to.
-         */
+        /** FNV-1a 64-bit over the length-prefixed identity, fixed-width lowercase hex. Internal,
+         *  not private: the Keychain orphan classification verifies a candidate owner with it. */
         internal fun aliasFingerprint(keyNamespace: String?, userKey: String): String {
             val ns = keyNamespace ?: ""
             val input = "${ns.length}:$ns|${userKey.length}:$userKey"
-            // Deliberately hashes UTF-16 code units, unlike [namespaceCollisionDigest]'s UTF-8
-            // bytes: both spell live on-disk identities, so neither may adopt the other's domain.
+            // Hashes UTF-16 code units, unlike [namespaceCollisionDigest]'s UTF-8 bytes: both
+            // spell live on-disk identities, so neither may adopt the other's.
             var hash = FNV1A_64_OFFSET_BASIS
             for (ch in input) {
                 hash = hash xor ch.code.toLong()

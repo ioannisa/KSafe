@@ -27,20 +27,13 @@ import platform.darwin.sysctl
 import platform.posix.getpid
 import platform.posix.size_tVar
 
-/**
- * Apple-platform security checker, shared by iOS and macOS. Jailbreak probes match on every Mac,
- * so [isDeviceRooted] short-circuits to `false` on macOS and for an iOS binary on Apple Silicon.
- */
+/** Apple-platform security checker; the jailbreak probes match on every Mac, hence the short-circuits. */
 internal actual object SecurityChecker {
 
     @OptIn(ExperimentalNativeApi::class)
     private val isMacOs: Boolean = Platform.osFamily == OsFamily.MACOSX
 
-    /**
-     * True when this iOS binary runs on an Apple Silicon Mac, where jailbreak probes match the
-     * real macOS filesystem yet [isMacOs] is `false` (compile-time iosArm64 slice). The selector
-     * guard keeps pre-iOS-14 runtimes safe.
-     */
+    /** An iOS binary on an Apple Silicon Mac: probes match the real macOS filesystem, [isMacOs] is false. */
     @OptIn(ExperimentalForeignApi::class)
     private val isIosAppOnMac: Boolean = try {
         val info = NSProcessInfo.processInfo
@@ -80,8 +73,7 @@ internal actual object SecurityChecker {
         "/var/lib/cydia",
         "/bin/sh",
         "/usr/bin/ssh",
-        // Rootless-era jailbreaks (palera1n, Dopamine / Procursus) keep the system partition
-        // read-only and install under /var/jb, so the classic probes above never fire on them.
+        // Rootless jailbreaks (palera1n, Dopamine) install under /var/jb, so the probes above miss them.
         "/var/jb",
         "/var/jb/Applications/Sileo.app",
         "/var/jb/usr/bin/apt",
@@ -89,8 +81,7 @@ internal actual object SecurityChecker {
         "/var/binpack"
     )
 
-    /** True if the device is jailbroken; always `false` on macOS, where the iOS probes fire on
-     *  every Mac and would otherwise block the whole library. */
+    /** Always `false` on macOS, where the iOS probes fire on every Mac and would block the library. */
     actual fun isDeviceRooted(): Boolean {
         if (isMacOs) return false
         if (isIosAppOnMac) return false
@@ -99,20 +90,17 @@ internal actual object SecurityChecker {
         return checkJailbreakPaths() || checkWritableSystemPaths()
     }
 
-    /** True if a debugger is attached: kernel `P_TRACED` flag via `sysctl`, OR-ed with env-var
-     *  heuristics — the env vars also catch dylib injection, which `P_TRACED` does not. */
+    /** `P_TRACED` via `sysctl`, OR-ed with env vars that also catch dylib injection. */
     actual fun isDebuggerAttached(): Boolean = try {
         val env = NSProcessInfo.processInfo.environment
         isProcessTraced() ||
                 env["_"] as? String == "lldb" ||
                 env.containsKey("DYLD_INSERT_LIBRARIES")
     } catch (_: Throwable) {
-        // Fail-open: a security probe must never crash KSafe(...) construction.
+        // Fail-open: a security probe must not crash KSafe(...) construction.
         false
     }
 
-    /** Kernel-level trace check: `kinfo_proc.kp_proc.p_flag & P_TRACED` for this pid. Catches a
-     *  debugger attached to an already-running process, which leaves no env marker. Fail-open. */
     @OptIn(ExperimentalForeignApi::class)
     private fun isProcessTraced(): Boolean = try {
         memScoped {
@@ -131,8 +119,7 @@ internal actual object SecurityChecker {
         false
     }
 
-    /** True if this looks like a debug build. iOS has no FLAG_DEBUGGABLE equivalent, so this
-     *  combines env-var, simulator, and debugger heuristics. */
+    /** iOS has no FLAG_DEBUGGABLE equivalent, so this combines env, simulator and debugger heuristics. */
     actual fun isDebugBuild(): Boolean {
         val env = NSProcessInfo.processInfo.environment
 

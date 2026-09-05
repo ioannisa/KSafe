@@ -6,11 +6,8 @@ import android.os.Debug
 import java.io.File
 
 /**
- * Android root detection, best-effort — hiding tools (Magisk DenyList, Shamiko) can bypass it;
- * use Play Integrity for high-security needs. The app sandbox defeats file/package probes
- * (SELinux denies `untrusted_app` access to `su`, so `File.exists` reads false even when
- * present); the build-signal checks survive it. The build *type* (`userdebug`/`eng`), not the
- * signing tag, is decisive — `user`-build emulators are `dev-keys`-signed yet not rooted.
+ * Best-effort: hiding tools bypass it, and the sandbox hides `su` from the file probes — the
+ * build-signal checks survive it. Use Play Integrity where it matters.
  */
 internal actual object SecurityChecker {
 
@@ -29,7 +26,6 @@ internal actual object SecurityChecker {
         "/system/xbin/daemonsu"
     )
 
-    // Magisk paths (may be hidden by DenyList).
     private val magiskPaths = listOf(
         "/sbin/.magisk",
         "/data/adb/magisk",
@@ -58,10 +54,8 @@ internal actual object SecurityChecker {
         "/data/user_de/0/de.robv.android.xposed.installer"
     )
 
-    // Root PROVIDERS/managers and root-requiring frameworks only. Detection-only apps
-    // (e.g. Root Checker) are deliberately excluded: they sit on plenty of stock devices
-    // and prove nothing — flagging them is a pure false positive. Must stay in sync with
-    // the <queries> list in androidMain/AndroidManifest.xml.
+    // Root providers only; detection-only apps sit on stock devices and prove nothing. Must stay
+    // in sync with the <queries> list in androidMain/AndroidManifest.xml.
     private val rootPackages = listOf(
         "com.topjohnwu.magisk",
         "com.koushikdutta.superuser",
@@ -167,7 +161,6 @@ internal actual object SecurityChecker {
         }
     }
 
-    // Reads only public [Build] fields, so — unlike the file probes — it survives the app sandbox.
     private fun checkRootIndicatingBuild(): Boolean =
         isRootIndicatingBuild(Build.TYPE, Build.TAGS)
 
@@ -177,8 +170,7 @@ internal actual object SecurityChecker {
         }
     }
 
-    // Reflected `SystemProperties.get` hits the native property area directly and works from the
-    // sandbox, unlike `Runtime.exec("getprop")` which SELinux denies to `untrusted_app`. Null on failure.
+    // Reflection reads the property area directly; `getprop` is SELinux-denied to `untrusted_app`.
     @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
     private fun readSystemProperty(name: String): String? = try {
         val clazz = Class.forName("android.os.SystemProperties")
@@ -190,10 +182,8 @@ internal actual object SecurityChecker {
 }
 
 /**
- * The reliable root signal is the build *type*: `userdebug`/`eng` ship `su` by construction;
- * `test-keys` signing is secondary. Deliberately ignores `dev-keys` — modern Google emulator
- * images are `dev-keys`-signed for both `user` and `userdebug`, so a `user`-build emulator must
- * not be flagged.
+ * `userdebug`/`eng` ship `su`; `dev-keys` is ignored, since Google emulator images sign
+ * `user` builds with it.
  */
 internal fun isRootIndicatingBuild(buildType: String?, buildTags: String?): Boolean {
     val dangerousType = buildType == "userdebug" || buildType == "eng"
@@ -202,10 +192,8 @@ internal fun isRootIndicatingBuild(buildType: String?, buildTags: String?): Bool
 }
 
 /**
- * Emulator detection from hardware/product/fingerprint signals ONLY. Build type and signing
- * tags (`userdebug`/`test-keys`) deliberately do NOT count: they mark a root-capable image —
- * [isRootIndicatingBuild]'s job — and a physical engineering device carrying them is not an
- * emulator; flagging it here would trip an emulator-BLOCK policy for the wrong violation.
+ * Hardware/product signals only; build type and tags belong to [isRootIndicatingBuild] — an
+ * engineering device carrying them is not an emulator.
  */
 internal fun isEmulatorBuild(
     fingerprint: String?,

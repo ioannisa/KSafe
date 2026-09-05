@@ -12,17 +12,12 @@ import eu.anifantakis.lib.ksafe.internal.jsonEncode
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.serialization.KSerializer
 
-/**
- * Applies a delete's optimistic in-memory state and returns the op to enqueue. Shared by the
- * fire-and-forget and the awaiting delete, which differ only in how they dispatch it: the
- * generation and per-entry-alias flag must be captured BEFORE the map wipe, so the capture and the
- * wipe cannot be allowed to drift apart into two hand-written copies.
- */
+/** Optimistic delete state plus the op to enqueue; captures generation/alias flags before the wipe. */
 internal fun KSafeCore.stageDelete(
     key: String,
     completion: CompletableDeferred<Unit>? = null,
 ): PendingWrite.Delete {
-    // Rollback ownership claimed before any optimistic mutation.
+    // Rollback token claimed before any optimistic mutation.
     val writeToken = Any().also { writeOwners[key] = it }
     val rawKey = key
     val encKeyName = legacyEncryptedRawKey(key)
@@ -48,27 +43,21 @@ internal fun KSafeCore.stageDelete(
     )
 }
 
-/**
- * Applies a plain write's optimistic in-memory state and returns the op to enqueue. Shared by
- * [putPlainSuspend] and `putDirectRaw`'s plain arm; the caller supplies the already-encoded value
- * (a throwing serializer must leave no trace, so encoding happens before anything here runs) and
- * chooses between awaiting the commit and being notified of a failure.
- */
+/** Optimistic plain-write state plus the op to enqueue; the caller passes the encoded value. */
 internal fun KSafeCore.stagePlainWrite(
     key: String,
     toStore: Any,
     completion: CompletableDeferred<Unit>? = null,
     onWriteFailed: ((Throwable) -> Unit)? = null,
 ): PendingWrite.Plain {
-    // Rollback ownership claimed before any optimistic mutation.
+    // Rollback token claimed before any optimistic mutation.
     val writeToken = Any().also { writeOwners[key] = it }
     val supersededGen =
         if (deleteTargetsPerEntryAlias(key)) maxOf(encMetaMap[key]?.keyGeneration ?: 1, 1) else 0
     val supersededStrict = supersededGen > 0 && encMetaMap[key]?.strictAliasVariant == true
     dirtyKeys.add(key)
 
-    // Cache the value BEFORE the protection literal — the post-commit repair's orphan
-    // cleanup (`!memoryCache.containsKey`) relies on this ordering.
+    // Value before the protection literal; the post-commit repair's orphan cleanup relies on it.
     memoryCache[key] = toStore
     protectionMap[key] = KeySafeMetadataManager.protectionToLiteral(null)
     encMetaMap.remove(key)
@@ -86,11 +75,7 @@ internal fun KSafeCore.stagePlainWrite(
     )
 }
 
-/**
- * Encodes a plain value for storage: primitives ride the store's native types, everything else
- * becomes JSON, and null becomes the sentinel. Encoding once also guarantees the cache and the
- * batch share one representation even when the serializer is non-deterministic.
- */
+/** Encodes once, so the cache and the batch share one representation even for a loose serializer. */
 internal fun KSafeCore.encodePlainValue(value: Any?, serializer: KSerializer<*>): Any =
     if (value == null) NULL_SENTINEL
     else when (value) {
@@ -106,13 +91,10 @@ internal suspend fun KSafeCore.putEncryptedSuspend(
     requireUnlockedDevice: Boolean,
     serializer: KSerializer<*>,
 ) {
-    // Serialize FIRST: a throwing serializer must leave no trace (see the
-    // putDirectRaw twin for the full rationale).
+    // Serialize first: a throwing serializer must leave no trace.
     val jsonString = if (value == null) NULL_SENTINEL else jsonEncode(json, serializer, value)
 
-    // Optimistic in-memory state (matches `putEncryptedDirect`): subsequent
-    // reads from any thread see the new value the instant this returns.
-    // Rollback ownership claimed before any optimistic mutation.
+    // Rollback token claimed before any optimistic mutation.
     val writeToken = Any().also { writeOwners[key] = it }
     val rawCacheKey = legacyEncryptedRawKey(key)
     dirtyKeys.add(rawCacheKey)
@@ -122,21 +104,15 @@ internal suspend fun KSafeCore.putEncryptedSuspend(
     encMetaMap[key] = encMetaForWrite(protection, requireUnlockedDevice, writeKeyGeneration)
     hasAnyEncryptedKey.set(true)
     memoryCache[rawCacheKey] = jsonString
-    // Plain→encrypted transition: evict the stale bare `key` plain slot a prior plaintext
-    // write left in RAM (see the putDirectRaw twin for the full rationale) so an upgraded
-    // secret's plaintext copy doesn't linger for the process lifetime.
+    // Plain→encrypted: drop the bare-key plain slot a prior plaintext write left in RAM.
     memoryCache.remove(key)
     plaintextCache.remove(key)
-    // Strict entries never enter the plaintext side cache; a non-strict→strict rewrite
-    // also evicts any prior entry so stale plaintext doesn't linger.
+    // Strict entries never enter the plaintext side cache, and a rewrite into strict evicts it.
     if (usesPlaintextSideCache) {
         if (requireUnlockedDevice) plaintextCache.remove(rawCacheKey)
         else plaintextCache[rawCacheKey] = CachedPlaintext(jsonString, plaintextExpiry())
     }
 
-    // Route through the same coalescing channel as `putDirect`, but await the
-    // batch's commit. Concurrent suspend `put` calls and concurrent `putDirect`
-    // calls land in the same batch and share a single `applyBatch` transaction.
     val deferred = CompletableDeferred<Unit>()
     writeChannel.send(
         PendingWrite.Encrypted(
@@ -154,10 +130,7 @@ internal suspend fun KSafeCore.putEncryptedSuspend(
     deferred.await()
 }
 
-/**
- * Evicts a prior encrypted write's cache slots ([legacyEncryptedRawKey]) on an encrypted->plain
- * overwrite, so the old decrypted secret doesn't linger for the process lifetime. Mirrors [deleteDirect].
- */
+/** Drops the encrypted cache slots on an encrypted→plain overwrite so old plaintext doesn't linger. */
 internal fun KSafeCore.evictEncryptedSlot(key: String) {
     val encKeyName = legacyEncryptedRawKey(key)
     memoryCache.remove(encKeyName)
@@ -165,7 +138,7 @@ internal fun KSafeCore.evictEncryptedSlot(key: String) {
 }
 
 internal suspend fun KSafeCore.putPlainSuspend(key: String, value: Any?, serializer: KSerializer<*>) {
-    // Serialize FIRST — a throwing serializer must leave no trace (see the putDirectRaw twin).
+    // Serialize first: a throwing serializer must leave no trace.
     val toStore = encodePlainValue(value, serializer)
     val deferred = CompletableDeferred<Unit>()
     writeChannel.send(stagePlainWrite(key, toStore, completion = deferred))

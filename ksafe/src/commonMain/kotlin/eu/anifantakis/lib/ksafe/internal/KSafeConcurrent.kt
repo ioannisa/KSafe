@@ -5,10 +5,6 @@ import kotlin.concurrent.atomics.AtomicLong
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.CoroutineContext
 
-// Thread-safe primitives for [KSafeCore]. Each target provides an `actual` tuned to
-// its concurrency model: java.util.concurrent on JVM/Android, atomics/OS locks on
-// Native, plain unsynchronized types on single-threaded web.
-
 @PublishedApi
 internal expect class KSafeAtomicFlag(initial: Boolean) {
     fun get(): Boolean
@@ -23,7 +19,7 @@ internal expect class KSafeAtomicInt(initial: Int) {
     fun compareAndSet(expected: Int, new: Int): Boolean
 }
 
-/** Concurrent `String`-keyed map; callers use `remove` rather than storing `null`. */
+/** Concurrent `String`-keyed map; `null` is never stored, callers use `remove`. */
 @PublishedApi
 internal expect class KSafeConcurrentMap<V : Any>() {
     operator fun get(key: String): V?
@@ -32,26 +28,16 @@ internal expect class KSafeConcurrentMap<V : Any>() {
     fun containsKey(key: String): Boolean
     fun clear()
 
-    /** Returns a point-in-time copy. Safe to iterate. */
+    /** A point-in-time copy, safe to iterate. */
     fun snapshot(): Map<String, V>
 
-    /**
-     * Atomically replaces the mapping only when the current value is `==` [expected];
-     * lets the write coalescer swap plaintext → ciphertext without clobbering newer writes.
-     */
+    /** Replaces only when the current value is `==` [expected], so a newer write survives. */
     fun replaceIf(key: String, expected: V, new: V): Boolean
 
-    /**
-     * Atomically inserts only when [key] is absent; returns the existing value, or `null`
-     * if inserted. Lets cache repair restore a slot wiped by a concurrent clearAll
-     * without overwriting a newer write's value.
-     */
+    /** Inserts only when [key] is absent; returns the existing value, or `null` if inserted. */
     fun putIfAbsent(key: String, value: V): V?
 
-    /**
-     * Atomically removes only when the current value is `==` [expected], so cache repair
-     * rolls back exactly the value it restored — never a third writer's.
-     */
+    /** Removes only when the current value is `==` [expected], never a third writer's value. */
     fun removeIf(key: String, expected: V): Boolean
 }
 
@@ -63,29 +49,20 @@ internal expect class KSafeConcurrentSet<T : Any>() {
     fun snapshot(): Set<T>
 }
 
-/**
- * Runs [block] synchronously, blocking the caller. Throws on web, which cannot block
- * the main thread — the web backend pre-populates its cache and never hits this path.
- */
+/** Runs [block] synchronously. Throws on web, which cannot block; its cache is pre-populated. */
 @PublishedApi
 internal expect fun <T> runBlockingOnPlatform(block: suspend () -> T): T
 
 /**
- * `flowOn` context for `getFlowRaw`'s per-emission decrypt. `Dispatchers.Default` on
- * JVM/Android/Apple: the OS-vault decrypt is a blocking IPC call that must not run on
- * the collector's dispatcher (often the main thread). `EmptyCoroutineContext` on
- * single-threaded web: decryption is async WebCrypto, and a dispatcher hop would break
- * the synchronous cold-start `getFlow().first()` self-heal.
+ * `flowOn` context for the per-emission decrypt: `Dispatchers.Default` where that decrypt is a
+ * blocking OS-vault call, `EmptyCoroutineContext` on web, where a hop breaks the cold-start read.
  */
 @PublishedApi
 internal expect val decryptFlowContext: CoroutineContext
 
 /**
- * Per-instance, reentrant, non-suspending lock for the flow delegates' one-shot lazy
- * init. Per-delegate so unrelated delegates never contend; reentrant so a nested
- * first-access on the same thread cannot self-deadlock; a real parking lock
- * (ReentrantLock / NSRecursiveLock) so blocking across the cold-start read doesn't
- * busy-spin. No-op on single-threaded web.
+ * Per-delegate non-suspending lock for the one-shot lazy init: reentrant so a nested first access
+ * cannot self-deadlock, a parking lock so the cold-start read does not busy-spin. No-op on web.
  */
 @PublishedApi
 internal expect class KSafeInitLock() {
@@ -93,13 +70,8 @@ internal expect class KSafeInitLock() {
 }
 
 /**
- * One double-checked lazily-built value, held in a private field. Every delegate that must hand
- * out a single canonical instance needs this exact shape — a lock-free fast path plus a build
- * under [KSafeInitLock] — and each one that hand-writes it is a chance for a concurrent first
- * access to build a second instance and, with it, leak the coroutine that instance launched.
- *
- * Composition rather than a shared supertype: the delegates are `@PublishedApi internal` and
- * their supertypes are recorded in the committed ABI dumps, while a private field is not.
+ * One double-checked lazily-built value: racing first accesses cannot build two instances and leak
+ * the loser's coroutine. Composition, not a supertype — supertypes land in the committed ABI dumps.
  */
 internal class KSafeLazyRef<T : Any> {
     @Volatile private var value: T? = null
@@ -114,17 +86,8 @@ internal class KSafeLazyRef<T : Any> {
 }
 
 /**
- * Inserts [value] into a key cache guarded by the purge fence [epoch], which a wipe bumps BEFORE
- * removing the persisted records the cache mirrors.
- *
- * [epochAtRead] must be captured BEFORE the read/mint that produced [value] — capturing it here
- * would miss a wipe that completed in between. The insert is skipped if a wipe raced that read,
- * and undone if one lands between the check and the put; the undo is conditional on [value] still
- * being the mapping, so it can never strip a newer legitimate re-mint.
- *
- * Written once because getting it wrong on one engine is silent: the cache would keep serving
- * key material whose persisted record is gone — readable for the rest of the session, gone after
- * relaunch, taking everything written under it.
+ * Inserts [value] into a key cache guarded by the wipe fence [epoch]. [epochAtRead] must be
+ * captured BEFORE the read that produced [value], or a wipe racing that read goes unseen.
  */
 @OptIn(ExperimentalAtomicApi::class)
 internal fun <V : Any> insertUnderPurgeFence(

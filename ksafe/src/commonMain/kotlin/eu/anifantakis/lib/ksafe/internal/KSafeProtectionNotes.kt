@@ -1,16 +1,8 @@
 package eu.anifantakis.lib.ksafe.internal
 
 /**
- * The `KSafeProtectionInfo.notes` vocabulary: a documented, stable string protocol between four
- * per-platform PRODUCERS and one consumer, `KSafeProtectionInfo.isEncryptionOperational`.
- *
- * Written once because a rename on one side alone is silent and wrong in the dangerous direction:
- * `isEncryptionOperational` matches produced notes against a set of non-operational codes, so a
- * producer whose code no longer matches makes it return `true` on a store where every encrypted
- * operation throws. There is no compile error and no runtime signal for that.
- *
- * The per-code semantics are documented on `KSafeProtectionInfo.notes`; this object owns only
- * their spelling.
+ * Spelling of the `KSafeProtectionInfo.notes` codes. `isEncryptionOperational` matches produced
+ * notes against these strings, so renaming one side alone silently reports a broken store as healthy.
  */
 internal object KSafeProtectionNotes {
     const val JVM_OS_VAULT_UNAVAILABLE: String = "jvm_os_vault_unavailable"

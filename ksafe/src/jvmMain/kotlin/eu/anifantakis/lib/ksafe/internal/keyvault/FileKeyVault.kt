@@ -10,22 +10,11 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermissions
 
-/**
- * Software [JvmKeyVault] storing AES keys Base64-encoded in a plain JSON file —
- * the fallback used when KSafe runs on the JSON-file backend (no DataStore,
- * whose protobuf needs `sun.misc.Unsafe`, absent on a jlink-trimmed runtime that
- * omits `jdk.unsupported`).
- *
- * Security: none beyond OS file permissions (the key sits next to the
- * ciphertext), so `isOsBacked = false`. Writes are atomic (temp file +
- * `ATOMIC_MOVE`) in the same `0700` directory as the data.
- */
+/** Software [JvmKeyVault] holding Base64 AES keys in a plain JSON file, used when KSafe runs on
+ *  the JSON-file backend. No protection beyond OS file permissions, so `isOsBacked = false`. */
 internal class FileKeyVault(
     private val file: File,
-    /**
-     * fsyncs the directory so a preceding atomic rename is durable. Injectable for
-     * tests; best-effort no-op where a directory can't be opened as a channel (Windows).
-     */
+    /** fsyncs the directory so a preceding atomic rename is durable; a no-op on Windows. */
     private val syncDir: (File) -> Unit = ::fsyncDirectory,
 ) : JvmKeyVault {
 
@@ -45,9 +34,8 @@ internal class FileKeyVault(
         } catch (e: Throwable) {
             throw IllegalStateException("KSafe: key vault file unreadable: ${file.name}", e)
         }
-        // An existing-but-blank file is truncation, never a fresh store — write() always emits
-        // at least "{}" and clearAll() deletes the file — so it must fail closed like the
-        // unreadable/corrupt branches, not read as "no keys yet".
+        // A blank file is truncation, never a fresh store — write() always emits at least "{}"
+        // and clearAll() deletes the file — so it fails closed too.
         if (text.isBlank()) {
             throw IllegalStateException("KSafe: key vault file is blank (truncated?): ${file.name}")
         }
@@ -64,13 +52,11 @@ internal class FileKeyVault(
         if (parent != null && !parent.exists()) parent.mkdirs()
         // Sweep crash-leftover temp files first: each holds the full plaintext key map.
         deleteStaleTempFiles(parent)
-        // Owner-only (rw-------) so the plaintext AES key is never group/world-readable;
-        // ATOMIC_MOVE carries the perms to the destination. Windows relies on the 0700 dir.
+        // Owner-only so the plaintext key is never group/world-readable; ATOMIC_MOVE carries the perms.
         val tmp = createOwnerOnlyTempFile(parent)
         try {
-            // fsync data BEFORE the rename: a journaling FS can persist the rename ahead of the
-            // temp file's blocks, leaving a zero-length destination that reads as "no keys yet"
-            // — the orphan sweep then deletes every entry.
+            // fsync data BEFORE the rename: a journaling FS can persist the rename first, leaving
+            // a zero-length destination that reads as "no keys yet" and gets swept.
             java.io.FileOutputStream(tmp).use { out ->
                 out.write(json.encodeToString(ser, map).encodeToByteArray())
                 out.flush()
@@ -82,8 +68,7 @@ internal class FileKeyVault(
                 StandardCopyOption.ATOMIC_MOVE,
                 StandardCopyOption.REPLACE_EXISTING,
             )
-            // fsync the parent dir too, so the rename itself is durable — else a crash can lose
-            // it and leave the key file missing, which reads as "no keys yet" and gets swept.
+            // fsync the parent dir too, or a crash loses the rename and the file reads as empty.
             val dir = file.absoluteFile.parentFile
             if (dir != null) syncDir(dir)
         } catch (e: Throwable) {
@@ -92,10 +77,8 @@ internal class FileKeyVault(
         }
     }
 
-    /**
-     * Deletes `<file.name>*.tmp` orphans from a write that died before the atomic move — each
-     * is a full plaintext copy of the key map. Best-effort; never deletes the key file itself.
-     */
+    /** Deletes `<file.name>*.tmp` orphans of a write that died before the move — each a full
+     *  plaintext copy of the key map. Never deletes the key file itself. */
     private fun deleteStaleTempFiles(parent: File?) {
         val dir = parent ?: file.absoluteFile.parentFile ?: return
         runCatching {
@@ -123,10 +106,6 @@ internal class FileKeyVault(
     }
 
     private companion object {
-        /**
-         * Best-effort fsync of [dir] so a preceding atomic rename survives a crash. Opening a
-         * directory as a channel is POSIX-only; swallowed on Windows.
-         */
         fun fsyncDirectory(dir: File) {
             runCatching {
                 java.nio.channels.FileChannel.open(dir.toPath(), java.nio.file.StandardOpenOption.READ)
@@ -151,13 +130,8 @@ internal class FileKeyVault(
         if (map.remove(alias) != null) write(map)
     }
 
-    /**
-     * Wipes EVERY key (this file is a per-store plaintext key map, so removing it in whole is
-     * safe and is the only way to reclaim keys the per-alias deletes miss — orphans and
-     * `getOrCreateSecret` slots). Deleting the physical file + its crash-leftover temp copies
-     * leaves no plaintext key material behind. Called on the write consumer, so it never races
-     * a concurrent write; a subsequent write re-creates the file with the fresh key.
-     */
+    /** Wipes every key: deleting the file and its temp copies is the only way to reclaim the
+     *  orphans per-alias deletes miss. Runs on the write consumer, so it can't race a write. */
     @Synchronized
     override fun clearAll() {
         deleteStaleTempFiles(file.parentFile)
@@ -165,10 +139,6 @@ internal class FileKeyVault(
     }
 }
 
-/**
- * Suffix of [FileKeyVault]'s atomic-write staging files. Each is a full plaintext copy of the AES
- * key map, so the store's own crash-leftover sweep and `clearAll`'s residue sweep — in a different
- * file — must recognise exactly the same name. (`JvmFallbackMigration`'s pending-state temp shares
- * the spelling by coincidence, not by contract, and deliberately does not use this.)
- */
+/** Suffix of [FileKeyVault]'s staging files, each a full plaintext key map: the residue sweeps
+ *  that live in other files must match the same name. */
 internal const val KEY_VAULT_TEMP_SUFFIX: String = ".tmp"

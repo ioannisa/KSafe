@@ -58,15 +58,9 @@ private fun isSimulator(): Boolean =
     NSProcessInfo.processInfo.environment["SIMULATOR_UDID"] != null
 
 /**
- * Creates a [KSafe] for Apple targets (iOS, iPadOS, macOS): DataStore-backed storage under
- * `NSApplicationSupportDirectory` (or [directory]), with encryption keys held device-only in
- * the Keychain and Secure Enclave wrapping available per write.
- *
- * [fileName] is the store's key-isolation boundary: the Keychain key namespace derives from it,
- * NOT from [directory]. Two instances sharing a [fileName] under different [directory] values thus
- * share Keychain keys — keep one `KSafe` per [fileName] and use distinct [fileName]s for
- * independent stores (the startup orphan sweep is skipped for custom-[directory] stores so it can
- * never reap such a sibling's keys).
+ * Creates a [KSafe] for Apple targets: DataStore storage under `NSApplicationSupportDirectory`
+ * (or [directory]), keys held device-only in the Keychain. [fileName], not [directory], is the
+ * key-isolation boundary — same-[fileName] instances share Keychain keys, so keep one per file.
  */
 fun KSafe(
     fileName: String? = null,
@@ -112,16 +106,14 @@ internal fun KSafe(
     testEngine = testEngine,
 )
 
-/** Ref-counted per-file DataStore + engine: native DataStore refuses two active instances on
- *  one file and frees it only once the owning scope's Job completes. */
+/** Ref-counted per-file DataStore + engine: native DataStore refuses two instances on one file. */
 private class AppleBackend(
     val dataStore: DataStore<Preferences>,
     val storage: KSafePlatformStorage,
     scope: CoroutineScope,
 ) : SharedStoreBackend(scope)
 
-// Dispatchers.Default: Kotlin/Native has no Dispatchers.IO, and DataStore's Apple I/O path is
-// non-blocking.
+// Kotlin/Native has no Dispatchers.IO, and DataStore's Apple I/O path is non-blocking.
 private val appleBackends = SharedBackendRegistry<AppleBackend>(Dispatchers.Default)
 
 @OptIn(ExperimentalForeignApi::class)
@@ -139,10 +131,7 @@ private fun buildAppleKSafe(
     requireValidStoreFileName(fileName)
     validateSecurityPolicy(securityPolicy)
 
-    // Probe the SE for real instead of assuming "not the Simulator ⇒ has SE": that was true on
-    // iOS but wrong on SE-less Macs (pre-T2 Intel, VMs), where it masked a silent downgrade to a
-    // plain Keychain key in protectionInfo/getKeyInfo. Short-circuit on the Simulator (no SE, and
-    // the probe there is pointless).
+    // Probe, don't assume "not the Simulator ⇒ has SE": pre-T2 Intel Macs and VMs have none.
     val hasSecureEnclave: Boolean = !isSimulator() && AppleKeychainEncryption.deviceHasSecureEnclave()
 
     val deviceKeyStorages: Set<KSafeKeyStorage> = buildSet {
@@ -174,7 +163,6 @@ private fun buildAppleKSafe(
     val baseFileName = dataStoreBaseFileName(fileName)
     val datastoreFilePath = "$resolvedDirPath/$baseFileName$DATASTORE_FILE_SUFFIX"
 
-    // Best-effort migration of a legacy DataStore file from NSDocumentDirectory (old builds).
     if (directory == null && !fm.fileExistsAtPath(datastoreFilePath)) {
         val docsDirPath: String? = fm.URLForDirectory(
             directory = NSDocumentDirectory,
@@ -197,17 +185,14 @@ private fun buildAppleKSafe(
         }
     }
 
-    // Canonical spelling (symlinks — e.g. /var vs /private/var — and `..`/`.` resolved) so one
-    // physical store keeps ONE identity and ONE backend however its `directory` was spelled.
-    // Resolved on the DIRECTORY, which was just created above: stringByResolvingSymlinksInPath
-    // leaves a non-existent path untouched, so resolving the full file path would be a silent
-    // no-op on first launch and the identity/backend key would CHANGE once the file appeared.
+    // One identity and one backend per physical store, however its path was spelled. Resolved on
+    // the DIRECTORY: resolving a not-yet-existing file path is a no-op, so the identity would
+    // change once the file appeared.
     val canonicalDirPath = (resolvedDirPath as NSString).stringByResolvingSymlinksInPath
     val canonicalStorePath = "$canonicalDirPath/$baseFileName$DATASTORE_FILE_SUFFIX"
     val storeIdentity = resolveStoreIdentity(
         canonicalPath = canonicalStorePath,
-        // The home is resolved to the SAME degree, or a canonical path could never prefix-match a
-        // symlinked home (/var vs /private/var) and the identity would silently stay absolute.
+        // Resolved to the same degree, or a canonical path never prefix-matches a symlinked home.
         canonicalHome = (NSHomeDirectory() as NSString).stringByResolvingSymlinksInPath,
         rawPath = datastoreFilePath,
         rawHome = NSHomeDirectory(),
@@ -215,12 +200,8 @@ private fun buildAppleKSafe(
 
     val backend = appleBackends.acquire(canonicalStorePath) { scope ->
         val dataStore = PreferenceDataStoreFactory.createWithPath(
-            // Quarantine a corrupt .preferences_pb and continue from empty instead of throwing
-            // CorruptionException on every read; the corrupt bytes are copied aside for recovery.
             corruptionHandler = ReplaceFileCorruptionHandler {
                 runCatching {
-                    // Fixed name, unlike the JVM targets' timestamped copies: only the newest
-                    // corruption is retained here.
                     val dest = corruptQuarantineName(datastoreFilePath)
                     val fmgr = NSFileManager.defaultManager
                     fmgr.removeItemAtPath(dest, error = null) // copyItem fails if dest exists
@@ -242,7 +223,7 @@ private fun buildAppleKSafe(
     val engine: KSafeEncryption =
         testEngine ?: backend.engineOrCreate { AppleKeychainEncryption(config = config, serviceName = SERVICE_NAME) }
 
-    // Guards this instance's single backend release (KSafeCore.cancel() is idempotent).
+    // cancel() can run more than once; release the shared backend on the first call only.
     val released = KSafeAtomicFlag(false)
 
     fun iosKeyAlias(userKey: String): String = KSafeAliasFormat.dotted(fileName, userKey)
@@ -257,14 +238,10 @@ private fun buildAppleKSafe(
     fun iosLegacyEncryptedPrefix(): String =
         fileName?.let { "${it}_" } ?: KeySafeMetadataManager.LEGACY_ENCRYPTED_PREFIX
 
-    // Simulator fallback for an entitlement-blocked Keychain (errSecMissingEntitlement, -34018)
-    // engages lazily on the first blocked key op, so re-read the flag per access.
     val keychainEngine = engine as? AppleKeychainEncryption
 
-    // Custody-first resolution for getKeyInfo: the live key outranks capability inference,
-    // because a HARDWARE_ISOLATED request can be served by a legacy pre-SE plain key (honoured
-    // forever) or by the Simulator sandbox fallback. Inference stays as the fallback for keys
-    // the engine can't classify (not yet minted, locked device, injected test engine).
+    // Custody of the live key outranks capability inference: a HARDWARE_ISOLATED request can be
+    // served by a legacy plain key or the Simulator fallback. Inference covers unclassifiable keys.
     fun resolveKeyTier(protection: KSafeProtection?, engineAlias: String?): KSafeKeyTier {
         if (protection == null) return KSafeKeyTier.SOFTWARE
         when (engineAlias?.let { keychainEngine?.keyCustody(it) }) {
@@ -278,21 +255,14 @@ private fun buildAppleKSafe(
         else KSafeKeyTier.HARDWARE_BACKED
     }
 
-    /** Orphan sweep with failures swallowed — a locked device or transient Keychain error
-     *  must never block startup. */
+    /** Failures swallowed: a locked device or transient Keychain error must not block startup. */
     suspend fun cleanupOrphanedKeychainEntriesSafe(isUserKeyDirty: (String) -> Boolean) {
-        // The Keychain key namespace is KEY_PREFIX.fileName — it does NOT encode `directory` — so a
-        // custom-directory instance can share it with a same-fileName sibling in another location.
-        // The sweep validates against only THIS store's snapshot, so there it would reap the
-        // sibling's live keys as "orphans". Skip it for custom-directory stores (fileName is the
-        // isolation boundary; keeping one KSafe per fileName is the supported contract).
+        // The Keychain namespace encodes fileName, not directory, so a custom-directory store
+        // shares it with a same-fileName sibling whose live keys the sweep would reap.
         if (directory != null) return
         runCatching {
-            // Hold the shared per-store commit mutex across the WHOLE snapshot → classify →
-            // delete sequence: a batch commit (whose encrypts mint/reuse keys under it) can
-            // then never interleave between our snapshot and our deletes, so a write's key
-            // can't be reaped between its encrypt and its commit. The owner-keyed in-flight
-            // gate covers writes enqueued but not yet in a batch (dirty is marked at enqueue).
+            // Hold the commit mutex across the whole snapshot → classify → delete, or a batch
+            // commit mints a key between our snapshot and our deletes and we reap it.
             backend.commitMutex.withLock {
                 cleanupOrphanedKeychainEntries(
                     storage = storage,
@@ -301,8 +271,7 @@ private fun buildAppleKSafe(
                     fileName = fileName,
                     legacyEncryptedPrefix = iosLegacyEncryptedPrefix(),
                     seKeyTagPrefix = AppleKeychainEncryption.SE_KEY_TAG_PREFIX,
-                    // Shared master keys never appear in the sweep's valid-key set (no single user
-                    // key references them); reserve them or the sweep orphans all DEFAULT ciphertext.
+                    // No user key references a master key; unreserved, DEFAULT data is orphaned.
                     reservedKeyIds = setOf(KSafeReservedKeys.MASTER, KSafeReservedKeys.MASTER_LOCKED),
                     // A write in flight during the sweep commits after our snapshot — don't reap it.
                     isInFlight = isUserKeyDirty,
@@ -315,15 +284,9 @@ private fun buildAppleKSafe(
     }
 
     val core = KSafeCore(
-        // Bind the full store path (directory + fileName), not just fileName, into the v3 AAD —
-        // mirroring Android. Two same-fileName instances differing only by `directory` share the
-        // same fileName-scoped Keychain key by design, so without this a rotated (v3) ciphertext
-        // transplanted between their directories would still decrypt; the path in the AAD makes
-        // that fail closed. The Keychain alias stays fileName-scoped (an SE-wrapped/non-exportable
-        // key can't be re-aliased without data loss). HOME-RELATIVE, never absolute: the iOS app
-        // container UUID changes on every App Store update/restore, so an absolute path would
-        // break every rotated entry's AAD after an ordinary update (and the startup orphan sweep
-        // would then delete them).
+        // Full store path in the v3 AAD, not just fileName: same-fileName instances in different
+        // directories share the Keychain key, so a transplanted ciphertext must fail closed.
+        // Home-relative — the iOS container UUID changes on every update.
         storeIdentity = storeIdentity.canonical,
         fallbackStoreIdentity = storeIdentity.fallback,
         keyNamespace = fileName,
@@ -342,8 +305,6 @@ private fun buildAppleKSafe(
         legacyEncryptedPrefix = iosLegacyEncryptedPrefix(),
         legacyEncryptedKeyFor = ::iosLegacyEncryptedKey,
         modeTransformer = { promoteDefaultToIsolated(it, useSecureEnclave) },
-        // Only the last live instance on this file cancels the shared scope; guarded to one
-        // release because KSafeCore.cancel() is idempotent.
         onCancel = { if (released.compareAndSet(false, true)) appleBackends.release(canonicalStorePath) },
     )
     core.attachSiblings(backend.siblings)
@@ -371,6 +332,7 @@ private fun buildAppleKSafe(
         core = core,
         deviceKeyStorages = deviceKeyStorages,
         protectionInfoProvider = {
+            // Re-read per access: the Simulator fallback engages on the first blocked Keychain op.
             if (keychainEngine?.isSimulatorFallbackActive() == true) fallbackProtectionInfo
             else protectionInfoSnapshot
         },

@@ -1,25 +1,12 @@
 package eu.anifantakis.lib.ksafe.internal
 
 /**
- * The single JS source of the web key store, shared by the js and wasmJs bindings.
- *
- * The algorithm has to live as JS text rather than Kotlin: it is one long chain of IndexedDB
- * request/transaction callbacks and WebCrypto promises, and the two targets can only reach them
- * through different interop mechanisms (`js(...)` on Kotlin/JS, `@JsFun` on Kotlin/Wasm). Keeping
- * the text here leaves each target file with nothing but its binding and its caching of the built
- * store — the IndexedDB orchestration, commit-durability, cross-tab eviction, crypto rules and op
- * routing are written once.
- *
- * `const val`s (not functions) because both bindings need a compile-time constant string.
+ * The one JS source of the web key store: the js and wasmJs bindings reach IndexedDB and WebCrypto
+ * through different interop, so it stays JS text, and `const val` so both can inline it.
  */
 internal object WebKeyStoreJsSource {
 
-    /**
-     * JS source of the op dispatch, written against a store instance the caller has already bound
-     * to `wk` and the dispatcher arguments `op, a, b, c`. Each target owns only *where* the built
-     * store lives (a module-scope closure on Kotlin/JS, a global slot on Kotlin/Wasm, which cannot
-     * keep closure state between `@JsFun` calls); which op maps to which store call is written once.
-     */
+    /** Op dispatch, written against a store the caller bound to `wk` and the arguments `op, a, b, c`. */
     const val OP_ROUTING: String = """
       if (op === '${WebKeyStoreOps.ENSURE}') return wk.ensure(a, b, true, c);
       if (op === '${WebKeyStoreOps.ENSURE_NO_MINT}') return wk.ensure(a, b, false, c);
@@ -32,12 +19,8 @@ internal object WebKeyStoreJsSource {
     """
 
     /**
-     * JS source of a zero-argument factory returning `{ ensure, enc, dec, del, copyIfAbsent }`.
-     * Callers own the caching of the built object, which is why the factory itself holds no
-     * cross-call state.
-     *
-     * Property access is written `mem['delete'](…)` rather than `mem.delete(…)` so the text parses
-     * under both targets' JS toolchains.
+     * Zero-argument factory returning `{ ensure, enc, dec, del, copyIfAbsent }`; callers cache the
+     * built object. Property access is written `mem['delete'](…)` so both toolchains parse it.
      */
     const val FACTORY: String = """
     (function() {

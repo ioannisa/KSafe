@@ -3,10 +3,8 @@ package eu.anifantakis.lib.ksafe.internal
 import eu.anifantakis.lib.ksafe.KSafeProtection
 
 /**
- * User key → recorded protection, read off a raw storage snapshot: canonical `__ksafe_meta_*__`
- * records win, legacy `__ksafe_prot_*__` ones only fill the gaps. Shared by the core's orphan
- * sweep and the Apple Keychain sweep, which must agree on what a live entry is — a divergent
- * copy makes one sweep reap what the other preserves.
+ * User key → recorded protection off a raw snapshot; canonical `__ksafe_meta_*__` records win over
+ * legacy ones. Shared so the core and Apple sweeps cannot disagree on what a live entry is.
  */
 internal fun protectionByKeyFromSnapshot(
     snapshot: Map<String, StoredValue>,

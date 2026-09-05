@@ -48,25 +48,15 @@ import java.nio.file.attribute.PosixFilePermission
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
-// The JVM key vaults persist raw key bytes as Base64 text. The codec itself is KSafeBase64;
-// these stay declared here only because the vaults are jvmMain-only.
-
 internal fun encodeBase64(bytes: ByteArray): String = KSafeBase64.encode(bytes)
 
 internal fun decodeBase64(encoded: String): ByteArray = KSafeBase64.decode(encoded)
 
 /**
- * Creates a JVM [KSafe] whose data lives under [baseDir] (default
- * `~/.eu_anifantakis_ksafe`, created if missing with POSIX 0700 permissions).
+ * Creates a JVM [KSafe] storing data under [baseDir] (default `~/.eu_anifantakis_ksafe`, 0700).
  *
- * **[fileName] is the key-isolation boundary**, not [baseDir]: the OS key vault (or software
- * fallback) is keyed by an alias scoped to [fileName] (and [KSafeConfig.appNamespace]) only,
- * so two instances that share a [fileName] but differ only in [baseDir] share the same key
- * material — one instance's `clearAll()` deletes the key the other still needs. Give
- * independent stores DISTINCT [fileName]s (or `appNamespace`s). [baseDir] chooses where the
- * data file lives and, once a store has been rotated, is bound into the v3 AAD (so a rotated
- * ciphertext can't be transplanted to a store with a different [baseDir]); it still does not
- * isolate key material.
+ * Key material is scoped to [fileName] (and [KSafeConfig.appNamespace]), not [baseDir]: two
+ * instances sharing a [fileName] share one key, so give independent stores distinct names.
  */
 fun KSafe(
     fileName: String? = null,
@@ -109,10 +99,8 @@ internal fun KSafe(
     testEngine = testEngine,
 )
 
-/**
- * Per-file shared backend: DataStore refuses two active instances on one file, so live
- * [KSafe] instances sharing a path share one ref-counted backend (last close tears it down).
- */
+/** DataStore refuses two active instances on one file, so instances sharing a path share a
+ *  ref-counted backend. */
 private class JvmBackend(
     val storage: KSafePlatformStorage,
     scope: CoroutineScope,
@@ -122,11 +110,8 @@ private class JvmBackend(
 
 private val jvmBackends = SharedBackendRegistry<JvmBackend>(Dispatchers.IO)
 
-/**
- * Custody of one JVM key: an OS secret store (DPAPI / Keychain / Secret Service) is sandbox
- * protection, its software fallback is not, and a test-injected engine is assumed to be baseline.
- * There is no device key hardware here, so this never reaches the HARDWARE tiers.
- */
+/** An OS secret store is sandbox protection, its software fallback is not; the JVM has no key
+ *  hardware, so this never reaches the HARDWARE tiers. */
 private fun jvmKeyTier(engine: KSafeEncryption, protection: KSafeProtection?): KSafeKeyTier = when {
     protection == null -> KSafeKeyTier.SOFTWARE
     engine is JvmSoftwareEncryption && engine.keyVaultIsOsBacked -> KSafeKeyTier.SANDBOX_PROTECTED
@@ -158,12 +143,9 @@ private fun buildJvmKSafe(
 
     val baseFileName = dataStoreBaseFileName(fileName)
 
-    // Same canonicalization as the key vault's namespace (resolveJvmAppNamespace), so one
-    // configured token can never split into different data-dir and vault identities.
+    // Must match the key vault's canonicalization, or one token splits into two identities.
     val explicitNamespace = canonicalJvmNamespaceToken(config.appNamespace)
-    // The pre-3.0.0 directory token (no trim, so whitespace became '_'): when it differs from
-    // the canonical one, a shipped app's live data sits in the old subdir — carried forward as
-    // the preferred copy source so the canonicalization can't strand it.
+    // The older, untrimmed token: a shipped app's data may sit in that subdir, so it is preferred.
     val legacyNamespaceDir: File? = config.appNamespace
         ?.replace(NAMESPACE_SANITIZE_REGEX, "_")
         ?.trimStart('.')
@@ -179,8 +161,7 @@ private fun buildJvmKSafe(
             ?: if (importStoreFilesOnce(srcDirs, nsDir, baseFileName, copy = storeCopy())) nsDir
             else carryForwardSourceForThisSession(srcDirs, baseFileName, nsDir)
     } else {
-        // A canonicalized-away token (e.g. whitespace-only) may still have pre-3.0.0 data in
-        // its old subdir; surface it at the un-namespaced path it now maps to.
+        // A canonicalized-away token may still have data under its old subdir.
         val srcDirs = listOfNotNull(legacyNamespaceDir)
         degradedCarryForwardSources[degradeMemoKey(resolvedBaseDir, baseFileName)]
             ?: if (srcDirs.isEmpty() ||
@@ -194,35 +175,21 @@ private fun buildJvmKSafe(
     // JVM has no locked/unlocked split, so both access policies route to the one master.
     val masterAlias: (Boolean) -> String = { _ -> KSafeAliasFormat.colonMaster(fileName) }
 
-    // v3 AAD store identity: the pre-namespace baseDir + fileName, NOT storageDir. Two same-fileName
-    // stores in different baseDirs share the fileName-scoped key by design, so binding the baseDir
-    // makes a rotated (v3) ciphertext transplanted between them fail closed instead of decrypting.
-    // resolvedBaseDir (not storageDir) is deliberate: the appNamespace copy-forward relocates the
-    // file into a namespace subdir but resolvedBaseDir is invariant across it, so a v3 entry stays
-    // decryptable after that move. Must match all consumers (both engines, migration, KSafeCore).
-    // Home-relative, never absolute: a JVM user home can move (renamed account, OS
-    // migration, portable install), and an absolute path in the v3 AAD would make every
-    // rotated entry fail authentication afterwards. Same defect class as the iOS
-    // container-UUID relocation; see KeySafeMetadataManager.stableStoreIdentity.
-    // Canonical spelling (symlinks / `..` / a relative baseDir under a changing working
-    // directory resolved) so one physical store keeps ONE identity however its baseDir was
-    // spelled — two spellings would otherwise bind different AAD and read each other's rotated
-    // entries as defaults.
+    // v3 AAD identity: resolvedBaseDir + fileName, never storageDir — the namespace copy-forward
+    // moves the file but resolvedBaseDir survives it. Home-relative and canonical, or a moved home
+    // or a second spelling breaks authentication. Every consumer must derive it the same way.
     val identityBaseFile = File(resolvedBaseDir, baseFileName)
     val rawUserHome = System.getProperty("user.home")
     val storeIdentity = resolveStoreIdentity(
         canonicalPath = runCatching { identityBaseFile.canonicalPath }
             .getOrDefault(identityBaseFile.absolutePath),
-        // Canonicalized to the same degree as the store path: a symlinked or mounted home
-        // (/home -> /System/Volumes/Data/home, /var -> /private/var) would otherwise never
-        // prefix-match a canonical path, leaving the identity absolute and the guard inert.
+        // A symlinked home (/var -> /private/var) never prefix-matches a canonical store path.
         canonicalHome = rawUserHome?.let { h -> runCatching { File(h).canonicalPath }.getOrDefault(h) },
         rawPath = identityBaseFile.absolutePath,
         rawHome = rawUserHome,
     )
 
-    // Canonical registry key so two spellings of one physical file share the ref-counted backend
-    // instead of tripping DataStore's "multiple instances active" fail-fast.
+    // Canonical key, or two spellings of one file trip DataStore's multiple-instances fail-fast.
     val backendFile = File(storageDir, baseFileName)
     val backendPath = runCatching { backendFile.canonicalPath }.getOrDefault(backendFile.absolutePath)
     val backend = jvmBackends.acquire(backendPath) { storageScope ->
@@ -240,13 +207,9 @@ private fun buildJvmKSafe(
         )
     }
 
-    // Guards this instance's single backend release; KSafeCore.cancel() is idempotent.
     val released = java.util.concurrent.atomic.AtomicBoolean(false)
 
     val core = KSafeCore(
-        // The live v3 AAD authority. MUST be the derived store identity (not fileName) so runtime
-        // reads/writes bind the same baseDir-inclusive identity the fallback migration uses —
-        // otherwise a v3 entry written here would fail the migration's decrypt and be dropped.
         storeIdentity = storeIdentity.canonical,
         fallbackStoreIdentity = storeIdentity.fallback,
         keyNamespace = fileName,
@@ -274,12 +237,8 @@ private fun buildJvmKSafe(
     )
 }
 
-/**
- * Publish order, not merely the file list: whatever a published file makes the next launch DO must
- * already be in place when that file appears. The fallback JSON is the trigger — its presence alone
- * re-runs the drain — so it goes last, after the two markers that gate the drain, the key sidecar
- * that decrypts it, and the store file whose newer values it must not roll back.
- */
+/** Publish order: the fallback JSON's presence alone re-runs the drain, so it goes last — after
+ *  the markers that gate it, the key sidecar, and the store file. */
 private val storeCohortSuffixes = listOf(
     JSON_FALLBACK_SUFFIX + FALLBACK_MIGRATED_SUFFIX,
     JSON_FALLBACK_SUFFIX + FALLBACK_MIGRATION_PENDING_SUFFIX,
@@ -294,10 +253,8 @@ private const val DATASTORE_SCRATCH_SUFFIX: String = ".tmp"
 private const val REWRITE_WINDOW_SAMPLES: Int = 10
 private const val REWRITE_WINDOW_SAMPLE_MS: Long = 10
 
-/**
- * DataStore's JVM rewrite is unlink-then-rename: a live store file is briefly absent while its
- * scratch sibling exists, and a single `exists()` sample there would read as "no data here".
- */
+/** DataStore's JVM rewrite is unlink-then-rename: a live store file is briefly absent while its
+ *  scratch sibling exists, and one `exists()` sample there reads as "no data here". */
 private fun cohortFilePresent(file: File): Boolean {
     if (file.exists()) return true
     val scratch = File(file.path + DATASTORE_SCRATCH_SUFFIX)
@@ -314,28 +271,11 @@ private fun cohortFilePresent(file: File): Boolean {
     return false
 }
 
-/** The single directory a carry-forward publishes from: the first of [srcDirs] holding any cohort file. */
 internal fun selectCopyForwardSource(srcDirs: List<File>, baseFileName: String): File? =
     srcDirs.firstOrNull { dir -> storeCohortSuffixes.any { cohortFilePresent(File(dir, baseFileName + it)) } }
 
-/**
- * Copies one store's on-disk files into [dstDir] (existing destinations kept). Copy, never
- * move: a move would steal another app's shared un-namespaced file. The whole cohort comes
- * from ONE source directory — the first of [srcDirs] holding any cohort file — because
- * per-file source selection could pair a data file with a different historical store's key
- * sidecar, or carry a foreign `.migrated`/`.migration-pending` marker whose mtime defeats
- * the fallback-migration gate. Each file is staged to a temp name and published by rename
- * only after every copy succeeded, so a failure mid-cohort leaves no final name occupied (a
- * truncated destination would count as "exists" and block the retry forever) and the next
- * launch retries the whole cohort. Each copy keeps the SOURCE mtime: `copyTo` stamps copy
- * time, which would make the copied `.migrated` marker at least as new as the copied
- * fallback JSON and deterministically skip a genuinely-newer second fallback period's
- * migration, stranding its values. The `.migration-pending` marker is carried too: without
- * it a namespaced first launch after an un-namespaced transient migration failure reverts to
- * "fallback wins" and can overwrite the newer OS-backed writes the copied `.preferences_pb`
- * holds. Returns true once the cohort is fully published (or there was nothing to copy), false
- * when a copy or rename failed and the next launch must retry.
- */
+/** Copies one store's cohort into [dstDir] from ONE source dir — a mixed cohort would pair a
+ *  data file with another store's key sidecar. Copy, never move: the source may be shared. */
 internal fun copyStoreFilesForward(
     srcDirs: List<File>,
     dstDir: File,
@@ -352,6 +292,7 @@ internal fun copyStoreFilesForward(
         val tmp = File(dstDir, dst.name + ".fwd-tmp")
         try {
             copy(src, tmp)
+            // Keep the source mtime, or the copied `.migrated` marker skips a newer fallback's migration.
             val srcMtime = src.lastModified()
             if (srcMtime > 0) tmp.setLastModified(srcMtime)
             staged += tmp to dst
@@ -364,10 +305,8 @@ internal fun copyStoreFilesForward(
     for ((index, entry) in staged.withIndex()) {
         val (tmp, dst) = entry
         if (rename(tmp, dst)) continue
-        // Same-directory renames fail rarely (an indexer's file lock), but skipping just the
-        // failed one would publish a later file without the earlier one it depends on — the
-        // whole point of the order above. Dropping the rest instead leaves those names absent
-        // for the next launch to re-copy; what is published stays a valid prefix of the cohort.
+        // Skipping just the failed one would publish a later file without the earlier one it
+        // depends on; dropping the rest keeps what is published a valid prefix of the cohort.
         staged.drop(index).forEach { (rest, _) -> runCatching { rest.delete() } }
         return false
     }
@@ -383,13 +322,8 @@ internal var copyForwardCopyForTest: ((File, File) -> Unit)? = null
 private fun storeCopy(): (File, File) -> Unit =
     copyForwardCopyForTest ?: { src, dst -> src.copyTo(dst, overwrite = true) }
 
-/**
- * One-shot carry-forward: a marker written after a complete publish keeps a later clearAll() from
- * re-arming it. Returns true when [dstDir] holds the cohort — already imported, nothing to import,
- * or just published — and false when a source cohort exists and the publish failed.
- * Finding nothing is deliberately NOT marked: it may be a store caught mid-rewrite, and a marker
- * written on that reading would strand the un-namespaced data forever.
- */
+/** One-shot carry-forward gated by a marker, so a later clearAll() cannot re-arm it. Finding
+ *  nothing is NOT marked: a store caught mid-rewrite would be stranded forever. */
 internal fun importStoreFilesOnce(
     srcDirs: List<File>,
     dstDir: File,
@@ -405,26 +339,17 @@ internal fun importStoreFilesOnce(
     return true
 }
 
-/**
- * Destinations this process has already degraded, and the source each degraded to. Lives until
- * process exit: a second construction on a degraded store joins it instead of re-attempting the
- * copy, which would otherwise snapshot a store file the first instance is actively writing and
- * then publish the marker that strands its writes.
- */
+/** Destinations this process already degraded, and the source each runs from. Re-attempting the
+ *  copy would snapshot a file the first instance is writing, then mark it done. */
 private val degradedCarryForwardSources = java.util.concurrent.ConcurrentHashMap<String, File>()
 
 private fun degradeMemoKey(dstDir: File, baseFileName: String): String =
     runCatching { dstDir.canonicalPath }.getOrDefault(dstDir.absolutePath) + "|" + baseFileName
 
-/** Test seam: forgets the degrade memo, modelling a process restart. */
 internal fun clearCarryForwardDegradeMemoForTest() = degradedCarryForwardSources.clear()
 
-/**
- * A failed carry-forward must not promote the empty destination to authoritative: a store file
- * created there would be skipped by the name-keyed retry forever, so this session runs from the
- * source. For the duration of the degrade this session reads, writes and `clearAll()`s that
- * shared source store.
- */
+/** A failed carry-forward must not promote the empty destination — the name-keyed retry would skip
+ *  it forever — so this session reads, writes and `clearAll()`s the source store. */
 private fun carryForwardSourceForThisSession(
     srcDirs: List<File>,
     baseFileName: String,
@@ -440,11 +365,8 @@ private fun carryForwardSourceForThisSession(
     return src
 }
 
-/**
- * Builds the storage + engine + clearAll-cleanup for one file, selecting the DataStore backend
- * or the no-`sun.misc.Unsafe` JSON-file fallback and running the one-time JSON→OS-backed
- * migration. Invoked once per file path, under that path's lock.
- */
+/** Builds the storage, engine and clearAll cleanup for one file, choosing the DataStore backend
+ *  or the no-`sun.misc.Unsafe` JSON fallback. Once per file path, under that path's lock. */
 private fun createJvmBackend(
     storageScope: CoroutineScope,
     storageDir: File,
@@ -462,9 +384,8 @@ private fun createJvmBackend(
     val clearAllCleanup: suspend () -> Unit
 
     if (testEngine == null && !isSunMiscUnsafePresent()) {
-        // `sun.misc.Unsafe` (JDK module `jdk.unsupported`) is missing (typically a jlink-trimmed
-        // Compose Desktop distributable); DataStore's protobuf hard-requires it and would crash,
-        // so persist to a software-encrypted JSON file instead (no OS-backed keys, no data loss).
+        // `sun.misc.Unsafe` is missing (typically a jlink-trimmed distributable) and DataStore's
+        // protobuf hard-requires it, so persist to a software-encrypted JSON file instead.
         warnUsingJsonFileFallbackOnce()
         val jsonFile = File(storageDir, "$baseFileName$JSON_FALLBACK_SUFFIX")
         val keysFile = File(storageDir, "$baseFileName.ksafe-keys.json")
@@ -474,17 +395,14 @@ private fun createJvmBackend(
             vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFile)),
         )
         clearAllCleanup = {
-            // The live jsonFile (ciphertext) and keysFile (plaintext AES keys) are wiped on the
-            // write consumer by core.clearAll(); a raw File.delete() on this caller thread would
-            // race a concurrent put()'s consumer batch and drop an acknowledged write, so they
-            // are excluded here and only stale archive/quarantine residue is swept.
+            // The live files are wiped on the write consumer by core.clearAll(); deleting them
+            // from this thread would race a concurrent put() and drop an acknowledged write.
             deleteResidualFallbackFiles(storageDir, baseFileName, exclude = setOf(jsonFile.name, keysFile.name))
         }
     } else {
         val datastoreFile = File(storageDir, "$baseFileName$DATASTORE_FILE_SUFFIX")
         val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
-            // A corrupt .preferences_pb otherwise throws CorruptionException on every read forever;
-            // quarantine the unreadable file (copy aside for recovery) and continue from empty.
+            // A corrupt .preferences_pb otherwise throws on every read forever; set it aside and continue.
             corruptionHandler = ReplaceFileCorruptionHandler {
                 quarantineCorruptStoreFile(datastoreFile)
                 emptyPreferences()
@@ -495,28 +413,19 @@ private fun createJvmBackend(
         storage = DataStoreStorage(dataStore)
         engine = testEngine ?: JvmSoftwareEncryption(config, dataStore)
         clearAllCleanup = {
-            // The DataStore file is NOT deleted here: core.clearAll() already emptied it on the
-            // write consumer, and a raw File.delete() on this caller thread would race a concurrent
-            // consumer batch (e.g. a key mint during rotation) and strand an in-RAM-only key.
-            // deleteResidualFallbackFiles below only matches the `<base>.ksafe` prefix, so the
-            // datastore file's own quarantine copies need this sweep.
+            // The store file is emptied on the write consumer by core.clearAll(); deleting it from
+            // this thread would race a commit. The sweep below matches only `<base>.ksafe`.
             sweepCorruptQuarantineCopies(datastoreFile)
-            // A prior JSON-fallback period may have left recoverable residue even on the
-            // OS-backed path; clearAll() must wipe it too.
             deleteResidualFallbackFiles(storageDir, baseFileName)
         }
 
-        // One-time forward migration: re-encrypt any no-`Unsafe` JSON-fallback data under the
-        // OS-backed key so it carries forward instead of appearing empty. Fallback values win
-        // over the target, except keys written to the target since a failed prior attempt
-        // (tracked via `.migration-pending`). Skipped for test engines.
+        // Fallback values win over the target, except keys written since a failed attempt.
         if (testEngine == null) {
             val jsonFallback = File(storageDir, "$baseFileName$JSON_FALLBACK_SUFFIX")
             val migrationMarker =
                 File(storageDir, "$baseFileName$JSON_FALLBACK_SUFFIX$FALLBACK_MIGRATED_SUFFIX")
-            // Compare mtimes, not just `!marker.exists()`: the `.migrated` archive is permanent, so
-            // gating on existence alone would skip a second modules-off→on fallback period forever.
-            // A fallback file newer than the marker is fresh data to migrate; older is stale residue.
+            // Compare mtimes, not just marker existence: the `.migrated` archive is permanent, so
+            // existence alone would skip a second fallback period forever.
             val needsMigration = jsonFallback.exists() &&
                 (!migrationMarker.exists() || jsonFallback.lastModified() > migrationMarker.lastModified())
             if (needsMigration) {
@@ -539,19 +448,13 @@ private fun createJvmBackend(
     return JvmBackend(storage, storageScope, engine, clearAllCleanup)
 }
 
-/**
- * Deletes residual JVM-fallback files that still hold recoverable secrets — `*.migrated` migration
- * archives (plaintext AES keys + the ciphertext they decrypt), `*.corrupt-<ts>` quarantine copies,
- * and any live `<base>.ksafe.json` / `<base>.ksafe-keys.json`. clearAll() promises a full wipe;
- * leaving any of these would let anyone with file access decrypt pre-migration secrets offline.
- * Matched by the `<baseFileName>.ksafe` prefix so a sibling safe's files aren't touched.
- */
+/** Deletes fallback residue that still holds recoverable secrets: `.migrated` archives, quarantine
+ *  copies, live JSON/key files. Prefix-matched so a sibling safe is never touched. */
 private fun deleteResidualFallbackFiles(
     storageDir: File,
     baseFileName: String,
-    // On the JSON-fallback backend the two live files are the active store, wiped on the write
-    // consumer by core.clearAll(); deleting them here (caller thread) would race a concurrent
-    // write, so they are excluded. On the OS-backed backend they are stale residue, swept normally.
+    // The JSON backend's live files are wiped on the write consumer; deleting them from the
+    // caller thread would race a concurrent write, so that backend excludes them.
     exclude: Set<String> = emptySet(),
 ) {
     runCatching {
@@ -561,17 +464,14 @@ private fun deleteResidualFallbackFiles(
         storageDir.listFiles()?.forEach { f ->
             val n = f.name
             if (n in exclude) return@forEach
-            // Crash-leftover copy-forward staging temps still hold recoverable data (the
-            // keys temp is a full plaintext AES key map); matched on `<base>.` so a
-            // longer-named sibling safe's temps aren't touched.
+            // Staging temps hold a full plaintext key map; `<base>.` so a sibling isn't touched.
             if (n.endsWith(".fwd-tmp") && n.startsWith("$baseFileName.")) {
                 runCatching { f.delete() }
                 return@forEach
             }
             if (n.startsWith(prefix) &&
                 (n == liveJson || n == liveKeys ||
-                    // Crash-leftover FileKeyVault.write() temp files: each a full plaintext copy
-                    // of the AES key map (`<base>.ksafe-keys.json<random>.tmp`).
+                    // Crash-leftover FileKeyVault write temps: each a full plaintext key map.
                     (n.startsWith(liveKeys) && n.endsWith(KEY_VAULT_TEMP_SUFFIX)) ||
                     n.endsWith(FALLBACK_MIGRATED_SUFFIX) ||
                     n.endsWith(FALLBACK_MIGRATION_PENDING_SUFFIX) ||
@@ -583,10 +483,7 @@ private fun deleteResidualFallbackFiles(
     }
 }
 
-/**
- * Builds [KSafeProtectionInfo] from the active vault descriptor. A test-injected engine has no
- * vault to introspect, so it reports the engine class name as custody at the intended baseline.
- */
+/** Builds [KSafeProtectionInfo] from the active vault; a test engine reports its class name. */
 private fun jvmProtectionInfo(engine: KSafeEncryption): KSafeProtectionInfo {
     val intended = KSafeProtectionLevel.SANDBOX_PROTECTED
     if (engine !is JvmSoftwareEncryption) {
@@ -606,19 +503,15 @@ private fun jvmProtectionInfo(engine: KSafeEncryption): KSafeProtectionInfo {
         notes = when {
             osBacked -> emptyList()
             optOut   -> listOf(KSafeProtectionNotes.JVM_USER_OPTED_OUT)
-            // An OS vault exists but failed its self-test: KSafe refuses to mint keys to protect
-            // the real OS key, so encrypted ops THROW. Non-operational — a distinct note from the
-            // "no OS vault, software works" case below so isEncryptionOperational can tell them apart.
+            // An OS vault exists but failed its self-test, so encrypted ops throw. A separate note
+            // from the "no OS vault, software works" case so isEncryptionOperational can tell them apart.
             engine.osVaultUnavailable -> listOf(KSafeProtectionNotes.JVM_OS_VAULT_DEGRADED)
             else     -> listOf(KSafeProtectionNotes.JVM_OS_VAULT_UNAVAILABLE)
         },
     )
 }
 
-/**
- * True iff `sun.misc.Unsafe` (JDK module `jdk.unsupported`) is on the runtime. Absent (a
- * jlink-trimmed runtime) selects [DataStoreJsonStorage] rather than crashing in DataStore's protobuf.
- */
+/** True iff `sun.misc.Unsafe` (JDK module `jdk.unsupported`) is on the runtime. */
 private fun isSunMiscUnsafePresent(): Boolean = try {
     Class.forName("sun.misc.Unsafe", false, KSafe::class.java.classLoader)
     true
@@ -662,9 +555,6 @@ private fun secureDirectory(file: File) {
     }
 }
 
-// Whitebox test hooks: KSafe is in commonMain (no platform members), so these are
-// platform-source-set extensions in the same package.
-
 @PublishedApi
 internal val KSafe.dataStore: DataStore<Preferences>
     get() = (core.storage as DataStoreStorage).dataStore
@@ -676,6 +566,6 @@ internal val KSafe.engine: KSafeEncryption
 @PublishedApi
 internal fun KSafe.updateCache(prefs: Preferences) {
     val out = toStoredMap(prefs)
-    // core.updateCache is suspend for web's async decrypt; JVM crypto is blocking, so runBlocking is fine.
+    // updateCache is suspend only for web's async decrypt; JVM crypto is blocking.
     kotlinx.coroutines.runBlocking { core.updateCache(out) }
 }

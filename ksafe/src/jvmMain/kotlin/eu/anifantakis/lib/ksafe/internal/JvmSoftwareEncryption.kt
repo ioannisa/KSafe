@@ -19,18 +19,9 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * JVM [KSafeEncryption]: software AES-GCM (`javax.crypto`) for the payload, with the
- * AES key itself protected by an OS secret store via [JvmKeyVault] — DPAPI on Windows,
- * login Keychain on macOS (SE-gated on Apple Silicon / T2), Secret Service / libsecret
- * on Linux.
- *
- * When no OS store is reachable, [JvmKeyVaultProvider] falls back to a Base64-in-DataStore
- * scheme and logs a one-time security warning. A key already in the DataStore file is
- * migrated on first read: copied into the OS store, then removed from the file. The crypto
- * (random 12-byte IV, IV‖ciphertext layout) is unchanged, so data survives the migration.
- *
- * @property config Key-generation configuration (key size).
- * @property dataStore Backs the legacy/fallback vault and the Windows DPAPI vault.
+ * JVM [KSafeEncryption]: software AES-GCM for the payload, with the AES key held in an OS secret
+ * store via [JvmKeyVault] (DPAPI, login Keychain, Secret Service). Without one, keys fall back to
+ * Base64-in-DataStore and migrate into the OS store once it is reachable.
  */
 @PublishedApi
 internal class JvmSoftwareEncryption(
@@ -40,7 +31,6 @@ internal class JvmSoftwareEncryption(
 ) : KSafeEncryption {
 
     companion object {
-        /** Suffix marking a custody-marker slot; must never be treated as a key alias. */
         private const val FALLBACK_MINT_MARKER_SUFFIX = ".${KSafeReservedKeys.VAULT_SOFTWARE_FALLBACK}"
     }
 
@@ -60,16 +50,10 @@ internal class JvmSoftwareEncryption(
     @PublishedApi
     internal val keyVaultIsOsBacked: Boolean get() = vaults.active.isOsBacked
 
-    /**
-     * True when an OS vault exists but failed its construction self-test, so KSafe refuses to
-     * mint keys and every encrypted create (and any OS-resident read) throws until it is
-     * reachable — the degraded, NON-operational state (distinct from "no OS vault → software
-     * works"). Surfaced so `protectionInfo` can report it as non-operational.
-     */
+    /** OS vault present but failed its self-test: key mints and OS-resident reads throw until it returns. */
     @PublishedApi
     internal val osVaultUnavailable: Boolean get() = vaults.osVaultUnavailable
 
-    /** A cached key tagged with the purge epoch it was resolved under (see [cacheEpoch]). */
     private class CachedKey(val key: SecretKey, val epoch: Long)
 
     private val keyCache = ConcurrentHashMap<String, CachedKey>()
@@ -83,13 +67,9 @@ internal class JvmSoftwareEncryption(
         requireUnlockedDevice: Boolean?,
         aad: ByteArray?,
     ): ByteArray {
-        // Bounded retry around a sibling-instance clearAll racing this encrypt: the key was
-        // resolved, then the wipe landed, and without the epoch re-check the acknowledged
-        // ciphertext would be unreadable on the next launch. The response is to RE-ENCRYPT
-        // under whatever legitimately owns the vault slot afterwards — a concurrent winner's
-        // key, or fresh material minted by the next resolution. The key this attempt used is
-        // never re-persisted: it is exactly the material `clearAll()` promised to destroy,
-        // and re-inserting it would make a pre-wipe backup of the store decryptable again.
+        // A clearAll can land between resolving the key and returning the ciphertext; re-encrypt
+        // under whatever owns the slot afterwards. Never re-persist this key — it is the material
+        // clearAll promised to destroy.
         repeat(2) {
             val epochAtResolve = cacheEpoch.get()
             val secretKey = getOrCreateSecretKey(identifier)
@@ -97,15 +77,11 @@ internal class JvmSoftwareEncryption(
             if (cacheEpoch.get() == epochAtResolve) return out
             synchronized(aliasLocks.forAlias(identifier)) {
                 val vaultBytes = runCatching { vaults.active.get(identifier) }.getOrNull()
-                // Our key still owns the slot (e.g. a concurrent re-mint of identical bytes) —
-                // the ciphertext is readable exactly as persisted, keep it.
+                // Our key still owns the slot, so the ciphertext stays readable.
                 if (vaultBytes != null && vaultBytes.contentEquals(secretKey.encoded)) return out
-                // Slot wiped, or a different key won it — fall through and re-encrypt.
             }
         }
-        // Two consecutive wipes raced this write; seal under the current resolution and stop
-        // re-checking. The pathological tail fails toward erasure — the ciphertext may land
-        // under a key a third wipe then destroys — never toward undoing a wipe.
+        // Two wipes raced this write; seal under the current resolution and stop re-checking.
         return encryptWith(getOrCreateSecretKey(identifier), data, aad)
     }
 
@@ -118,9 +94,7 @@ internal class JvmSoftwareEncryption(
     }
 
     override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray {
-        // Fail-closed: decrypt must NOT create a key. Orphaned ciphertext throws the same
-        // "No encryption key found" as Android/Apple so the orphan sweep reclaims it instead
-        // of minting a junk key into the OS vault on every failed decrypt.
+        // Fail-closed: decrypt must not create a key; the orphan sweep reclaims stranded ciphertext.
         val secretKey = getExistingSecretKey(identifier)
 
         val iv = data.copyOfRange(0, JvmAesGcm.IV_LENGTH_BYTES)
@@ -134,12 +108,8 @@ internal class JvmSoftwareEncryption(
     }
 
     /**
-     * Purge epoch, bumped by [onStoreCleared]. Each cache entry is tagged with the epoch it was
-     * resolved under and served only while its tag equals the current epoch, so a `clearAll`
-     * invalidates every cached key — including one a concurrent reader inserts AFTER the purge
-     * with a pre-purge tag. Without this a stale cached key (whose record `clearAll` already
-     * wiped from the DataStore) would be served on a later encrypt and never re-persisted:
-     * readable all session, unreadable after the next launch.
+     * Bumped by [onStoreCleared]; a cached key is served only while its tag matches, so a wipe
+     * also invalidates entries a concurrent reader inserts after it.
      */
     private val cacheEpoch = java.util.concurrent.atomic.AtomicLong(0)
 
@@ -149,8 +119,7 @@ internal class JvmSoftwareEncryption(
     override fun onStoreCleared() {
         cacheEpoch.incrementAndGet()
         keyCache.clear()
-        // Runs on the write consumer (via performClearAll), not the caller thread, so it can't
-        // race a concurrent write's key mint and strand an acknowledged encrypted value.
+        // Runs on the write consumer, not the caller thread, so it can't race a write's key mint.
         runCatching { vaults.active.clearAll() }
         if (vaults.legacy !== vaults.active) runCatching { vaults.legacy.clearAll() }
     }
@@ -158,9 +127,8 @@ internal class JvmSoftwareEncryption(
     override fun deleteKey(identifier: String) {
         synchronized(aliasLocks.forAlias(identifier)) {
             keyCache.remove(identifier)
-            // Snapshot vaults.active before the try: a degrade in the catch flips it to legacy
-            // and would skip the legacy-cleanup branch below, exactly when it is still needed
-            // (the OS delete never happened, a stale pre-migration legacy entry may remain).
+            // Snapshot before the try: a degrade in the catch flips vaults.active to legacy and
+            // would skip the legacy cleanup below, just when it is needed.
             val activeAtStart = vaults.active
             try {
                 activeAtStart.delete(identifier)
@@ -171,25 +139,15 @@ internal class JvmSoftwareEncryption(
             if (activeAtStart !== vaults.legacy) {
                 runCatching { vaults.legacy.delete(identifier) }
             }
-            // Scrub the derived-namespace location too, else a recreate resurrects the key via
-            // the namespace read-fallback.
+            // Scrub the derived namespace too, else a recreate resurrects the key via the read-fallback.
             vaults.deleteFromLegacyNamespace(identifier)
         }
     }
 
-    /**
-     * Returns the AES key for [alias], in priority order: in-memory cache, active OS-backed
-     * vault, a legacy Base64 key migrated out of the DataStore file, or a freshly generated
-     * one stored in the active vault.
-     */
     private fun getOrCreateSecretKey(alias: String): SecretKey =
         secretKey(alias, create = true)!!
 
-    /**
-     * Resolve/create only — no throwaway encrypt, and none of the encrypt path's clearAll-race
-     * handling: prewarm output is discarded, so there is no acknowledged ciphertext whose
-     * readability a raced wipe could break, and nothing that needs re-encrypting.
-     */
+    /** Resolve/create only: nothing is encrypted, so a raced wipe has no ciphertext to strand. */
     override suspend fun prewarmKey(
         identifier: String,
         hardwareIsolated: Boolean,
@@ -199,12 +157,8 @@ internal class JvmSoftwareEncryption(
     }
 
     /**
-     * Decrypt-only lookup: returns the existing key or throws, never creates.
-     *
-     * Genuine absence on a healthy vault throws "No encryption key found" so the orphan sweep
-     * reclaims it. A null after the provider degraded is ambiguous (the key may live only in
-     * the now-unreachable OS vault), so it throws "unavailable" — which the sweep does NOT
-     * treat as an orphan, leaving recoverable ciphertext intact until the OS vault returns.
+     * A miss on a healthy vault throws "no key found" so the orphan sweep reclaims the ciphertext;
+     * a miss after a degrade throws "unavailable", which the sweep leaves alone.
      */
     private fun getExistingSecretKey(alias: String): SecretKey =
         secretKey(alias, create = false)
@@ -216,28 +170,20 @@ internal class JvmSoftwareEncryption(
                 throw IllegalStateException(KSafeEngineMessage.noKeyFound(alias))
             }
 
-    /**
-     * Cache-checked, per-alias-locked key resolution with the runtime LinkageError degrade.
-     * Returns null only when [create] is false and no key exists. The per-alias lock is also
-     * held by [deleteKey] to block cache-repopulation races.
-     */
+    /** The per-alias lock is also held by [deleteKey], to block cache-repopulation races. */
     private fun secretKey(alias: String, create: Boolean): SecretKey? {
         cachedKey(alias)?.let { return it }
 
         return synchronized(aliasLocks.forAlias(alias)) {
             cachedKey(alias)?.let { return it }
-            // Captured BEFORE the vault read: the cached entry is stamped with this epoch, so a
-            // purge landing during or after the read leaves the entry tagged stale and it is
-            // never served again.
+            // Epoch captured before the vault read: a purge during it leaves this entry stale.
             val epochAtRead = cacheEpoch.get()
 
             val key = try {
                 resolveKeyVia(vaults.active, alias, create)
             } catch (e: LinkageError) {
-                // Runtime native-link failure on the OS vault (e.g. a jlink JRE missing
-                // `jdk.unsupported`, so JNA throws NoClassDefFoundError on first real call
-                // despite passing the construction-time self-test). Degrade and retry on the
-                // legacy software vault so writes continue instead of silently dropping.
+                // JNA can fail to link on the first real call (jlink JRE without
+                // `jdk.unsupported`) despite passing the construction-time self-test.
                 vaults.degradeToLegacy(e)
                 resolveKeyVia(vaults.active, alias, create)
             }
@@ -248,25 +194,14 @@ internal class JvmSoftwareEncryption(
     }
 
     /**
-     * Single attempt of the legacy-first key resolution against [active]. Caller holds
-     * `aliasLocks.forAlias(alias)`. Returns null when [create] is false and no key exists.
-     *
-     * Legacy-first when an OS-backed vault is active: a legacy DataStore key, when present, is
-     * authoritative — it provably encrypted this datastore's ciphertext. The OS vault is
-     * global-per-user and long-lived, so it can hold a STALE key under the same
-     * `<file>:<alias>` from a prior KSafe lifecycle (reinstall, data-clear, backup restore);
-     * trusting it first would shadow the real legacy key and reset every value to default. So
-     * [migrateLegacyLocked] moves an existing legacy key into the OS vault (overwrite, verify,
-     * scrub the legacy copy) and we use it; only with no legacy key do we fall back to the OS
-     * vault. Migration only moves an existing key, so it is safe on the decrypt path.
+     * Legacy-first when an OS vault is active: the OS vault is per-user and long-lived and can
+     * hold a stale key from a previous install, so an existing legacy DataStore key wins and is
+     * migrated in. Caller holds `aliasLocks.forAlias(alias)`.
      */
     private fun resolveKeyVia(active: JvmKeyVault, alias: String, create: Boolean): SecretKey? {
         val keyBytes: ByteArray? =
             if (active !== vaults.legacy) {
-                // Last probe before declaring the key absent: an app upgrading from a
-                // launcher-derived OS-vault namespace to the constant default finds its keys
-                // only under the old derived namespace. recoverFromLegacyNamespace migrates on
-                // hit; only a true miss everywhere makes "No encryption key found" safe.
+                // An app upgrading off the old launcher-derived namespace finds its keys only there.
                 migrateLegacyLocked(alias)
                     ?: active.get(alias)
                     ?: vaults.recoverFromLegacyNamespace(alias)
@@ -278,12 +213,8 @@ internal class JvmSoftwareEncryption(
             keyBytes != null -> SecretKeySpec(keyBytes, "AES")
             !create -> null
             vaults.osVaultUnavailable -> {
-                // Fail-closed: the OS vault was unreachable at construction (locked Keychain /
-                // keyring not yet up), so the real key most likely lives there. Minting a fresh
-                // legacy-DataStore key would be trusted as authoritative by the next healthy
-                // launch's legacy-first migration, overwriting the real OS-vault key and
-                // destroying everything under it. The ciphertext recovers once the OS store is
-                // reachable. (A genuine legacy key would already have been returned above.)
+                // Fail-closed: the real key most likely lives in the unreachable OS vault, and a
+                // fresh legacy key would overwrite it on the next healthy launch.
                 throw IllegalStateException(
                     "KSafe: OS key vault is unavailable (locked/unreachable); " +
                         "refusing to create a key for identifier: $alias to avoid " +
@@ -307,32 +238,19 @@ internal class JvmSoftwareEncryption(
     }
 
     /**
-     * Legacy → OS-vault migration for a single alias. Caller must hold `aliasLocks.forAlias(alias)`.
-     *
-     * Copies the legacy DataStore key into the active OS vault, then deletes the legacy copy
-     * only after re-reading and byte-verifying the OS store persisted it — a keyring that
-     * silently no-ops `put()` must not destroy the only copy. Returns the legacy bytes if one
-     * existed (so the session can still use them even when the OS write couldn't finalise),
-     * else null.
+     * Copies the legacy DataStore key into the OS vault, deleting the legacy copy only after
+     * byte-verifying the OS store kept it — a keyring that silently no-ops `put()` must not
+     * destroy the only copy. Caller holds `aliasLocks.forAlias(alias)`.
      */
     private fun migrateLegacyLocked(alias: String): ByteArray? {
-        // A custody marker is local-custody bookkeeping, never key material: migrating one into
-        // the OS vault would delete it from the legacy slot, and the conflict guard below —
-        // which reads the marker from the LEGACY vault — would then see none and let the
-        // fallback key overwrite the live OS key it exists to protect.
+        // A custody marker is bookkeeping, not key material: migrating one would clear the legacy
+        // copy and disarm the conflict guard below, which reads the marker from the legacy vault.
         if (isFallbackMintMarker(alias)) return null
         val legacyBytes = vaults.legacy.get(alias) ?: return null
         try {
-            // A FALLBACK-MINTED legacy key must NEVER overwrite a different live OS-vault
-            // key: a `-Dksafe.jvm.keyVault=software` session (or a runtime LinkageError
-            // degrade) mints fresh keys into the legacy slot while the real key lives in
-            // the OS vault — blindly migrating would destroy it and every value under it,
-            // with no user write needed (prewarm suffices). On that conflict keep BOTH:
-            // this session keeps reading with the legacy key (unchanged visible behavior),
-            // the OS key survives for recovery, and a loud warning asks the developer to
-            // resolve. A GENUINE pre-2.x legacy key (no custody marker — old binaries
-            // never wrote one) stays authoritative and still replaces a stale OS copy,
-            // preserving the reinstall/data-clear fix. Equal bytes re-migrate idempotently.
+            // A fallback-minted legacy key must not overwrite a different live OS key: a software
+            // session mints into the legacy slot while the real key sits in the OS vault, so keep
+            // both. A marker-less legacy key is genuine and still replaces a stale OS copy.
             val existing = vaults.active.get(alias)
             val fallbackMinted = vaults.legacy.get(fallbackMintMarker(alias)) != null
             if (fallbackMinted && existing != null && !existing.contentEquals(legacyBytes)) {
@@ -354,8 +272,7 @@ internal class JvmSoftwareEncryption(
                 vaults.legacy.delete(fallbackMintMarker(alias))
             }
         } catch (e: LinkageError) {
-            // Propagate so the outer catch can degrade and retry on the legacy vault; the
-            // legacy copy is intact (delete is gated on a successful read-back).
+            // The legacy copy is intact (delete is gated on read-back), so degrade and retry outside.
             throw e
         } catch (_: Throwable) {
             // Best-effort: a transient OS-vault hiccup must not destroy the legacy copy.
@@ -363,32 +280,26 @@ internal class JvmSoftwareEncryption(
         return legacyBytes
     }
 
-    /** One warning per engine for the both-vaults-hold-different-keys conflict. */
     private val legacyConflictWarning = OneShotWarning()
 
-    /** Custody-marker record for a key WE minted into the legacy/software slot. */
     private fun fallbackMintMarker(alias: String) = "$alias$FALLBACK_MINT_MARKER_SUFFIX"
 
-    /** True for a custody-marker slot rather than a real key alias. */
     private fun isFallbackMintMarker(alias: String) = alias.endsWith(FALLBACK_MINT_MARKER_SUFFIX)
 
     private val FALLBACK_MINT_MARKER = byteArrayOf(1)
 
 
     /**
-     * Eager one-time sweep moving every remaining legacy `ksafe_key_*` entry out of the
-     * DataStore file into the OS secret store, so a never-read-again key doesn't leave its
-     * plaintext sitting in the compromisable file. Best-effort, per-alias isolated, and a
-     * no-op when there is no safer destination (software fallback / opt-out).
+     * Moves every remaining legacy key out of the DataStore file into the OS store, so a
+     * never-read-again key doesn't leave its plaintext in the file. Best-effort.
      */
     override suspend fun migrateLegacyKeysSuspend() {
         if (vaults.active === vaults.legacy || !vaults.active.isOsBacked) return
         val legacyStore = vaults.legacy as? DataStoreKeyVault ?: return
         withContext(Dispatchers.IO) {
             for (alias in legacyStore.legacyAliases()) {
-                // A LinkageError is sticky for the whole engine (same JNA classloader), so a
-                // degrade (which flips vaults.active === vaults.legacy) both ends this sweep
-                // and routes future encrypt calls to the software vault.
+                // A LinkageError is sticky for the whole engine, so a degrade ends this sweep and
+                // routes later writes to the software vault.
                 if (vaults.active === vaults.legacy) return@withContext
                 try {
                     synchronized(aliasLocks.forAlias(alias)) {

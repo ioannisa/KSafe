@@ -6,10 +6,7 @@ import kotlinx.cinterop.usePinned
 import platform.Security.SecRandomCopyBytes
 import platform.Security.kSecRandomDefault
 
-/**
- * Apple (iOS + macOS) actual for [secureRandomBytes], reading from `SecRandomCopyBytes` —
- * the Security-framework CSPRNG that also backs `SecKey*` key generation and CryptoKit.
- */
+/** Apple [secureRandomBytes], backed by `SecRandomCopyBytes` — the Security-framework CSPRNG. */
 @OptIn(ExperimentalForeignApi::class)
 actual fun secureRandomBytes(size: Int): ByteArray {
     require(size > 0) { "size must be positive" }

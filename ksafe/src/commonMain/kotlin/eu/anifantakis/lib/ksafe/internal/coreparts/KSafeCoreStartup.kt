@@ -22,15 +22,11 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 
-/**
- * Eagerly creates both master keys (relaxed + strict) off-thread. Failures are
- * swallowed — the lazy-create path retries on the first real write.
- */
+/** Creates both master keys off-thread; failures fall through to the lazy-create path. */
 internal fun KSafeCore.prewarmMasterKeys() {
     writeScope.launch {
-        // Generation read at execute time; on a rotated store this may still race the
-        // first snapshot and warm the base generation — harmless (writes lazily create
-        // the right key), just a missed warm.
+        // Generation read at execute time: on a rotated store this can warm the base
+        // generation instead — a missed warm, not a correctness problem.
         val gen = currentKeyGeneration.get()
         for (requireUnlocked in listOf(false, true)) {
             try {
@@ -43,8 +39,6 @@ internal fun KSafeCore.prewarmMasterKeys() {
                 if (e is CancellationException) throw e
             }
         }
-        // Read-only warm of an already-persisted relaxed DEK so the first encrypted
-        // read doesn't block the caller thread on storage I/O; never creates a DEK.
         try {
             engine.prewarmDekReadIfPresent(
                 aliasWithGeneration(masterAlias(false), gen),
@@ -58,9 +52,8 @@ internal fun KSafeCore.prewarmMasterKeys() {
 
 internal fun KSafeCore.startBackgroundCollector() {
     collectorScope.launch {
-        // Startup cleanup runs only AFTER the first snapshot emission: sweeping against
-        // an empty pre-migration snapshot would treat every Keychain key as orphaned and
-        // delete unrecreatable Secure Enclave keys.
+        // Cleanup only after the first snapshot: sweeping an empty pre-migration snapshot
+        // would delete unrecreatable Secure Enclave keys as orphans.
         var firstEmission = true
         storage.snapshotFlow()
             .onEach { snapshot ->
@@ -80,11 +73,7 @@ internal fun KSafeCore.startBackgroundCollector() {
     }
 }
 
-/**
- * One-time post-first-load cleanup: access-policy migration, orphan-ciphertext sweep,
- * and legacy key-material migration. Best-effort and idempotent; must run only after
- * the first snapshot has populated the cache.
- */
+/** Access-policy migration, orphan sweep and legacy key migration; best-effort, runs once. */
 internal suspend fun KSafeCore.runOneTimeStartupCleanup() {
     if (!startupCleanupDone.compareAndSet(false, true)) return
     swallowingNonCancellation { migrateAccessPolicy(::isUserKeyDirty) }
@@ -93,10 +82,7 @@ internal suspend fun KSafeCore.runOneTimeStartupCleanup() {
     maybeScheduleKeyRotation()
 }
 
-/**
- * Under [lazyLoad] no collector runs, so the startup cleanup is triggered once by the
- * first access — on the background scope so it never blocks the read.
- */
+/** Under [lazyLoad] no collector runs, so the first access triggers the cleanup off-thread. */
 internal fun KSafeCore.triggerLazyStartupCleanupOnce() {
     if (!lazyLoad || startupCleanupDone.get()) return
     if (!lazyStartupCleanupLaunched.compareAndSet(false, true)) return
@@ -108,8 +94,6 @@ internal suspend fun KSafeCore.cleanupOrphanedCiphertext() {
     val snapshot = storage.snapshot()
     val protectionByKey = protectionByKeyFromSnapshot(snapshot)
 
-    // Candidates are collected first so the decrypt probes run concurrently,
-    // semaphore-capped keystore IPC.
     data class Candidate(
         val rawKey: String,
         val userKey: String,
@@ -129,9 +113,8 @@ internal suspend fun KSafeCore.cleanupOrphanedCiphertext() {
         ) return@mapNotNull null
         val protection = protectionByKey[userKey] ?: return@mapNotNull null
         val encryptedString = (value as? StoredValue.Text)?.value ?: return@mapNotNull null
-        // Route the probe from the SAME snapshot's metadata, not a stale encMetaMap generation a
-        // concurrent rotation could make disagree — else a freshly-rotated entry reads as a
-        // false "key not found" orphan.
+        // Probe from this snapshot's metadata, not encMetaMap: a concurrent rotation would make
+        // a freshly-rotated entry read as a "key not found" orphan.
         val metaRaw = (snapshot[metaRawKey(userKey)] as? StoredValue.Text)?.value
             ?: (snapshot[legacyProtectionRawKey(userKey)] as? StoredValue.Text)?.value
         Candidate(
@@ -151,12 +134,8 @@ internal suspend fun KSafeCore.cleanupOrphanedCiphertext() {
             async {
                 gate.withPermit {
                     try {
-                        // Future-format entries throw inside decryptRoute (a message the
-                        // orphan patterns below never match) — preserved, never probed as v3.
-                        // Probe with the candidate's own recorded unlock policy: a locked-device
-                        // probe throws transient, not "key not found", so strict entries aren't
-                        // misclassified as orphans. Deliberately NOT decryptEntry: a legacy-identity
-                        // retry would only repeat the same missing-key verdict this probe asks for.
+                        // Probe with the entry's own unlock policy — a locked-device probe throws
+                        // transient, not "key not found". Not decryptEntry: its retry repeats it.
                         val route = decryptRoute(c.userKey, c.protection, c.meta)
                         engine.decryptSuspend(
                             route.alias,
@@ -178,18 +157,12 @@ internal suspend fun KSafeCore.cleanupOrphanedCiphertext() {
 
     if (orphans.isEmpty()) return
 
-    // CAS the on-disk ciphertext before deleting: a rotation that committed after the probe
-    // snapshot rewrites it, and rotations don't mark dirtyKeys so isUserKeyDirty can't catch
-    // them — deleting on the stale probe would drop a now-recoverable entry. The whole
-    // check+delete holds the shared commit mutex: a sibling same-file instance's dirtyKeys
-    // are invisible here, so without it a sibling could commit a fresh value between this
-    // snapshot and the applyBatch and the delete would erase an acknowledged write.
+    // Re-check under the shared commit mutex: a rotation rewrites the ciphertext without marking
+    // dirtyKeys, and a sibling's dirtyKeys are invisible here — a stale probe would erase a write.
     commitMutex.withLock {
         val fresh = storage.snapshot()
         val orphanOps = mutableListOf<StorageOp>()
         for (c in orphans) {
-            // Live re-check: a write racing the sweep marks the key dirty before committing;
-            // deleting its ciphertext here would silently revert an acknowledged write.
             if (isUserKeyDirty(c.userKey)) continue
             if ((fresh[c.rawKey] as? StoredValue.Text)?.value != c.ciphertextB64) continue
             orphanOps += StorageOp.Delete(c.rawKey)
@@ -203,21 +176,8 @@ internal suspend fun KSafeCore.cleanupOrphanedCiphertext() {
     }
 }
 
-/**
- * Removes metadata records whose value never landed — the surviving half of a write torn by
- * process death on a backend without multi-key atomicity. Such a record already reads back as the
- * caller's default, so deleting it loses nothing; leaving it accumulates junk that no other pass
- * enumerates (rotation needs a ciphertext, the orphan sweep walks value records).
- *
- * The same discipline as the orphan sweep guards it: the whole scan+delete holds the commit mutex,
- * so no half-applied batch of this process is ever visible, and a key with a write in flight is
- * skipped — on a backend that commits metadata first, "metadata without a value" is also the
- * transient shape of a perfectly healthy write.
- *
- * On a backend whose `applyBatch` is atomic this is a no-op by construction: every producer of a
- * metadata record emits its value record in the SAME batch, so the pair can only be split by a
- * process death partway through a non-atomic apply.
- */
+/** Deletes metadata whose value record never landed — a write torn by process death on a backend
+ *  without atomic batches. Skips keys with a write in flight: that shape is also a healthy commit. */
 private suspend fun KSafeCore.reapValuelessMetadata() {
     commitMutex.withLock {
         val fresh = storage.snapshot()

@@ -16,28 +16,20 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
 /**
- * Stores [fresh] only while the slot still holds [observed], read BEFORE the dirty check: every
- * writer sets its dirty flag before touching these maps, so a racing write is either seen by that
- * check or fails this CAS. A racer writing a value equal to [observed] still loses — undoing after
- * the store would instead lose a racer that wrote the disk value, which is commoner.
+ * Stores [fresh] only while the slot still holds [observed]: writers set their dirty flag first, so
+ * a racer fails this CAS. A racer that wrote a value equal to [observed] loses too — undoing after
+ * the store would instead lose the commoner racer that wrote the disk value.
  */
 private fun <V : Any> KSafeConcurrentMap<V>.storeUnclaimed(key: String, observed: V?, fresh: V): Boolean =
     if (observed == null) putIfAbsent(key, fresh) == null else replaceIf(key, observed, fresh)
 
-/**
- * The snapshot merge [KSafeCore.updateCache] retries around; see its contract for the
- * clear-epoch protocol this single pass deliberately does not handle itself.
- */
+/** One snapshot-merge pass; [KSafeCore.updateCache] owns the retry and the clear-epoch protocol. */
 internal suspend fun KSafeCore.updateCacheOnce(snapshot: Map<String, StoredValue>) {
     val currentDirty = dirtyKeys.snapshot()
     val existingMetadata = protectionMap.snapshot()
     val validCacheKeys = mutableSetOf<String>()
 
-    // Sync the store's key-rotation generation from disk. Never move backwards: a stale
-    // snapshot racing a just-committed rotation must not make new writes mint keys under
-    // an old (possibly already-deleted) generation. An ABSENT keygen record is just as
-    // authoritative (the store is at the base generation), so the reconciled flag is set
-    // either way.
+    // Never move the generation backwards; an absent record is authoritative (base generation).
     (snapshot[KeySafeMetadataManager.KEYGEN_RAW_KEY] as? StoredValue.Text)?.value?.let { raw ->
         currentKeyGeneration.raiseToAtLeast(KeySafeMetadataManager.parseKeyGeneration(raw))
     }
@@ -49,9 +41,7 @@ internal suspend fun KSafeCore.updateCacheOnce(snapshot: Map<String, StoredValue
         return canonical in currentDirty || userKey in currentDirty || legacyEncrypted in currentDirty
     }
 
-    // Frozen + LIVE dirty check for the shared metadata maps: a write landing after the
-    // snapshot must not have its metadata reverted to stale disk state, while a key
-    // rolled back mid-merge still defers to the rollback's own fresher re-merge.
+    // Frozen plus LIVE check: a write landing after the snapshot must not revert to disk state.
     fun isDirtyForUserKeyLive(userKey: String): Boolean =
         isDirtyForUserKey(userKey) || isUserKeyDirty(userKey)
 
@@ -65,7 +55,6 @@ internal suspend fun KSafeCore.updateCacheOnce(snapshot: Map<String, StoredValue
 
     // encMetaMap is populated BEFORE the decrypt pass — aliasForRead consults it.
     for ((userKey, rawMeta) in protectionByKey) {
-        // Skip plain entries — encMetaMap only tracks encrypted ones.
         if (KeySafeMetadataManager.parseProtection(rawMeta) == null) continue
         val observed = encMetaMap[userKey]
         if (isDirtyForUserKeyLive(userKey)) continue
@@ -73,8 +62,7 @@ internal suspend fun KSafeCore.updateCacheOnce(snapshot: Map<String, StoredValue
         encMetaMap.storeUnclaimed(userKey, observed, encMetaFromRaw(rawMeta))
     }
 
-    // PLAIN_TEXT-memory decrypts are deferred to a concurrent second pass —
-    // serialised keystore IPC dominates cold-start time on large stores.
+    // Decrypts are deferred to a concurrent second pass: serialised keystore IPC dominates cold start.
     data class PendingDecrypt(
         val userKey: String,
         val cacheKey: String,
@@ -112,19 +100,16 @@ internal suspend fun KSafeCore.updateCacheOnce(snapshot: Map<String, StoredValue
         if (explicitEncrypted) {
             hasAnyEncryptedKey.set(true)
             val encryptedString = (storedValue as? StoredValue.Text)?.value ?: continue
-            // Strict (requireUnlockedDevice) entries stay ciphertext even under a
-            // plaintext policy so every read hits the native store and enforces the lock.
+            // Strict entries stay ciphertext under any policy, so every read hits the native lock.
             val strict = encMetaMap[userKey]?.requireUnlockedDevice == true
             if (cacheHoldsCiphertext || strict) {
-                // Live re-check: a write landing after the snapshot must not be
-                // clobbered with the older disk value.
+                // Live re-check: a write landing after the snapshot must not lose to the disk value.
                 val previousCiphertext = memoryCache[cacheKey]
                 if (!isUserKeyDirty(userKey)) {
                     cacheMergeStoreHook?.invoke(userKey)
                     val stored = memoryCache.storeUnclaimed(cacheKey, previousCiphertext, encryptedString)
-                    // A changed ciphertext means an external write (fresh IV per encrypt) —
-                    // evict the stale side-cache entry, which under LAZY_PLAIN_TEXT would
-                    // otherwise serve the old plaintext forever.
+                    // Changed ciphertext means an external write (fresh IV per encrypt) — evict,
+                    // or LAZY_PLAIN_TEXT serves the stale plaintext forever.
                     if (stored && usesPlaintextSideCache && previousCiphertext != encryptedString) {
                         plaintextCache.remove(cacheKey)
                     }
@@ -143,7 +128,6 @@ internal suspend fun KSafeCore.updateCacheOnce(snapshot: Map<String, StoredValue
         }
     }
 
-    // Second pass: concurrent decrypts; failures are dropped from the cache.
     if (pendingDecrypts.isNotEmpty()) {
         val gate = Semaphore(maxParallelEncrypts)
         coroutineScope {
@@ -151,16 +135,12 @@ internal suspend fun KSafeCore.updateCacheOnce(snapshot: Map<String, StoredValue
                 async {
                     gate.withPermit {
                         try {
-                            // Future-format entries fail closed (left out of the cache; reads
-                            // serve the default) instead of being misread as v3. Strict entries
-                            // are excluded upstream; their recorded unlock policy still travels
-                            // with the routing so any that slip through enforce the lock.
+                            // Future-format entries fail closed: kept out of the cache, not misread.
                             val plain = decryptEntry(
                                 p.userKey, p.protection, KSafeBase64.decode(p.ciphertextB64),
                                 encMetaMap[p.userKey],
                             )
-                            // Live re-check after the slow decrypt: don't overwrite a write
-                            // that landed during the round-trip with this stale disk value.
+                            // Live re-check after the slow decrypt: a write that landed meanwhile wins.
                             val observed = memoryCache[p.cacheKey]
                             if (!isUserKeyDirty(p.userKey)) {
                                 cacheMergeStoreHook?.invoke(p.userKey)
@@ -181,14 +161,11 @@ internal suspend fun KSafeCore.updateCacheOnce(snapshot: Map<String, StoredValue
     for ((key, observed) in memoryCache.snapshot()) {
         if (key !in validCacheKeys && !dirtyKeys.contains(key)) {
             memoryCache.removeIf(key, observed)
-            // Mirror into the side cache — an externally deleted key's plaintext would
-            // otherwise be served forever under never-expiring LAZY_PLAIN_TEXT.
+            // Mirror the removal, or never-expiring LAZY_PLAIN_TEXT keeps serving deleted plaintext.
             if (usesPlaintextSideCache) plaintextCache.remove(key)
         }
     }
 
-    // Sync protectionMap from disk; live-checked so a put that changed this key's
-    // protection mid-merge keeps its fresh routing metadata.
     for ((userKey, rawMeta) in protectionByKey) {
         val observed = protectionMap[userKey]
         if (!isDirtyForUserKeyLive(userKey)) {
@@ -203,7 +180,6 @@ internal suspend fun KSafeCore.updateCacheOnce(snapshot: Map<String, StoredValue
         }
     }
 
-    // Drop encMetaMap entries with no on-disk metadata (live-checked, as above).
     for ((userKey, observed) in encMetaMap.snapshot()) {
         if (!protectionByKey.containsKey(userKey) && !isDirtyForUserKeyLive(userKey)) {
             encMetaMap.removeIf(userKey, observed)

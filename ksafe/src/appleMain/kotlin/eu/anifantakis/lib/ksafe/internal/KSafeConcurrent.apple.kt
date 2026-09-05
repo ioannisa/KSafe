@@ -13,8 +13,7 @@ internal actual fun <T> runBlockingOnPlatform(block: suspend () -> T): T = runBl
 @PublishedApi
 internal actual val decryptFlowContext: CoroutineContext = Dispatchers.Default
 
-// Kotlin/Native has no `synchronized`; back each init lock with a per-instance, reentrant
-// NSRecursiveLock so a nested first-access can't deadlock.
+// Kotlin/Native has no `synchronized`; NSRecursiveLock so a nested first-access can't deadlock.
 @PublishedApi
 internal actual class KSafeInitLock actual constructor() {
     private val lock = NSRecursiveLock()
@@ -28,8 +27,7 @@ internal actual class KSafeInitLock actual constructor() {
     }
 }
 
-// AtomicInt (0/1) not AtomicReference<Boolean>: boxed Booleans lack stable identity on
-// Kotlin/Native, which breaks AtomicReference's identity-based compareAndSet.
+// AtomicInt, not AtomicReference<Boolean>: boxed Booleans have no stable identity on Kotlin/Native.
 @PublishedApi
 internal actual class KSafeAtomicFlag actual constructor(initial: Boolean) {
     private val ref = AtomicInt(if (initial) 1 else 0)
@@ -47,10 +45,7 @@ internal actual class KSafeAtomicInt actual constructor(initial: Int) {
     actual fun compareAndSet(expected: Int, new: Int): Boolean = ref.compareAndSet(expected, new)
 }
 
-/**
- * Copy-on-write concurrent map (Kotlin/Native lacks `ConcurrentHashMap`): reads are lock-free
- * snapshots, writes rebuild the map and CAS-retry on conflict.
- */
+/** Copy-on-write map, since Kotlin/Native lacks `ConcurrentHashMap`: writes rebuild and CAS-retry. */
 @PublishedApi
 internal actual class KSafeConcurrentMap<V : Any> actual constructor() {
     private val ref = AtomicReference<Map<String, V>>(emptyMap())
@@ -78,7 +73,7 @@ internal actual class KSafeConcurrentMap<V : Any> actual constructor() {
     actual fun containsKey(key: String): Boolean = ref.value.containsKey(key)
 
     actual fun clear() {
-        // CAS loop so a concurrent mutation can't undo the clear by retrying against the pre-clear snapshot.
+        // CAS, not a plain assignment: a concurrent write would retry onto the pre-clear snapshot.
         while (true) {
             val current = ref.value
             if (ref.compareAndSet(current, emptyMap())) return

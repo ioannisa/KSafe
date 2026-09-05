@@ -2,13 +2,8 @@
 
 package eu.anifantakis.lib.ksafe.internal
 
-/**
- * wasmJs actual implementations of the web-interop surface.
- *
- * External functions are private (Kotlin/WASM requirement: external functions
- * cannot be internal due to name mangling). The internal `actual` functions
- * below delegate to them.
- */
+// The external functions are private because Kotlin/Wasm forbids internal ones (name mangling);
+// the internal actuals below delegate to them.
 
 @JsFun("(key) => { const v = window.localStorage.getItem(key); return v === null ? null : v; }")
 private external fun _localStorageGet(key: String): String?

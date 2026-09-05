@@ -3,34 +3,24 @@ package eu.anifantakis.lib.ksafe.internal
 import kotlinx.coroutines.flow.Flow
 
 /**
- * Adapter over the platform persistent key-value store (Jetpack DataStore on
- * Android/iOS/JVM, Web Storage on wasmJs/js). All cache, encryption, metadata and
- * coalescing logic lives above this interface in [KSafeCore]. Keys arriving here are
- * already the final on-disk raw keys — the adapter adds or removes no prefixes.
+ * Adapter over the platform key-value store (DataStore, Web Storage). Keys arriving here are
+ * already the final on-disk raw keys; cache, encryption and metadata live above it in [KSafeCore].
  */
 @PublishedApi
 internal interface KSafePlatformStorage {
 
-    /** One-shot bulk read of the entire store. */
     suspend fun snapshot(): Map<String, StoredValue>
 
-    /** Stream of full-store snapshots, each reflecting the latest on-disk state. Re-collection must re-deliver the current snapshot: `getFlowRaw` resubscribes to recover from a transient decrypt failure. */
+    /** Re-collection must re-deliver the current snapshot; `getFlowRaw` resubscribes to retry. */
     fun snapshotFlow(): Flow<Map<String, StoredValue>>
 
-    /**
-     * Applies a batch of writes/deletes atomically when the backend supports it
-     * (DataStore's single `edit {}` block); otherwise applies the ops in order.
-     */
+    /** Atomic when the backend supports it (one DataStore `edit {}`), else applied in order. */
     suspend fun applyBatch(ops: List<StorageOp>)
 
-    /** Removes every entry. */
     suspend fun clear()
 }
 
-/**
- * Typed stored value. Preserves DataStore's native primitive types on disk; encrypted
- * blobs and JSON-serialised user objects arrive as [Text].
- */
+/** Preserves the store's native primitive types; encrypted blobs and JSON arrive as [Text]. */
 @PublishedApi
 internal sealed interface StoredValue {
     data class IntVal(val value: Int) : StoredValue
@@ -41,10 +31,7 @@ internal sealed interface StoredValue {
     data class Text(val value: String) : StoredValue
 }
 
-/**
- * Flattens a value for the string-only backends (the JSON file store, Web Storage): the type
- * is recovered on read from the stored text, so this must stay their single spelling of it.
- */
+/** The single spelling for the string-only backends: the type is recovered from this text on read. */
 internal fun StoredValue.asString(): String = when (this) {
     is StoredValue.BoolVal -> value.toString()
     is StoredValue.IntVal -> value.toString()
@@ -62,7 +49,6 @@ internal sealed interface StorageOp {
     data class Delete(override val rawKey: String) : StorageOp
 }
 
-/** Unwraps the native Kotlin value; the memory cache stores native types. */
 @PublishedApi
 internal fun StoredValue.toCacheValue(): Any = when (this) {
     is StoredValue.IntVal -> value

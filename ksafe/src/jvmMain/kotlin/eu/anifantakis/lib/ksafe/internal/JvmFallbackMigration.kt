@@ -17,43 +17,19 @@ import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import java.io.File
 
-/**
- * Probe alias for [FileKeyVault] whole-file readability: a healthy/missing key file returns null,
- * an unreadable/corrupt one throws. Deliberately not a real key name.
- */
+/** Probe alias for [FileKeyVault] whole-file readability: healthy or missing returns null, corrupt throws. */
 private const val WHOLE_VAULT_READ_PROBE_ALIAS = "__ksafe_migration_readability_probe__"
 
-/** File-name suffix of the JVM software JSON fallback store, appended to the DataStore base name. */
 internal const val JSON_FALLBACK_SUFFIX: String = ".ksafe.json"
 
-/**
- * On-disk markers of the fallback migration, appended to a drained fallback file's name.
- *
- * Written here and matched from the factory — `clearAll`'s residue sweep must delete the
- * `.migrated` archive (it holds the full plaintext AES key map), and the appNamespace
- * copy-forward must carry both markers or an already-drained fallback is re-drained over newer
- * writes. Neither failure reports anything, so both ends spell them from here.
- */
+// The factory spells these too: its clearAll sweep must delete the `.migrated` archive (plaintext
+// key map), and its appNamespace copy-forward must carry both or a drained fallback is re-drained.
 internal const val FALLBACK_MIGRATED_SUFFIX: String = ".migrated"
 internal const val FALLBACK_MIGRATION_PENDING_SUFFIX: String = ".migration-pending"
 
 /**
- * One-time forward migration: software JSON fallback → OS-backed DataStore.
- *
- * Runs when a previous launch persisted through the no-`sun.misc.Unsafe` fallback
- * ([DataStoreJsonStorage] + [FileKeyVault]) and the app now has the OS-backed path. Each entry is
- * decrypted with the old software key and re-encrypted under a fresh OS-backed key (the software
- * master key is never imported into the OS keychain); protection, envelope version, and unlock
- * policy carry verbatim.
- *
- * Fallback wins: its values overwrite the target. Source files are renamed to `*.migrated` (never
- * deleted) once a pass has no transient failure, so the drain happens exactly once and originals
- * stay recoverable. Permanently unmigratable entries (corrupt ciphertext, lost software key) do NOT
- * block archiving — re-running would roll newer OS-backed writes back to stale fallback. Only a
- * transient target-vault failure blocks archiving, and then nothing is applied.
- *
- * Best-effort and non-fatal; failures are swallowed. Runs synchronously before [KSafeCore]
- * preloads, but only when a fallback file exists.
+ * One-time drain of the software JSON fallback into the OS-backed DataStore, archiving the source as
+ * `*.migrated`. A transient vault failure applies nothing and blocks archiving, so a later launch retries.
  */
 internal fun migrateJsonFallbackToOsBacked(
     config: KSafeConfig,
@@ -63,26 +39,18 @@ internal fun migrateJsonFallbackToOsBacked(
     targetEngine: KSafeEncryption,
     keyAlias: (String) -> String,
     masterAlias: (Boolean) -> String,
-    // Must equal the KSafeCore storeIdentity for this store BYTE-FOR-BYTE — the home-relative
-    // stableStoreIdentity of the pre-namespace baseDir + baseFileName — so a rotated v3 entry's
-    // AAD round-trips. (Not the raw absolute path: the identity is home-relative since the AAD
-    // relocation fix.) The "" default is only a safety fallback; the live factory always passes
-    // the real value.
+    // Must equal the KSafeCore storeIdentity byte-for-byte, or a rotated v3 entry's AAD breaks.
     storeIdentity: String = "",
-    // The pre-canonicalization identity (blank when it matches [storeIdentity]); a v3 entry
-    // written by an older build under the raw path spelling is retried under it, so a custom
-    // baseDir reached via a relative/symlinked/`..` spelling isn't dropped from the migration.
+    // The pre-canonicalization identity (blank when it matches storeIdentity): a v3 entry an older
+    // build wrote under the raw path spelling is retried under it instead of being dropped.
     fallbackStoreIdentity: String = "",
-    // Must equal the KSafeCore keyNamespace (the fileName) so rotated per-entry aliases —
-    // fingerprinted with it — derive identically here and in the live core.
+    // Must equal the KSafeCore keyNamespace, or rotated per-entry aliases derive differently here.
     keyNamespace: String? = null,
-    // Injectable for fault tests; the default is the atomic temp-write-then-rename publish.
     persistPendingState: (File, String) -> Unit = ::defaultPersistPendingState,
 ) {
     runCatching {
         runBlocking {
-            // `.migration-pending` present ⇒ this run is a RETRY (recorded target state at the
-            // first transient failure); sessions since may have written newer target values.
+            // A `.migration-pending` file means this run is a retry: newer target values may exist.
             val pendingFile = File(jsonFallback.parentFile, jsonFallback.name + FALLBACK_MIGRATION_PENDING_SUFFIX)
             val pendingExists = pendingFile.exists()
             val priorTargetState: Map<String, String>? = if (pendingExists) {
@@ -95,16 +63,12 @@ internal fun migrateJsonFallbackToOsBacked(
             } else {
                 null
             }
-            // A present-but-unreadable pending file still proves this is a RETRY; treating it as
-            // null would re-enable "fallback wins" and roll newer writes back. Retry with an
-            // UNKNOWN baseline: keep any key the target already has a value for.
+            // An unreadable pending file still proves this is a retry; reading it as null would
+            // re-enable "fallback wins" and roll newer writes back. Keep whatever the target holds.
             val unknownRetryBaseline = pendingExists && priorTargetState == null
 
-            // Probe the source key store's whole-file readability ONCE up front (a missing file
-            // reads empty; an unreadable/corrupt one throws). Letting that surface per-alias in the
-            // loop would miscount every encrypted entry as a permanent skip → both files archived,
-            // never retried, data recoverable only from the .migrated archives. Mark the whole vault
-            // unreadable so those entries count transient (block archiving → retry).
+            // Probe the source vault once up front. Per-alias in the loop, an outage would miscount
+            // every encrypted entry as a permanent skip and archive both files, never retrying.
             val sourceKeyStoreReadable =
                 runCatching { FileKeyVault(keysFallback).get(WHOLE_VAULT_READ_PROBE_ALIAS) }.isSuccess
 
@@ -118,33 +82,27 @@ internal fun migrateJsonFallbackToOsBacked(
                     )
                     reEncryptAll(source, sourceEngine, target, targetEngine, keyAlias, masterAlias, storeIdentity, fallbackStoreIdentity, keyNamespace, priorTargetState, unknownRetryBaseline, sourceKeyStoreReadable)
                 }.getOrElse {
-                    // A transient failure (source construction, snapshot() IOException) must not
-                    // escape and abort silently — no marker means the next launch reruns as a
-                    // first attempt and rolls newer OS writes back. Count transient so archiving
-                    // is blocked and the pending marker is recorded.
+                    // Transient, not escaping: with no marker the next launch reruns as a first
+                    // attempt and rolls newer OS writes back.
                     MigrationResult(migrated = 0, permanentlySkipped = 0, transientFailed = 1)
                 }
             } finally {
-                // Release the .ksafe.json DataStore handle before renaming the file.
+                // Release the DataStore handle before renaming the file.
                 migScope.coroutineContext[Job]?.cancelAndJoin()
             }
 
-            // Archive unless a transient failure occurred. Permanent per-entry failures must not
-            // block archiving — they recur every launch and the re-run would overwrite newer
-            // OS-backed writes with stale fallback. On a transient failure nothing was applied.
+            // Permanent per-entry failures must not block archiving: they recur every launch, and
+            // the re-run would overwrite newer OS-backed writes with stale fallback.
             if (result.transientFailed == 0) {
                 val markedJson = archiveOrMark(jsonFallback)
                 val markedKeys = archiveOrMark(keysFallback)
-                // Drop the `.migration-pending` state only once the migration is durably marked
-                // done, so a forced re-run skips already-migrated keys rather than re-draining
-                // stale fallback over newer writes.
+                // Drop the pending state only once the migration is durably marked done.
                 if (markedJson && markedKeys) {
                     runCatching { pendingFile.delete() }
                 }
             } else if (!pendingFile.exists()) {
-                // First transient failure: the session proceeds on the OS-backed store and may
-                // write newer values. Record the target's per-key state so the retry can tell
-                // "unchanged → overwrite" from "user wrote it after → keep". Kept until success.
+                // Record the target's per-key state so the retry can tell "unchanged" from
+                // "written since". Kept until a pass succeeds.
                 runCatching {
                     val json = Json.encodeToString(
                         MapSerializer(String.serializer(), String.serializer()),
@@ -152,11 +110,7 @@ internal fun migrateJsonFallbackToOsBacked(
                     )
                     persistPendingState(pendingFile, json)
                 }
-                // The pending marker is the SOLE defense against a later launch re-running
-                // "fallback wins" and rolling newer target writes back to stale fallback
-                // values. If even its content couldn't be persisted, a 0-byte sentinel still
-                // proves "this is a retry": a present-but-unreadable pending file routes to
-                // the unknown-retry baseline above, which keeps any value the target holds.
+                // If the content couldn't be written, a 0-byte sentinel still proves this is a retry.
                 if (!pendingFile.exists()) {
                     runCatching { pendingFile.createNewFile() }
                 }
@@ -166,11 +120,7 @@ internal fun migrateJsonFallbackToOsBacked(
     }
 }
 
-/**
- * Atomic publish of the `.migration-pending` state: write a temp then rename it in, so a
- * crash mid-write can't leave a truncated pending file. A blocked rename falls back to a
- * direct write (the corrupt-pending handling in the caller is the safety net).
- */
+// Temp then rename, so a crash mid-write can't leave a truncated pending file.
 private fun defaultPersistPendingState(pendingFile: File, json: String) {
     val tmp = File(pendingFile.parentFile, pendingFile.name + ".tmp")
     tmp.writeText(json)
@@ -182,18 +132,15 @@ private fun defaultPersistPendingState(pendingFile: File, json: String) {
 
 private data class MigrationResult(
     val migrated: Int,
-    /** Entries permanently unmigratable (corrupt source / lost software key). Do NOT block archiving. */
+    /** Corrupt source or lost software key. Does NOT block archiving. */
     val permanentlySkipped: Int,
-    /** Entries that failed for a transient reason (OS vault unavailable). Block archiving → retry. */
+    /** OS vault unavailable. Blocks archiving so the next launch retries. */
     val transientFailed: Int,
-    /** Per-key fingerprints of the target snapshot the pass compared against; persisted as the `.migration-pending` state on a transient failure. */
     val targetStateForPending: Map<String, String> = emptyMap(),
 )
 
-/** Marker fingerprint for "the target had no value for this key". */
 private const val ABSENT_FINGERPRINT = "∅"
 
-/** Stable equality fingerprint of a target value for the retry-overwrite decision (compared, never reconstructed). */
 private fun storedFingerprint(sv: StoredValue?): String = when (sv) {
     null -> ABSENT_FINGERPRINT
     is StoredValue.Text -> "T:${sv.value}"
@@ -204,14 +151,8 @@ private fun storedFingerprint(sv: StoredValue?): String = when (sv) {
     is StoredValue.DoubleVal -> "D:${sv.value}"
 }
 
-/**
- * Re-encrypts every user entry from [source] into [target] under the same key alias (only the key
- * store changes), overwriting existing target values. Returns the migrated/failed counts.
- *
- * [priorTargetState] is non-null on a retry after a transient failure: a key whose target value
- * changed since the recorded fingerprints is skipped (the user's newer write wins), an unchanged
- * key migrates ("fallback wins" is only sound when the target holds nothing newer).
- */
+// Re-encrypts every user entry from source into target under the same key alias, overwriting existing
+// values — except, on a retry, keys whose target value moved since the priorTargetState fingerprints.
 private suspend fun reEncryptAll(
     source: KSafePlatformStorage,
     sourceEngine: KSafeEncryption,
@@ -224,8 +165,7 @@ private suspend fun reEncryptAll(
     keyNamespace: String?,
     priorTargetState: Map<String, String>? = null,
     unknownRetryBaseline: Boolean = false,
-    // False when the source key store couldn't be read this pass (probed up front). A whole-vault
-    // read outage is transient, not per-entry permanent — its encrypted entries block archiving.
+    // A whole-vault read outage is transient: its entries block archiving instead of counting as skips.
     sourceKeyStoreReadable: Boolean = true,
 ): MigrationResult {
     val srcSnap = source.snapshot()
@@ -245,12 +185,11 @@ private suspend fun reEncryptAll(
         if (priorTargetState != null &&
             nowFingerprint != (priorTargetState[valueKey] ?: ABSENT_FINGERPRINT)
         ) {
-            // Newer user write — fallback superseded. Resolved, not failed: doesn't block archiving.
+            // Newer user write, so the fallback is superseded. Resolved, not failed.
             continue
         }
+        // With no baseline, any non-absent value could be a newer write: migrate what's missing only.
         if (unknownRetryBaseline && nowFingerprint != ABSENT_FINGERPRINT) {
-            // Unknown retry baseline: any non-absent target value could be a newer user write.
-            // Migrate only keys the target lacks; the fallback copy stays in the `.migrated` archive.
             continue
         }
 
@@ -258,7 +197,6 @@ private suspend fun reEncryptAll(
         val protection = KeySafeMetadataManager.parseProtection(metaRaw)
 
         if (protection == null) {
-            // Plain entry — copy value + metadata verbatim, no crypto.
             ops += StorageOp.Put(rawKey, stored)
             if (metaRaw != null) {
                 ops += StorageOp.Put(KeySafeMetadataManager.metadataRawKey(userKey), StoredValue.Text(metaRaw))
@@ -269,23 +207,17 @@ private suspend fun reEncryptAll(
 
         val cipherB64 = (stored as? StoredValue.Text)?.value
         if (cipherB64 == null) {
-            // Encrypted metadata but no text ciphertext (orphaned/non-Text remnant): nothing to
-            // carry forward, and permanent — skip rather than block archiving forever.
+            // Encrypted meta with no ciphertext: nothing to carry, and permanent — don't block archiving.
             continue
         }
         if (!sourceKeyStoreReadable) {
-            // Whole-vault source read outage: every encrypted entry would fail decrypt identically.
-            // Count transient (block archiving → retry) instead of draining as permanent skips.
             transientFailed++
             continue
         }
         val version = KeySafeMetadataManager.parseEnvelopeVersion(metaRaw)
         if (version > KeySafeMetadataManager.ENVELOPE_VERSION_MAX_KNOWN) {
-            // Written by a newer KSafe (a future envelope this build can't decrypt): probing it
-            // as v3 would fail and count it a permanent skip, and permanent skips don't block
-            // archiving — the entry would vanish from the live store into the `.migrated`
-            // archive. Carry the bytes forward verbatim (like a plain entry) so the KSafe that
-            // wrote them still reads them; the software-fallback key travels via the vault copy.
+            // A future envelope this build can't decrypt: trying would count a permanent skip and
+            // the entry would vanish into the archive, so carry the bytes forward verbatim.
             ops += StorageOp.Put(rawKey, stored)
             ops += StorageOp.Put(KeySafeMetadataManager.metadataRawKey(userKey), StoredValue.Text(metaRaw!!))
             migrated++
@@ -294,9 +226,8 @@ private suspend fun reEncryptAll(
         val requireUnlocked = KeySafeMetadataManager.parseRequireUnlockedDevice(metaRaw)
         val generation = KeySafeMetadataManager.parseKeyGeneration(metaRaw)
         val strictVariant = KeySafeMetadataManager.parseStrictAliasVariant(metaRaw)
-        // Routing and associated data come from the core's single producers, never re-derived
-        // here: a wrong alias makes the source decrypt fail and the entry is silently DROPPED,
-        // and this copy has already drifted from the shared formula twice.
+        // Alias and AAD come from the core, never re-derived here: a wrong alias fails the source
+        // decrypt and the entry is silently dropped.
         val alias = KSafeCore.aliasForRecordedMeta(
             userKey = userKey,
             protection = protection,
@@ -318,10 +249,8 @@ private suspend fun reEncryptAll(
             )
         } else null
 
-        // Source decrypt: the fallback is a static file, so a failure here (corrupt ciphertext,
-        // lost/rotated software key) is permanent — skip rather than block archiving forever.
-        // A v3 entry written by an older build under the non-canonical path is retried under the
-        // fallback identity before being counted a permanent skip.
+        // The fallback is a static file, so a decrypt failure is permanent: skip rather than block
+        // archiving forever, after one retry under the fallback identity.
         val plain = try {
             sourceEngine.decryptSuspend(alias, decodeBase64(cipherB64), aad = aad)
         } catch (e: Throwable) {
@@ -335,9 +264,8 @@ private suspend fun reEncryptAll(
             recovered
         }
 
-        // Target re-encrypt: a failure here is typically transient (vault unavailable / device
-        // locked). Count transient so archiving is blocked and the apply (gated on transientFailed
-        // == 0) writes nothing this launch, leaving no partial state to roll back.
+        // A re-encrypt failure is transient (vault unavailable, device locked); it also gates the
+        // apply below, so this launch writes nothing and leaves no partial state.
         val reCipher = try {
             targetEngine.encryptSuspend(
                 identifier = alias,
@@ -356,12 +284,8 @@ private suspend fun reEncryptAll(
         migrated++
     }
 
-    // Carry the store-level key-generation record with the entry cohort. Without it a migrated
-    // rotated store regresses to generation 1: the next write silently drops back to a v2
-    // envelope (no AAD), the MaxAge clock restarts, and a later 1→2 rotation re-targets ".g2"
-    // aliases the migration already minted keys under. The target's record wins when it is
-    // AHEAD (higher generation, or same generation with an older birth) — a newer OS-side
-    // rotation must not be rolled back by stale fallback state.
+    // The key-generation record travels with the entry cohort, or a rotated store regresses to
+    // generation 1 and the next write drops back to a v2 envelope. The target wins when ahead.
     val srcKeygen = (srcSnap[KeySafeMetadataManager.KEYGEN_RAW_KEY] as? StoredValue.Text)?.value
     if (srcKeygen != null) {
         val dstKeygen = (targetSnap[KeySafeMetadataManager.KEYGEN_RAW_KEY] as? StoredValue.Text)?.value
@@ -376,8 +300,7 @@ private suspend fun reEncryptAll(
         }
     }
 
-    // All-or-nothing on a transient failure: apply nothing this launch (no partial drain a re-run
-    // could roll back). Permanent skips don't block the apply — successful entries still land.
+    // All-or-nothing on a transient failure, so a re-run has no partial drain to roll back.
     if (transientFailed == 0 && ops.isNotEmpty()) target.applyBatch(ops)
     return MigrationResult(
         migrated = migrated,
@@ -387,16 +310,8 @@ private suspend fun reEncryptAll(
     )
 }
 
-/**
- * Archives a drained fallback file to `<name>.migrated` and returns whether a done-marker exists
- * afterwards. Renames when possible (preserving the original); a blocked rename (e.g. a lingering
- * Windows file handle just after `cancelAndJoin`) copies instead; both blocked falls back to a
- * 0-byte sentinel.
- *
- * The marker makes `buildJvmKSafe`'s gate treat the migration as done — without it the gate
- * re-runs every launch and re-drains stale fallback over newer writes. `false` (caller withholds
- * "done") only for a fully unwritable directory. The three I/O steps are injectable for tests.
- */
+// Archives a drained fallback to `<name>.migrated` — rename, else copy, else a 0-byte sentinel — and
+// reports whether a marker exists: without one the factory's gate re-drains stale fallback each launch.
 internal fun archiveOrMark(
     f: File,
     rename: (File, File) -> Boolean = { src, dst -> src.renameTo(dst) },
@@ -405,9 +320,8 @@ internal fun archiveOrMark(
 ): Boolean {
     val archived = File(f.parentFile, f.name + FALLBACK_MIGRATED_SUFFIX)
     if (archived.isFile) {
-        // Marker already exists from a prior period. A still-present source means a second fallback
-        // period was drained: the marker name is taken, so remove the redundant source and bump the
-        // marker mtime past it, else the mtime gate keeps re-draining stale fallback over newer writes.
+        // A second fallback period was drained and the marker name is taken: drop the redundant
+        // source and bump the marker past it, or the mtime gate keeps re-draining stale fallback.
         if (f.exists()) {
             runCatching { f.delete() }
             runCatching { archived.setLastModified(System.currentTimeMillis()) }
@@ -417,21 +331,17 @@ internal fun archiveOrMark(
     if (f.exists()) {
         if (rename(f, archived) && archived.isFile) return true
         if (copy(f, archived) && archived.isFile) {
-            // Copy succeeded but the source still holds the plaintext AES key / ciphertext; remove
-            // it so it doesn't linger as a residual secret. If the delete is blocked, clearAll()'s
-            // residual-file sweep is the backstop.
+            // The source still holds the plaintext AES key, so drop it once the copy landed.
             runCatching { f.delete() }
             return true
         }
     }
-    // Rename and copy both failed (or the source is gone). Ensure a durable done-marker regardless
-    // — the archive is only a recoverability bonus; satisfying the gate prevents the rollback.
+    // The archive is a bonus; the marker is what stops the re-drain, so write one regardless.
     return touch(archived) && archived.isFile
 }
 
 private val migratedWarning = OneShotWarning()
 
-/** One-time notice that fallback data was carried forward to the OS-backed store. */
 private fun warnMigratedFromFallbackOnce(entries: Int) {
     migratedWarning.warn {
         "KSafe NOTICE: migrated $entries entr${if (entries == 1) "y" else "ies"} from the " +
