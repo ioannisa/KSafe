@@ -221,6 +221,12 @@ counter.value++
   warning, so the next launch carries the whole cohort forward, this session's writes included. A
   store already stranded this way by 3.0.0 or 3.1.0 is not repaired: its namespaced store file
   already exists, so the retry still skips it.
+- **Web: `lazyLoad = true` no longer makes every non-suspend read return its default.** The web
+  target has no blocking cold-load, so suppressing the snapshot collector left the cache empty for
+  the whole session: `getDirect`, `by ksafe(...)` handles, `asStateFlow` and Compose state all
+  served the caller's default over live persisted data, and the first read-modify-write overwrote
+  it. The preload now always runs on web, where reading `localStorage` is synchronous and there is
+  nothing to defer; `lazyLoad` is accepted for API parity and documented as ignored there.
 
 ### Changed
 

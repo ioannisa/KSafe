@@ -73,6 +73,8 @@ val archive = KSafe(
 )
 ```
 
+On **web (js / wasmJs)** `lazyLoad` is accepted for API parity but ignored — the preload always runs. The web target has no blocking cold-load seam, so deferring it would leave `getDirect`, `by ksafe(...)` delegates and Compose state returning their defaults for the whole session; `localStorage` is read synchronously anyway, so there is nothing to defer.
+
 ### Constructor Parameters
 
 ```Kotlin
@@ -115,7 +117,7 @@ KSafe(
 // Web (Kotlin/WASM + Kotlin/JS)
 KSafe(
     fileName: String? = null,
-    lazyLoad: Boolean = false,
+    lazyLoad: Boolean = false,                                       // accepted for API parity; ignored — the preload always runs
     memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.PLAIN_TEXT,  // accepted for API parity; ignored — always PLAIN_TEXT internally
     config: KSafeConfig = KSafeConfig(),
     securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,

@@ -30,6 +30,10 @@ import kotlin.time.Duration.Companion.seconds
  * background preload and cached as plaintext, since the non-suspend [getDirect] path can't
  * decrypt on demand. A `getDirect` that races the preload returns `defaultValue` until it
  * completes; call [awaitCacheReady] first for a deterministic first read.
+ *
+ * `lazyLoad` is accepted for parity but ignored: the preload always runs. Web has no blocking
+ * cold-load seam, so deferring it would make every non-suspend read return `defaultValue` for
+ * the whole session, and localStorage is read synchronously anyway — there is nothing to defer.
  */
 @Suppress("UNUSED_PARAMETER")
 fun KSafe(
@@ -41,7 +45,6 @@ fun KSafe(
     plaintextCacheTtl: Duration = 5.seconds,
 ): KSafe = buildWebKSafe(
     fileName = fileName,
-    lazyLoad = lazyLoad,
     config = config,
     securityPolicy = securityPolicy,
     plaintextCacheTtl = plaintextCacheTtl,
@@ -60,7 +63,6 @@ internal fun KSafe(
     testEngine: KSafeEncryption,
 ): KSafe = buildWebKSafe(
     fileName = fileName,
-    lazyLoad = lazyLoad,
     config = config,
     securityPolicy = securityPolicy,
     plaintextCacheTtl = plaintextCacheTtl,
@@ -80,7 +82,6 @@ private fun webKeyTier(protection: KSafeProtection?): KSafeKeyTier = when {
 
 private fun buildWebKSafe(
     fileName: String?,
-    lazyLoad: Boolean,
     config: KSafeConfig,
     securityPolicy: KSafeSecurityPolicy,
     plaintextCacheTtl: Duration,
@@ -198,7 +199,8 @@ private fun buildWebKSafe(
         },
         resolveKeyStorage = { _, protection, _ -> webKeyTier(protection).asKeyStorage() },
         resolveKeyLevel = { _, protection, _ -> webKeyTier(protection).asProtectionLevel() },
-        lazyLoad = lazyLoad,
+        // No runBlocking on web: without the collector, non-suspend reads serve defaults all session.
+        lazyLoad = false,
         keyAlias = { userKey -> KSafeAliasFormat.colon(fileName, userKey) },
         // Web has no device lock, so both access policies route to the one master.
         masterAlias = { _ -> KSafeAliasFormat.colonMaster(fileName) },
