@@ -952,6 +952,7 @@ final class eu.anifantakis.lib.ksafe.internal/WebSoftwareEncryption : eu.anifant
     final suspend fun deleteKeySuspend(kotlin/String) // eu.anifantakis.lib.ksafe.internal/WebSoftwareEncryption.deleteKeySuspend|deleteKeySuspend(kotlin.String){}[0]
     final suspend fun encryptSuspend(kotlin/String, kotlin/ByteArray, kotlin/Boolean, kotlin/Boolean?, kotlin/ByteArray?): kotlin/ByteArray // eu.anifantakis.lib.ksafe.internal/WebSoftwareEncryption.encryptSuspend|encryptSuspend(kotlin.String;kotlin.ByteArray;kotlin.Boolean;kotlin.Boolean?;kotlin.ByteArray?){}[0]
     final suspend fun migrateLegacyKeysSuspend() // eu.anifantakis.lib.ksafe.internal/WebSoftwareEncryption.migrateLegacyKeysSuspend|migrateLegacyKeysSuspend(){}[0]
+    final suspend fun prewarmKey(kotlin/String, kotlin/Boolean, kotlin/Boolean?) // eu.anifantakis.lib.ksafe.internal/WebSoftwareEncryption.prewarmKey|prewarmKey(kotlin.String;kotlin.Boolean;kotlin.Boolean?){}[0]
 
     final object Companion // eu.anifantakis.lib.ksafe.internal/WebSoftwareEncryption.Companion|null[0]
 }

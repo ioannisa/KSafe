@@ -194,6 +194,18 @@ internal class WebSoftwareEncryption(
     }
 
     /**
+     * Read-only warm, never a mint: a master minted over key-less ciphertext turns the orphan
+     * sweep's "web key missing" into a GCM error it cannot classify, stranding the entry.
+     */
+    override suspend fun prewarmKey(
+        identifier: String,
+        hardwareIsolated: Boolean,
+        requireUnlockedDevice: Boolean?,
+    ) {
+        ensureKeyForRead(identifier)
+    }
+
+    /**
      * Drops [alias] from [ensured] and re-ensures it, regenerating the IndexedDB key if gone.
      * Self-heals after another tab's clearAll/logout: cross-tab `BroadcastChannel` eviction clears
      * the JS `mem` cache but not this Kotlin set, so a surviving tab would otherwise short-circuit

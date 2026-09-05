@@ -187,6 +187,17 @@ counter.value++
   durable one, which is exactly what the guard suppressed. The phantom outlived the failure while
   `getDirect` on the same key returned the value still on disk. Such a failure now reconciles the
   flow the same way an asynchronous one does, and still propagates to the caller.
+- **Web: losing IndexedDB no longer strands every encrypted value forever.** Ciphertext lives in
+  `localStorage` and the AES-GCM key in IndexedDB, so "key gone, data present" — a DevTools clear
+  with only IndexedDB ticked, an eviction under storage pressure, a Safari ITP purge — is the
+  platform's characteristic failure, and the one-time startup sweep reclaims it by recognising the
+  probe's "web key missing". But construction pre-warmed the master key through the generic path,
+  which mints one when it is absent: the probes then failed as an AES-GCM `OperationError`, which
+  matches no orphan pattern, so nothing was reclaimed, the freshly minted master persisted, and
+  every later launch's sweep hit the same unclassifiable error — leaving unreadable ciphertext
+  occupying the origin's quota and `rotateKeys()` reporting it failed. The web engine now
+  pre-warms read-only: a store with no key yet simply pays the key generation on its first
+  encrypted write, and a plain-only store writes nothing to IndexedDB at all.
 
 ## [3.1.0] - 2026-08-24
 
