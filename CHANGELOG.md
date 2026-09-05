@@ -289,6 +289,11 @@ counter.value++
 
 ### Changed
 
+- **`kotlinx-coroutines-core` and `compose-runtime` are now `api` dependencies.** `Flow`,
+  `StateFlow` and `CoroutineScope` appear in `:ksafe`'s public API and `KSafeComposeState`
+  publicly implements `MutableState`, yet both libraries were declared `implementation`, so a
+  consumer module without its own dependency on them could not compile the documented surface.
+  Consumers now get both transitively; nothing changes for projects that already declared them.
 - **The Android public API now has an ABI baseline that `apiCheck` enforces.** The binary
   compatibility validator only registers its Android dump for a compilation named `release`,
   and the Android multiplatform library plugin names that compilation `main` — so it registered

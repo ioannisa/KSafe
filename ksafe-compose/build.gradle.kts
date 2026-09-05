@@ -78,7 +78,8 @@ kotlin {
                 // Use api() for your main library so it's exposed to consumers
                 api(project(":ksafe"))
 
-                implementation(libs.runtime)
+                // api — KSafeComposeState publicly implements MutableState.
+                api(libs.runtime)
             }
         }
 

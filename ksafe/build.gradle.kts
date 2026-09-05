@@ -182,10 +182,10 @@ kotlin {
         @Suppress("unused")
         val commonMain by getting {
             dependencies {
-                // api (not implementation) — Json is part of KSafe's public API (KSafeConfig.json),
-                // so consumers get kotlinx-serialization-json transitively without declaring it themselves.
+                // api (not implementation) — Json (KSafeConfig.json) and coroutines (Flow, StateFlow,
+                // CoroutineScope) are part of KSafe's public API, so consumers get them transitively.
                 api(libs.kotlinx.serialization.json)
-                implementation(libs.kotlinx.coroutines.core)
+                api(libs.kotlinx.coroutines.core)
 
                 // compileOnly — used solely for the @Stable marker on the KSafe class so
                 // Compose consumers (via :ksafe-compose) get accurate stability inference
