@@ -1,10 +1,14 @@
 package eu.anifantakis.lib.ksafe
 
 import app.cash.turbine.test
+import eu.anifantakis.lib.ksafe.internal.KSafeReservedKeys
 import eu.anifantakis.lib.ksafe.internal.keyvault.DataStoreKeyVault
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlin.test.*
 import kotlinx.serialization.Serializable
@@ -25,6 +29,14 @@ class JvmFileNameTest {
             return "fnrun${runId}test${numberToLetters(count.toLong())}"
         }
 
+        private val vaultBookkeepingSuffixes = listOf(
+            KSafeReservedKeys.VAULT_SOFTWARE_FALLBACK,
+            KSafeReservedKeys.VAULT_TOMBSTONE,
+        )
+
+        private fun isVaultKeyRecord(rawKey: String): Boolean =
+            rawKey.startsWith(DataStoreKeyVault.KEY_PREFIX) &&
+                vaultBookkeepingSuffixes.none { rawKey.endsWith(".$it") }
     }
 
     private fun newStore(): KSafe = KSafe(generateUniqueFileName())
@@ -71,8 +83,10 @@ class JvmFileNameTest {
             // in jvmTest the software fallback keeps key records in this very file — so asserting
             // "no ksafe_key_ prefix anywhere afterwards" is a race against an unrelated mint, not
             // a wipe check. Assert the specific pre-clear bytes are gone instead.
+            // The vault's bookkeeping sentinels are excluded: their value is a constant byte that
+            // every later mint writes back verbatim, so matching it proves nothing about key bytes.
             val preClearKeyMaterial = safe.dataStore.data.first().asMap()
-                .filterKeys { it.name.startsWith(DataStoreKeyVault.KEY_PREFIX) }
+                .filterKeys { isVaultKeyRecord(it.name) }
                 .values.map { it.toString() }
             assertTrue(
                 preClearKeyMaterial.isNotEmpty(),
@@ -90,6 +104,15 @@ class JvmFileNameTest {
             assertEquals("default", safe.get("k", "default"), "the value must be wiped")
             val reopened = KSafe(fileName = name, baseDir = tmpDir)
             assertEquals("default", reopened.get("k", "default"), "the wipe must survive a cold reopen")
+            // Let the reopened instance's off-thread prewarm mint land first, so the residue check
+            // runs against a store that was actually rewritten after the wipe.
+            withContext(Dispatchers.Default) {
+                withTimeoutOrNull(30.seconds) {
+                    reopened.dataStore.data.first { prefs ->
+                        prefs.asMap().keys.any { isVaultKeyRecord(it.name) }
+                    }
+                }
+            }
             reopened.close()
 
             // No pre-clear key material and no ciphertext survives in the on-disk store.
