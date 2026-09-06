@@ -146,9 +146,9 @@ KSafe in action across many scenarios: **[KSafeDemo — Compose Multiplatform ap
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:3.1.0")
-implementation("eu.anifantakis:ksafe-compose:3.1.0")     // ← Compose state (optional)
-implementation("eu.anifantakis:ksafe-biometrics:3.1.0")  // ← Biometric auth (optional)
+implementation("eu.anifantakis:ksafe:3.2.0")
+implementation("eu.anifantakis:ksafe-compose:3.2.0")     // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe-biometrics:3.2.0")  // ← Biometric auth (optional)
 ```
 
 > Skip `ksafe-compose` if you don't use Jetpack Compose or `mutableStateOf` persistence.
@@ -204,7 +204,9 @@ Multi-instance setups, web `awaitCacheReady()`, custom storage directories, key 
 
 > **Compose Desktop release builds:** add `modules("jdk.unsupported", "java.management")` to `nativeDistributions` for OS-backed key custody — why, and what happens without it: [docs/JVM_PROTECTION.md](docs/JVM_PROTECTION.md#compose-desktop-release-distributables-jdkunsupported).
 
-## Basic Usage
+---
+
+## 🟢 Basic Usage 🟢
 
 There are two ways to reach your data, and they share the same store and the same hot cache, so you can mix them freely. Full reference (Compose `policy`, cross-screen sync, write modes, nullables, deletion, full ViewModel): **[docs/USAGE.md](docs/USAGE.md)**.
 
