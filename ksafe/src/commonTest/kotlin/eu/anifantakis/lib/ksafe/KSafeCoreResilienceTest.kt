@@ -15,14 +15,13 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
- * Locks in the commonMain resilience primitives behind three medium audit fixes:
- * - the snapshot collector resubscribes on a transient read failure instead of dying (M4),
- * - teardown drains queued-but-unprocessed writes rather than leaving awaiters hung (M5),
- * - a plaintext String that collides with the internal null marker round-trips, not to null (M8).
+ * Locks in the commonMain resilience primitives: the snapshot collector resubscribes after a
+ * transient read failure instead of dying, teardown drains queued writes rather than leaving
+ * awaiters hung, and a plaintext String colliding with the null marker round-trips as itself.
  */
 class KSafeCoreResilienceTest {
 
-    // ---- M4: collector survives a transient read failure ---------------------------------
+    // ---- collector survives a transient read failure -------------------------------------
 
     @Test
     fun retryingTransientReads_resubscribesAfterAThrow() = runTest {
@@ -67,7 +66,7 @@ class KSafeCoreResilienceTest {
         assertEquals(1_000L, collectorRetryBackoffMs(100), "must stay capped, never overflow the shift")
     }
 
-    // ---- M5: teardown drains the write channel without closing it ------------------------
+    // ---- teardown drains the write channel without closing it ----------------------------
 
     @Test
     fun drainRemaining_appliesEveryQueuedElementThenStops_withoutClosing() = runTest {
@@ -86,7 +85,7 @@ class KSafeCoreResilienceTest {
         assertEquals(listOf(4), more)
     }
 
-    // ---- M8: the null-sentinel escape --------------------------------------------------
+    // ---- the null-sentinel escape --------------------------------------------------------
 
     @Test
     fun nullSentinelEscape_roundTripsCollidingStrings_asThemselves() {
@@ -94,8 +93,7 @@ class KSafeCoreResilienceTest {
         assertEquals("hello", KSafeCore.encodePlainString("hello"))
         assertEquals("hello", KSafeCore.decodePlainString(KSafeCore.encodePlainString("hello")))
 
-        // A plaintext value literally equal to the null marker must NOT be stored as the bare
-        // marker (that reads back as null); it is escaped and decodes back to itself.
+        // Stored as the bare marker, a value equal to it would read back as null.
         val sentinel = KSafeCore.NULL_SENTINEL
         val encoded = KSafeCore.encodePlainString(sentinel)
         assertNotEquals(sentinel, encoded, "the colliding value must be stored in an escaped form")

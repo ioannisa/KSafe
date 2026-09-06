@@ -16,13 +16,10 @@ import kotlin.test.assertNull
 import kotlin.test.assertSame
 
 /**
- * Locks in: a serializer that throws during encode leaves the store completely untouched.
- * Before the fix the put paths mutated the ownership token, dirty flag, and routing
- * metadata BEFORE encoding; an encode-time throw then poisoned the key for the process
- * lifetime — the durable value became unreadable through get/getDirect (routing pointed at
- * an empty ciphertext slot) while nothing could repair it, because the cache merge skips
- * dirty keys. Also locks in single-encode on the plain paths: cache and disk must share one
- * representation even for a non-deterministic serializer.
+ * Locks in: a serializer that throws during encode leaves the store completely untouched. The put
+ * paths once mutated the ownership token, dirty flag and routing metadata before encoding, so an
+ * encode-time throw poisoned the key for the whole process lifetime with nothing able to repair it.
+ * Also locks in single-encode on the plain paths: cache and disk must share one representation.
  */
 class JvmPutSerializerFailureTest {
 

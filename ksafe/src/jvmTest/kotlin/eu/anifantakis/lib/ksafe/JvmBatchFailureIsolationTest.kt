@@ -70,9 +70,8 @@ class JvmBatchFailureIsolationTest {
 
     @Test
     fun failedOverwrite_underLazyPlainTextSideCache_restoresPriorValue() = runTest {
-        // LAZY_PLAIN_TEXT keeps an optimistic plaintext copy in the side cache that
-        // updateCache doesn't manage; on an overwrite, reads consult it first, so the
-        // rollback must evict it or the phantom is served all session (LAZY never expires).
+        // LAZY_PLAIN_TEXT keeps an optimistic plaintext copy in a side cache updateCache doesn't
+        // manage, and reads consult it first — rollback must evict it or the phantom lives forever.
         val fileName = JvmKSafeTest.generateUniqueFileName()
         val ksafe = KSafe(
             fileName = fileName,
@@ -141,9 +140,8 @@ class JvmBatchFailureIsolationTest {
                 // Optimistic fire-and-forget persist that fails in the write consumer.
                 flow.value = "BAD_phantom"
 
-                // An awaited write is processed after (or within) the failing write's batch,
-                // and the failure reconcile runs inside that processing — so it has completed
-                // by the time this put returns.
+                // An awaited write is processed within or after the failing batch, and the failure
+                // reconcile runs inside that processing — so it is done once this put returns.
                 ksafe.put("flush", "x", KSafeWriteMode.Encrypted())
 
                 assertEquals(
@@ -172,8 +170,7 @@ class JvmBatchFailureIsolationTest {
             testEngine = MarkerFailEncryption("BAD"),
         )
 
-        // Concurrent writes so the coalescer merges them into one applyBatch: a bad
-        // encrypted key, a good encrypted key (shares the master alias), and a plain key.
+        // Concurrent, so the coalescer merges all three into one applyBatch.
         coroutineScope {
             launch {
                 runCatching { ksafe.put("bad", "BAD_value", KSafeWriteMode.Encrypted()) }
@@ -190,9 +187,8 @@ class JvmBatchFailureIsolationTest {
     }
 
     /**
-     * XOR engine that fails encrypt on "BAD" and pins the single write consumer inside
-     * encrypt on "DECOY" until [releaseGate] opens — letting the test stage a coalesced
-     * batch with a guaranteed op order while the consumer is parked.
+     * XOR engine that fails encrypt on "BAD" and pins the single write consumer inside encrypt on
+     * "DECOY" until [releaseGate] opens, so a coalesced batch can be staged in a guaranteed order.
      */
     private class PinFailEncryption : KSafeEncryption {
         private val xor = FakeEncryption()
@@ -211,12 +207,9 @@ class JvmBatchFailureIsolationTest {
 
     @Test
     fun failingEncryptedWrite_failsASupersededSameKeyDeleteAwaiter() {
-        // A batch coalesces same-key ops to the LAST write. When an earlier delete("token") is
-        // superseded by a later encrypted put that fails to encrypt, NO storage op is committed for
-        // the key, so the pre-batch value survives on disk. The delete therefore never became
-        // durable — its awaiter must be FAILED, not acknowledged with success (which would falsely
-        // report "the key is gone" while the old value survives), consistent with how a superseded
-        // value write is failed.
+        // A batch coalesces same-key ops to the last write, so an earlier delete superseded by a
+        // failing encrypted put commits no op at all and the pre-batch value survives on disk. The
+        // delete never became durable, so its awaiter must fail rather than report the key gone.
         val engine = PinFailEncryption()
         val ksafe = KSafe(
             fileName = JvmKSafeTest.generateUniqueFileName(),
@@ -231,8 +224,7 @@ class JvmBatchFailureIsolationTest {
             ksafe.put("token", "original", KSafeWriteMode.Encrypted())
             assertEquals("original", ksafe.get("token", "none"))
 
-            // Park the single write consumer inside the decoy's encrypt so the next two
-            // writes queue in the channel without being drained yet.
+            // Park the write consumer in the decoy's encrypt so the next two writes queue undrained.
             val decoyJob = launch(Dispatchers.IO) { runCatching { ksafe.put("decoy", "DECOY_v", KSafeWriteMode.Encrypted()) } }
             engine.decoyPinned.await()
 
@@ -257,7 +249,6 @@ class JvmBatchFailureIsolationTest {
             putResult!!.exceptionOrNull()?.message?.contains("device is locked", ignoreCase = true) == true,
             "the failing op's awaiter gets the keystore exception; was: ${putResult!!.exceptionOrNull()?.message}",
         )
-        // Neither token op became durable (delete superseded, failing put rolled back) → prior value survives.
         assertEquals("original", runBlocking { ksafe.get("token", "none") }, "the prior persisted value must survive")
 
         ksafe.close()
@@ -265,10 +256,8 @@ class JvmBatchFailureIsolationTest {
 
     @Test
     fun failingEncryptedWrite_failsASupersededSameKeyWriteAwaiter() {
-        // Twin of the delete case, opposite outcome: when an earlier put("token", ...) is coalesced
-        // away by a later same-key encrypted put that FAILS to encrypt, the earlier put's value was
-        // rolled back and never persisted — so its awaiter must ALSO fail, not be completed with
-        // Unit, or a concurrent caller believes its value is durable when it is gone.
+        // Twin of the delete case: an earlier put coalesced away by a later failing same-key put was
+        // rolled back and never persisted, so its awaiter must fail rather than complete with Unit.
         val engine = PinFailEncryption()
         val ksafe = KSafe(
             fileName = JvmKSafeTest.generateUniqueFileName(),
@@ -285,8 +274,7 @@ class JvmBatchFailureIsolationTest {
             val decoyJob = launch(Dispatchers.IO) { runCatching { ksafe.put("decoy", "DECOY_v", KSafeWriteMode.Encrypted()) } }
             engine.decoyPinned.await()
 
-            // early put sends first, the failing late put sends second → same parked batch,
-            // coalesced to the late failing op (the early value is never encrypted).
+            // Same parked batch, coalesced to the late failing op — the early value never encrypts.
             val earlyJob = launch(Dispatchers.Unconfined) { earlyResult = runCatching { ksafe.put("token", "superseded_value", KSafeWriteMode.Encrypted()) } }
             val lateJob = launch(Dispatchers.Unconfined) { lateResult = runCatching { ksafe.put("token", "BAD_secret", KSafeWriteMode.Encrypted()) } }
 
@@ -306,9 +294,8 @@ class JvmBatchFailureIsolationTest {
     }
 
     /**
-     * XOR engine that fails once on the marker payload — invoking [onMarkerFailure] (the
-     * racing newer write) first — and gates every non-marker encrypt on [commitGate] so the
-     * newer write can't commit before the test asserts on its optimistic state.
+     * XOR engine that fails once on the marker payload, invoking [onMarkerFailure] (the racing newer
+     * write) first, and gates every other encrypt on [commitGate] so that write cannot commit early.
      */
     private class RaceFailEncryption(private val failMarker: String) : KSafeEncryption {
         private val xor = FakeEncryption()
@@ -338,9 +325,8 @@ class JvmBatchFailureIsolationTest {
     }
 
     /**
-     * `dirtyKeys` is a set, not a counter: a newer same-key write issued while an older
-     * write's batch is failing is a no-op `add`, so rollback must skip a key whose latest
-     * writer is no longer the failed op, or it clobbers the newer acknowledged write.
+     * `dirtyKeys` is a set, not a counter: a newer same-key write during an older write's failing
+     * batch is a no-op `add`, so rollback must skip keys whose latest writer is not the failed op.
      */
     @Test
     fun failedWriteRollback_doesNotClobber_aNewerWriteToTheSameKey() = runTest {
@@ -352,8 +338,7 @@ class JvmBatchFailureIsolationTest {
             testEngine = engine,
         )
 
-        // The racing newer same-key write, fired from inside the older write's failing
-        // encrypt — i.e. while its batch is mid-processing.
+        // The racing newer same-key write, fired while the older write's batch is mid-processing.
         engine.onMarkerFailure = {
             ksafe.putDirect("token", "fresh-v2", KSafeWriteMode.Encrypted())
         }
@@ -363,8 +348,7 @@ class JvmBatchFailureIsolationTest {
         }
 
         try {
-            // The newer write hasn't committed (encrypt is latch-gated), so this read is
-            // answered purely by its optimistic state — which the rollback must leave intact.
+            // The newer write is latch-gated in encrypt, so only its optimistic state answers here.
             assertEquals(
                 "fresh-v2", ksafe.getDirect("token", "none"),
                 "rollback of a failed write must not strip a newer same-key write's optimistic state",

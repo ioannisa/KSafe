@@ -10,7 +10,6 @@ import kotlin.test.Test
  */
 class JvmKSafeMutableStateOfTest : KSafeMutableStateOfTest() {
 
-    /** Skipped on JVM: DataStore doesn't allow multiple instances on the same file. */
     @Test
     override fun mutableStateOf_persistsAcrossInstances() {
         println("Skipped: mutableStateOf_persistsAcrossInstances (JVM DataStore limitation)")

@@ -15,7 +15,11 @@ import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
-/** Locks in: startBackgroundCollector runs migrateAccessPolicy only AFTER the first snapshotFlow emission has populated the cache — on Apple platforms, running it early would let the orphan-Keychain sweep observe an empty snapshot and irreversibly delete Secure Enclave keys. */
+/**
+ * Locks in: startBackgroundCollector runs migrateAccessPolicy only once the first snapshotFlow
+ * emission has populated the cache — on Apple platforms, running it early would let the
+ * orphan-Keychain sweep observe an empty snapshot and irreversibly delete Secure Enclave keys.
+ */
 class KSafeCoreStartupOrderingTest {
 
     private var core: KSafeCore? = null

@@ -1,18 +1,8 @@
 package eu.anifantakis.lib.ksafe.biometrics
 
-/**
- * The WebAuthn ceremony dispatcher as JavaScript source, shared by both web targets: a
- * self-contained IIFE evaluating to `(op, arg) -> Promise<String>` with the outcome contract
- * documented on [webAuthnCall], keeping the in-flight ceremony's `AbortController` in its closure.
- *
- * It lives here as a `const val` because that is the one shape both interop primitives accept:
- * `js(...)` and `@JsFun(...)` each require a compile-time constant, and a constant may be
- * assembled from other constants. Only the wrapper is per-target — `@JsFun` takes a single
- * function expression and so has nowhere to keep the returned closure between calls, while
- * Kotlin/JS holds it in a module-level property.
- *
- * The program references no Kotlin identifiers: the JS IR compiler renames parameters.
- */
+/** WebAuthn dispatcher JS shared by both web targets: an IIFE evaluating to `(op, arg) -> Promise<String>`,
+ *  with the op and outcome strings listed on [webAuthnCall]. A `const val` because `js(...)` and `@JsFun(...)`
+ *  need a compile-time constant; it names no Kotlin identifiers, since the IR compiler renames them. */
 internal const val WEBAUTHN_DISPATCHER_JS = """
     (function() {
       var G = (typeof globalThis !== 'undefined') ? globalThis : self;

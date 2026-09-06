@@ -5,11 +5,10 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Locks in: the Secure Enclave availability probe (which replaced the old `!isSimulator()` heuristic
- * that over-reported SE on every Mac) runs without throwing and returns a stable, cached result. The
- * concrete true/false is host-dependent (Apple-Silicon / T2 → true, pre-T2 Intel / VM → false), so it
- * is NOT asserted here — only that the probe is well-behaved: a transient first-probe failure must
- * stick as a stable value for the process, never crash or flap between calls.
+ * Locks in: the Secure Enclave availability probe — which replaced an `!isSimulator()` heuristic
+ * that over-reported SE on every Mac — runs without throwing and returns a stable, cached result.
+ * The concrete true/false is host-dependent (Apple Silicon / T2 → true, pre-T2 Intel / VM → false),
+ * so only the well-behavedness is asserted: stable per process, never crashing or flapping.
  */
 class MacosSecureEnclaveProbeTest {
 

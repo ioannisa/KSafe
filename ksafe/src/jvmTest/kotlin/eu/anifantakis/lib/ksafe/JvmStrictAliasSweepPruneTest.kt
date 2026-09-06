@@ -18,13 +18,10 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Locks in: the delete/clearAll sweep still reaches an entry whose key lives under the strict
- * alias variant, even on a store whose write path can no longer mint one.
- *
- * The prune asks `modeTransformer` what a new USER write can carry — on web, never strict. But
- * rotation does not go through the transformer: it takes the unlock policy from the entry's own
- * metadata, so a store written before that veto rotates into exactly the key the prune would
- * then refuse to sweep, and the key outlives the data it protected.
+ * Locks in: the delete/clearAll sweep still reaches an entry whose key lives under the strict alias
+ * variant, even on a store whose write path can no longer mint one. The prune asks `modeTransformer`
+ * what a new write may carry — on web, never strict — but rotation reads the unlock policy from the
+ * entry's own metadata, so without this the key outlives the data it protected.
  */
 class JvmStrictAliasSweepPruneTest {
 
@@ -60,9 +57,8 @@ class JvmStrictAliasSweepPruneTest {
         val storage = MemoryStorage()
         val engine = StatefulFakeEncryption()
 
-        // The entry a pre-veto release left behind, then rotation carried to generation 2 under
-        // the strict alias. Its key is live and its ciphertext decrypts, so the startup orphan
-        // sweep leaves it alone and the deletion below is the only thing that can reap the key.
+        // The entry a pre-veto release left behind, rotated to generation 2 under the strict alias.
+        // Its key is live and its ciphertext decrypts, so the startup orphan sweep leaves it alone.
         val strictAlias = KSafeCore.strictPerEntryAliasWithGeneration(
             baseAlias = "p.token", generation = 2, keyNamespace = null, userKey = "token",
         )

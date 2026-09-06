@@ -19,11 +19,10 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * A `lazyLoad` instance runs no snapshot collector, so nothing but its own write path ever
- * re-reads the store's key-rotation generation. This locks in that a rotation performed by
- * a co-existing instance AFTER that instance's first write still governs its later writes —
- * otherwise they keep minting keys and metadata under a superseded generation, dropping
- * back to the unauthenticated envelope on an already-rotated store.
+ * A `lazyLoad` instance runs no snapshot collector, so nothing but its own write path re-reads
+ * the store's key-rotation generation. Locks in that a rotation by a co-existing instance after
+ * that first write still governs its later writes — otherwise they keep minting under a
+ * superseded generation, dropping back to the unauthenticated envelope on a rotated store.
  */
 class JvmLazyGenerationRefreshTest {
 

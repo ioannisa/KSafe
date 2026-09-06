@@ -7,12 +7,8 @@ import kotlin.js.JsAny
 import kotlin.js.JsString
 import kotlin.js.Promise
 
-/**
- * Kotlin/Wasm actuals for [webKeyEnsure] et al. The store is [WebKeyStoreJsSource.FACTORY] and the
- * op dispatch is [WebKeyStoreJsSource.OP_ROUTING], both shared with the Kotlin/JS twin; only the
- * binding and where the built store is cached are per-target. `@JsFun` bodies are stateless between
- * calls, so the built store is cached on the global object.
- */
+// The factory and op routing are shared with the Kotlin/JS twin. `@JsFun` bodies keep no state
+// between calls, so the built store is cached on the global object.
 private const val DISPATCH_JS: String = """
     (op, a, b, c) => {
       var G = (typeof globalThis !== 'undefined') ? globalThis : self;

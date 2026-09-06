@@ -15,11 +15,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Locks in: `KSafeMutableStateFlow` enqueues each write's persist INSIDE the same lock that
- * publishes it, so persist order always matches publish order. With the persist outside the
- * lock, two racing writers could publish A→B yet enqueue B→A, making the durable final value
- * the one the visible ordering had discarded — a silent lost update the flow then "healed"
- * to the wrong value.
+ * Locks in: `KSafeMutableStateFlow` enqueues each write's persist inside the same lock that
+ * publishes it, so persist order always matches publish order. With the persist outside the lock,
+ * two racing writers could publish A→B yet enqueue B→A, leaving the durable final value the one
+ * the visible ordering had discarded — a lost update the flow then "healed" to the wrong value.
  */
 class JvmStateFlowPersistOrderTest {
 
@@ -28,8 +27,8 @@ class JvmStateFlowPersistOrderTest {
         val persisted = mutableListOf<String>()
         val msf = KSafeMutableStateFlow("init") { v -> synchronized(persisted) { persisted.add(v) } }
 
-        // Freeze the FIRST writer inside the lock, between its bookkeeping and its
-        // publish+persist; the hook must not re-trigger for the second writer.
+        // Freezes the first writer inside the lock, between its bookkeeping and its
+        // publish+persist; the hook must not fire again for the second writer.
         val firstWriterInLock = CountDownLatch(1)
         val releaseFirstWriter = CountDownLatch(1)
         val hookUsed = AtomicBoolean(false)

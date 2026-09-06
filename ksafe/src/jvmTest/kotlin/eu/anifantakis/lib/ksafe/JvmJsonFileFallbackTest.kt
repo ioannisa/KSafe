@@ -32,7 +32,7 @@ class JvmJsonFileFallbackTest {
     private val tmp = File(System.getProperty("java.io.tmpdir"), "ksafe_jsonfb_${System.nanoTime()}")
         .apply { mkdirs() }
 
-    /** DataStore allows ONE active instance per file per process — track scopes and release them. */
+    /** DataStore allows one active instance per file per process — track scopes and release them. */
     private val scopes = mutableListOf<CoroutineScope>()
 
     private fun storage(file: File): DataStoreJsonStorage {
@@ -110,8 +110,7 @@ class JvmJsonFileFallbackTest {
 
     @Test
     fun jsonStorage_corruptFile_isQuarantinedNotSilentlyDiscarded() = runTest {
-        // Unparseable content must be quarantined to a .corrupt-* sibling, not read back
-        // as empty — an empty read would let the next write overwrite recoverable bytes.
+        // Reading a corrupt file back as empty would let the next write overwrite recoverable bytes.
         val file = File(tmp, "corrupt.json")
         file.writeText("{ this is not valid json")
         assertTrue(storage(file).snapshot().isEmpty())
@@ -155,8 +154,7 @@ class JvmJsonFileFallbackTest {
 
     @Test
     fun fileKeyVault_unreadableFile_throwsRatherThanReportingEmpty() {
-        // An unparseable keys file must not read back as "no keys" — that would let the
-        // orphan sweep delete recoverable ciphertext.
+        // Reading an unparseable keys file as "no keys" would let the orphan sweep delete ciphertext.
         val file = File(tmp, "corruptkeys.json")
         file.writeText("{ not valid json")
         assertFailsWith<IllegalStateException> { FileKeyVault(file).get("anything") }
@@ -169,9 +167,8 @@ class JvmJsonFileFallbackTest {
 
     @Test
     fun fileKeyVault_blankFile_throwsRatherThanReportingEmpty() {
-        // write() always emits at least "{}" and clearAll() deletes the file, so an existing
-        // blank file is truncation — reading it as "no keys yet" would let the orphan sweep
-        // delete recoverable ciphertext.
+        // write() always emits at least "{}" and clearAll() deletes the file, so an existing blank
+        // file is truncation; reading it as "no keys yet" hands the orphan sweep live ciphertext.
         val file = File(tmp, "blankkeys.json")
         file.writeText("")
         val ex = assertFailsWith<IllegalStateException> { FileKeyVault(file).get("anything") }
@@ -205,8 +202,7 @@ class JvmJsonFileFallbackTest {
         // Truncated key file (crash mid-write under an old release / external tampering).
         keysFile.writeText("")
 
-        // A FRESH engine (no in-memory key cache) must fail closed — not report the
-        // key-absent wording the orphan sweep deletes ciphertext on.
+        // A fresh engine (no in-memory key cache) must fail closed, not report key-absent.
         val cold = JvmSoftwareEncryption(
             vaultProvider = JvmKeyVaultProvider(legacyOverride = FileKeyVault(keysFile)),
         )
@@ -230,7 +226,6 @@ class JvmJsonFileFallbackTest {
 
     @Test
     fun fileKeyVault_keyFileIsOwnerOnly_onPosix() {
-        // The key file must be created owner-only (rw-------); skipped on non-POSIX filesystems.
         val file = File(tmp, "perms.ksafe-keys.json")
         FileKeyVault(file).put("alias", ByteArray(32) { it.toByte() })
         val view = java.nio.file.Files.getFileAttributeView(

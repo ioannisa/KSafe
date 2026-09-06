@@ -10,26 +10,10 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Locks in: what the post-commit repair's orphan cleanup does to a newer write's protection and
- * routing metadata, as a function of whether that newer write has published its cached value yet.
- *
- * When a repair loses ownership mid-way it must undo the metadata it just restored, because a
- * concurrent delete would otherwise leave protection/encMeta orphaned on a key that no longer has
- * a value. It recognises that case by the cache slot being empty (`!memoryCache.containsKey`).
- * That test cannot tell "the key was deleted" from "a newer write has published its metadata but
- * not yet its value" — so the optimistic write paths publish the cached value BEFORE the
- * protection literal, which keeps the second state from ever being observed.
- *
- * The tests below are identical except for one line: whether the newer write's value slot is
- * present when the older repair resumes. That isolates exactly the property the ordering exists to
- * guarantee, and shows what is lost without it. Both the plain and the encrypted repair branches
- * carry their own copy of the cleanup, so both are driven here.
- *
- * Not every write path holds that ordering today — the encrypted suspend path publishes its
- * metadata before its value, so it can expose the window these tests reproduce. That divergence is
- * known and deferred to 3.0.1. It cannot be driven from here: the repair hook runs ON the write
- * loop, and a suspend put awaits the very loop it would be blocking, so the window is set up
- * directly instead of by racing for it.
+ * Locks in: what the post-commit repair's orphan cleanup does to a newer write's metadata. A repair
+ * that lost ownership undoes what it restored when the cache slot is empty, and cannot tell "the
+ * key was deleted" from "a newer write published its metadata but not yet its value" — which is why
+ * the optimistic paths publish the value first. Each pair below differs only in that slot.
  */
 class JvmPostCommitRepairOrphanCleanupTest {
 
@@ -48,13 +32,10 @@ class JvmPostCommitRepairOrphanCleanupTest {
     )
 
     /**
-     * Commits a write, lands a newer write of the same mode inside its post-commit repair, and
-     * reports the metadata state as seen at the START of the newer write's own repair — the last
-     * moment before that repair re-asserts its metadata and hides whatever the older one did.
-     *
-     * Both writes share [mode] so the newer metadata is value-equal to what the older repair
-     * restores; the cleanup is a value-matched `removeIf`, so mixing modes would make it silently
-     * stop applying.
+     * Reports the metadata state at the start of the newer write's own repair, the last moment
+     * before that repair hides whatever the older one did. Both writes share [mode] because the
+     * cleanup is a value-matched `removeIf`. The window is set up rather than raced for: the repair
+     * hook runs on the write loop, and a suspend put would await that same loop.
      *
      * @param rewindValueSlot removes the newer write's cached value after it stages, reproducing
      *   the instant a metadata-before-value ordering leaves visible.
@@ -151,10 +132,9 @@ class JvmPostCommitRepairOrphanCleanupTest {
         val outcome = runRepairRace(rewindValueSlot = true, mode = KSafeWriteMode.Encrypted())
         assertPremises(outcome, expectValueSlot = false)
 
-        // Current behaviour, not desired behaviour: metadata with no cached value is
-        // indistinguishable from a deleted key, so the older repair's cleanup takes it. The key is
-        // left routing-less until the newer write's own repair re-asserts it, and reads in that
-        // window see no protection record for a key that has one on disk.
+        // Current behaviour, not desired: metadata with no cached value is indistinguishable from
+        // a deleted key, so the cleanup takes it and reads see no protection record until the
+        // newer write's repair re-asserts it. The encrypted suspend path can still reach here.
         assertNull(
             outcome.protectionWhenNewerRepairRan,
             "a repair that lost ownership drops a newer write's protection while that write's " +
@@ -168,8 +148,8 @@ class JvmPostCommitRepairOrphanCleanupTest {
 
     @Test
     fun plainRepairLeavesNewerMetadataAlone_whenTheNewerWriteHasAlreadyPublishedItsValue() {
-        // The plain repair branch carries its own copy of the cleanup and only tracks the
-        // protection literal (a plain write clears routing metadata outright).
+        // The plain branch carries its own copy of the cleanup and only tracks the protection
+        // literal, since a plain write clears routing metadata outright.
         val outcome = runRepairRace(rewindValueSlot = false, mode = KSafeWriteMode.Plain)
         assertPremises(outcome, expectValueSlot = true)
 

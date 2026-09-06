@@ -4,9 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * Locks in: KSafeMemoryPolicy enum values, ordinals, names, and valueOf lookups.
- */
+/** Locks in: KSafeMemoryPolicy enum values, ordinals, names, and valueOf lookups. */
 class KSafeMemoryPolicyTest {
 
     @Test

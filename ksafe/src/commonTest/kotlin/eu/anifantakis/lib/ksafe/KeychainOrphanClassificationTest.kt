@@ -33,17 +33,16 @@ class KeychainOrphanClassificationTest {
     // fileName = "vault" → these are the per-instance account prefixes.
     private val prefix = "eu.anifantakis.ksafe.vault."
     private val sePrefix = "se.eu.anifantakis.ksafe.vault."
-    // fileName = null (the root/default instance) → these prefixes. A named instance reaps ONLY
-    // keys it provably owns, so the "an unknown key is reaped" semantics are exercised against the
-    // ROOT sweep, which the owned-key guard leaves unchanged.
+    // fileName = null (root instance) → these prefixes. A named instance reaps only keys it
+    // provably owns, so "an unknown key is reaped" is exercised against the root sweep.
     private val rootPrefix = "eu.anifantakis.ksafe."
     private val rootSePrefix = "se.eu.anifantakis.ksafe."
     private val masters = setOf("__ksafe_master__", "__ksafe_master_locked__")
 
     @Test
     fun reservedMasterSentinelIsNeverAnOrphan() {
-        // The master rides every DEFAULT value, so it is never in validKeys;
-        // being reserved is what keeps it out of orphan classification.
+        // The master rides every DEFAULT value, so it is never in validKeys; being
+        // reserved is the only thing keeping it out of orphan classification.
         assertNull(
             orphanId("${prefix}__ksafe_master__", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters),
             "reserved master sentinel must never be classified as an orphan",
@@ -56,9 +55,7 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun masterSentinelWouldBeDeletedWithoutReservation() {
-        // With no reservation the master (never a user key) classifies as an orphan
-        // and would be deleted, losing all DEFAULT data — the reservation is required.
-        // Exercised on the ROOT sweep, where the owned-key guard does not apply.
+        // Without the reservation the master is an orphan, and deleting it loses all DEFAULT data.
         assertEquals(
             "__ksafe_master__",
             orphanId("${rootPrefix}__ksafe_master__", rootPrefix, fileName = null, validKeys = setOf("token"), reservedKeyIds = emptySet()),
@@ -68,8 +65,6 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun liveUserKeyIsNotAnOrphan() {
-        // A named instance's own live key is in ownedKeyIds (= validKeys), so it passes the
-        // owned-key guard and is then preserved by the validKeys check.
         assertNull(
             orphanId("${prefix}token", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters, ownedKeyIds = setOf("token")),
             "a key with a live DataStore counterpart must be preserved",
@@ -78,8 +73,7 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun unknownUserKeyIsAnOrphan_forTheRootSweep() {
-        // The ROOT sweep reaps a per-entry key with no DataStore counterpart. (A NAMED
-        // instance does not — see namedInstanceDoesNotReapAnUnprovableKey.)
+        // A named instance does not reap it — see namedInstanceDoesNotReapAnUnprovableKey.
         assertEquals(
             "ghost",
             orphanId("${rootPrefix}ghost", rootPrefix, fileName = null, validKeys = setOf("token"), reservedKeyIds = masters),
@@ -89,9 +83,8 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun inFlightKeyIsNotAnOrphan_evenWhenAbsentFromValidKeys() {
-        // A key just created for a still-in-flight write hasn't reached the DataStore
-        // snapshot (validKeys) yet — the sweep must not reap it, or it destroys the key
-        // for an acknowledged concurrent write. Exercised on the ROOT sweep.
+        // A key minted for a still-in-flight write has not reached the DataStore snapshot
+        // (validKeys) yet; reaping it destroys the key of an acknowledged concurrent write.
         assertEquals(
             "fresh",
             orphanId("${rootPrefix}fresh", rootPrefix, fileName = null, validKeys = setOf("token"), reservedKeyIds = masters),
@@ -108,10 +101,8 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun namedInstanceSweepDoesNotReapRootInstanceDottedKey() {
-        // A root instance stored userKey "vault.token" → account "eu.anifantakis.ksafe.vault.token",
-        // byte-identical to named-instance "vault"'s userKey "token". The named "vault" sweep must
-        // NOT reap it (it can't prove ownership) — reaping would destroy the root instance's live
-        // HARDWARE key.
+        // A root instance's userKey "vault.token" yields the same account as named instance
+        // "vault"'s userKey "token", whose live hardware key reaping it here would destroy.
         assertNull(
             orphanId(
                 "eu.anifantakis.ksafe.vault.token", prefix, fileName = "vault",
@@ -123,8 +114,7 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun namedInstanceDoesNotReapAnUnprovableKey() {
-        // The contract: a named instance reaps ONLY keys it provably owns (ownedKeyIds).
-        // A cross-session orphan it can't prove is its own is left as harmless clutter.
+        // A cross-session orphan it cannot prove is its own is left as harmless clutter.
         assertNull(
             orphanId("${prefix}ghost", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters, ownedKeyIds = setOf("token")),
             "a named instance must not reap a key it can't prove it owns",
@@ -133,14 +123,12 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun orphanClassifiedThenReusedByConcurrentWrite_isNotDeleted() {
-        // The sweep classifies on a frozen snapshot, then deletes on the same pass while writes
-        // run in parallel on Native. A key can be a genuine orphan at classify time (no valid
-        // entry, not in flight) yet be re-used by a concurrent put BEFORE the delete lands — the
-        // delete-time re-check must drop it.
+        // The sweep classifies on a frozen snapshot but deletes later in the same pass, and on
+        // Native a parallel put can re-use a key that was a genuine orphan at classify time.
         val classified = keychainOrphanKeyId(
             "${prefix}ghost", prefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters,
             isInFlight = { false }, // classify time: not yet in flight → orphan
-            ownedKeyIds = setOf("ghost"), // provably owned so the owned-key guard passes; this test targets the delete-time recheck
+            ownedKeyIds = setOf("ghost"), // provably owned, so the owned-key guard is out of the way
         )
         assertEquals("ghost", classified?.keyId, "precondition: 'ghost' classifies as an orphan")
 
@@ -154,10 +142,8 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun strictVariantOrphan_deleteTimeGateChecksTheLogicalOwner() {
-        // KFA-007 regression: the delete-time gate must re-check in-flight by the LOGICAL
-        // owner, not the physical variant id — dirty tracking is keyed by user key, so an
-        // id-keyed check would never match and a strict write started between classification
-        // and deletion would lose its freshly minted key.
+        // Dirty tracking is keyed by user key, so an id-keyed in-flight check never matches and a
+        // strict write started between classification and deletion loses its freshly minted key.
         val id = strictId("token", 1, null)
         val classified = keychainOrphanKeyId(
             "$rootPrefix$id", rootPrefix, fileName = null, validKeys = emptySet(), reservedKeyIds = masters,
@@ -178,8 +164,6 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun orphanStillIdleAtDeleteTime_isDeleted() {
-        // The common path: a classified orphan that is not in flight when the delete
-        // loop reaches it must still be reaped.
         assertEquals(
             listOf("ghost"),
             keychainOrphansToDelete(
@@ -200,9 +184,7 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun secureEnclavePrefixClassifiesIndependently() {
-        // SE-wrapped generic-passwords and SE EC tags use the "se." prefix; the master
-        // stays reserved (named instance) and, on the ROOT sweep, unknown SE keys are
-        // still orphans.
+        // SE-wrapped generic passwords and SE EC tags live under the "se." prefix.
         assertNull(
             orphanId("${sePrefix}__ksafe_master__", sePrefix, "vault", validKeys = setOf("token"), reservedKeyIds = masters),
             "reserved master must be preserved on the SE prefix too",
@@ -216,8 +198,7 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun noFileNameInstanceSkipsForeignNamedEntriesButStillReservesMaster() {
-        // fileName == null → prefix is "eu.anifantakis.ksafe." and a key-id with a
-        // further '.' belongs to a named instance; leave it alone.
+        // Under the root prefix a key-id with a further '.' belongs to a named instance.
         val rootPrefix = "eu.anifantakis.ksafe."
         assertNull(
             orphanId("${rootPrefix}vault.token", rootPrefix, fileName = null, validKeys = emptySet(), reservedKeyIds = masters),
@@ -228,7 +209,6 @@ class KeychainOrphanClassificationTest {
             "loose",
             orphanId("${rootPrefix}loose", rootPrefix, fileName = null, validKeys = emptySet(), reservedKeyIds = masters),
         )
-        // ...but the master sentinel (no dot) stays reserved even with no fileName.
         assertNull(
             orphanId("${rootPrefix}__ksafe_master__", rootPrefix, fileName = null, validKeys = emptySet(), reservedKeyIds = masters),
             "master sentinel must stay reserved on the no-fileName instance",
@@ -237,9 +217,8 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun rotatedGenerationKeys_areNeverClassifiedAsOrphans() {
-        // Key rotation (3.0.0) suffixes aliases with `.gN`. validKeys/ownedKeyIds hold BARE
-        // user keys, so a rotated id can never match them — the sweep must still preserve
-        // every rotated key, or a rotation on iOS would be followed by its own keys' deletion.
+        // Rotation suffixes aliases with `.gN` while validKeys/ownedKeyIds hold bare user keys, so
+        // without other guards a rotation on iOS would delete the very keys it just minted.
 
         // Root sweep: the `.gN` suffix makes the id dotted → the named-instance guard keeps it.
         assertNull(
@@ -267,8 +246,8 @@ class KeychainOrphanClassificationTest {
             "a rotated Secure Enclave key must survive the named SE sweep",
         )
 
-        // Same guarantees for the REAL current formula (`.gN.__ksafe_gen__.h<fp>`), so the
-        // alias builder and this classifier can't drift apart silently.
+        // Same guarantees for the real current formula (`.gN.__ksafe_gen__.h<fp>`), so the alias
+        // builder and this classifier cannot drift apart silently.
         val rootRotated = KSafeCore.perEntryAliasWithGeneration("token", 2, null, "token")
         assertNull(
             orphanId("$rootPrefix$rootRotated", rootPrefix, fileName = null, validKeys = setOf("token"), reservedKeyIds = masters),
@@ -290,19 +269,15 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun strictVariantKeys_classifyByTheirRecoveredOwner() {
-        // Strict alias variants ("<key>[.gN].__ksafe_strict__.h<fp>", 3.0.0+) must be
-        // classified by the OWNING user key: a live/in-flight owner preserves the key (a
-        // failed tighten's virgin key is reused by the retry), while a genuinely orphaned
-        // variant (uninstall→reinstall residue) must be reclaimed — the generic dotted/owned
-        // guards would otherwise strand strict keys and their SE artifacts forever.
+        // Strict alias variants classify by their owning user key: a live or in-flight owner
+        // preserves the key, since a failed tighten's virgin key is reused by the retry, while
+        // reinstall residue must be reclaimed or its SE artifacts are stranded forever.
         val rootId = strictId("token", 1, null)
 
-        // Root sweep, owner still valid → preserved.
         assertNull(
             orphanId("$rootPrefix$rootId", rootPrefix, fileName = null, validKeys = setOf("token"), reservedKeyIds = masters),
             "a strict-variant key with a live owner must be preserved",
         )
-        // Root sweep, owner in flight → preserved.
         assertNull(
             orphanId(
                 "$rootPrefix$rootId", rootPrefix, fileName = null, validKeys = emptySet(),
@@ -310,19 +285,18 @@ class KeychainOrphanClassificationTest {
             ),
             "a strict-variant key with an in-flight owner must be preserved",
         )
-        // Root sweep, owner gone → reclaimed (full variant id returned).
         assertEquals(
             rootId,
             orphanId("$rootPrefix$rootId", rootPrefix, fileName = null, validKeys = emptySet(), reservedKeyIds = masters),
             "an orphaned strict-variant key must be reclaimed by the root sweep",
         )
-        // Root sweep, dotted owner → ambiguous with a named instance's key → preserved.
+        // A dotted owner is ambiguous with a named instance's key.
         val dottedId = strictId("a.b", 1, null)
         assertNull(
             orphanId("$rootPrefix$dottedId", rootPrefix, fileName = null, validKeys = emptySet(), reservedKeyIds = masters),
             "a dotted-owner strict variant is ambiguous on the root sweep and must be preserved",
         )
-        // A fingerprint matching no candidate owner (foreign store / corrupt id) → preserved.
+        // A fingerprint matching no candidate owner: foreign store, or a corrupt id.
         assertNull(
             orphanId(
                 "${rootPrefix}token.__ksafe_strict__.h0123456789abcdef", rootPrefix, fileName = null,
@@ -330,7 +304,7 @@ class KeychainOrphanClassificationTest {
             ),
             "a strict variant whose fingerprint resolves no owner must be preserved",
         )
-        // Named sweep: reaped only when the recovered owner is provably owned.
+        // On a named sweep the recovered owner must also be provably owned.
         val namedGenId = strictId("token", 2, "vault")
         assertEquals(
             namedGenId,
@@ -351,34 +325,26 @@ class KeychainOrphanClassificationTest {
 
     @Test
     fun strictVariantGenerationAmbiguity_isResolvedByTheFingerprint() {
-        // "foo.g2.__ksafe_strict__.h<fp>" is ambiguous by shape: the generation-1 variant of
-        // user key "foo.g2", or the generation-2 variant of user key "foo". Only the
-        // fingerprint (hashed over the owner) distinguishes them. A greedy parse that always
-        // strips ".g2" would resolve owner "foo" for BOTH — and on a root store where no
-        // entry "foo" exists, reap the LIVE key of entry "foo.g2" (the startup ciphertext
-        // sweep then deletes the row: deterministic data loss).
+        // "foo.g2.__ksafe_strict__.h<fp>" is ambiguous by shape: the gen-1 variant of user key
+        // "foo.g2", or the gen-2 variant of "foo" — only the fingerprint separates them. A greedy
+        // parse that always strips ".g2" reaps the live key of "foo.g2" when no entry "foo"
+        // exists, and the startup ciphertext sweep then deletes the row: deterministic data loss.
         val gen1OfFooG2 = strictId("foo.g2", 1, null)
         val gen2OfFoo = strictId("foo", 2, null)
-        // Same shape, different fingerprints — precondition of the whole test.
         assertTrue(gen1OfFooG2 != gen2OfFoo, "the two interpretations must differ only by fingerprint")
 
-        // THE regression: entry "foo.g2" is live (strict, gen 1); no entry "foo" exists.
-        // Its key must be preserved — a greedy parse would have resolved owner "foo" and
-        // reaped it (the startup ciphertext sweep would then have deleted the row too).
         assertNull(
             orphanId("$rootPrefix$gen1OfFooG2", rootPrefix, fileName = null, validKeys = setOf("foo.g2"), reservedKeyIds = masters),
             "the live gen-1 strict key of user key 'foo.g2' must never be reaped",
         )
-        // Once genuinely orphaned, its DOTTED owner keeps it preserved on the root sweep
-        // (conservative litter, same stance as every dotted id there) even while an
-        // unrelated "foo" is live — the fingerprint stops the misattribution, the dotted
-        // guard stops the reclaim.
+        // Once genuinely orphaned its dotted owner keeps it preserved here as litter, the same
+        // stance as every dotted id on the root sweep, even while an unrelated "foo" is live.
         assertNull(
             orphanId("$rootPrefix$gen1OfFooG2", rootPrefix, fileName = null, validKeys = setOf("foo"), reservedKeyIds = masters),
             "an orphaned dotted-owner variant stays preserved litter on the root sweep",
         )
-        // On a NAMED store the ownership proof (ownedKeyIds) replaces the dot heuristic,
-        // so the same dotted-owner variant IS reclaimable there.
+        // On a named store the ownership proof replaces the dot heuristic, so the same
+        // dotted-owner variant is reclaimable there.
         val namedDotted = strictId("foo.g2", 1, "vault")
         assertEquals(
             namedDotted,

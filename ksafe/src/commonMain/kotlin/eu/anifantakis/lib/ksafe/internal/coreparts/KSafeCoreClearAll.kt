@@ -4,40 +4,52 @@ import eu.anifantakis.lib.ksafe.internal.KSafeCore
 import eu.anifantakis.lib.ksafe.internal.KSafeCore.Companion.aliasWithGeneration
 import eu.anifantakis.lib.ksafe.internal.KSafeCore.Companion.ownsPerEntryAlias
 import eu.anifantakis.lib.ksafe.internal.KeySafeMetadataManager
+import eu.anifantakis.lib.ksafe.internal.StoredValue
 import kotlinx.coroutines.CancellationException
 
-/** The wipe for [clearAll]; runs on the write consumer, serialized with other writes. */
+/** The wipe for [clearAll]; runs on the write consumer and also clears every sibling core's caches. */
 internal suspend fun KSafeCore.performClearAll() {
-    // First: any cache merge whose snapshot predates this wipe must observe the bump and
-    // redo itself, or it would republish the wiped state after clearAll returns.
-    while (true) {
-        val e = clearEpoch.get()
-        if (clearEpoch.compareAndSet(e, e + 1)) break
-    }
-    // Per-entry engine keys are deleted BEFORE clearing protectionMap (the key
-    // inventory). Only entries that provably USED a per-entry alias are swept:
-    // v2+ DEFAULT entries ride the shared master (deleted below), and issuing the
-    // no-op delete anyway would destroy a sibling store's live key when a dotted
-    // user key collides with that store's alias namespace.
+    // Bump first: a cache merge whose snapshot predates this wipe must see it and redo itself,
+    // or it republishes the wiped state after clearAll returns.
+    clearEpoch.incrementByOne()
     val protectionSnapshot = protectionMap.snapshot()
-    // Captured before the map clears below: an entry can legitimately record a generation
-    // ABOVE the store's (a write that raced an earlier clearAll under the old clamp-free
-    // code), and its master would otherwise survive this wipe's 1..current sweep.
+    val encMetaSnapshot = encMetaMap.snapshot()
+    // An entry can record a generation above the store's; its master must still be swept.
     var maxRecordedGeneration = currentKeyGeneration.get()
-    for (meta in encMetaMap.snapshot().values) {
+    for (meta in encMetaSnapshot.values) {
         if (meta.keyGeneration > maxRecordedGeneration) maxRecordedGeneration = meta.keyGeneration
     }
+    // This core's view can lag the store — a lazyLoad instance runs no collector, and a sibling or
+    // another process may have rotated — and this sweep is a master's only reclaim.
+    val persistedGeneration = try {
+        KeySafeMetadataManager.parseKeyGeneration(
+            (storage.snapshot()[KeySafeMetadataManager.KEYGEN_RAW_KEY] as? StoredValue.Text)?.value,
+        )
+    } catch (e: Throwable) {
+        if (e is CancellationException) throw e
+        1 // an unreadable snapshot must not fail the data wipe itself
+    }
+    if (persistedGeneration > maxRecordedGeneration) maxRecordedGeneration = persistedGeneration
+    siblings?.others(this)?.forEach {
+        val generation = it.currentKeyGeneration.get()
+        if (generation > maxRecordedGeneration) maxRecordedGeneration = generation
+    }
+    // No key material is reclaimed until the data wipe itself succeeds.
+    commitToStorage { storage.clear() }
+    memoryCache.clear()
+    plaintextCache.clear()
+    protectionMap.clear()
+    encMetaMap.clear()
+    // Only entries that used a per-entry alias: a no-op delete can destroy a sibling store's key.
     for ((userKey, literal) in protectionSnapshot) {
         val protection = KeySafeMetadataManager.parseProtection(literal) ?: continue
-        val meta = encMetaMap[userKey]
+        val meta = encMetaSnapshot[userKey]
         val usedPerEntryAlias = ownsPerEntryAlias(
             protection,
             meta?.envelopeVersion ?: KeySafeMetadataManager.ENVELOPE_VERSION_V1,
         )
         if (!usedPerEntryAlias) continue
-        // Sweep every generation up to the store's current one, mirroring the delete()
-        // path: a swallowed rotation-time cleanup may have stranded an intermediate
-        // generation's alias that the entry's recorded generation no longer names.
+        // Every generation, not just the recorded one: a swallowed rotation cleanup strands aliases.
         val aliases = perEntryAliasesThrough(
             userKey, meta?.keyGeneration ?: 1, meta?.strictAliasVariant == true,
         )
@@ -49,14 +61,6 @@ internal suspend fun KSafeCore.performClearAll() {
             )
         }
     }
-    storage.clear()
-    memoryCache.clear()
-    plaintextCache.clear()
-    protectionMap.clear()
-    encMetaMap.clear()
-    // Drop the master keys — every generation up to the highest one any entry recorded
-    // (not just the store's), so a rotated store's superseded-but-not-yet-swept keys and
-    // an above-store-generation straggler's master can't outlive a full wipe.
     for (reqUnlocked in listOf(false, true)) {
         for (gen in 1..maxRecordedGeneration) {
             deleteEngineKeyBestEffort(
@@ -66,12 +70,19 @@ internal suspend fun KSafeCore.performClearAll() {
             )
         }
     }
-    // storage.clear() wiped the persisted keygen state with everything else; a fresh
-    // store starts over at the base generation.
+    // storage.clear() took the persisted keygen record with it, so the store restarts at 1.
     currentKeyGeneration.set(1)
-    // The wipe may have removed engine key records the explicit deletes above didn't
-    // name (e.g. rotation-generation masters minted concurrently); an engine holding
-    // them in an in-memory cache must drop it or it will keep encrypting with keys
-    // that no longer exist on disk.
+    siblings?.others(this)?.forEach { it.onSiblingClearAll() }
+    // The wipe removed key records an engine may still cache; a stale cache encrypts with dead keys.
     swallowingNonCancellation { engine.onStoreCleared() }
+}
+
+/** `dirtyKeys`/`writeOwners` stay: the post-commit repair re-asserts an in-flight write via its owner token. */
+internal fun KSafeCore.onSiblingClearAll() {
+    clearEpoch.incrementByOne()
+    memoryCache.clear()
+    plaintextCache.clear()
+    protectionMap.clear()
+    encMetaMap.clear()
+    currentKeyGeneration.set(1)
 }

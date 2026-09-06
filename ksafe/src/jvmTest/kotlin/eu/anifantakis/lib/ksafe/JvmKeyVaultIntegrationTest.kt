@@ -11,6 +11,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import java.io.File
+import org.junit.Assume.assumeTrue
+import org.junit.runner.RunWith
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -20,11 +22,13 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Locks in: the real OS secret store (DPAPI / Keychain / Secret Service) is selected, round-trips keys, and wins over stale or legacy entries — opt-in via the KSAFE_KEYVAULT_IT env var so local runs never touch the developer keyring.
+ * Locks in: the real OS secret store (DPAPI, Keychain, Secret Service) is selected, round-trips
+ * keys, and wins over stale or legacy entries. Opt-in through the KSAFE_KEYVAULT_IT env var, so a
+ * local run never touches the developer's own keyring.
  */
+@RunWith(SkipConditionRunner::class)
+@SkipUnless(KeyVaultItEnabled::class)
 class JvmKeyVaultIntegrationTest {
-
-    private val enabled = !System.getenv("KSAFE_KEYVAULT_IT").isNullOrBlank()
     private val os = System.getProperty("os.name").orEmpty().lowercase()
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -49,11 +53,6 @@ class JvmKeyVaultIntegrationTest {
 
     @Test
     fun realOsVault_isSelected_andRoundTrips_andDoesNotTouchTheFile() {
-        if (!enabled) {
-            println("[skip] JvmKeyVaultIntegrationTest — set KSAFE_KEYVAULT_IT to run")
-            return
-        }
-
         val provider = JvmKeyVaultProvider(dataStore)
         assertTrue(
             provider.active.isOsBacked,
@@ -81,10 +80,8 @@ class JvmKeyVaultIntegrationTest {
 
     @Test
     fun legacyFileKey_migratesIntoRealOsVault() {
-        if (!enabled) return
-
         val provider = JvmKeyVaultProvider(dataStore)
-        if (!provider.active.isOsBacked) return
+        assumeTrue("no OS-backed vault on this host", provider.active.isOsBacked)
 
         val alias = "ksafe_it_mig_${System.nanoTime()}"
         val legacyKey = ByteArray(32) { (it * 7).toByte() }
@@ -103,16 +100,11 @@ class JvmKeyVaultIntegrationTest {
         }
     }
 
-    /**
-     * Dirty precondition: the OS store already holds a stale key for the alias;
-     * the legacy DataStore key that encrypted the data must win and overwrite it.
-     */
+    /** The OS store already holds a stale key, and the legacy key that encrypted the data wins. */
     @Test
     fun legacyData_survivesUpgrade_evenWhenRealOsStoreHoldsAStaleKey() {
-        if (!enabled) return
-
         val provider = JvmKeyVaultProvider(dataStore)
-        if (!provider.active.isOsBacked) return
+        assumeTrue("no OS-backed vault on this host", provider.active.isOsBacked)
 
         val alias = "ksafe_it_stale_${System.nanoTime()}"
         val payload = "iban=GR1601;balance=4242".toByteArray()
@@ -148,4 +140,9 @@ class JvmKeyVaultIntegrationTest {
             assertNull(provider.active.get(alias), "real OS-store entry purged on cleanup")
         }
     }
+}
+
+private object KeyVaultItEnabled : SkipCondition {
+    override fun skipReason(): String? =
+        if (System.getenv("KSAFE_KEYVAULT_IT").isNullOrBlank()) "set KSAFE_KEYVAULT_IT to run against the real OS vault" else null
 }

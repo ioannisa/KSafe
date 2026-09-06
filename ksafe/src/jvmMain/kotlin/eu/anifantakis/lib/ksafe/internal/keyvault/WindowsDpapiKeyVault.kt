@@ -7,19 +7,12 @@ import androidx.datastore.preferences.core.Preferences
 import com.sun.jna.platform.win32.Crypt32Util
 
 /**
- * Windows key vault using **DPAPI** (`CryptProtectData` / `CryptUnprotectData`)
- * via JNA's `jna-platform` [Crypt32Util]. The key is wrapped under the current
- * user's login credentials; the opaque blob is Base64-encoded and persisted in
- * the DataStore file under `ksafe_dpapi_`. This defeats offline disk theft and
- * other-user access, but NOT code running as the same logged-in user (DPAPI
- * unprotects transparently) — that needs the opt-in passphrase mode.
+ * Windows key vault using DPAPI via JNA's [Crypt32Util]: the key is wrapped under the current user's
+ * login credentials. Defeats offline disk theft, not code running as the same user.
  */
 internal class WindowsDpapiKeyVault(
     dataStore: DataStore<Preferences>,
-    /**
-     * App-isolation namespace folded into the on-disk key prefix
-     * (`ksafe_dpapi_<ns>_`). Blank = the historical un-namespaced prefix.
-     */
+    /** Folded into the on-disk key prefix (`ksafe_dpapi_<ns>_`); blank = the un-namespaced prefix. */
     appNamespace: String = "",
 ) : JvmKeyVault {
 
@@ -33,9 +26,8 @@ internal class WindowsDpapiKeyVault(
 
     override fun get(alias: String): ByteArray? {
         val wrapped = store.getString(alias) ?: return null
-        // A blob that can no longer be unprotected (password reset, profile moved) is NOT
-        // a miss — throw "unavailable" so the orphan sweep leaves the ciphertext intact and
-        // writes fail closed instead of minting a divergent key.
+        // A blob that can no longer be unprotected is not a miss — throw "unavailable" so the
+        // sweep leaves the ciphertext intact and writes fail closed instead of minting a new key.
         return try {
             Crypt32Util.cryptUnprotectData(decodeBase64(wrapped))
         } catch (e: Throwable) {

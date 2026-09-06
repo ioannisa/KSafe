@@ -27,11 +27,10 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Locks in: the startup orphan-ciphertext sweep's final check + delete are atomic with respect
- * to sibling same-file instances — both run under the shared per-store commit mutex. A sibling's
- * dirtyKeys are invisible to the sweeping instance, so without the mutex a sibling could commit
- * a fresh value for the swept key between the sweep's fresh-snapshot check and its delete batch,
- * and the delete would silently erase the acknowledged write and its metadata.
+ * Locks in: the startup orphan-ciphertext sweep's final check and delete are atomic against sibling
+ * same-file instances, both running under the shared per-store commit mutex. A sibling's dirtyKeys
+ * are invisible to the sweeper, so without the mutex its commit could land between the check and
+ * the delete batch, and the delete would erase an acknowledged write and its metadata.
  */
 class JvmOrphanSweepCommitRaceTest {
 
@@ -44,9 +43,8 @@ class JvmOrphanSweepCommitRaceTest {
     }
 
     /**
-     * In-memory storage whose applyBatch parks the orphan sweep's delete batch (an all-delete
-     * batch touching [gateValueRawKey]) at a test-controlled gate — the exact point between the
-     * sweep's fresh-snapshot check and the deletion landing on disk.
+     * Parks the sweep's delete batch — an all-delete batch touching [gateValueRawKey] — at a gate
+     * the test controls: the point between the fresh-snapshot check and the deletion landing.
      */
     private class GatedStorage(private val gateValueRawKey: String) : KSafePlatformStorage {
         private val state = MutableStateFlow<Map<String, StoredValue>>(emptyMap())
@@ -116,8 +114,8 @@ class JvmOrphanSweepCommitRaceTest {
             metaKey to StoredValue.Text("""{"v":2,"p":"HARDWARE_ISOLATED"}"""),
         )
 
-        // Sweeper instance: its startup sweep classifies "token" as orphan and parks inside the
-        // delete batch — after its fresh-snapshot check, still holding the shared commit mutex.
+        // The sweeper classifies "token" as an orphan and parks inside the delete batch: past its
+        // fresh-snapshot check, still holding the shared commit mutex.
         buildCore(storage, engine, sharedMutex, lazyLoad = false)
         withTimeout(10.seconds) { storage.deleteEntered.await() }
 

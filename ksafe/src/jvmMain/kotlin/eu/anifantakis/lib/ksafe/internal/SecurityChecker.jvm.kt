@@ -7,13 +7,8 @@ internal actual object SecurityChecker {
 
     actual fun isDeviceRooted(): Boolean = false
 
-    /**
-     * Reports whether a debugger is attached, from the JVM input arguments.
-     *
-     * Catches `Throwable`: a trimmed jlink runtime may lack `java.management`,
-     * and the resulting `NoClassDefFoundError` must read as "no debugger"
-     * rather than crash `KSafe(...)` construction.
-     */
+    /** Catches `Throwable`: a trimmed jlink runtime may lack `java.management`, and that must read
+     *  as "no debugger" rather than fail construction. */
     actual fun isDebuggerAttached(): Boolean {
         return try {
             val runtimeMxBean = ManagementFactory.getRuntimeMXBean()
@@ -29,16 +24,11 @@ internal actual object SecurityChecker {
         }
     }
 
-    /** Approximates a debug build by whether assertions are enabled. */
-    actual fun isDebugBuild(): Boolean {
-        return try {
-            var assertionsEnabled = false
-            @Suppress("KotlinConstantConditions", "UNUSED_VALUE")
-            assert(true.also { assertionsEnabled = true })
-            assertionsEnabled
-        } catch (_: Throwable) {
-            false
-        }
+    /** Approximated by whether the JVM enables assertions (`-ea`) for this class. */
+    actual fun isDebugBuild(): Boolean = try {
+        SecurityChecker::class.java.desiredAssertionStatus()
+    } catch (_: Throwable) {
+        false
     }
 
     actual fun isEmulator(): Boolean = false

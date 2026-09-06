@@ -13,10 +13,9 @@ import kotlin.test.assertTrue
 
 /**
  * Locks in: a Compose `mutableStateOf` write without an explicit mode inherits the instance's
- * `KSafeConfig.requireUnlockedDevice` (via `KSafe.defaultWriteMode`) instead of silently
- * downgrading to the relaxed `KSafeWriteMode.Encrypted()` literal. Observable in the persisted
- * per-entry metadata JSON, which records a strict unlock policy as `"u":"unlocked"` and omits
- * the field entirely for a relaxed write.
+ * `KSafeConfig.requireUnlockedDevice` (via `KSafe.defaultWriteMode`) instead of downgrading to the
+ * relaxed `KSafeWriteMode.Encrypted()` literal. Visible in the persisted per-entry metadata JSON,
+ * which records a strict unlock policy as `"u":"unlocked"` and omits the field for a relaxed one.
  */
 class ComposeDefaultModeJvmTest {
 

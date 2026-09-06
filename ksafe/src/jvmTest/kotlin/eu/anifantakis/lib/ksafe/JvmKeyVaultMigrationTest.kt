@@ -4,6 +4,8 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import eu.anifantakis.lib.ksafe.internal.JvmSoftwareEncryption
+import eu.anifantakis.lib.ksafe.internal.KSafeEngineMessage
+import eu.anifantakis.lib.ksafe.internal.KSafeReservedKeys
 import eu.anifantakis.lib.ksafe.internal.keyvault.DataStoreKeyVault
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVault
 import eu.anifantakis.lib.ksafe.internal.keyvault.JvmKeyVaultProvider
@@ -16,6 +18,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -25,6 +28,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /** Locks in: [JvmKeyVault] wiring and legacy-key → OS-store migration, via an in-memory fake vault. */
@@ -32,8 +36,7 @@ class JvmKeyVaultMigrationTest {
 
     @Test
     fun legacyFallbackNamespaces_probesBothDerivedAndSharedWhenExplicitAppNamespaceSet() {
-        // An explicit appNamespace must probe BOTH legacy locations — the derived namespace
-        // first, then the shared default — since either may hold the keys.
+        // Either legacy location may hold the keys — derived first, then the shared default.
         assertEquals(listOf(DEFAULT_JVM_NAMESPACE), legacyFallbackNamespaces("myapp", derivedNamespace = null))
         assertEquals(
             listOf("myapp", DEFAULT_JVM_NAMESPACE),
@@ -43,9 +46,9 @@ class JvmKeyVaultMigrationTest {
 
     @Test
     fun legacyFallbackNamespaces_probesPreCanonicalConfigNamespaceFirst() {
-        // The pre-canonicalization config namespace was this app's ACTIVE namespace right up
-        // to the upgrade, so it holds the newest keys — it must be probed before "shared",
-        // else a stale pre-namespace key could migrate over the live one.
+        // The pre-canonicalization config namespace was this app's active namespace right up
+        // to the upgrade, so it holds the newest keys: probing "shared" first could migrate a
+        // stale pre-namespace key over the live one.
         assertEquals(
             listOf(".foo", "myapp", DEFAULT_JVM_NAMESPACE),
             legacyFallbackNamespaces("foo", derivedNamespace = "myapp", legacyConfigNamespace = ".foo"),
@@ -59,9 +62,7 @@ class JvmKeyVaultMigrationTest {
 
     @Test
     fun legacyFallbackNamespaces_probesDerivedWhenOnDefaultNamespace() {
-        // On the shared default, the only fallback is the launcher-derived namespace.
         assertEquals(listOf("derived-ns"), legacyFallbackNamespaces(DEFAULT_JVM_NAMESPACE, derivedNamespace = "derived-ns"))
-        // Nothing to probe when there is no derived namespace, or it equals the current one.
         assertEquals(emptyList<String>(), legacyFallbackNamespaces(DEFAULT_JVM_NAMESPACE, derivedNamespace = null))
         assertEquals(emptyList<String>(), legacyFallbackNamespaces(DEFAULT_JVM_NAMESPACE, derivedNamespace = DEFAULT_JVM_NAMESPACE))
     }
@@ -110,8 +111,8 @@ class JvmKeyVaultMigrationTest {
         val legacyKey = ByteArray(32) { it.toByte() }
         legacy.put(alias, legacyKey)
 
-        // The OS store already holds a stale key for this alias; the legacy DataStore key is
-        // authoritative and must win (an empty vault wouldn't discriminate).
+        // The OS store holds a stale key; the legacy one is authoritative and must win (an
+        // empty vault wouldn't discriminate).
         val staleOsKey = ByteArray(32) { 0x5A }
         val fake = FakeOsVault().apply { store[alias] = staleOsKey.copyOf() }
         val engine = JvmSoftwareEncryption(
@@ -123,8 +124,7 @@ class JvmKeyVaultMigrationTest {
         val ct = engine.encrypt(alias, "hello".toByteArray())
         assertEquals("hello", String(engine.decrypt(alias, ct)))
 
-        // The stale OS key is overwritten with the real legacy bytes (so old ciphertext stays
-        // decryptable) and the plaintext file is scrubbed.
+        // The real legacy bytes must win, so old ciphertext stays decryptable.
         assertContentEquals(legacyKey, fake.store[alias])
         assertNull(legacy.get(alias), "legacy DataStore entry must be removed after migration")
         assertEquals(fake.name, engine.keyVaultName)
@@ -151,7 +151,6 @@ class JvmKeyVaultMigrationTest {
 
     @Test
     fun noOsStore_fallsBackToDataStore_explicitOptOut() {
-        // `software` opt-out → provider must select the legacy DataStore vault.
         System.setProperty("ksafe.jvm.keyVault", "software")
         try {
             val provider = JvmKeyVaultProvider(dataStore)
@@ -176,9 +175,7 @@ class JvmKeyVaultMigrationTest {
         val key200 = DataStoreKeyVault(dataStore).get(alias)
         assertNotNull(key200, "2.0.0 must persist the AES key in the DataStore file")
 
-        // Upgrade precondition: the per-user OS store already holds a stale key for this
-        // alias, yet the at-rest ciphertext must still decrypt because the legacy DataStore
-        // key is authoritative (an empty vault wouldn't discriminate).
+        // Upgrade precondition: a stale OS key for the alias (an empty vault wouldn't discriminate).
         val osVault = FakeOsVault().apply { store[alias] = ByteArray(32) { 0x5A } }
         val v210 = JvmSoftwareEncryption(
             dataStore = dataStore,
@@ -204,8 +201,8 @@ class JvmKeyVaultMigrationTest {
         )
         val ciphertextAtRest = v200.encrypt(alias, payload)
 
-        // No OS secret store → provider falls back to the legacy DataStore vault; old data
-        // must still read and the key must NOT be deleted (nothing to migrate to).
+        // No OS secret store → legacy vault; old data must still read and the key must stay
+        // in place (nothing to migrate it to).
         System.setProperty("ksafe.jvm.keyVault", "software")
         try {
             val provider = JvmKeyVaultProvider(dataStore)
@@ -237,7 +234,7 @@ class JvmKeyVaultMigrationTest {
             vaultProvider = JvmKeyVaultProvider(dataStore, forced = fake),
         )
 
-        // Sweep WITHOUT any prior encrypt/decrypt — proves it's eager, not lazy.
+        // Sweep without any prior encrypt/decrypt — proves it's eager, not lazy.
         runBlocking { engine.migrateLegacyKeysSuspend() }
 
         seeded.forEach { (k, v) ->
@@ -303,7 +300,6 @@ class JvmKeyVaultMigrationTest {
         val ct = engine.encrypt(alias, "hello".toByteArray())
         assertContentEquals("hello".toByteArray(), engine.decrypt(alias, ct))
 
-        // Provider degraded → active vault is now the legacy DataStore.
         assertEquals(provider.legacy, provider.active)
         // The key just used must live in the legacy store, not the unreachable OS vault.
         assertNotNull(DataStoreKeyVault(dataStore).get(alias))
@@ -311,9 +307,8 @@ class JvmKeyVaultMigrationTest {
 
     @Test
     fun runtimeLinkageError_preservesLegacyKey_andDecryptsExisting2_0_0Data() {
-        // A user with a legacy DataStore key upgrades and ships a Compose Desktop release
-        // build: the legacy key (authoritative for at-rest ciphertext) must survive and its
-        // existing data must still decrypt.
+        // A user with a legacy DataStore key ships a Compose Desktop release build: that key is
+        // authoritative for at-rest ciphertext, so it must survive and its data must still read.
         val alias = "settings:theme"
         val payload = "dark".toByteArray()
 
@@ -347,8 +342,7 @@ class JvmKeyVaultMigrationTest {
         val provider = JvmKeyVaultProvider(dataStore, forced = osVault)
         val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
 
-        // Concurrent first hits: assert all threads see consistent post-degrade state and no
-        // exception escapes.
+        // Concurrent first hits: no exception may escape and the degrade must settle once.
         val threads = (0 until 16).map { i ->
             Thread {
                 val ct = engine.encrypt("k$i", byteArrayOf(i.toByte()))
@@ -361,8 +355,7 @@ class JvmKeyVaultMigrationTest {
 
     @Test
     fun engineDiagnostics_reflectRuntimeDegrade() {
-        // The diagnostic getters must read through vaults.active, not a value frozen at
-        // construction — after a degrade they must report the legacy vault, not the OS one.
+        // The diagnostics must read through vaults.active, not a value frozen at construction.
         val osVault = LinkErrorOsVault().also { it.armed = true }
         val provider = JvmKeyVaultProvider(dataStore, forced = osVault)
         val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
@@ -370,7 +363,6 @@ class JvmKeyVaultMigrationTest {
         // Trigger the degrade with an encrypt (armed=true fails on the first real op).
         engine.encrypt("trigger", byteArrayOf(0x01))
 
-        // name + isOsBacked now reflect the legacy fallback.
         assertEquals(false, engine.keyVaultIsOsBacked)
         assertEquals(DataStoreKeyVault(dataStore).name, engine.keyVaultName)
     }
@@ -434,9 +426,8 @@ class JvmKeyVaultMigrationTest {
     @Test
     fun softwareOptOut_flagsDegraded_toPreserveOsVaultCiphertext() {
         // The `-Dksafe.jvm.keyVault=software` opt-out returns the legacy vault before any
-        // self-test. A missing legacy key must read as "unavailable" (sweep preserves it),
-        // not "absent" (which deletes recoverable data) — yet the opt-out must still mint new
-        // keys, so it must NOT set osVaultUnavailable. The OS candidate proves it short-circuits.
+        // self-test. A missing legacy key must read as "unavailable" (sweep preserves it), not
+        // "absent" (which deletes recoverable data) — yet it must still mint new keys.
         System.setProperty("ksafe.jvm.keyVault", "software")
         try {
             val provider = JvmKeyVaultProvider(dataStore, osCandidateForTest = FakeOsVault())
@@ -454,9 +445,69 @@ class JvmKeyVaultMigrationTest {
         }
     }
 
+    // A vault whose native bridge never links is dead in-process, not locked-but-present. On
+    // Windows JNA resolves lazily inside the first put/get, i.e. inside the self-test, so the
+    // link failure must degrade to the software vault instead of failing every write closed.
+
+    /** OS-vault stand-in whose every op dies with a `LinkageError` (JNA cannot load). */
+    private class UnlinkableOsVault : JvmKeyVault {
+        override val name = "UnlinkableOsVault (test)"
+        override val isOsBacked = true
+        override fun get(alias: String): ByteArray? = throw UnsatisfiedLinkError("jnidispatch")
+        override fun put(alias: String, keyBytes: ByteArray): Unit = throw UnsatisfiedLinkError("jnidispatch")
+        override fun delete(alias: String): Unit = throw UnsatisfiedLinkError("jnidispatch")
+    }
+
+    @Test
+    fun osVaultLinkageFailureInSelfTest_degradesToLegacy_ratherThanFailingClosed() = withoutSoftwareOptOut {
+        val provider = JvmKeyVaultProvider(dataStore, osCandidateForTest = UnlinkableOsVault())
+
+        assertSame(provider.legacy, provider.active, "an unlinkable OS vault ⇒ legacy is the active vault")
+        assertTrue(provider.hasDegraded, "reads must still report 'unavailable' so no ciphertext is swept")
+        assertFalse(
+            provider.osVaultUnavailable,
+            "a native-link failure is an in-process death, not a locked vault — minting must stay allowed",
+        )
+    }
+
+    @Test
+    fun osVaultLinkageFailureInSelfTest_encryptSucceeds_andUnknownKeyReportsUnavailable() = withoutSoftwareOptOut {
+        val alias = "user:token"
+
+        // Ciphertext whose key never reaches this store, so the read below is a genuine miss.
+        val orphanCiphertext = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = FakeOsVault()),
+        ).encrypt("unknown", "secret".toByteArray())
+
+        val provider = JvmKeyVaultProvider(dataStore, osCandidateForTest = UnlinkableOsVault())
+        val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+
+        val ct = engine.encrypt(alias, "data".toByteArray())
+        assertContentEquals("data".toByteArray(), engine.decrypt(alias, ct))
+        assertNotNull(
+            DataStoreKeyVault(dataStore).get(alias),
+            "an unlinkable OS vault must still mint into the software vault",
+        )
+        assertNotNull(
+            DataStoreKeyVault(dataStore).get("$alias.${KSafeReservedKeys.VAULT_SOFTWARE_FALLBACK}"),
+            "a degraded mint must carry the custody marker the next healthy launch relies on",
+        )
+
+        val ex = assertFailsWith<IllegalStateException> { engine.decrypt("unknown", orphanCiphertext) }
+        val msg = ex.message.orEmpty()
+        assertTrue(
+            msg.contains(KSafeEngineMessage.VAULT_UNAVAILABLE, ignoreCase = true),
+            "should report vault unavailable; was: $msg",
+        )
+        assertFalse(
+            msg.contains("No encryption key found", ignoreCase = true),
+            "must NOT use the orphan-sweep delete message; was: $msg",
+        )
+    }
+
     @Test
     fun healthyOsCandidate_selectsOsVault_viaSelfTestSeam() {
-        // A candidate that passes self-test is selected as the active OS vault.
         val fake = FakeOsVault()
         val provider = JvmKeyVaultProvider(dataStore, osCandidateForTest = fake)
 
@@ -468,9 +519,8 @@ class JvmKeyVaultMigrationTest {
 
     @Test
     fun osVaultUnavailable_refusesToMintKeyIntoLegacyMigrationSource() {
-        // While the OS vault is unavailable, creating a key must NOT persist material into the
-        // legacy DataStore — the next healthy launch trusts it as the migration source and
-        // would copy it over the real OS-vault key.
+        // Creating a key while the OS vault is unavailable must not persist material into the
+        // legacy DataStore: the next healthy launch would copy it over the real OS-vault key.
         val alias = "user:token"
         val provider = JvmKeyVaultProvider(dataStore, osCandidateForTest = LockedOsVault())
         val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
@@ -480,7 +530,6 @@ class JvmKeyVaultMigrationTest {
             ex.message?.contains("unavailable", ignoreCase = true) == true,
             "key creation while the OS vault is unavailable must fail closed; was: ${ex.message}",
         )
-        // Nothing was written into the legacy migration source.
         assertNull(
             DataStoreKeyVault(dataStore).get(alias),
             "no junk key may be minted into the legacy DataStore migration source",
@@ -489,8 +538,6 @@ class JvmKeyVaultMigrationTest {
 
     @Test
     fun osVaultUnavailable_decryptOfUnresolvableKey_reportsUnavailableNotOrphan() {
-        // A value whose key lives only in the unreachable OS vault must report "unavailable",
-        // not the "No encryption key found" message the orphan sweep deletes on.
         val alias = "user:token"
 
         // Ciphertext produced earlier under a healthy OS vault (key not in the legacy DataStore).
@@ -515,9 +562,7 @@ class JvmKeyVaultMigrationTest {
 
     @Test
     fun osVaultUnavailable_genuineLegacyKey_stillDecrypts_andIsNotScrubbed() {
-        // Failing closed must not break the upgrade path: when the OS vault is unreachable but
-        // a genuine legacy key exists in the DataStore, that key is authoritative — its data
-        // must still decrypt and the key must be left in place for a later migration.
+        // Failing closed must not break the upgrade path: a genuine legacy key is authoritative.
         val alias = "settings:theme"
         val payload = "dark".toByteArray()
 
@@ -544,15 +589,13 @@ class JvmKeyVaultMigrationTest {
         )
     }
 
-    // DPAPI / Keychain vaults map a runtime lookup failure to the "key vault unavailable"
-    // contract instead of leaking a raw platform exception. These tests lock in the engine
-    // half via a fake whose get() throws that wording.
+    // DPAPI / Keychain map a runtime lookup failure to the "key vault unavailable" contract
+    // instead of leaking a raw platform exception; these lock in the engine half of that.
 
     @Test
     fun runtimeUnavailableVault_decrypt_reportsUnavailableNotOrphan() {
         val alias = "user:token"
-        // Ciphertext produced earlier under a healthy vault; its key is irrelevant — we assert
-        // on the error wording when the vault is unreachable at read time.
+        // Produced under a healthy vault; the key value is irrelevant, the error wording is not.
         val ciphertext = JvmSoftwareEncryption(
             dataStore = dataStore,
             vaultProvider = JvmKeyVaultProvider(dataStore, forced = FakeOsVault()),
@@ -587,20 +630,15 @@ class JvmKeyVaultMigrationTest {
 
     @Test
     fun degradedVault_decryptOfUnresolvableKey_reportsUnavailableNotOrphan() {
-        // After a runtime LinkageError forces the software fallback, a key living only in the
-        // unreachable OS vault must report "unavailable", not the "No encryption key found"
-        // message the orphan sweep deletes on — so recoverable ciphertext survives.
         val alias = "user:token"
 
-        // Ciphertext exists; its key value is irrelevant — we assert on the error
-        // CLASS when the key is unresolvable, not on a recovered plaintext.
+        // The key value is irrelevant — the assertion is on the error, not a recovered plaintext.
         val ciphertext = JvmSoftwareEncryption(
             dataStore = dataStore,
             vaultProvider = JvmKeyVaultProvider(dataStore, forced = FakeOsVault()),
         ).encrypt(alias, "secret".toByteArray())
 
-        // Fresh engine whose OS vault fails at runtime, with an empty legacy
-        // DataStore — so after the degrade the key is genuinely unresolvable.
+        // Fresh engine, OS vault failing at runtime, legacy empty — the key is unresolvable.
         val osVault = LinkErrorOsVault().also { it.armed = true }
         val provider = JvmKeyVaultProvider(dataStore, forced = osVault)
         val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
@@ -617,9 +655,8 @@ class JvmKeyVaultMigrationTest {
     }
 
     // Namespace-upgrade recovery: a build that derived the OS-vault namespace from
-    // sun.java.command holds its keys under that derived namespace, while the current
-    // constant "shared" namespace is empty. Without a read-fallback every decrypt throws
-    // "No encryption key found" and the orphan sweep deletes the user's data.
+    // sun.java.command holds its keys there while the current "shared" namespace is empty.
+    // Without a read-fallback every decrypt throws and the orphan sweep deletes the user's data.
 
     /** OS-vault stand-in whose writes fail (migration target unwritable). */
     private class ReadOnlyOsVault : JvmKeyVault {
@@ -637,7 +674,7 @@ class JvmKeyVaultMigrationTest {
         val alias = "user:token"
         val payload = "namespace-upgrade".toByteArray()
 
-        // Derived-namespace install: the key lives under the derived-namespace location.
+        // Derived-namespace install: the key lives under the derived namespace.
         val derivedNsVault = FakeOsVault()
         val ciphertextAtRest = JvmSoftwareEncryption(
             dataStore = dataStore,
@@ -646,8 +683,7 @@ class JvmKeyVaultMigrationTest {
         val realKey = derivedNsVault.store[alias]
         assertNotNull(realKey)
 
-        // Current launch: lookups go to the empty "shared" namespace; the legacy-namespace
-        // twin holds the real key.
+        // Current launch: lookups go to the empty "shared" namespace; the twin holds the key.
         val sharedVault = FakeOsVault()
         val provider = JvmKeyVaultProvider(
             dataStore,
@@ -656,11 +692,9 @@ class JvmKeyVaultMigrationTest {
         )
         val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
 
-        // Without the fallback this throws "No encryption key found" → the
-        // orphan sweep would then permanently delete the user's ciphertext.
+        // Without the fallback this throws and the orphan sweep deletes the user's ciphertext.
         assertContentEquals(payload, engine.decrypt(alias, ciphertextAtRest))
 
-        // Migrated: written to the new namespace, scrubbed from the old one.
         assertContentEquals(realKey, sharedVault.store[alias], "key must migrate into the new namespace")
         assertNull(derivedNsVault.store[alias], "old-namespace entry must be deleted after a verified write")
     }
@@ -684,16 +718,14 @@ class JvmKeyVaultMigrationTest {
         )
         val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
 
-        // The recovered key must still serve this session…
         assertContentEquals(payload, engine.decrypt(alias, ciphertextAtRest))
-        // …and the ONLY copy must not be destroyed (migration retries later).
+        // The only copy must not be destroyed (migration retries later).
         assertNotNull(derivedNsVault.store[alias], "old-namespace key must survive a failed migration write")
     }
 
     @Test
     fun namespaceUpgrade_noTwin_trueMissStillReportsNoKeyFound() {
-        // Without a twin to probe, a miss is a true miss: the "No encryption key found"
-        // orphan-sweep contract must be intact.
+        // With no twin to probe, a miss is a true miss — the orphan-sweep contract stays intact.
         val alias = "user:token"
         val ciphertext = JvmSoftwareEncryption(
             dataStore = dataStore,
@@ -708,17 +740,16 @@ class JvmKeyVaultMigrationTest {
         assertTrue(ex.message.orEmpty().contains("No encryption key found"))
     }
 
-    // Adding an explicit appNamespace makes an instance probe the "shared" default as its
-    // read-fallback. But "shared" is also the live active namespace of any co-existing
-    // no-namespace instance, so recovery from it must be COPY-only — the destructive delete
-    // is reserved for a genuine derived legacy namespace with no live owner.
+    // An explicit appNamespace makes an instance probe the "shared" default as its read-
+    // fallback. But "shared" is also the live namespace of any co-existing no-namespace
+    // instance, so recovery from it must copy; the delete is for a derived legacy namespace.
 
     @Test
     fun namespaceUpgrade_sharedSource_isCopiedNotMoved_soLiveSiblingKeySurvives() {
         val alias = "user:token"
         val payload = "shared-sibling".toByteArray()
 
-        // A default (no-namespace) instance mints its LIVE key under "shared".
+        // A default (no-namespace) instance mints its live key under "shared".
         val sharedVault = FakeOsVault()
         val ciphertext = JvmSoftwareEncryption(
             dataStore = dataStore,
@@ -727,9 +758,8 @@ class JvmKeyVaultMigrationTest {
         val liveKey = sharedVault.store[alias]
         assertNotNull(liveKey, "precondition: default instance minted a live key under \"shared\"")
 
-        // A co-existing namespaced instance whose active vault is empty probes "shared" as its
-        // legacy source. Recovery must COPY the key forward without deleting the sibling's live
-        // entry.
+        // A co-existing namespaced instance with an empty active vault probes "shared" as its
+        // legacy source.
         val nsVault = FakeOsVault()
         val provider = JvmKeyVaultProvider(
             dataStore,
@@ -740,17 +770,14 @@ class JvmKeyVaultMigrationTest {
         )
         val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
 
-        // The namespaced instance decrypts via the recovered key…
         assertContentEquals(payload, engine.decrypt(alias, ciphertext))
-        // …the key is copied into the namespaced vault…
         assertContentEquals(liveKey, nsVault.store[alias], "key must be copied into the namespaced vault")
-        // …and the sibling's LIVE "shared" key MUST survive (not MOVE-deleted).
+        // The sibling's live "shared" key must survive — a copy, never a move.
         assertContentEquals(
             liveKey, sharedVault.store[alias],
             "H2: probing the shared default must not delete a co-existing instance's live key",
         )
 
-        // deleteKey on the namespaced instance must also not scrub the shared sibling's key.
         engine.deleteKey(alias)
         assertNull(nsVault.store[alias], "deleteKey removes the namespaced copy")
         assertContentEquals(
@@ -761,9 +788,8 @@ class JvmKeyVaultMigrationTest {
 
     @Test
     fun namespaceCanonicalization_oldVaultNamespace_isCopiedNotMoved_soAnOlderInstanceKeepsItsKey() {
-        // A pre-canonicalization vault namespace (e.g. ".foo", now resolved as "foo") may
-        // still be owned by a not-yet-upgraded instance of the same app, so recovery from it
-        // must be COPY-only, exactly like the "shared" default.
+        // A pre-canonicalization vault namespace (".foo", now resolved as "foo") may still be
+        // owned by a not-yet-upgraded instance, so recovery must copy, like the "shared" default.
         val alias = "user:token"
         val payload = "pre-canonical".toByteArray()
 
@@ -795,7 +821,6 @@ class JvmKeyVaultMigrationTest {
             "the pre-canonicalization namespace may still have a live owner — recovery must not reclaim it",
         )
 
-        // deleteKey must not scrub the possibly-still-owned pre-canonical twin either.
         engine.deleteKey(alias)
         assertNull(nsVault.store[alias], "deleteKey removes the canonical-namespace copy")
         assertContentEquals(
@@ -806,9 +831,8 @@ class JvmKeyVaultMigrationTest {
 
     @Test
     fun namespaceUpgrade_explicitAppNamespace_alsoProbesDerivedNamespace() {
-        // A build with a stable launcher stored its key under the derived namespace, then set
-        // an explicit appNamespace. "shared" is empty, so recovery must still probe the derived
-        // namespace where the key lives.
+        // A build with a stable launcher stored its key under the derived namespace, then set an
+        // explicit appNamespace: "shared" is empty, so the derived namespace must still be probed.
         val alias = "user:token"
         val payload = "derived-and-explicit".toByteArray()
 
@@ -820,8 +844,7 @@ class JvmKeyVaultMigrationTest {
         ).encrypt(alias, payload)
         assertNotNull(derivedNsVault.store[alias])
 
-        // Launch with an explicit appNamespace: the active vault and "shared" are both empty;
-        // only the derived namespace holds the key.
+        // Explicit appNamespace: active vault and "shared" empty; only the derived one has the key.
         val provider = JvmKeyVaultProvider(
             dataStore,
             appNamespace = "prod",
@@ -833,19 +856,16 @@ class JvmKeyVaultMigrationTest {
         )
         val engine = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
 
-        // Probing only "shared" would miss and let the orphan sweep delete recoverable
-        // ciphertext; probing the derived namespace recovers it.
+        // Probing only "shared" would miss and let the orphan sweep delete recoverable data.
         assertContentEquals(payload, engine.decrypt(alias, ciphertext))
-        // Recovered into the active vault; the derived source is scrubbed after a verified
-        // migration (a genuine derived legacy namespace with no live owner).
+        // A genuine derived legacy namespace has no live owner, so it is scrubbed after the copy.
         assertNull(derivedNsVault.store[alias], "derived-namespace entry scrubbed after verified migration")
     }
 
     @Test
     fun namespaceUpgrade_legacyProbeUnavailable_reportsUnavailable_notOrphan() {
         // A transient 'vault unavailable' from the legacy-namespace probe (a keychain re-locked
-        // between round-trips) must NOT be misread as a genuine miss — that would let the
-        // orphan sweep delete still-recoverable ciphertext.
+        // between round-trips) must not read as a genuine miss — the sweep would delete the data.
         val alias = "user:token"
 
         // Ciphertext whose key lives in the legacy namespace (produced under a healthy vault).
@@ -854,8 +874,7 @@ class JvmKeyVaultMigrationTest {
             vaultProvider = JvmKeyVaultProvider(dataStore, forced = FakeOsVault()),
         ).encrypt(alias, "secret".toByteArray())
 
-        // Active vault empty (genuine miss under the current namespace); the legacy probe
-        // throws 'vault unavailable' instead of returning the key.
+        // Active vault empty; the legacy probe throws 'vault unavailable' instead of the key.
         val provider = JvmKeyVaultProvider(
             dataStore,
             forced = FakeOsVault(),
@@ -913,12 +932,10 @@ class JvmKeyVaultMigrationTest {
 
     @Test
     fun concurrentSelfTests_onSharedOsStore_doNotFailEachOther() {
-        // OS stores are per-user and shared by every instance, so self-tests must use unique
-        // canary aliases: with a fixed alias, a competing self-test's delete could remove our
-        // canary between put and read-back and flag a healthy vault unavailable.
-        //
-        // JVM tests run with `-Dksafe.jvm.keyVault=software`, which short-circuits pick()
-        // before the self-test, so lift it for this test and restore.
+        // OS stores are per-user and shared by every instance, so self-tests need unique canary
+        // aliases: a competing self-test's delete could otherwise remove ours between put and
+        // read-back and flag a healthy vault unavailable. jvmTest sets
+        // `-Dksafe.jvm.keyVault=software`, which short-circuits pick(), so lift it here.
         val prop = "ksafe.jvm.keyVault"
         val original = System.getProperty(prop)
         System.clearProperty(prop)
@@ -942,9 +959,8 @@ class JvmKeyVaultMigrationTest {
     }
 
     // Prewarm runs outside the store's commit mutex and its output is discarded, so it must
-    // never re-persist the key it warmed: a clearAll() landing mid-prewarm would otherwise be
-    // silently undone — the erased key returns to the vault and old ciphertext backups become
-    // decryptable again.
+    // never re-persist the key it warmed: a clearAll() landing mid-prewarm would be silently
+    // undone — the erased key returns and old ciphertext backups decrypt again.
 
     /** Vault whose first `put` triggers [onFirstPut] once — simulates a concurrent clearAll. */
     private class PutHookOsVault : JvmKeyVault {
@@ -980,7 +996,7 @@ class JvmKeyVaultMigrationTest {
             "prewarm must not re-persist a key a concurrent clearAll erased (cryptographic erasure)",
         )
 
-        // The next real encrypt mints a FRESH key — the stale cached one is never served.
+        // The next real encrypt mints a fresh key — the stale cached one is never served.
         val ct = engine.encrypt(alias, "post-clear".toByteArray())
         assertNotNull(vault.store[alias], "a real write after the clear mints a fresh durable key")
         assertContentEquals("post-clear".toByteArray(), engine.decrypt(alias, ct))
@@ -1003,10 +1019,9 @@ class JvmKeyVaultMigrationTest {
         assertContentEquals("warm".toByteArray(), engine.decrypt(alias, ct))
     }
 
-    // A retained legacy-namespace source ("shared", or the pre-canonicalization namespace)
-    // can never be reclaim-deleted — a sibling may own it live. Without a persistent
-    // tombstone, a fresh engine's read-fallback would happily re-copy a key this namespace
-    // deliberately deleted, resurrecting erased key material.
+    // A retained legacy-namespace source ("shared", or the pre-canonicalization namespace) can
+    // never be reclaim-deleted — a sibling may own it live. Without a persistent tombstone a
+    // fresh engine's read-fallback would re-copy a deliberately deleted key.
 
     @Test
     fun deletedKey_isNotResurrected_fromTheRetainedSharedSource_byAFreshEngine() {
@@ -1036,13 +1051,12 @@ class JvmKeyVaultMigrationTest {
         engine.deleteKey(alias)
         assertNull(nsVault.store[alias], "deleteKey removes the namespaced copy")
 
-        // A FRESH engine (fresh caches, same persistent vaults) must NOT re-adopt the shared
-        // key: the decrypt fails as a true miss…
+        // A fresh engine (new caches, same vaults) must not re-adopt the shared key.
         val fresh = JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider())
         assertFailsWith<IllegalStateException>("deleted key must not be re-copied from the shared source") {
             fresh.decrypt(alias, ciphertext)
         }
-        // …a recreate mints a FRESH key instead of resurrecting the deleted one…
+        // A recreate mints a fresh key instead of resurrecting the deleted one.
         fresh.encrypt(alias, "new-era".toByteArray())
         val recreated = nsVault.store[alias]
         assertNotNull(recreated, "recreate must mint a key in the namespaced vault")
@@ -1050,16 +1064,13 @@ class JvmKeyVaultMigrationTest {
             recreated.contentEquals(sharedKey),
             "recreate must NOT reuse the deleted (pre-clear) key material",
         )
-        // …and the shared sibling's live key is still never touched.
         assertContentEquals(sharedKey, sharedVault.store[alias], "the retained shared source must survive")
     }
 
     @Test
     fun deleteOfANeverRecoveredAlias_doesNotBlockALaterGenuineUpgradeRecovery() {
-        // Deleting an alias the shared source does NOT hold must not tombstone it: a later
-        // genuine upgrade-recovery of that alias (the source gains it before this namespace
-        // ever owned it) must still work — the tombstone is only for keys deliberately
-        // deleted while the source held them.
+        // Deleting an alias the shared source does not hold must not tombstone it: the tombstone
+        // is only for keys deliberately deleted while the source held them.
         val alias = "user:token"
         val sharedVault = FakeOsVault()
         val nsVault = FakeOsVault()
@@ -1089,18 +1100,17 @@ class JvmKeyVaultMigrationTest {
         )
     }
 
-    // Custody-marker conflict guard: a key minted into the legacy/software slot by a
-    // fallback session carries a marker; the legacy-first migration must not let it
-    // overwrite a DIFFERENT live OS-vault key (both are kept, the session reads with the
-    // legacy key), while a genuine marker-less pre-2.x legacy key stays authoritative.
+    // Custody-marker conflict guard: a key minted into the legacy slot by a fallback session
+    // carries a marker, and must not overwrite a different live OS-vault key (both are kept,
+    // the session reads with the legacy one). A marker-less pre-2.x key stays authoritative.
 
     @Test
     fun fallbackMintedLegacyKey_doesNotOverwriteDifferentLiveOsKey_andSessionUsesLegacy() {
         val alias = "user:token"
         val payload = "minted-under-fallback".toByteArray()
 
-        // Opt-out session: keys mint into the legacy DataStore slot WITH the custody marker.
-        // (Save/restore: the jvmTest JVM sets this property globally.)
+        // Opt-out session: keys mint into the legacy DataStore slot with the custody marker.
+        // (Save/restore — the jvmTest JVM sets this property globally.)
         val prop = "ksafe.jvm.keyVault"
         val original = System.getProperty(prop)
         System.setProperty(prop, "software")
@@ -1122,7 +1132,7 @@ class JvmKeyVaultMigrationTest {
             "precondition: the fallback mint must carry its custody marker",
         )
 
-        // Healthy launch: the OS vault holds a DIFFERENT live key for the same alias.
+        // Healthy launch: the OS vault holds a different live key for the same alias.
         val liveOsKey = ByteArray(32) { 0x5A }
         val osVault = FakeOsVault().apply { store[alias] = liveOsKey.copyOf() }
         val engine = JvmSoftwareEncryption(
@@ -1130,23 +1140,21 @@ class JvmKeyVaultMigrationTest {
             vaultProvider = JvmKeyVaultProvider(dataStore, forced = osVault),
         )
 
-        // The session keeps reading with the legacy key (unchanged visible behavior)…
+        // The session keeps reading with the legacy key — visible behavior unchanged.
         assertContentEquals(payload, engine.decrypt(alias, ciphertext))
-        // …the live OS key is NOT overwritten…
         assertContentEquals(
             liveOsKey, osVault.store[alias],
             "a fallback-minted legacy key must never overwrite a different live OS-vault key",
         )
-        // …and both copies survive (the legacy key + marker stay for later resolution).
+        // Both copies survive — the legacy key and marker stay for later resolution.
         assertContentEquals(legacyKey, legacy.get(alias), "the legacy key must be kept, not scrubbed")
         assertNotNull(legacy.get("$alias.__ksafe_swfb__"), "the custody marker must be kept with it")
     }
 
     @Test
     fun markerlessGenuineLegacyKey_staysAuthoritative_andReplacesStaleOsCopy() {
-        // A genuine pre-2.x legacy key (old binaries never wrote a custody marker) provably
-        // encrypted this store's ciphertext: it must still replace a stale OS copy, keeping
-        // the reinstall/data-clear fix intact.
+        // A genuine pre-2.x legacy key (old binaries wrote no custody marker) provably encrypted
+        // this store's ciphertext, so it must still replace a stale OS copy.
         val alias = "settings:theme"
         val payload = "dark".toByteArray()
 
@@ -1174,6 +1182,211 @@ class JvmKeyVaultMigrationTest {
         assertNull(legacy.get(alias), "the migrated legacy copy is scrubbed after verification")
     }
 
+    // An involuntary degrade (dead JNA bridge) also mints into the legacy slot, but that key is
+    // provisional: a live OS key for the same alias predates it and must stay authoritative.
+
+    @Test
+    fun degradedMint_doesNotShadowTheLiveOsKey_onTheNextHealthyLaunch() = withoutSoftwareOptOut {
+        val alias = "user:token"
+        val healthyPayload = "written-before-the-bridge-died".toByteArray()
+
+        // Healthy launch: the key lands in the OS vault and a value is written under it.
+        val osVault = FakeOsVault()
+        val ciphertext = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = osVault),
+        ).encrypt(alias, healthyPayload)
+        val osKey = osVault.store[alias]
+        assertNotNull(osKey, "precondition: the healthy launch minted into the OS vault")
+
+        // Degraded launch: JNA cannot link, so this session mints into the software vault.
+        JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, osCandidateForTest = UnlinkableOsVault()),
+        ).encrypt(alias, "written-while-degraded".toByteArray())
+        assertNotNull(
+            DataStoreKeyVault(dataStore).get(alias),
+            "precondition: the degraded session minted a local key",
+        )
+
+        // Next healthy launch: the OS key wins again, so the pre-degrade value still reads.
+        val healed = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = osVault),
+        )
+        assertContentEquals(healthyPayload, healed.decrypt(alias, ciphertext))
+        assertContentEquals(osKey, osVault.store[alias], "the live OS key must not be replaced")
+    }
+
+    @Test
+    fun degradedFirstInstall_keepsItsKey_andMigratesItOnTheFirstHealthyLaunch() = withoutSoftwareOptOut {
+        val alias = "user:token"
+        val payload = "written-while-degraded".toByteArray()
+
+        val ciphertext = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, osCandidateForTest = UnlinkableOsVault()),
+        ).encrypt(alias, payload)
+        val mintedKey = DataStoreKeyVault(dataStore).get(alias)
+        assertNotNull(mintedKey, "precondition: the degraded session minted a local key")
+
+        // The OS vault holds nothing for this alias, so nothing outranks the provisional key.
+        val osVault = FakeOsVault()
+        val healthy = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = osVault),
+        )
+        assertContentEquals(payload, healthy.decrypt(alias, ciphertext))
+        assertContentEquals(
+            mintedKey, osVault.store[alias],
+            "the degraded-session key must migrate in, not be dropped",
+        )
+        assertNull(DataStoreKeyVault(dataStore).get(alias), "the migrated legacy copy is scrubbed")
+        assertNull(
+            DataStoreKeyVault(dataStore).get("$alias.${KSafeReservedKeys.VAULT_SOFTWARE_FALLBACK}"),
+            "the custody marker goes with the key it described",
+        )
+    }
+
+    @Test
+    fun degradedSessionWrites_stillDecrypt_afterTheOsVaultReturns() = withoutSoftwareOptOut {
+        val alias = "user:token"
+        val osVault = FakeOsVault()
+        val beforeCiphertext = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = osVault),
+        ).encrypt(alias, "before".toByteArray())
+
+        // The bridge dies: this session mints a provisional key and writes under it, which also
+        // rewrites the record of the pre-failure value.
+        val degradedCiphertext = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, osCandidateForTest = UnlinkableOsVault()),
+        ).encrypt(alias, "during".toByteArray())
+
+        // Healed: the OS key owns the alias again, and the kept provisional key covers the rest.
+        val healed = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = osVault),
+        )
+        assertContentEquals("before".toByteArray(), healed.decrypt(alias, beforeCiphertext))
+        assertContentEquals("during".toByteArray(), healed.decrypt(alias, degradedCiphertext))
+    }
+
+    @Test
+    fun degradedFirstInstall_ontoAStaleOsKey_stillDecrypts() = withoutSoftwareOptOut {
+        val alias = "user:token"
+        val payload = "written-while-degraded".toByteArray()
+        val staleOsKey = ByteArray(32) { 0x5A }
+        val osVault = FakeOsVault().apply { store[alias] = staleOsKey.copyOf() }
+
+        // Fresh data dir, permanently dead bridge (a jlink runtime without `jdk.unsupported`),
+        // and a leftover OS entry for the same alias from a previous install.
+        val ciphertext = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, osCandidateForTest = UnlinkableOsVault()),
+        ).encrypt(alias, payload)
+
+        val healed = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = osVault),
+        )
+        assertContentEquals(payload, healed.decrypt(alias, ciphertext))
+        assertContentEquals(staleOsKey, osVault.store[alias], "the OS key stays authoritative for the alias")
+    }
+
+    @Test
+    fun deliberateOptOut_takesCustodyOfAProvisionalKey() = withoutSoftwareOptOut {
+        val alias = "user:token"
+        val markerAlias = "$alias.${KSafeReservedKeys.VAULT_SOFTWARE_FALLBACK}"
+
+        // Dead bridge: the key this session mints is provisional.
+        JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, osCandidateForTest = UnlinkableOsVault()),
+        ).encrypt(alias, "degraded".toByteArray())
+        assertContentEquals(byteArrayOf(2), DataStoreKeyVault(dataStore).get(markerAlias))
+
+        withSoftwareOptOut {
+            JvmSoftwareEncryption(
+                dataStore = dataStore,
+                vaultProvider = JvmKeyVaultProvider(dataStore, osCandidateForTest = FakeOsVault()),
+            ).encrypt(alias, "deliberate".toByteArray())
+        }
+
+        assertContentEquals(
+            byteArrayOf(1), DataStoreKeyVault(dataStore).get(markerAlias),
+            "a deliberate opt-out owns the key it resolved, so custody is no longer involuntary",
+        )
+
+        // The opt-out contract: the next healthy launch continues with the local key, so a value
+        // it writes is readable by a software-only engine.
+        val osVault = FakeOsVault().apply { store[alias] = ByteArray(32) { 0x5A } }
+        val healthyCiphertext = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = osVault),
+        ).encrypt(alias, "after".toByteArray())
+        val softwareOnly = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = DataStoreKeyVault(dataStore)),
+        )
+        assertContentEquals("after".toByteArray(), softwareOnly.decrypt(alias, healthyCiphertext))
+    }
+
+    @Test
+    fun prewarm_mintsNothing_whileTheNativeBridgeIsDead() = withoutSoftwareOptOut {
+        val alias = "master.g1"
+        val engine = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, osCandidateForTest = UnlinkableOsVault()),
+        )
+
+        runBlocking { engine.prewarmKey(alias) }
+
+        assertNull(
+            DataStoreKeyVault(dataStore).get(alias),
+            "a read-only session under a dead bridge must leave the store untouched",
+        )
+        assertNull(DataStoreKeyVault(dataStore).get("$alias.${KSafeReservedKeys.VAULT_SOFTWARE_FALLBACK}"))
+    }
+
+    /** Legacy vault that runs a one-shot hook on its next get, to land a degrade mid-migration. */
+    private class HookedLegacyVault(private val inner: JvmKeyVault) : JvmKeyVault {
+        var onNextGet: (() -> Unit)? = null
+        override val name = "HookedLegacyVault (test)"
+        override val isOsBacked = false
+        override fun get(alias: String): ByteArray? {
+            onNextGet?.let { onNextGet = null; it() }
+            return inner.get(alias)
+        }
+        override fun put(alias: String, keyBytes: ByteArray) = inner.put(alias, keyBytes)
+        override fun delete(alias: String) = inner.delete(alias)
+    }
+
+    @Test
+    fun degradeDuringMigration_keepsTheLegacyKeyAndItsMarker() = withoutSoftwareOptOut {
+        val alias = "user:token"
+        val markerAlias = "$alias.${KSafeReservedKeys.VAULT_SOFTWARE_FALLBACK}"
+        val store = DataStoreKeyVault(dataStore)
+        val legacyKey = ByteArray(32) { it.toByte() }
+        store.put(alias, legacyKey)
+        store.put(markerAlias, byteArrayOf(2))
+
+        val legacy = HookedLegacyVault(store)
+        val provider = JvmKeyVaultProvider(dataStore, forced = FakeOsVault(), legacyOverride = legacy)
+        // Stands in for another alias' thread degrading the provider after resolveKeyVia's snapshot.
+        legacy.onNextGet = { provider.degradeToLegacy(UnsatisfiedLinkError("jnidispatch")) }
+
+        JvmSoftwareEncryption(dataStore = dataStore, vaultProvider = provider)
+            .encrypt(alias, "data".toByteArray())
+
+        assertContentEquals(
+            legacyKey, store.get(alias),
+            "a degrade mid-migration must not delete the only copy of the key",
+        )
+        assertNotNull(store.get(markerAlias), "the custody marker must survive with the key it describes")
+    }
+
     @Test
     fun legacyDerivedJvmNamespace_reproduces211Derivation() {
         val prop = "sun.java.command"
@@ -1196,5 +1409,80 @@ class JvmKeyVaultMigrationTest {
         } finally {
             if (original == null) System.clearProperty(prop) else System.setProperty(prop, original)
         }
+    }
+
+    /** Legacy vault that records put order and can fail custody-marker puts. */
+    private class RecordingLegacyVault(
+        private val inner: JvmKeyVault,
+        private val failMarkerPut: Boolean,
+    ) : JvmKeyVault {
+        val puts = mutableListOf<String>()
+        override val name = "RecordingLegacyVault (test)"
+        override val isOsBacked = false
+        override fun get(alias: String): ByteArray? = inner.get(alias)
+        override fun put(alias: String, keyBytes: ByteArray) {
+            puts += alias
+            if (failMarkerPut && alias.endsWith(KSafeReservedKeys.VAULT_SOFTWARE_FALLBACK)) {
+                throw IOException("simulated marker write failure")
+            }
+            inner.put(alias, keyBytes)
+        }
+        override fun delete(alias: String) = inner.delete(alias)
+    }
+
+    /** Lifts the suite-wide `-Dksafe.jvm.keyVault=software`, so pick() reaches the self-test. */
+    private inline fun withoutSoftwareOptOut(block: () -> Unit) {
+        // The env twin cannot be unset from inside a JVM, so assert it away: set, it would re-arm
+        // the opt-out and silently invert every custody-marker assertion below.
+        assertNull(System.getenv("KSAFE_JVM_KEY_VAULT"), "KSAFE_JVM_KEY_VAULT must not be set for these tests")
+        val prev = System.getProperty("ksafe.jvm.keyVault")
+        System.clearProperty("ksafe.jvm.keyVault")
+        try {
+            block()
+        } finally {
+            if (prev != null) System.setProperty("ksafe.jvm.keyVault", prev)
+        }
+    }
+
+    private inline fun withSoftwareOptOut(block: () -> Unit) {
+        val prev = System.getProperty("ksafe.jvm.keyVault")
+        System.setProperty("ksafe.jvm.keyVault", "software")
+        try {
+            block()
+        } finally {
+            if (prev == null) System.clearProperty("ksafe.jvm.keyVault") else System.setProperty("ksafe.jvm.keyVault", prev)
+        }
+    }
+
+    @Test
+    fun fallbackMint_writesCustodyMarkerBeforeKey() = withSoftwareOptOut {
+        val alias = "user:token"
+        val legacy = RecordingLegacyVault(DataStoreKeyVault(dataStore), failMarkerPut = false)
+        val engine = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, legacyOverride = legacy),
+        )
+
+        engine.encrypt(alias, "data".toByteArray())
+
+        assertEquals(
+            listOf("$alias.${KSafeReservedKeys.VAULT_SOFTWARE_FALLBACK}", alias),
+            legacy.puts,
+            "the custody marker must be durable before the key it describes",
+        )
+    }
+
+    @Test
+    fun fallbackMint_markerWriteFailure_mintsNoKey() = withSoftwareOptOut {
+        val alias = "user:token"
+        val store = DataStoreKeyVault(dataStore)
+        val legacy = RecordingLegacyVault(store, failMarkerPut = true)
+        val engine = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, legacyOverride = legacy),
+        )
+
+        assertFailsWith<IOException> { engine.encrypt(alias, "data".toByteArray()) }
+        assertNull(store.get(alias), "an unmarked fallback key must never reach the legacy vault")
     }
 }

@@ -6,10 +6,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 
 /**
- * Locks in: the v3 AAD store identity is HOME-RELATIVE, so an OS-relocated home (the iOS
- * app-container UUID changes on every App Store update/restore; a JVM user home can move)
- * yields the SAME identity — an absolute path would make every rotated entry fail its AAD
- * after an ordinary app update, and the startup orphan sweep would then delete it.
+ * Locks in: the v3 AAD store identity is home-relative, so an OS-relocated home — the iOS container
+ * UUID changes on every App Store update, a JVM user home can move — yields the same identity. An
+ * absolute path would fail every rotated entry's AAD after an update, and the sweep would reap it.
  */
 class StableStoreIdentityTest {
 
@@ -96,7 +95,6 @@ class StableStoreIdentityTest {
             stableStoreIdentity("""C:\Users\x\AppData\ks\store.json""", """C:\Users\x"""),
             "Windows separators must normalize before the prefix match",
         )
-        // A sibling user's home must NOT be treated as a prefix ("/home/us" vs "/home/user").
         assertEquals(
             "/home/user2/store.json",
             stableStoreIdentity("/home/user2/store.json", "/home/user"),

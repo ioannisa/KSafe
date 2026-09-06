@@ -11,21 +11,15 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 
 /**
- * A `clearAll()` promises cryptographic erasure: destroy the key and every pre-wipe copy of the
- * ciphertext is dead. The one window where that promise used to bend is an encrypt in flight
- * across the wipe — the key was resolved, the wipe landed, and the repair re-persisted the key it
- * had just used, resurrecting exactly the material `clearAll()` erased. A pre-wipe backup of the
- * store file became decryptable again.
- *
- * These tests force that interleaving deterministically: a vault whose `get` fires the sibling
- * `clearAll` (epoch bump + record wipe) after handing out the old key — the resolution has the
- * pre-wipe key in hand while its record is already gone. The raced write must stay readable
- * (that guarantee is why the repair existed), but under a FRESH key: the wiped one stays dead.
+ * Locks in: a `clearAll()` landing mid-encrypt must not re-persist the key it just erased, since
+ * that resurrection makes a pre-wipe backup of the store decryptable again. The vault below fires
+ * the sibling wipe from inside `get`, so the resolution holds the old key while its record is
+ * already gone; the raced write must still be readable, but under a fresh key.
  */
 class JvmClearAllEncryptRaceTest {
 
-    /** Map-backed [JvmKeyVault] whose [get] can fire a hook after reading — the wipe landing
-     *  between key resolution and the encrypt path's epoch re-check. */
+    /** Map-backed [JvmKeyVault] whose [get] fires a hook after reading, landing the wipe between
+     *  key resolution and the encrypt path's epoch re-check. */
     private class RacingVault : JvmKeyVault {
         val records = ConcurrentHashMap<String, ByteArray>()
         var onGet: ((String) -> Unit)? = null
@@ -58,7 +52,7 @@ class JvmClearAllEncryptRaceTest {
         val vault = RacingVault()
         val alias = "master"
 
-        // A value written before the wipe — the copy an attacker's backup of the store would hold.
+        // The pre-wipe value, standing in for the copy a stolen backup of the store would hold.
         val minter = engineOver(vault)
         val preWipeCiphertext = minter.encrypt(
             alias, "secret before wipe".encodeToByteArray(),
@@ -66,9 +60,8 @@ class JvmClearAllEncryptRaceTest {
         )
         val preWipeKey = assertNotNull(vault.records[alias]).copyOf()
 
-        // A separate engine (cold cache) so the raced encrypt resolves through the vault, where
-        // the hook lands the sibling clearAll mid-flight: old key handed out, record wiped,
-        // epoch bumped — before the encrypt's own consistency re-check runs.
+        // A separate engine has a cold cache, so the raced encrypt resolves through the vault and
+        // the hook can land the wipe before the encrypt's own consistency re-check runs.
         val engine = engineOver(vault)
         var armed = true
         vault.onGet = { got ->
@@ -85,7 +78,6 @@ class JvmClearAllEncryptRaceTest {
         )
         vault.onGet = null
 
-        // The wiped key must stay dead: not re-persisted, and unable to open pre-wipe ciphertext.
         val persistedAfter = assertNotNull(
             vault.records[alias],
             "the raced write must leave a persisted key — its ciphertext must survive a relaunch",
@@ -99,7 +91,7 @@ class JvmClearAllEncryptRaceTest {
             engine.decrypt(alias, preWipeCiphertext, requireUnlockedDevice = false, aad = null)
         }
 
-        // The half the old repair existed for must still hold: the acknowledged write is
+        // The guarantee the old repair existed for still holds: an acknowledged write stays
         // readable, including from a cold engine that can only see the persisted key.
         assertContentEquals(
             acknowledged,

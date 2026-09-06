@@ -15,13 +15,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Rotation hardening extras:
- * - reserved master-sentinel user keys are rejected at the write/delete API (a key named
- *   "__ksafe_master__" produces an alias byte-identical to the master's — deleting it would
- *   destroy the KEK protecting every DEFAULT value);
- * - two live instances on one file may rotate simultaneously without losing anything;
- * - a transient vault outage mid-rotation reports `skipped` (never `failed`), leaves every
- *   entry readable, and the next pass completes the rotation.
+ * Locks in: reserved master-sentinel user keys are rejected at the write/delete API — a key named
+ * "__ksafe_master__" produces an alias byte-identical to the master's, so deleting it would destroy
+ * the KEK protecting every DEFAULT value; two live instances on one file may rotate at once without
+ * losing anything; and a vault outage mid-rotation reports `skipped`, never `failed`.
  */
 class JvmRotationHardeningTest {
 
@@ -105,11 +102,10 @@ class JvmRotationHardeningTest {
         assertEquals(6, duringOutage.skipped, "every entry pauses, awaiting the store's return")
         assertEquals(0, duringOutage.rotated)
 
-        // Entries stayed readable throughout (their recorded generation still decrypts)...
+        // Entries stayed readable throughout: their recorded generation still decrypts.
         engine.outage.set(false)
         for (i in 0 until 6) assertEquals("v$i", ksafe.get("k$i", "MISSING"))
 
-        // ...and the next pass completes the rotation.
         val afterRecovery = ksafe.rotateKeys()
         assertEquals(6, afterRecovery.rotated, "the retry pass rotates everything the outage skipped")
         assertEquals(0, afterRecovery.failed)
@@ -119,12 +115,10 @@ class JvmRotationHardeningTest {
 
     @Test
     fun sweepDoesNotDeleteTheMasterAliasASurvivingRelaxedEntryStillNeeds() = runTest {
-        // On JVM (and Web) the master alias ignores requireUnlockedDevice, so both unlock
-        // policies collapse onto ONE physical alias. When a rotation leaves a relaxed DEFAULT
-        // entry skipped at an old generation, the sweep must NOT delete that generation's
-        // master — the requireUnlocked=true pass would otherwise delete the alias the
-        // requireUnlocked=false pass still needs. FakeEncryption regenerates keys from the
-        // alias string (masking the data loss), so assert directly on which aliases were deleted.
+        // On JVM (and web) the master alias ignores requireUnlockedDevice, so both unlock policies
+        // collapse onto one physical alias: with a relaxed DEFAULT entry left skipped at an old
+        // generation, the requireUnlocked=true sweep must not delete the alias it still needs.
+        // FakeEncryption remints keys from the alias string, so assert on which aliases were gone.
         val engine = FaultInjectingEncryption()
         val fileName = "sweepc1"
         val ksafe = KSafe(fileName = fileName, baseDir = tmp, testEngine = engine)
@@ -132,7 +126,7 @@ class JvmRotationHardeningTest {
 
         val baseMaster = "$fileName:__ksafe_master__" // aliasWithGeneration(masterAlias, 1) == base
 
-        // Total outage → every entry SKIPPED, all stay at generation 1; sweep runs for newGen=2.
+        // Total outage → every entry skipped, all stay at generation 1; sweep runs for newGen=2.
         engine.outage.set(true)
         val r = ksafe.rotateKeys()
         assertEquals(4, r.skipped)
@@ -142,7 +136,7 @@ class JvmRotationHardeningTest {
             engine.inner.deletedKeys.contains(baseMaster),
             "the generation-1 master is still referenced by 4 surviving entries — the sweep must NOT delete it (deleted: ${engine.inner.deletedKeys})",
         )
-        // And the entries remain readable (belt-and-suspenders; Fake would pass this regardless).
+        // Entries remain readable — though Fake would pass this regardless.
         for (i in 0 until 4) assertEquals("v$i", ksafe.get("k$i", "MISSING"))
         ksafe.close()
     }

@@ -30,19 +30,10 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Locks in the store key-generation authority invariants:
- * - the PERSISTED generation governs a cold/lazy instance's first write (no silent
- *   regression of a rotated store to generation-1 / v2 envelopes),
- * - a stale rotation can never roll the persisted generation record backwards,
- * - a clearAll landing inside an in-flight rotation fences the pass — post-clear writes
- *   are never stamped with the stale target generation,
- * - a rotation entry superseded before its commit does not strand the freshly minted
- *   target-generation key in the vault,
- * - a fabricated huge generation record is clamped (no unbounded sweep loops, no
- *   increment overflow) and rotation refuses past the bound,
- * - a crash-persisted rotation marker is resumed automatically at the SAME generation
- *   by the next instance, even under the default `Never` policy,
- * - an envelope version from the future fails closed: unreadable but PRESERVED.
+ * Locks in key-generation authority: the persisted generation governs every write, a stale
+ * rotation can never roll it back, a clearAll or delete fences an in-flight pass and reclaims
+ * the key it had minted, fabricated huge generations are clamped, a crashed rotation resumes on
+ * the next instance even under `Never`, and a future envelope version fails closed but intact.
  */
 class JvmGenerationAuthorityTest {
 
@@ -62,6 +53,15 @@ class JvmGenerationAuthorityTest {
         override suspend fun snapshot(): Map<String, StoredValue> = state.value
         override fun snapshotFlow(): Flow<Map<String, StoredValue>> = state
         override suspend fun applyBatch(ops: List<StorageOp>) {
+            state.update { cur ->
+                val m = cur.toMutableMap()
+                for (op in ops) when (op) {
+                    is StorageOp.Put -> m[op.rawKey] = op.value
+                    is StorageOp.Delete -> m.remove(op.rawKey)
+                }
+                m
+            }
+            // Counted after the state carries it, or a poll can see the claim before the record.
             for (op in ops) {
                 if (
                     op is StorageOp.Put &&
@@ -73,14 +73,6 @@ class JvmGenerationAuthorityTest {
                     inProgressKeygenWrites++
                 }
             }
-            state.update { cur ->
-                val m = cur.toMutableMap()
-                for (op in ops) when (op) {
-                    is StorageOp.Put -> m[op.rawKey] = op.value
-                    is StorageOp.Delete -> m.remove(op.rawKey)
-                }
-                m
-            }
         }
         override suspend fun clear() { state.value = emptyMap() }
 
@@ -90,12 +82,10 @@ class JvmGenerationAuthorityTest {
     }
 
     /**
-     * [StatefulFakeEncryption] whose SUSPEND decrypt pauses AFTER a successful decrypt at a
-     * test-armed gate — the exact window where a rotation already holds an entry's decrypted
-     * payload but has not yet enqueued its re-encrypt commit. The gate stays armed once set:
-     * the lazy startup cleanup's orphan probe also decrypts on a background scope, and only
-     * holding EVERY suspend decrypt at the gate guarantees the rotation's re-encrypt op is
-     * enqueued after whatever the test interleaves before releasing.
+     * [StatefulFakeEncryption] whose suspend decrypt pauses after a successful decrypt at a
+     * test-armed gate — the window where a rotation holds an entry's decrypted payload but has
+     * not yet enqueued its re-encrypt commit. The gate stays armed once set: the lazy startup
+     * orphan probe decrypts too, and only holding every decrypt guarantees the ordering.
      */
     private class GatedStatefulEncryption : StatefulFakeEncryption() {
         val decryptEntered = CompletableDeferred<Unit>()
@@ -168,10 +158,9 @@ class JvmGenerationAuthorityTest {
             creator.startupCleanupDone.set(true)
             creator.putRaw("old", "old-value", KSafeWriteMode.Encrypted(), String.serializer())
 
-            // Exact mixed-generation state that 3.0.0 could leave after a crash: the store
-            // bumped to g2, a later write already used g2, but one older entry remains on g1.
-            // 3.0.0 had no lifecycle field, so 3.1.0 MUST NOT guess whether this pass had
-            // returned normally or died; absence is conservatively adopted as completed.
+            // The mixed-generation state a 3.0.0 crash could leave: store and a later write on
+            // g2, one older entry on g1. 3.0.0 had no lifecycle field, so absence of one must not
+            // be guessed at — it is conservatively adopted as a completed pass.
             storage.seed(keygenKey to StoredValue.Text("""{"g":2,"ts":1}"""))
             creator.putRaw("new", "new-value", KSafeWriteMode.Encrypted(), String.serializer())
             val oldValueBefore = storage.text(valueKey("old"))
@@ -191,8 +180,8 @@ class JvmGenerationAuthorityTest {
                     delay(20)
                 }
             }
-            // Give the background maintenance coroutine enough time to expose an accidental
-            // same-launch MaxAge fall-through. Adoption must be the ONLY action this launch.
+            // Long enough for the background maintenance coroutine to expose an accidental
+            // same-launch MaxAge fall-through; adoption must be this launch's only action.
             delay(200)
 
             assertEquals("""{"g":2,"ts":1,"r":0}""", storage.text(keygenKey))
@@ -204,9 +193,8 @@ class JvmGenerationAuthorityTest {
             assertEquals("old-value", upgraded.getRaw("old", "", String.serializer()))
             assertEquals("new-value", upgraded.getRaw("new", "", String.serializer()))
 
-            // On the following launch the record is no longer ambiguous. Normal MaxAge
-            // policy may now act and finish both entries, proving migration delayed rather
-            // than disabled rotation.
+            // The record is no longer ambiguous on the next launch: MaxAge may now finish both
+            // entries, proving migration delayed rotation rather than disabling it.
             upgraded.cancel()
             buildCore(storage, engine, lazyLoad = false, config = policy)
             withTimeout(10.seconds) {
@@ -230,9 +218,8 @@ class JvmGenerationAuthorityTest {
         val core = buildCore(storage, engine)
         core.startupCleanupDone.set(true)
 
-        // Dangerous queue order: the newer g3/r1 bump is followed by the lower g2/r0
-        // adoption in the SAME batch. The coalescer must retain the generation authority,
-        // not apply ordinary "last raw key wins".
+        // Dangerous queue order: the newer g3/r1 bump followed by the lower g2/r0 adoption in
+        // one batch. The coalescer must keep generation authority, not "last raw key wins".
         core.processWrites(
             listOf(
                 KSafeCore.PendingWrite.SetKeyGeneration(
@@ -261,9 +248,8 @@ class JvmGenerationAuthorityTest {
         creator.startupCleanupDone.set(true)
         creator.putRaw("skipped", "old-value", KSafeWriteMode.Encrypted(), String.serializer())
 
-        // A 3.0 record adopted by early 3.1 startup can be r:0 with an older entry but no
-        // retry marker. Absence of rp must stay conservative: it is not evidence that a
-        // retryable 3.1 pass was skipped.
+        // A 3.0 record adopted by early-3.1 startup can be r:0 with an older entry and no retry
+        // marker. A missing rp is not evidence that a retryable pass was skipped.
         storage.seed(keygenKey to StoredValue.Text("""{"g":2,"ts":123,"r":0}"""))
         creator.putRaw("current", "new-value", KSafeWriteMode.Encrypted(), String.serializer())
         val skippedCiphertext = storage.text(valueKey("skipped"))
@@ -273,8 +259,7 @@ class JvmGenerationAuthorityTest {
         creator.cancel()
 
         val reopened = buildCore(storage, engine, lazyLoad = false) // default policy = Never
-        // Startup maintenance is asynchronous. Give an incorrect r:0-as-resume
-        // implementation enough time to expose itself.
+        // Startup maintenance is async; give an r:0-as-resume reading time to expose itself.
         delay(200)
 
         assertEquals("""{"g":2,"ts":123,"r":0}""", storage.text(keygenKey))
@@ -363,7 +348,7 @@ class JvmGenerationAuthorityTest {
                 KeySafeMetadataManager.parseKeyGenerationTimestamp(storage.text(keygenKey))
             assertTrue(generationBirth != null)
 
-            // Unlocking during this SAME app run does not create a timer or an in-process loop.
+            // Unlocking during this same app run creates no timer and no in-process loop.
             engine.locked = false
             delay(200)
             assertEquals(
@@ -551,9 +536,8 @@ class JvmGenerationAuthorityTest {
             mode = KSafeWriteMode.Encrypted(requireUnlockedDevice = true),
             serializer = String.serializer(),
         )
-        // This is the durable state left when the last remaining attempt was decremented
-        // before work and the process then died: the claimed retry still needs crash
-        // recovery, but no later normally-completed retry remains.
+        // The durable state left when the last attempt was decremented before the work and the
+        // process then died: the claimed retry still needs recovery, none completed after it.
         storage.seed(
             keygenKey to StoredValue.Text("""{"g":2,"ts":123,"r":1,"rp":0}""")
         )
@@ -690,8 +674,7 @@ class JvmGenerationAuthorityTest {
         val storage = InMemoryStorage()
         val engine = GatedStatefulEncryption()
         val original = buildCore(storage, engine)
-        // Keep this test's gate exclusively on the rotation decrypt, not the lazy startup
-        // orphan probe which is exercised independently elsewhere.
+        // Gate only the rotation decrypt, not the lazy startup orphan probe.
         original.startupCleanupDone.set(true)
         original.putRaw("old", "old-value", KSafeWriteMode.Encrypted(), String.serializer())
 
@@ -706,14 +689,12 @@ class JvmGenerationAuthorityTest {
             "the generation bump must durably mark the pass before the first entry moves",
         )
 
-        // Coroutine cancellation models process death at the only granularity a unit test
-        // can observe: the pass stops without running its sweep/completion tail.
+        // Cancellation models process death: the pass stops before its sweep/completion tail.
         interrupted.cancel()
         assertFailsWith<CancellationException> { interrupted.await() }
         engine.gateArmed = false
 
-        // A write landing after the bump already belongs to g2, giving the exact mixed
-        // old+new-generation store described by the public crash guarantee.
+        // A write landing after the bump belongs to g2, giving the mixed-generation store.
         original.putRaw("new", "new-value", KSafeWriteMode.Encrypted(), String.serializer())
         assertEquals(1, KeySafeMetadataManager.parseKeyGeneration(storage.text(metaKey("old"))))
         assertEquals(2, KeySafeMetadataManager.parseKeyGeneration(storage.text(metaKey("new"))))
@@ -740,10 +721,9 @@ class JvmGenerationAuthorityTest {
             val storage = InMemoryStorage()
             val engine = StatefulFakeEncryption()
 
-            // Fabricate the exact durable state a process can leave after it bumped to g2:
-            // one older v2/g1 entry, one write that already landed at v3/g2, and the
-            // store-level "rotation still in progress" marker. Both generations' master
-            // keys exist, so the mixed store is readable before recovery.
+            // The durable state a process leaves after bumping to g2: one v2/g1 entry, one write
+            // already at v3/g2, and the in-progress marker. Both master keys exist, so the mixed
+            // store is readable before recovery.
             val oldJson = "\"old-value\""
             val oldCiphertext = engine.encrypt(
                 identifier = "master",
@@ -788,7 +768,7 @@ class JvmGenerationAuthorityTest {
                 keygenKey to StoredValue.Text("""{"g":2,"ts":123,"r":1}"""),
             )
 
-            // Constructing the next eager instance is enough. KSafeConfig() uses Never:
+            // Constructing the next eager instance is enough, and KSafeConfig() uses Never:
             // crash recovery is lifecycle repair, not a scheduled-rotation policy.
             val reopened = buildCore(storage, engine, lazyLoad = false)
             withTimeout(10.seconds) {
@@ -876,8 +856,8 @@ class JvmGenerationAuthorityTest {
         val engine = StatefulFakeEncryption()
         storage.seed(keygenKey to StoredValue.Text("""{"g":2,"ts":1}"""))
 
-        // Lazy instance, no cache merge before the write: the local generation still holds
-        // the constructor default when the put captures it.
+        // Lazy instance, no cache merge first: the local generation is still the constructor
+        // default when the put captures it.
         val core = buildCore(storage, engine)
         core.putRaw("token", "secret", KSafeWriteMode.Encrypted(), String.serializer())
 
@@ -904,8 +884,8 @@ class JvmGenerationAuthorityTest {
         val persistedAtG3 = storage.text(keygenKey)!!
         assertTrue("\"g\":3" in persistedAtG3)
 
-        // Simulate a stale sibling's view of the store: local generation back at 1 while the
-        // persisted record says 3. Its rotation targets generation 2 — BELOW the authority.
+        // A stale sibling's view: local generation back at 1 while the record says 3, so its
+        // rotation targets generation 2 — below the authority.
         core.currentKeyGeneration.set(1)
         val stale = core.rotateKeys()
 
@@ -937,8 +917,7 @@ class JvmGenerationAuthorityTest {
             serializer = String.serializer(),
         )
 
-        // Two passes with the device locked leave "locked" behind at generation 1 while the
-        // store's authority advances to 3 — the candidate the sibling test never has.
+        // Two locked passes leave "locked" behind at generation 1 while the store advances to 3.
         engine.locked = true
         assertEquals(2, core.rotateKeys().keyGeneration)
         assertEquals(3, core.rotateKeys().keyGeneration)
@@ -987,8 +966,7 @@ class JvmGenerationAuthorityTest {
         val rotation = async(Dispatchers.Default) { core.rotateKeys() }
         withTimeout(10.seconds) { engine.decryptEntered.await() }
 
-        // The rotation is paused between its generation bump and the entry's re-encrypt
-        // commit — exactly the window clearAll must fence.
+        // Paused between the generation bump and the re-encrypt commit: the window to fence.
         core.clearAll()
         core.putRaw("fresh", "post-clear", KSafeWriteMode.Encrypted(), String.serializer())
         engine.decryptGate.complete(Unit)
@@ -1001,8 +979,8 @@ class JvmGenerationAuthorityTest {
             "\"g\":" in freshMeta,
             "a post-clear write must stay at the store's reset generation, got: $freshMeta",
         )
-        // The pass had already minted the target-generation key for the fenced entry; a
-        // skipped commit must reclaim it instead of stranding it in the vault forever.
+        // The pass already minted the target-generation key; a skipped commit must reclaim it
+        // rather than strand it in the vault.
         val targetAlias = KSafeCore.perEntryAliasWithGeneration("p.hw", 2, null, "hw")
         assertFalse(
             targetAlias in engine.liveAliases(),
@@ -1034,9 +1012,8 @@ class JvmGenerationAuthorityTest {
         val rotation = async(Dispatchers.Default) { core.rotateKeys() }
         withTimeout(10.seconds) { engine.decryptEntered.await() }
 
-        // The entry is deleted in a separate batch while the rotation still holds its
-        // decrypted copy; the rotation's later commit CAS must skip — and must not leave
-        // the target-generation key it minted during its encrypt phase.
+        // Deleted in a separate batch while the rotation still holds its decrypted copy: the
+        // later commit CAS must skip, and must not strand the key it minted.
         core.delete("hw")
         engine.decryptGate.complete(Unit)
         val result = withTimeout(10.seconds) { rotation.await() }
@@ -1082,8 +1059,8 @@ class JvmGenerationAuthorityTest {
             // An entry stamped with an envelope version this build does not know.
             valueKey("future") to StoredValue.Text(junk),
             metaKey("future") to StoredValue.Text("""{"v":4,"p":"DEFAULT"}"""),
-            // A genuine orphan — per-entry alias, so the master the prewarm mints can't
-            // shadow the missing key — proves the sweep RAN before the assertions below.
+            // A genuine orphan — per-entry alias, so the prewarmed master can't shadow the
+            // missing key — proves the sweep ran before the assertions below.
             valueKey("orphan") to StoredValue.Text(junk),
             metaKey("orphan") to StoredValue.Text("""{"v":2,"p":"HARDWARE_ISOLATED"}"""),
         )

@@ -10,7 +10,7 @@ import kotlin.test.assertFalse
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Locks in: an external change merged via updateCache (another instance/process, or a direct DataStore edit) invalidates the plaintext side cache — under the side-cache policies get/getDirect must see the external write or delete rather than keep serving the stale (or deleted) plaintext, staying consistent with getFlow.
+ * Locks in: a change merged via updateCache (another instance, or a direct DataStore edit) invalidates the plaintext side cache, so get/getDirect see the external write or delete instead of stale plaintext — consistent with getFlow.
  */
 class JvmSideCacheExternalChangeTest {
 
@@ -33,14 +33,13 @@ class JvmSideCacheExternalChangeTest {
             testEngine = IdentityEngine(),
         )
 
-        // Initial disk state: k = "v1". First read populates the plaintext side cache.
+        // Disk holds k = "v1"; the first read populates the plaintext side cache.
         runBlocking { ksafe.core.updateCache(snapshotFor("v1")) }
         assertEquals("v1", ksafe.getDirect("k", "def"), "precondition: initial value reads back (policy=$policy)")
 
         // Another instance/process overwrites k = "v2"; the collector merges it.
         runBlocking { ksafe.core.updateCache(snapshotFor("v2")) }
 
-        // The reader must now see the external write, not the stale side-cache "v1".
         assertEquals(
             "v2", ksafe.getDirect("k", "def"),
             "an external write must invalidate the stale plaintext side cache (policy=$policy)",
@@ -59,9 +58,8 @@ class JvmSideCacheExternalChangeTest {
 
     @Test
     fun externalDelete_evictsPlaintextSideCache_leavingNoLingeringSecret() {
-        // An external delete must also evict the deleted secret's plaintext from the never-expiring side
-        // cache — the read is already safe (resolveFromCache gates on memoryCache) but the secret must
-        // not linger in RAM under LAZY_PLAIN_TEXT.
+        // The read is already safe (resolveFromCache gates on memoryCache), but under LAZY_PLAIN_TEXT
+        // the side cache never expires, so the deleted secret would otherwise linger in RAM.
         val ksafe = KSafe(
             fileName = JvmKSafeTest.generateUniqueFileName(),
             memoryPolicy = KSafeMemoryPolicy.LAZY_PLAIN_TEXT,

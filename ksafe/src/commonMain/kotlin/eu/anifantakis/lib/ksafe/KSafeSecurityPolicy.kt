@@ -1,29 +1,29 @@
 package eu.anifantakis.lib.ksafe
 
-/** Action to take when a security violation is detected. */
+/** What to do when a security violation is detected. */
 enum class SecurityAction {
-    /** Ignore the violation and continue normally. */
+    /** Skip the check; its probe never runs. */
     IGNORE,
 
-    /** Allow the operation but invoke the [KSafeSecurityPolicy.onViolation] callback. */
+    /** Continue, but invoke [KSafeSecurityPolicy.onViolation]. */
     WARN,
 
-    /** Block the operation and throw [SecurityViolationException]. */
+    /** Invoke [KSafeSecurityPolicy.onViolation], then throw [SecurityViolationException]. */
     BLOCK
 }
 
-/** Types of security violations that can be detected. */
+/** Threats KSafe can detect; Web detects none, so every check is a no-op there. */
 enum class SecurityViolation {
-    /** Device is rooted (Android) or jailbroken (iOS). */
+    /** Rooted (Android) or jailbroken (iOS); not detected on JVM. */
     RootedDevice,
 
-    /** A debugger is attached to the process. */
+    /** Debugger on the process: Android, Apple, or a JVM started with JDWP flags. */
     DebuggerAttached,
 
-    /** App is running a debug build. */
+    /** Android debuggable flag, Xcode/simulator environment on Apple, assertions (`-ea`) on JVM. */
     DebugBuild,
 
-    /** App is running on an emulator/simulator. */
+    /** Android emulator or iOS simulator; not detected on JVM. */
     Emulator
 }
 
@@ -33,13 +33,11 @@ class SecurityViolationException(
 ) : RuntimeException("Security violation: ${violation.name}")
 
 /**
- * Security policy for KSafe — detection and handling of threats such as
- * rooted/jailbroken devices, debugger attachment, and emulator usage.
+ * Detection and handling of rooted devices, debuggers, debug builds and emulators. The checks run
+ * once, inside the `KSafe(...)` factory call; a BLOCK match makes that call throw. Every action
+ * defaults to [SecurityAction.IGNORE].
  *
- * All actions default to [SecurityAction.IGNORE] for backwards compatibility.
- *
- * @property onViolation Invoked when a violation is detected under WARN or
- *   BLOCK — before throwing (BLOCK) or continuing (WARN).
+ * @property onViolation Called for each detected violation under WARN or BLOCK, before BLOCK throws.
  */
 data class KSafeSecurityPolicy(
     val rootedDevice: SecurityAction = SecurityAction.IGNORE,
@@ -49,7 +47,7 @@ data class KSafeSecurityPolicy(
     val onViolation: ((SecurityViolation) -> Unit)? = null
 ) {
     companion object {
-        /** All checks ignored. */
+        /** Every check [SecurityAction.IGNORE]. */
         val Default = KSafeSecurityPolicy()
 
         /** Blocks on rooted devices and debuggers; warns on debug build / emulator. */

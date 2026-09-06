@@ -11,10 +11,10 @@ import kotlin.test.assertFails
 import org.junit.runner.RunWith
 
 /**
- * The Android twin of `JvmClearAllEncryptRaceTest`: a `clearAll()` racing an in-flight DEK
- * encrypt must not end with the wiped DEK re-persisted. The KEK stays in the real device
- * Keystore — only the wrapped-DEK store is replaced with one whose `load` fires the sibling
- * teardown mid-resolution, which is the interleaving the epoch fence exists to catch.
+ * Locks in: a `clearAll()` racing an in-flight DEK encrypt must not end with the wiped DEK
+ * re-persisted. The KEK stays in the real device Keystore; only the wrapped-DEK store is swapped
+ * for one whose `load` fires the sibling teardown mid-resolution — the interleaving the epoch
+ * fence exists to catch. Android twin of `JvmClearAllEncryptRaceTest`.
  */
 @RunWith(AndroidJUnit4::class)
 class AndroidDekClearAllRaceTest {
@@ -65,9 +65,8 @@ class AndroidDekClearAllRaceTest {
             hardwareIsolated = false, requireUnlockedDevice = false, aad = null,
         )
 
-        // A separate engine (cold DEK cache) so the raced encrypt resolves through the store,
-        // where the hook lands the sibling clearAll mid-flight: old DEK handed out, record
-        // wiped, teardown epoch bumped — before the encrypt's own re-check runs.
+        // A separate engine (cold DEK cache) so the raced encrypt resolves through the store, where
+        // the hook lands the sibling clearAll mid-flight — before the encrypt's own re-check runs.
         val engine = engineOver(store)
         var armed = true
         store.onLoad = { got ->
@@ -84,9 +83,8 @@ class AndroidDekClearAllRaceTest {
         )
         store.onLoad = null
 
-        // The wiped DEK must stay dead: pre-wipe ciphertext unreadable ever again. (The DEK
-        // never leaves the engine, so death is asserted behaviourally — if the repair had
-        // re-persisted it, this decrypt would succeed.)
+        // The DEK never leaves the engine, so its death is asserted behaviourally: had the repair
+        // re-persisted it, this decrypt would succeed.
         assertFails("pre-wipe ciphertext must stay dead after the wipe") {
             engine.decrypt(alias, preWipeCiphertext, requireUnlockedDevice = false, aad = null)
         }

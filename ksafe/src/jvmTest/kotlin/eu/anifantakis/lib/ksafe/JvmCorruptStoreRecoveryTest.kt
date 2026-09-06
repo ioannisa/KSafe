@@ -8,7 +8,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Locks in: a corrupt DataStore .preferences_pb is quarantined and recovered to an empty store instead of throwing CorruptionException on every read, so the store stays usable.
+ * Locks in: a corrupt DataStore .preferences_pb is quarantined and recovered to an empty store, so reads stop throwing CorruptionException and the store stays usable.
  */
 class JvmCorruptStoreRecoveryTest {
 

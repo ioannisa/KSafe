@@ -11,14 +11,10 @@ import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
 /**
- * iOS-specific tests for AppleKeychainEncryption error handling.
- *
- * The Kotlin/Native test runner has no Keychain entitlements, so direct
- * AppleKeychainEncryption calls throw `errSecMissingEntitlement` (-25291).
- * These tests verify exactly that: unknown Keychain errors throw instead of
- * silently creating a new key (which would cause data loss). The device-locked
- * scenario and the full encryption round-trip require manual testing on a
- * device / entitled app.
+ * Locks in: AppleKeychainEncryption throws on an unknown Keychain error instead of silently
+ * creating a new key, which would read back as data loss. The Kotlin/Native simulator runner has
+ * no Keychain entitlements (every call returns `errSecMissingEntitlement`, -34018) while the
+ * on-device harness runs signed, so each test asserts what its own environment owes.
  *
  * @see IosKSafeTest for tests that run through KSafe's abstraction (which handles entitlements)
  */
@@ -27,13 +23,7 @@ class IosKeychainEncryptionTest {
     @OptIn(ExperimentalUuidApi::class)
     private fun uniqueKeyId(): String = "test_${Uuid.random().toString().take(8)}"
 
-    /**
-     * The Keychain is unreachable in the Kotlin/Native simulator test runner (no entitlements, so
-     * every call returns -25291) and fully functional in the signed app the on-device harness
-     * builds. The four tests below therefore assert what each environment is supposed to do, rather
-     * than being written for one and listed as "expected failures" in the other — an
-     * expected-failure list is where a real regression goes to hide.
-     */
+    /** Branching per environment beats an "expected failures" list, which is where a regression hides. */
     private val keychainUsable: Boolean get() = !SecurityChecker.isEmulator()
 
     private fun assertKeychainRefusal(exception: IllegalStateException) {
@@ -44,11 +34,7 @@ class IosKeychainEncryptionTest {
         )
     }
 
-    /**
-     * Without Keychain entitlements, encrypt must throw rather than silently create a new key —
-     * silently minting would read back as data loss. Where the Keychain works, the same call must
-     * round-trip.
-     */
+    /** Without entitlements encrypt must refuse; minting a fresh key instead would look like data loss. */
     @Test
     fun testEncryptThrowsWithoutEntitlements_andRoundTripsWithThem() {
         val encryption = AppleKeychainEncryption()
@@ -71,15 +57,13 @@ class IosKeychainEncryptionTest {
     }
 
     /**
-     * Decrypt never silently succeeds on bytes it cannot authenticate — it throws in BOTH
-     * environments. Only the reason differs: no entitlements where the Keychain is unreachable,
-     * an unknown key / failed authentication where it works.
+     * Decrypt throws in both environments; only the reason differs — no entitlements where the
+     * Keychain is unreachable, failed authentication where it works.
      */
     @Test
     fun testDecryptThrowsOnGarbage() {
         val encryption = AppleKeychainEncryption()
         val keyId = uniqueKeyId()
-        // Fake ciphertext for a key that was never minted.
         val fakeCiphertext = ByteArray(48) { it.toByte() }
 
         val exception = assertFailsWith<IllegalStateException> {
@@ -89,17 +73,14 @@ class IosKeychainEncryptionTest {
         if (!keychainUsable) assertKeychainRefusal(exception)
     }
 
-    /**
-     * deleteKey must not throw even in the test environment — delete is
-     * permissive (no data-loss risk from failing silently).
-     */
+    /** Delete is permissive: unlike encrypt, failing silently costs no data. */
     @Test
     fun testDeleteKeyDoesNotThrow() {
         val encryption = AppleKeychainEncryption()
         val keyId = uniqueKeyId()
 
         encryption.deleteKey(keyId)
-        encryption.deleteKey(keyId) // Multiple deletes should be safe
+        encryption.deleteKey(keyId) // Repeated on purpose: a second delete must also be a no-op.
     }
 
     /** Both AES key sizes are accepted at construction and behave identically at use. */
@@ -130,8 +111,7 @@ class IosKeychainEncryptionTest {
 
     @Test
     fun testKeychainLookupOrder_checksWrappedThenPlain() {
-        // keychainLookupOrder always returns SE-wrapped account first so decrypt
-        // can transparently find keys regardless of how they were created.
+        // SE-wrapped account first, so decrypt finds a key regardless of how it was created.
         val order = AppleKeychainEncryption.keychainLookupOrder(keyId = "mykey")
         assertEquals(listOf("se.mykey", "mykey"), order)
     }
@@ -149,9 +129,8 @@ class IosKeychainEncryptionTest {
     }
 
     /**
-     * With no entitlements and no SE hardware the SE path falls back to the plain Keychain, which
-     * also fails with errSecMissingEntitlement and must throw. On real hardware the same request
-     * must instead produce a Secure-Enclave-wrapped payload that round-trips.
+     * With no SE hardware the request falls back to the plain Keychain, which without entitlements
+     * fails too — so the simulator branch still expects a throw, not a silent plain-AES key.
      */
     @Test
     fun testSecureEnclaveThrowsWithoutEntitlements_andRoundTripsOnHardware() {
@@ -181,44 +160,21 @@ class IosKeychainEncryptionTest {
         }
     }
 
-    /**
-     * deleteKey always attempts to clean up SE artifacts regardless of whether
-     * they exist, and never throws — delete is permissive.
-     */
+    /** deleteKey attempts the SE cleanup whether or not any SE artifact exists. */
     @Test
     fun testSecureEnclaveDeleteDoesNotThrow() {
         val encryption = AppleKeychainEncryption()
         val keyId = uniqueKeyId()
 
         encryption.deleteKey(keyId)
-        encryption.deleteKey(keyId) // Multiple deletes should be safe
+        encryption.deleteKey(keyId) // Repeated on purpose: a second delete must also be a no-op.
     }
 
     /**
-     * Documents the Secure Enclave envelope encryption behavior:
-     *
-     * When useSecureEnclave=true:
-     * 1. An EC P-256 key pair is created in the Secure Enclave hardware
-     * 2. The AES symmetric key is wrapped (encrypted) by the SE public key using ECIES
-     * 3. The wrapped AES key is stored in the Keychain as a generic-password item
-     * 4. On decrypt, the SE private key unwraps the AES key, which then decrypts data
-     *
-     * Backward compatibility:
-     * - Pre-SE keys (plain AES in Keychain) are still readable
-     * - New keys are SE-wrapped; existing keys are never auto-migrated
-     *
-     * Fallback:
-     * - If SE is unavailable (simulator, old device), falls back to regular Keychain
-     *   (same behavior as Android's StrongBox fallback)
-     *
-     * Manual test on physical device:
-     * 1. Create KSafe with useSecureEnclave=true
-     * 2. Store a value with put("key", "value") (DEFAULT protection is encrypted)
-     * 3. Read it back with get("key", "") → should return "value"
-     * 4. Create KSafe with useSecureEnclave=false
-     * 5. Store a different value with put("key2", "value2") (DEFAULT protection is encrypted)
-     * 6. Switch back to useSecureEnclave=true
-     * 7. Read key2 → should return "value2" (legacy key is still readable)
+     * Manual-only, on real hardware: an SE-wrapped AES key (ECIES under an SE P-256 pair, stored as
+     * a generic-password item) must round-trip, and a value written with useSecureEnclave=false must
+     * still read back after switching to true — existing keys are never auto-migrated. Without an SE
+     * the write falls back to the plain Keychain, mirroring Android's StrongBox fallback.
      */
     @Test
     fun documentSecureEnclaveBehavior() {
@@ -226,23 +182,9 @@ class IosKeychainEncryptionTest {
     }
 
     /**
-     * Documents the expected behavior for errSecInteractionNotAllowed.
-     *
-     * This cannot be tested automatically (the device cannot be locked
-     * programmatically); it serves as documentation for manual testing.
-     *
-     * Expected behavior when device is locked:
-     * - getOrCreateKeychainKey() should throw IllegalStateException
-     * - The exception message should indicate the device is locked
-     * - The key should NOT be deleted or recreated
-     * - Data should remain intact and accessible after unlock
-     *
-     * Manual test steps:
-     * 1. Store encrypted data while device is unlocked
-     * 2. Lock the device
-     * 3. Try to read the encrypted data (should throw)
-     * 4. Unlock the device
-     * 5. Read the encrypted data again (should succeed with original data)
+     * Manual-only: a device cannot be locked programmatically. Locked, getOrCreateKeychainKey must
+     * throw errSecInteractionNotAllowed without deleting or recreating the key, and the data must
+     * read back intact once the device is unlocked again.
      */
     @Test
     fun documentDeviceLockedBehavior() {
@@ -250,16 +192,8 @@ class IosKeychainEncryptionTest {
     }
 
     /**
-     * Documents the error codes we handle:
-     *
-     * - errSecSuccess (0): Operation succeeded
-     * - errSecItemNotFound (-25300): Key doesn't exist → create new key
-     * - errSecInteractionNotAllowed (-25308): Device locked → throw exception
-     * - errSecMissingEntitlement (-25291): No keychain access → throw exception
-     * - Other errors: throw exception with status code
-     *
-     * The key insight is that only errSecItemNotFound should trigger key creation.
-     * All other errors should throw to prevent silent data loss.
+     * Only errSecItemNotFound (-25300) may trigger key creation; every other status throws, so a
+     * locked device (-25308) or a missing entitlement (-25291) never costs data.
      */
     @Test
     fun documentErrorCodes() {

@@ -13,11 +13,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Locks in: the engine's `keyResolutionLock` makes concurrent first-creation of one alias
- * resolve to exactly one key. Without it, unsynchronized creators each generate their own key
- * under a last-write-wins store and the losing key's ciphertext becomes undecryptable. Uses an
- * in-memory [AppleKeychainStore] since real Keychain round-trips need entitlements the test
- * runner lacks.
+ * Locks in: the engine's `keyResolutionLock` makes concurrent first-creation of one alias resolve
+ * to exactly one key. Unsynchronized, each creator generates its own under a last-write-wins store
+ * and the losing key's ciphertext becomes undecryptable. The [AppleKeychainStore] here is in-memory
+ * because real Keychain round-trips need entitlements the test runner lacks.
  */
 class IosKeychainConcurrencyTest {
 

@@ -16,16 +16,10 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * Locks in: the un-namespaced IndexedDB key record is a RETAINED migration source (a
- * co-existing no-namespace sibling may own it live), so after a namespaced delete a
- * persistent tombstone must keep a FRESH engine from re-copying the deleted key out of it —
- * otherwise old ciphertext backups become decryptable again and the erasure contract of
- * `delete()`/`clearAll()` is silently undone.
- *
- * Those tombstones are permanent `localStorage` entries competing with the user's data for the
- * origin's ~5 MB quota and `clearAll()` deliberately cannot erase them, so the rest of this class
- * pins how few of them may be written: never for an alias spelling this platform can't mint, and
- * never once a wipe has sealed the migration they exist to block.
+ * Locks in: the un-namespaced IndexedDB key record is a retained migration source, so a tombstone
+ * must stop a fresh engine re-copying a deleted key out of it — otherwise old ciphertext backups
+ * decrypt again. Tombstones are permanent localStorage entries clearAll() cannot erase, so the
+ * rest pins how few may be written against the origin's ~5 MB quota.
  */
 class WebKeyTombstoneTest {
 
@@ -47,22 +41,18 @@ class WebKeyTombstoneTest {
         val noNs = WebSoftwareEncryption(KSafeConfig(), enginePrefix)
         val ct = noNs.encryptSuspend("token", payload)
 
-        // The namespaced engine migrates the key forward and can decrypt…
         val cfg = KSafeConfig(appNamespace = "com.example.tomb")
         val ns = WebSoftwareEncryption(cfg, enginePrefix)
         assertContentEquals(payload, ns.decryptSuspend("token", ct), "precondition: migrate-forward works")
 
-        // …then deliberately deletes its copy.
         ns.deleteKeySuspend("token")
 
-        // A FRESH engine (fresh in-memory migration state) must NOT re-copy the retained
-        // source key: the deleted key stays deleted for this namespace.
+        // Fresh engine, so fresh in-memory migration state: only the tombstone can stop the copy.
         val fresh = WebSoftwareEncryption(cfg, enginePrefix)
         assertFails("a deleted namespaced key must not be re-supplied by the retained source") {
             fresh.decryptSuspend("token", ct)
         }
 
-        // The sibling's live key is untouched — its own data keeps decrypting.
         assertContentEquals(
             payload, noNs.decryptSuspend("token", ct),
             "the retained un-namespaced source must never be deleted by a namespaced delete",
@@ -70,15 +60,13 @@ class WebKeyTombstoneTest {
     }
 
     /**
-     * The delete sweep enumerates a per-entry alias in both the plain and the strict spelling, but
-     * the web factory strips `requireUnlockedDevice` before the entry's routing record is built, so
-     * no web entry can ever name the strict spelling. Tombstoning it burns the origin's shared
-     * `localStorage` quota on an alias that cannot exist — and nothing can ever reclaim it.
+     * The sweep enumerates both alias spellings, but the web factory strips `requireUnlockedDevice`
+     * before the routing record is built, so no web entry can ever name the strict one.
      */
     @Test
     fun delete_writesNoTombstoneForTheAliasSpellingWebCanNeverMint() = runTest {
         val file = WebKSafeTest.generateUniqueFileName()
-        // REAL engine: FakeEncryption writes no tombstones at all.
+        // Real engine: FakeEncryption writes no tombstones at all.
         val safe = KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.strict"))
         safe.awaitCacheReady()
 
@@ -100,10 +88,8 @@ class WebKeyTombstoneTest {
     }
 
     /**
-     * `clearAll()` seals every copy-forward INTO this store, data and keys alike, so after a wipe
-     * there is nothing left for a per-alias tombstone to protect: no ciphertext can arrive that
-     * would need a migrated key. Continuing to write one per deleted alias only grows the
-     * permanent, unreclaimable share of the origin quota the store consumes.
+     * `clearAll()` seals every copy-forward into this store, so no ciphertext can arrive that would
+     * need a migrated key and a per-alias tombstone has nothing left to protect.
      */
     @Test
     fun clearAll_sealsTheKeyMigration_soLaterDeletesStopWritingTombstones() = runTest {
@@ -132,10 +118,7 @@ class WebKeyTombstoneTest {
         safe.clearAll()
     }
 
-    /**
-     * The seal replaces the per-alias tombstones, so it has to carry their whole job: a namespace
-     * that deleted a key must still not have it re-supplied by the retained un-namespaced source.
-     */
+    /** The seal replaces the per-alias tombstones, so it has to carry their whole job. */
     @Test
     fun sealedNamespace_stillRefusesToResurrectADeletedKey() = runTest {
         val file = WebKSafeTest.generateUniqueFileName()

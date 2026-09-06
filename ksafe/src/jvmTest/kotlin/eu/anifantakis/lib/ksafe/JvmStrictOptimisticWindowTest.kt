@@ -6,7 +6,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Locks in: during a strict (requireUnlockedDevice) write's optimistic window — plaintext cached before the post-batch swap to ciphertext — a read returns the default, never the transiently-cached plaintext.
+ * Locks in: during a strict (requireUnlockedDevice) write's optimistic window — plaintext cached
+ * before the post-batch swap to ciphertext — a read returns the default, never that plaintext.
  */
 class JvmStrictOptimisticWindowTest {
 
@@ -33,8 +34,8 @@ class JvmStrictOptimisticWindowTest {
             testEngine = engine,
         )
         try {
-            // Strict write; the consumer picks it up and parks inside encrypt BEFORE the
-            // post-batch swap, so memoryCache still holds the optimistic PLAINTEXT.
+            // Strict write; the consumer parks inside encrypt before the post-batch swap, so
+            // memoryCache still holds the optimistic plaintext.
             ksafe.putDirect("k", "top-secret", KSafeWriteMode.Encrypted(requireUnlockedDevice = true))
             engine.encryptEntered.await()
 

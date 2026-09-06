@@ -10,13 +10,10 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Locks in the copy-on-write unlock-policy transition for per-entry aliases: a strict
- * `HARDWARE_ISOLATED` write keys under the strict alias VARIANT, so a relaxed→strict rewrite
- * mints its strict key under a fresh alias, commits, and only then reclaims the old relaxed
- * alias. The old key is never touched before the write's own encrypt and commit succeed —
- * any failure in between (locked device, keystore outage, crash) leaves the previous value
- * fully decryptable. This replaced the delete-first scheme, which destroyed the relaxed key
- * before the encrypt and lost the previous value on any failure after the delete.
+ * Locks in the copy-on-write unlock-policy transition: a relaxed→strict rewrite mints its key
+ * under the strict alias variant, commits, and only then reclaims the relaxed alias, so a locked
+ * device or keystore outage in between still leaves the previous value decryptable. The delete-first
+ * scheme this replaced destroyed the relaxed key before the encrypt and lost that value.
  */
 class JvmUnlockPolicyTighteningTest {
 
@@ -40,7 +37,6 @@ class JvmUnlockPolicyTighteningTest {
         }
     }
 
-    /** THE regression test: a failed tighten encrypt must leave the old value decryptable. */
     @Test
     fun tightenWithFailingEncrypt_preservesTheOldValue() = runTest {
         val engine = FailingEncryption()
@@ -134,7 +130,6 @@ class JvmUnlockPolicyTighteningTest {
         }
     }
 
-    /** Loosening moves the entry back to the base alias and reclaims the variant key. */
     @Test
     fun loosen_movesBackToTheBaseAlias() = runTest {
         val engine = StatefulFakeEncryption()
@@ -180,7 +175,6 @@ class JvmUnlockPolicyTighteningTest {
         }
     }
 
-    /** delete() must sweep BOTH per-entry alias variants. */
     @Test
     fun delete_sweepsBothAliasVariants() = runTest {
         val engine = StatefulFakeEncryption()
@@ -200,7 +194,7 @@ class JvmUnlockPolicyTighteningTest {
         }
     }
 
-    /** clearAll() sweeps BOTH variants too — the wipe is the last chance to reclaim key material. */
+    /** The wipe is the last chance to reclaim key material, so both variants have to go. */
     @Test
     fun clearAll_sweepsBothAliasVariants() = runTest {
         val engine = StatefulFakeEncryption()
@@ -221,10 +215,9 @@ class JvmUnlockPolicyTighteningTest {
     }
 
     /**
-     * The alias sweeps skip the strict spelling only where the platform's pre-write mode transform
-     * vetoes the unlock policy outright (web, whose strict read path async WebCrypto can't serve).
-     * The Android/Apple transform must keep a strict HARDWARE_ISOLATED write strict, or their
-     * sweeps would silently stop reclaiming strict key material.
+     * Only web vetoes the unlock policy in its pre-write transform (async WebCrypto can't serve the
+     * strict read path). If the Android/Apple transform dropped it, their sweeps would silently
+     * stop reclaiming strict key material.
      */
     @Test
     fun platformModeTransform_keepsAStrictHardwareIsolatedWriteStrict() {
@@ -236,7 +229,6 @@ class JvmUnlockPolicyTighteningTest {
         )
     }
 
-    /** Read routing: a legacy strict entry (no marker) keeps decrypting from the base alias. */
     @Test
     fun legacyStrictEntry_readsFromTheBaseAlias() = runTest {
         val engine = StatefulFakeEncryption()
@@ -247,8 +239,8 @@ class JvmUnlockPolicyTighteningTest {
         )
         try {
             val key = "hw_legacy"
-            // A pre-variant (≤2.2.1 / early-3.0.0) strict entry: strict metadata WITHOUT the
-            // marker — its key lives under the bare per-entry alias.
+            // A pre-variant strict entry: strict metadata without the marker, so its key lives
+            // under the bare per-entry alias.
             ksafe.core.encMetaMap[key] = eu.anifantakis.lib.ksafe.internal.KSafeCore.EncMeta(
                 envelopeVersion = 2,
                 requireUnlockedDevice = true,
@@ -276,7 +268,6 @@ class JvmUnlockPolicyTighteningTest {
         }
     }
 
-    /** User keys spelling the strict-variant sentinel are rejected at the API boundary. */
     @Test
     fun strictSentinelUserKeys_areRejectedOnWrite() = runTest {
         val ksafe = KSafe(

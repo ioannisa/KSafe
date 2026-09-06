@@ -9,15 +9,13 @@ import kotlin.properties.PropertyDelegateProvider
 import kotlin.properties.ReadWriteProperty
 import kotlinx.coroutines.CoroutineScope
 
-// Compose factories for the write-mode views (KSafePlain / KSafeEncrypted /
-// KSafeHardwareIsolated): the same `mutableStateOf` / `rememberKSafeState` surface as on
-// KSafe, minus the `mode` parameter — the view's frozen mode is the mode. Without these,
-// a Compose app would fall back to the raw KSafe exactly where most writes happen, and
-// the type guarantee would have a hole.
+// Compose factories for the write-mode views: the same surface as on KSafe, minus the `mode`
+// parameter — the view's frozen mode is the mode.
 
 /**
- * Persisted Compose state on a [KSafePlain] view — writes are always plain.
- * Same behavior as [KSafe.mutableStateOf] with `mode = KSafeWriteMode.Plain`.
+ * Persisted Compose state on a [KSafePlain] view — writes are always plain. Same parameters as
+ * the `KSafe.mutableStateOf` base minus `mode`: [key] defaults to the property name, [scope]
+ * makes external writes to the key propagate into the state.
  */
 inline fun <reified T> KSafePlain.mutableStateOf(
     defaultValue: T,
@@ -28,8 +26,9 @@ inline fun <reified T> KSafePlain.mutableStateOf(
     ksafe.mutableStateOf(defaultValue, key, mode, scope, policy)
 
 /**
- * Persisted Compose state on a [KSafeEncrypted] view — writes always use the view's
- * frozen encrypted mode. Same behavior as [KSafe.mutableStateOf] with that mode.
+ * Persisted Compose state on a [KSafeEncrypted] view — writes use the view's frozen mode. Same
+ * parameters as the `KSafe.mutableStateOf` base minus `mode`: [key] defaults to the property
+ * name, [scope] makes external writes to the key propagate into the state.
  */
 inline fun <reified T> KSafeEncrypted.mutableStateOf(
     defaultValue: T,
@@ -40,9 +39,9 @@ inline fun <reified T> KSafeEncrypted.mutableStateOf(
     ksafe.mutableStateOf(defaultValue, key, mode, scope, policy)
 
 /**
- * Persisted Compose state on a [KSafeHardwareIsolated] view — writes always request
- * hardware isolation via the view's frozen mode. Same behavior as [KSafe.mutableStateOf]
- * with that mode.
+ * Persisted Compose state on a [KSafeHardwareIsolated] view — writes request hardware isolation.
+ * Same parameters as the `KSafe.mutableStateOf` base minus `mode`: [key] defaults to the
+ * property name, [scope] makes external writes to the key propagate into the state.
  */
 inline fun <reified T> KSafeHardwareIsolated.mutableStateOf(
     defaultValue: T,
@@ -53,8 +52,9 @@ inline fun <reified T> KSafeHardwareIsolated.mutableStateOf(
     ksafe.mutableStateOf(defaultValue, key, mode, scope, policy)
 
 /**
- * Composable-local persisted state on a [KSafePlain] view. Matches the stock
- * [KSafe.rememberKSafeState] default (`Plain` — UI ephemera), here as a type guarantee.
+ * Composable-local persisted state on a [KSafePlain] view. Same parameters as the
+ * `KSafe.rememberKSafeState` base minus `mode`: [key] defaults to the property name,
+ * [observeExternalChanges] makes external writes to the key propagate into the state.
  */
 inline fun <reified T> KSafePlain.rememberKSafeState(
     defaultValue: T,
@@ -65,9 +65,9 @@ inline fun <reified T> KSafePlain.rememberKSafeState(
     ksafe.rememberKSafeState(defaultValue, key, mode, observeExternalChanges, policy)
 
 /**
- * Composable-local persisted state on a [KSafeEncrypted] view. Note the semantic shift
- * from the stock API: [KSafe.rememberKSafeState] defaults to `Plain`; through this view
- * every write is encrypted with the frozen mode — which is the point of the type.
+ * Composable-local persisted state on a [KSafeEncrypted] view — encrypted, unlike the `Plain`
+ * default of the `KSafe.rememberKSafeState` base, whose other parameters it shares: [key]
+ * defaults to the property name, [observeExternalChanges] makes external writes propagate in.
  */
 inline fun <reified T> KSafeEncrypted.rememberKSafeState(
     defaultValue: T,
@@ -78,9 +78,9 @@ inline fun <reified T> KSafeEncrypted.rememberKSafeState(
     ksafe.rememberKSafeState(defaultValue, key, mode, observeExternalChanges, policy)
 
 /**
- * Composable-local persisted state on a [KSafeHardwareIsolated] view. Note the semantic
- * shift from the stock API: [KSafe.rememberKSafeState] defaults to `Plain`; through this
- * view every write requests hardware isolation via the frozen mode.
+ * Composable-local persisted state on a [KSafeHardwareIsolated] view — hardware-isolated, unlike
+ * the `Plain` default of the `KSafe.rememberKSafeState` base, whose other parameters it shares:
+ * [key] defaults to the property name, [observeExternalChanges] makes external writes propagate in.
  */
 inline fun <reified T> KSafeHardwareIsolated.rememberKSafeState(
     defaultValue: T,

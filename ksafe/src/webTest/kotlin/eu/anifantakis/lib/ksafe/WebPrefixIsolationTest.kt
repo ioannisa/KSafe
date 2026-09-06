@@ -22,7 +22,6 @@ class WebPrefixIsolationTest {
 
     @Test
     fun nestedFileNames_clearAll_doesNotWipeSiblingStore() = runTest {
-        // Nested pair, unique per run so reruns don't collide.
         val base = WebKSafeTest.generateUniqueFileName()
         val outer = KSafe(fileName = base, testEngine = FakeEncryption())
         val nested = KSafe(fileName = "${base}_cache", testEngine = FakeEncryption())
@@ -35,7 +34,7 @@ class WebPrefixIsolationTest {
         // Wipe must be prefix-free: a startsWith() wipe would also delete the sibling's entries.
         outer.clearAll()
 
-        // Read via a FRESH instance so the answer comes from disk, not the optimistic cache.
+        // Read via a fresh instance so the answer comes from disk, not the optimistic cache.
         val nestedReopened = KSafe(fileName = "${base}_cache", testEngine = FakeEncryption())
         nestedReopened.awaitCacheReady()
         assertEquals(
@@ -53,7 +52,7 @@ class WebPrefixIsolationTest {
         nested.awaitCacheReady()
         nested.put("secret", "nested-only", KSafeWriteMode.Plain)
 
-        // Constructed after the sibling has data on disk; its snapshot must not ingest the sibling's entries.
+        // Constructed after the sibling already has data on disk — the order is what makes a bleed possible.
         val outer = KSafe(fileName = base, testEngine = FakeEncryption())
         outer.awaitCacheReady()
         assertEquals(
@@ -70,21 +69,18 @@ class WebPrefixIsolationTest {
     fun appNamespace_clearAll_doesNotResurrectSecretFromUnNamespacedSource() = runTest {
         val base = WebKSafeTest.generateUniqueFileName()
 
-        // Pre-upgrade layout: a no-namespace store on this fileName holds the secret.
         val preUpgrade = KSafe(fileName = base, testEngine = FakeEncryption())
         preUpgrade.awaitCacheReady()
         preUpgrade.put("token", "secret", KSafeWriteMode.Plain)
 
-        // Upgrade: add an appNamespace. The un-namespaced data copies forward once.
         val ns = KSafe(fileName = base, config = KSafeConfig(appNamespace = "app1"), testEngine = FakeEncryption())
         ns.awaitCacheReady()
         assertEquals("secret", ns.get("token", "GONE"), "the un-namespaced secret migrates forward on upgrade")
 
-        // Logout wipes the namespaced store.
         ns.clearAll()
 
-        // Reconstructing the namespaced store must NOT re-seed the secret from the still-present
-        // un-namespaced source: the one-time done-marker (kept outside the cleared prefix) blocks it.
+        // The one-time done-marker, kept outside the cleared prefix, is what stops the reconstruction
+        // from re-seeding the secret out of the still-present un-namespaced source.
         val nsReopened = KSafe(fileName = base, config = KSafeConfig(appNamespace = "app1"), testEngine = FakeEncryption())
         nsReopened.awaitCacheReady()
         assertEquals(
@@ -93,7 +89,6 @@ class WebPrefixIsolationTest {
             "clearAll() must durably erase the secret; the copy-forward must not resurrect it",
         )
 
-        // The co-existing no-namespace sibling still keeps its own data (never cannibalized).
         val siblingReopened = KSafe(fileName = base, testEngine = FakeEncryption())
         siblingReopened.awaitCacheReady()
         assertEquals("secret", siblingReopened.get("token", "GONE"), "the no-namespace sibling keeps its own data")
@@ -108,7 +103,6 @@ class WebPrefixIsolationTest {
         // Intermediate pre-appNamespace scheme: canonical data under the flat legacy `ksafe_<file>_`.
         localStorageSet("ksafe_${base}___ksafe_value_token", "legacy-secret")
 
-        // First namespaced construction migrates the legacy value forward (once).
         val ns = KSafe(fileName = base, config = KSafeConfig(appNamespace = "app1"), testEngine = FakeEncryption())
         ns.awaitCacheReady()
         assertEquals(
@@ -123,8 +117,7 @@ class WebPrefixIsolationTest {
             "clearAll must wipe the namespaced value",
         )
 
-        // Reconstructing must NOT re-seed from the still-present legacy source: the one-time
-        // done-marker (kept outside the cleared prefix) blocks the legacy copy-forward.
+        // The one-time done-marker, kept outside the cleared prefix, blocks the legacy copy-forward.
         val nsReopened = KSafe(fileName = base, config = KSafeConfig(appNamespace = "app1"), testEngine = FakeEncryption())
         nsReopened.awaitCacheReady()
         assertNull(
@@ -137,17 +130,14 @@ class WebPrefixIsolationTest {
     }
 
     /**
-     * The migration done-markers are written best-effort: if the marker write failed
-     * (quota/SecurityError) after a successful copy, reconstruction re-runs the copy-forward.
-     * clearAll() must therefore seal the markers itself — an explicit wipe means the user chose
-     * an empty store, and the retained source (which outlives the wipe by design) must not
-     * re-seed the wiped secrets on the next construction.
+     * Done-markers are best-effort: a marker write that failed after a successful copy makes the
+     * copy-forward re-run, so clearAll() seals them itself — an explicit wipe means the user chose an
+     * empty store, and the retained source must not re-seed it.
      */
     @Test
     fun clearAll_sealsMigrationMarkers_soAFailedMarkerWriteCannotResurrectSecrets() = runTest {
         val base = WebKSafeTest.generateUniqueFileName()
 
-        // Pre-upgrade layout: an un-namespaced store on this fileName holds the secret.
         val preUpgrade = KSafe(fileName = base, testEngine = FakeEncryption())
         preUpgrade.awaitCacheReady()
         preUpgrade.put("token", "secret", KSafeWriteMode.Plain)
@@ -157,15 +147,13 @@ class WebPrefixIsolationTest {
         ns.awaitCacheReady()
         assertEquals("secret", ns.get("token", "GONE"), "the un-namespaced secret migrates forward on upgrade")
 
-        // Simulate the marker writes having failed: copies succeeded but no marker exists —
-        // the state that used to let the retained source re-seed the store after a wipe.
+        // As if the marker writes had failed: copies succeeded but no marker exists — the state that
+        // used to let the retained source re-seed the store after a wipe.
         localStorageRemove("ksafe.__nsmigrated__.app1@$base")
         localStorageRemove("ksafe.__legacymigrated__.app1@$base")
 
         ns.clearAll()
 
-        // clear() sealed the markers, so reconstruction must not re-seed from the
-        // still-present un-namespaced source.
         val nsReopened = KSafe(fileName = base, config = KSafeConfig(appNamespace = "app1"), testEngine = FakeEncryption())
         nsReopened.awaitCacheReady()
         assertEquals(
@@ -174,7 +162,6 @@ class WebPrefixIsolationTest {
             "clearAll() must seal the migration markers: a failed marker write must not allow resurrection",
         )
 
-        // The co-existing no-namespace sibling still owns its data.
         val siblingReopened = KSafe(fileName = base, testEngine = FakeEncryption())
         siblingReopened.awaitCacheReady()
         assertEquals("secret", siblingReopened.get("token", "GONE"), "the no-namespace sibling keeps its own data")
@@ -184,12 +171,9 @@ class WebPrefixIsolationTest {
     }
 
     /**
-     * A uniquely-named store MOVES its flat legacy prefix forward instead of copying it, and that
-     * move is the one migration with no done-marker at all. A copy that failed (quota) — or a
-     * source `remove` that failed — leaves the entry behind at the source, which is the state
-     * seeded here: legacy entry present, no marker. `clearAll()` must seal the migration, or the
-     * wipe frees the very quota that broke the copy and the next construction copies the
-     * explicitly-wiped secret straight back in.
+     * A uniquely-named store moves its flat legacy prefix forward instead of copying it — the one
+     * migration with no done-marker. Seeded here as a half-failed move (entry still at the source),
+     * so `clearAll()` must seal it or the next construction copies the wiped secret straight back in.
      */
     @Test
     fun clearAll_sealsTheLegacyMigration_ofAStoreThatOwnsItsLegacyPrefixAlone() = runTest {
@@ -243,8 +227,8 @@ class WebPrefixIsolationTest {
         unnamed.put(key, "from-unnamed", KSafeWriteMode.Plain)
         named.put(key, "from-named", KSafeWriteMode.Plain)
 
-        // Read via a FRESH unnamed instance (from disk): under the old shared slot the named put
-        // was last writer and overwrote the unnamed store, masked only by the optimistic cache.
+        // Read via a fresh unnamed instance (from disk): under the old shared slot the named put was
+        // last writer and overwrote the unnamed store, masked only by the optimistic cache.
         val unnamedReopened = KSafe(testEngine = FakeEncryption())
         unnamedReopened.awaitCacheReady()
         assertEquals(
@@ -262,23 +246,20 @@ class WebPrefixIsolationTest {
     fun legacyPrefixData_isMigratedForward_andNestedSiblingLeftAlone() {
         val base = WebKSafeTest.generateUniqueFileName()
 
-        // Legacy data: canonical entries under the OLD prefixes of a store and its nested sibling.
+        // Legacy data: canonical entries under the old prefixes of a store and its nested sibling.
         localStorageSet("ksafe_${base}___ksafe_value_k", "legacy-value")
         localStorageSet("ksafe_${base}_cache___ksafe_value_k", "sibling-value")
 
         migrateLegacyLocalStoragePrefix("ksafe_${base}_", "ksafe.${base}:")
 
-        // Own canonical entry moved (copy + verify + delete).
         assertEquals("legacy-value", localStorageGet("ksafe.${base}:__ksafe_value_k"))
         assertNull(localStorageGet("ksafe_${base}___ksafe_value_k"), "old entry must be removed after a verified copy")
-        // The nested sibling's entry is left for the sibling's own migration.
         assertEquals(
             "sibling-value",
             localStorageGet("ksafe_${base}_cache___ksafe_value_k"),
             "the nested sibling's data must not be stolen by the shorter-named store's migration",
         )
 
-        // And the sibling's own migration picks it up correctly.
         migrateLegacyLocalStoragePrefix("ksafe_${base}_cache_", "ksafe.${base}_cache:")
         assertEquals("sibling-value", localStorageGet("ksafe.${base}_cache:__ksafe_value_k"))
 
@@ -287,24 +268,19 @@ class WebPrefixIsolationTest {
     }
 
     /**
-     * The migration must NOT move a nested sibling store's FLAT legacy entry (bare `<key>` /
-     * `encrypted_<key>`): it carries no canonical marker, so a shorter-named store cannot tell it
-     * from its own flat keys — moving it would delete the sibling's only copy and surface it under
-     * the shorter store (cross-store plaintext bleed). Every non-canonical entry is left untouched
-     * to preserve prefix-free isolation.
+     * A nested sibling's flat legacy entry (bare `<key>` / `encrypted_<key>`) carries no canonical
+     * marker, so a shorter-named store cannot tell it from its own: moving it would delete the
+     * sibling's only copy and surface it under the shorter store as plaintext bleed.
      */
     @Test
     fun legacyFlatData_ofNestedSibling_isNotStolenByShorterStore() {
         val base = WebKSafeTest.generateUniqueFileName()
-        // Flat legacy layout: the sibling's plain value at "ksafe_<base>_cache_foo" (no marker),
-        // encrypted at "ksafe_<base>_cache_encrypted_foo".
+        // Flat legacy layout: no canonical marker on either entry.
         localStorageSet("ksafe_${base}_cache_foo", "sibling-flat-plain")
         localStorageSet("ksafe_${base}_cache_encrypted_foo", "sibling-flat-cipher")
 
-        // The shorter-named store migrates.
         migrateLegacyLocalStoragePrefix("ksafe_${base}_", "ksafe.${base}:")
 
-        // The sibling's flat entries must be left exactly where they were.
         assertEquals(
             "sibling-flat-plain",
             localStorageGet("ksafe_${base}_cache_foo"),
@@ -315,7 +291,6 @@ class WebPrefixIsolationTest {
             localStorageGet("ksafe_${base}_cache_encrypted_foo"),
             "a nested sibling's flat encrypted entry must not be stolen by the shorter-named store",
         )
-        // And must NOT have leaked into the shorter store's namespace.
         assertNull(
             localStorageGet("ksafe.${base}:cache_foo"),
             "the shorter store must not surface the sibling's flat data under its own prefix",
@@ -326,21 +301,19 @@ class WebPrefixIsolationTest {
     }
 
     /**
-     * Constructing an appNamespaced store must NOT cannibalize a co-existing no-namespace store on
-     * the same fileName. The un-namespaced upgrade migration's source prefix `ksafe.<file>:` is that
-     * sibling's LIVE prefix and runs on every construction, so it must be non-destructive
-     * (copy-if-absent, no source delete), mirroring the non-destructive key migration.
+     * The un-namespaced upgrade migration's source prefix `ksafe.<file>:` is a co-existing sibling's
+     * live prefix and runs on every construction, so it has to be copy-if-absent with no source
+     * delete — otherwise an appNamespaced store cannibalizes its same-fileName neighbour.
      */
     @Test
     fun appNamespacedStore_doesNotCannibalize_coexistingNoNamespaceStore() = runTest {
         val file = WebKSafeTest.generateUniqueFileName()
 
-        // A no-namespace store writes a value…
         val plain = KSafe(fileName = file, testEngine = FakeEncryption())
         plain.awaitCacheReady()
         plain.put("token", "plain-value", KSafeWriteMode.Plain)
 
-        // …then a same-fileName appNamespaced store is constructed (runs the un-namespaced migration).
+        // Constructing a same-fileName appNamespaced store is what runs the un-namespaced migration.
         KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.a"), testEngine = FakeEncryption())
             .awaitCacheReady()
 
@@ -352,7 +325,6 @@ class WebPrefixIsolationTest {
             "a co-existing no-namespace store's value must survive construction of a same-fileName appNamespaced store",
         )
 
-        // A fresh no-namespace write after another namespaced construction must also survive.
         plainReopened.put("token2", "fresh", KSafeWriteMode.Plain)
         KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.a"), testEngine = FakeEncryption())
             .awaitCacheReady()
@@ -367,10 +339,9 @@ class WebPrefixIsolationTest {
     }
 
     /**
-     * The flat legacy `ksafe_<file>_` prefix has NO appNamespace segment — one SHARED source for
-     * every namespace of a fileName. The legacy→namespaced migration must therefore be
-     * non-destructive, or the first-constructed namespace copies the data to itself and deletes the
-     * shared source, so every OTHER namespace of that fileName reads the default for keys it owned.
+     * The flat legacy `ksafe_<file>_` prefix has no appNamespace segment — one source shared by every
+     * namespace of a fileName — so the legacy→namespaced migration must not delete it, or the
+     * first-constructed namespace strands every other one on defaults for keys it owned.
      */
     @Test
     fun legacyPrefix_withAppNamespace_isNotDeleted_soAllNamespacesCanMigrate() = runTest {
@@ -378,7 +349,6 @@ class WebPrefixIsolationTest {
         // Pre-namespace canonical data under the flat legacy prefix.
         localStorageSet("ksafe_${base}___ksafe_value_k", "legacy-value")
 
-        // First namespaced store migrates the legacy prefix forward but must NOT delete the shared source.
         KSafe(fileName = base, config = KSafeConfig(appNamespace = "com.example.a"), testEngine = FakeEncryption())
             .awaitCacheReady()
 
@@ -391,7 +361,6 @@ class WebPrefixIsolationTest {
             "namespace A must have migrated the legacy value forward",
         )
 
-        // A second same-fileName namespaced store must STILL find and migrate the legacy source.
         KSafe(fileName = base, config = KSafeConfig(appNamespace = "com.example.b"), testEngine = FakeEncryption())
             .awaitCacheReady()
         assertEquals(
@@ -405,23 +374,19 @@ class WebPrefixIsolationTest {
     }
 
     /**
-     * `KSafe()` (unnamed) and `KSafe(fileName = "default")` share the same legacy migration source
-     * (`ksafe_default_`) but get distinct new prefixes, so the legacy migration must be
-     * non-destructive — otherwise whichever constructs first copies the shared data and deletes the
-     * source, stranding it for the other.
+     * `KSafe()` and `KSafe(fileName = "default")` share one legacy migration source (`ksafe_default_`)
+     * but get distinct new prefixes, so that migration must not delete the source — otherwise
+     * whichever constructs first strands the data for the other.
      */
     @Test
     fun legacyDefaultPrefix_sharedByUnnamedAndDefaultNamed_isNotDeleted_soBothMigrate() = runTest {
         val k = "token_${WebKSafeTest.generateUniqueFileName()}" // unique key under the shared prefix
-        // The legacy copy-forward is one-time per store, gated on a persistent done-marker. These
-        // singleton stores share a GLOBAL marker (no fileName segment), so a prior test that already
-        // constructed KSafe()/KSafe("default") would have set it and block this injected migration.
-        // Clear both so this test drives the first-migration path deterministically.
+        // These singleton stores share one global done-marker (no fileName segment), so an earlier
+        // test that constructed KSafe()/KSafe("default") would block this injected migration.
         localStorageRemove("ksafe.__legacymigrated__.")
         localStorageRemove("ksafe.__legacymigrated__.default")
         localStorageSet("ksafe_default___ksafe_value_$k", "shared-legacy")
 
-        // Unnamed instance migrates to `ksafe.:` WITHOUT deleting the shared source.
         KSafe(testEngine = FakeEncryption()).awaitCacheReady()
         assertEquals(
             "shared-legacy", localStorageGet("ksafe.:__ksafe_value_$k"),
@@ -432,7 +397,6 @@ class WebPrefixIsolationTest {
             "the shared legacy source must survive an unnamed construction",
         )
 
-        // The 'default'-named instance still finds the source and migrates it too.
         KSafe(fileName = "default", testEngine = FakeEncryption()).awaitCacheReady()
         assertEquals(
             "shared-legacy", localStorageGet("ksafe.default:__ksafe_value_$k"),
@@ -459,7 +423,6 @@ class WebPrefixIsolationTest {
             "the live un-namespaced source must NOT be deleted (deleteSource=false)",
         )
 
-        // Idempotent + copy-if-absent: overwrite the source, migrate again, destination unchanged.
         localStorageSet("ksafe.${base}:__ksafe_value_k", "changed")
         migrateLegacyLocalStoragePrefix("ksafe.${base}:", "ksafe.ns@${base}:", deleteSource = false)
         assertEquals("live-value", localStorageGet("ksafe.ns@${base}:__ksafe_value_k"), "copy-if-absent: destination not overwritten")
@@ -470,9 +433,8 @@ class WebPrefixIsolationTest {
     }
 
     /**
-     * On web, `KSafeConfig.appNamespace` must isolate the localStorage DATA namespace, not just the
-     * IndexedDB key record: two same-origin setups with the SAME fileName but DIFFERENT appNamespace
-     * must not collide on the same data slots and overwrite each other.
+     * On web, `appNamespace` isolates the localStorage data namespace, not just the IndexedDB key
+     * record: two same-origin setups on one fileName must not overwrite each other's slots.
      */
     @Test
     fun appNamespace_isolatesTheDataStore_forSameFileName() = runTest {
@@ -485,7 +447,7 @@ class WebPrefixIsolationTest {
         appA.put("token", "value-A", KSafeWriteMode.Plain)
         appB.put("token", "value-B", KSafeWriteMode.Plain)
 
-        // Read via FRESH instances so the answer comes from localStorage, not the optimistic cache.
+        // Read via fresh instances so the answer comes from localStorage, not the optimistic cache.
         val appAReopened = KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.a"), testEngine = FakeEncryption())
         val appBReopened = KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.b"), testEngine = FakeEncryption())
         appAReopened.awaitCacheReady()
@@ -498,11 +460,9 @@ class WebPrefixIsolationTest {
     }
 
     /**
-     * A per-entry copy failure (e.g. QuotaExceededError on one large value) must surface as a
-     * `false` return so the construction-time done-markers are withheld and the migration retries
-     * on the next construction. Otherwise the tiny marker write still succeeds, the migration
-     * never re-runs, and the source values are stranded forever — the store silently reads
-     * defaults. Entries that fit must still copy.
+     * A per-entry copy failure (QuotaExceededError on one large value) must return `false` so the
+     * done-markers are withheld and the next construction retries. Otherwise the tiny marker write
+     * still succeeds, the migration never re-runs, and the store silently reads defaults forever.
      */
     @Test
     fun migration_reportsPartialCopyFailure_soTheMarkerIsWithheld_andRetryCompletes() {
@@ -527,7 +487,6 @@ class WebPrefixIsolationTest {
         assertEquals("small-value", store["new___ksafe_value_small"], "entries that fit must still copy")
         assertNull(store["new___ksafe_value_big"], "the failed entry stays uncopied, awaiting retry")
 
-        // Next construction (marker still absent) retries and completes; only now may the marker be set.
         val retry = migrate { k, v -> store[k] = v }
         assertTrue(retry, "a fully successful retry must report success so the marker can finally be set")
         assertEquals("BIG-VALUE", store["new___ksafe_value_big"], "the retry must complete the interrupted copy")
@@ -535,9 +494,8 @@ class WebPrefixIsolationTest {
     }
 
     /**
-     * With `deleteSource = true` a failed copy must keep its source (the only surviving copy)
-     * while verified copies still release theirs, and the overall result still reports the
-     * failure. Non-canonical entries are skipped, not counted as failures.
+     * With `deleteSource = true` a failed copy keeps its source (the only surviving copy) while
+     * verified copies release theirs; non-canonical entries are skipped, not counted as failures.
      */
     @Test
     fun migration_withDeleteSource_keepsSourceOfFailedCopy_andReleasesVerifiedOnes() {

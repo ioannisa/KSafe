@@ -12,8 +12,8 @@ import kotlin.test.assertNotNull
 
 /**
  * `KSafe()` and `KSafe("default")` are separate stores that share the `ksafe_default_` legacy
- * prefix. Their key records stay apart because the alias carries the fileName, but everything
- * derived from the prefix ALONE lands on both — locks in that neither store's wipe can reach
+ * prefix. Their key records stay apart because the alias carries the fileName, but anything
+ * derived from the prefix alone lands on both — locks in that neither store's wipe can reach
  * into the other through one of those.
  */
 class WebDefaultStoreSealScopeTest {
@@ -45,7 +45,7 @@ class WebDefaultStoreSealScopeTest {
         val preNamespace = WebSoftwareEncryption(KSafeConfig(), prefix)
         val ct = preNamespace.encryptSuspend("token", payload)
 
-        // KSafe("default") under the namespace wipes: only ITS seal may be written.
+        // KSafe("default") under the namespace wipes: only its own seal may be written.
         localStorageSet(
             assertNotNull(webKeyMigrationSealMarker(config.appNamespace, prefix, "default")), "1",
         )

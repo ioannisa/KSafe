@@ -1,13 +1,8 @@
 package eu.anifantakis.lib.ksafe.internal
 
-/**
- * The FROZEN pre-canonicalization `appNamespace` normalization: no leading-dot strip and no
- * collision digest, so distinct configured ids could collapse onto one token. Shipped installs hold
- * their JVM OS-vault namespace and their web data / IndexedDB key prefixes under exactly this
- * spelling, and the probes that recover them ([canonicalNamespaceToken]'s migration sources) can
- * only hit if it reproduces those identities byte-for-byte — so it must never change. New callers
- * use [canonicalNamespaceToken].
- */
+// FROZEN: shipped installs hold their JVM OS-vault namespace and web/IndexedDB prefixes under this
+// exact spelling, and the migration probes only hit if it reproduces them byte-for-byte.
+// New callers use canonicalNamespaceToken instead.
 internal fun legacyLossyNamespaceToken(raw: String?): String? =
     raw?.trim()?.takeIf { it.isNotEmpty() }
         ?.replace(NAMESPACE_SANITIZE_REGEX, "_")

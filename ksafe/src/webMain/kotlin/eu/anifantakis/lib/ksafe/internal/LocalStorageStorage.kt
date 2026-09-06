@@ -6,24 +6,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.yield
 
 /**
- * [KSafePlatformStorage] over the browser's `localStorage`, which is synchronous and string-only:
- * every [StoredValue] flattens to `.toString()` on write and the core re-types it through the
- * request's serializer on read. Keys are prefixed with [storagePrefix] so instances with
- * different `fileName`s don't collide.
- *
- * The Web Storage `storage` event only fires for other tabs, so change observation instead
- * re-emits a [MutableStateFlow] after every [applyBatch] or [clear].
+ * [KSafePlatformStorage] over the browser's `localStorage`, keyed under [storagePrefix]. The Web
+ * Storage `storage` event only fires for other tabs, so changes re-emit a [MutableStateFlow].
  */
 @PublishedApi
 internal class LocalStorageStorage(
     private val storagePrefix: String,
-    /**
-     * The one-time migration done-markers gating copy-forwards INTO this store from retained
-     * sources (they live outside [storagePrefix], see the factory). [clear] seals them: an
-     * explicit wipe means the user chose an empty store, so a marker whose original write
-     * failed (quota/SecurityError) must not let the still-present source re-seed the wiped
-     * data on the next construction.
-     */
+    /** Migration markers; [clear] seals them so a source can never re-seed a wiped store. */
     private val migrationMarkersSealedOnClear: List<String> = emptyList(),
 ) : KSafePlatformStorage {
 
@@ -35,14 +24,9 @@ internal class LocalStorageStorage(
 
     override suspend fun applyBatch(ops: List<StorageOp>) {
         if (ops.isEmpty()) return
-        // localStorage has no transaction API. A synchronous mid-batch failure (usually
-        // QuotaExceededError) is rolled back below, but a process death commits whatever prefix
-        // already ran. Ordering therefore picks which half survives: the value slot being
-        // rewritten is cleared first, then metadata, then the new value — so a tear leaves an
-        // entry with no value (reads return the caller's default) rather than one whose metadata
-        // describes a different protection than the bytes still sitting in the slot, which reads
-        // back as the wrong value entirely. The metadata it leaves behind is reaped by the
-        // startup cleanup and ignored by the superseded-master sweep.
+        // localStorage has no transaction API, so a process death commits whatever part of the
+        // batch already ran: clear the value slot, then write metadata, then the value, so a tear
+        // leaves an entry with no value rather than one the surviving metadata decodes wrongly.
         val ordered = orderMetaBeforeValue(ops)
         val priors = HashMap<String, String?>()
         for (op in ordered) {
@@ -58,22 +42,19 @@ internal class LocalStorageStorage(
             try {
                 rollbackPriors(priors, ::localStorageSet, ::localStorageRemove)
             } catch (rollbackError: Throwable) {
-                // A rollback that couldn't fully restore means silent data loss; surface it with
-                // the original write failure attached.
+                // A rollback that couldn't fully restore means silent data loss; surface it.
                 rollbackError.addSuppressed(e)
                 throw rollbackError
             }
             throw e
         } finally {
             changes.value = readSnapshotSync()
-            // Single-threaded browsers: without a yield, a put()-then-subscribe wouldn't see the
+            // Single-threaded browsers: without a yield, a put()-then-subscribe would not see the
             // new value until this coroutine returns.
             yield()
         }
     }
 
-    // Deletes first, then metadata Puts, then value Puts, so a process death mid-batch can't leave a
-    // value persisted ahead of its metadata. Stable within each group.
     internal fun orderMetaBeforeValue(ops: List<StorageOp>): List<StorageOp> =
         withValueSlotsCleared(ops).sortedBy { op ->
             when {
@@ -84,13 +65,8 @@ internal class LocalStorageStorage(
             }
         }
 
-    /**
-     * Prepends a removal of every canonical value slot this batch is about to rewrite, so the
-     * surviving half of a tear is "no value" rather than "the PREVIOUS value under the NEW
-     * metadata". Without it a plain write over an encrypted entry can commit `p:NONE` while the
-     * old ciphertext is still in the slot, and the reader — which treats an explicit NONE as
-     * plaintext — hands that ciphertext back to the caller as its value.
-     */
+    // Prepends a removal of every value slot this batch rewrites, so the surviving half of a tear
+    // is "no value" and never the PREVIOUS value read back under the NEW metadata.
     private fun withValueSlotsCleared(ops: List<StorageOp>): List<StorageOp> {
         val rewritten = ops.mapNotNullTo(mutableSetOf()) { op ->
             (op as? StorageOp.Put)?.rawKey
@@ -114,9 +90,8 @@ internal class LocalStorageStorage(
     }
 
     override suspend fun clear() {
-        // Seal BEFORE the wipe so a crash mid-clear can't leave the store half-wiped AND
-        // re-seedable; repeated after it for the rare set() that failed on a full quota
-        // (the wipe just freed space). Best-effort: a markerless clear still wipes.
+        // Seal BEFORE the wipe, or a crash mid-clear leaves the store half-wiped AND re-seedable;
+        // repeated after it for a set() that failed on a full quota the wipe has now freed.
         sealMigrationMarkers()
         val keysToRemove = buildList {
             for (i in 0 until localStorageLength()) {
@@ -142,7 +117,7 @@ internal class LocalStorageStorage(
             if (!fullKey.startsWith(storagePrefix)) continue
             val short = fullKey.removePrefix(storagePrefix)
             val value = localStorageGet(fullKey) ?: continue
-            // Always Text; primitives are re-typed by the core's serializer on read.
+            // localStorage is string-only; the core re-types primitives through its serializer.
             out[short] = StoredValue.Text(value)
         }
         return out
@@ -150,18 +125,8 @@ internal class LocalStorageStorage(
 }
 
 /**
- * One-time migration of a store's data entries from the legacy `ksafe_<name>_…` namespace to the
- * prefix-free `ksafe.<name>:…` one.
- *
- * Only canonical entries (remainder starts with `__ksafe_`) move — that gate keeps the migration
- * order-independent for nested store names and leaves non-canonical engine key records untouched.
- *
- * Copy-if-absent then delete: the source is cleared only once the destination holds the value, so a
- * mid-migration failure retries later and never loses the only copy.
- *
- * Returns `true` only when every required copy is verifiably present at the destination, so
- * callers gating a one-time done-marker on the result never seal a partially failed migration
- * (e.g. a quota failure on one large value) behind a marker that prevents any retry.
+ * One-time move of a store's entries into the `ksafe.<name>:…` namespace. Copy-if-absent then
+ * delete, so a failure never loses the only copy; `true` only when every copy verifiably landed.
  */
 internal fun migrateLegacyLocalStoragePrefix(oldPrefix: String, newPrefix: String, deleteSource: Boolean = true): Boolean {
     val keys = buildList {
@@ -175,12 +140,7 @@ internal fun migrateLegacyLocalStoragePrefix(oldPrefix: String, newPrefix: Strin
     )
 }
 
-/**
- * Copy loop of [migrateLegacyLocalStoragePrefix], pure over [get]/[set]/[remove] so partial-failure
- * behavior is testable without a real `localStorage` (mirroring [rollbackPriors]). Returns `true`
- * only when every canonical entry in [sourceKeys] is verifiably present at the destination;
- * skipped non-canonical entries and vanished sources count as success.
- */
+/** Copy loop of [migrateLegacyLocalStoragePrefix]; `true` only when every entry verifiably landed. */
 internal fun migratePrefixedEntries(
     sourceKeys: List<String>,
     oldPrefix: String,
@@ -193,9 +153,8 @@ internal fun migratePrefixedEntries(
     var allCopied = true
     for (oldKey in sourceKeys) {
         val rest = oldKey.removePrefix(oldPrefix)
-        // Legacy 1.6/1.7 flat entries (`<key>` / `encrypted_<key>`) carry no canonical marker, so a
-        // shorter-named store can't tell its own flat key from a nested sibling's; migrating them
-        // would steal the sibling's only copy. Left untouched until a scheme can disambiguate.
+        // Legacy flat entries carry no canonical marker, so a shorter-named store cannot tell its
+        // own key from a nested sibling's; migrating one would steal the sibling's only copy.
         if (!rest.startsWith(KSAFE_RESERVED_NAMESPACE_PREFIX)) continue
         val value = get(oldKey) ?: continue
         val newKey = newPrefix + rest
@@ -204,9 +163,8 @@ internal fun migratePrefixedEntries(
         }
         val copied = get(newKey) != null
         if (!copied) allCopied = false
-        // For the appNamespace upgrade the source prefix is also the live prefix of a co-existing
-        // no-namespace store on the same fileName; deleting it would cannibalize that sibling's
-        // writes on every construction. Copy-if-absent + no-delete is idempotent.
+        // The source prefix can also be the live prefix of a co-existing store; deleting from it
+        // would cannibalize that store's writes on every construction — hence the opt-out.
         if (deleteSource && copied) {
             runCatching { remove(oldKey) }
         }
@@ -215,13 +173,8 @@ internal fun migratePrefixedEntries(
 }
 
 /**
- * Restores the pre-batch state in [priors] (full key → prior value, or `null` if absent) after an
- * [LocalStorageStorage.applyBatch] failure. Pure over [set]/[remove] so it's testable without a real
- * `localStorage`.
- *
- * All touched keys are removed first — freeing the space the partial batch consumed — before priors
- * are restored, so a restore can't hit the same quota that failed the batch. A failed restore is
- * surfaced, not swallowed.
+ * Restores [priors] (full key → prior value, `null` if absent) after a failed batch. Touched keys
+ * are removed first, so the restore cannot hit the same quota that failed the batch.
  */
 internal fun rollbackPriors(
     priors: Map<String, String?>,

@@ -8,12 +8,10 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Locks in: [canonicalNamespaceToken] is injective for distinct configured ids — a lossy
- * sanitization (`a/b` vs `a?b` → both `a_b`) or a 120-char truncation must NOT collapse two
- * logical apps onto one data/key identity, or they silently share slots and key custody and
- * can read, overwrite, or `clearAll()` each other. Deliberate equivalences (whitespace
- * padding, leading dots) still agree, and clean tokens pass through unchanged so documented
- * usage needs no migration.
+ * Locks in: [canonicalNamespaceToken] is injective for distinct configured ids — neither a lossy
+ * sanitization (`a/b` and `a?b` both to `a_b`) nor a 120-char truncation may collapse two logical
+ * apps onto one identity, or they share slots and key custody and can `clearAll()` each other.
+ * Cosmetic equivalences still agree, and clean tokens pass through so existing usage needs no move.
  */
 class NamespaceTokenTest {
 

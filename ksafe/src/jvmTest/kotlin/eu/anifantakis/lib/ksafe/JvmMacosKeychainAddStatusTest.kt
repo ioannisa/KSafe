@@ -6,7 +6,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Locks in: only `errSecSuccess` counts as a successful keychain add — `errSecDuplicateItem` means the delete-then-add upsert never replaced the key, so `put` must fail closed.
+ * Locks in: only `errSecSuccess` counts as a successful keychain add — `errSecDuplicateItem` means
+ * the delete-then-add upsert never replaced the key, so `put` must fail closed.
  */
 class JvmMacosKeychainAddStatusTest {
 

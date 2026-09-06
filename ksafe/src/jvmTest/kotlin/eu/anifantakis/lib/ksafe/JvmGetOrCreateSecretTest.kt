@@ -9,7 +9,9 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * Locks in: getOrCreateSecret never silently rotates — an existing-but-unreadable secret (key invalidated, vault down, or corrupt ciphertext) throws instead of minting a replacement, which would permanently orphan everything encrypted under the old one (e.g. a SQLCipher DB keyed by it).
+ * Locks in: getOrCreateSecret never silently rotates. An existing-but-unreadable secret — key
+ * invalidated, vault down, corrupt ciphertext — throws instead of minting a replacement, which
+ * would permanently orphan everything encrypted under the old one, such as a SQLCipher DB.
  */
 class JvmGetOrCreateSecretTest {
 
@@ -60,11 +62,10 @@ class JvmGetOrCreateSecretTest {
             testEngine = engine,
         )
 
-        // Create a real secret (e.g. a SQLCipher DB passphrase).
         val original = ksafe.getOrCreateSecret("main_db")
         assertEquals(32, original.size)
 
-        // Secret still exists on disk but now decrypts to failure (key invalidated / vault down).
+        // Still on disk, but no longer decryptable: key invalidated, or the vault is down.
         engine.failDecrypt = true
 
         val ex = assertFailsWith<IllegalStateException> {
@@ -75,7 +76,6 @@ class JvmGetOrCreateSecretTest {
             "must surface the unreadable-secret condition rather than rotate; was: ${ex.message}",
         )
 
-        // Decisive check: no replacement was minted — once readable again, the ORIGINAL secret is still stored.
         engine.failDecrypt = false
         val afterRecovery = ksafe.getOrCreateSecret("main_db")
         assertContentEquals(
@@ -88,7 +88,6 @@ class JvmGetOrCreateSecretTest {
 
     @Test
     fun genuinelyAbsentSecretIsStillGeneratedEvenWhenUnrelatedEntriesExist() = runTest {
-        // First-time creation must still work when the store already holds unrelated data.
         val fileName = JvmKSafeTest.generateUniqueFileName()
         val ksafe = KSafe(fileName = fileName, testEngine = FakeEncryption())
 
@@ -105,9 +104,8 @@ class JvmGetOrCreateSecretTest {
         val fileName = JvmKSafeTest.generateUniqueFileName()
         val ksafe = KSafe(fileName = fileName, testEngine = FakeEncryption())
 
-        // The reserved slot decrypts fine but holds junk that is not Base64 (app misuse of the
-        // slot or exotic corruption). The contract reserves IllegalArgumentException for caller
-        // input validation; an existing-but-unreadable secret must surface as ISE.
+        // The reserved slot decrypts fine but holds junk that is not Base64. The contract keeps
+        // IllegalArgumentException for caller input, so an unreadable secret surfaces as ISE.
         ksafe.put("ksafe_secret_main_db", "not base64!!", KSafeWriteMode.Encrypted())
 
         val ex = assertFailsWith<IllegalStateException> { ksafe.getOrCreateSecret("main_db") }
@@ -142,7 +140,7 @@ class JvmGetOrCreateSecretTest {
         ksafe.close()
     }
 
-    /** XOR engine whose `decrypt` always throws — as if the backing key were invalidated on a later cold start. */
+    /** XOR engine whose `decrypt` always throws, as if the backing key were invalidated. */
     private class AlwaysFailDecryptEngine : KSafeEncryption {
         private val xor = FakeEncryption()
         override fun encrypt(
@@ -161,12 +159,11 @@ class JvmGetOrCreateSecretTest {
 
     @Test
     fun underPlainTextPolicy_unreadableSecretOnColdStart_throwsInsteadOfRotating() = runTest {
-        // Under PLAIN_TEXT a secret that fails cold-start decrypt is dropped from memoryCache, so the
-        // never-rotate guard must detect existence via protectionMap (on-disk metadata, present
-        // regardless of decryptability) — memoryCache alone would look "absent" and rotate.
+        // Under PLAIN_TEXT a secret that fails cold-start decrypt is dropped from memoryCache, so
+        // the never-rotate guard has to detect existence via protectionMap, which is on disk
+        // regardless of decryptability; memoryCache alone would look absent and rotate.
         val fileName = JvmKSafeTest.generateUniqueFileName()
 
-        // Instance 1 — create the secret successfully under PLAIN_TEXT.
         val k1 = KSafe(
             fileName = fileName,
             memoryPolicy = KSafeMemoryPolicy.PLAIN_TEXT,
@@ -176,7 +173,6 @@ class JvmGetOrCreateSecretTest {
         assertEquals(32, original.size)
         k1.close()
 
-        // Instance 2 — cold start where decrypt fails: the guard must still detect the entry (protectionMap) and throw, not rotate.
         val k2 = KSafe(
             fileName = fileName,
             memoryPolicy = KSafeMemoryPolicy.PLAIN_TEXT,
@@ -189,7 +185,7 @@ class JvmGetOrCreateSecretTest {
         )
         k2.close()
 
-        // Instance 3 — vault healthy: the ORIGINAL secret must be intact (instance 2 did not overwrite it).
+        // Vault healthy again, so k2 had better not have overwritten anything.
         val k3 = KSafe(
             fileName = fileName,
             memoryPolicy = KSafeMemoryPolicy.PLAIN_TEXT,

@@ -10,18 +10,10 @@ import kotlin.test.assertTrue
 import kotlin.uuid.ExperimentalUuidApi
 
 /**
- * macOS coverage for the storage-location code paths in
- * [KSafe] (Apple factory):
- *
- *  1. `directory = ...` routes the DataStore file into the caller-supplied path.
- *  2. The `directory` parameter creates the directory if it doesn't exist
- *     (including any missing parents).
- *  3. The 1.x → 2.0 NSDocumentDirectory auto-migration is a no-op on macOS
- *     when no legacy file exists.
- *
- * Unlike the iOS variant, every test here writes inside [NSTemporaryDirectory]
- * via [MacosTestPaths] — never `~/Library/Application Support/`, which is
- * persistent and shared on a real Mac.
+ * Locks in: the macOS storage-location paths — an explicit `directory` routes the DataStore file
+ * there, creates the missing parents, and skips the 1.x legacy lookup. Unlike the iOS variant every
+ * test writes inside [NSTemporaryDirectory] via [MacosTestPaths]: `~/Library/Application Support/`
+ * is persistent and shared on a real Mac.
  */
 @OptIn(ExperimentalForeignApi::class, ExperimentalUuidApi::class)
 class MacosStorageLocationTest {
@@ -34,7 +26,6 @@ class MacosStorageLocationTest {
         createdDirs.clear()
     }
 
-    /** `directory = ...` routes the DataStore file into the caller-supplied path. */
     @Test
     fun directory_storesFileInProvidedDirectory() = runTest {
         val name = MacosTestPaths.uniqueFileName("macosdir")
@@ -58,10 +49,8 @@ class MacosStorageLocationTest {
     }
 
     /**
-     * The factory creates the directory (and missing parents) when the path
-     * doesn't exist yet. Real callers on macOS often want a child like
-     * `~/Library/Application Support/<bundleId>/secrets/` and shouldn't need
-     * to mkdir it themselves.
+     * Real callers want a child like `~/Library/Application Support/<bundleId>/secrets/` and
+     * shouldn't have to mkdir it themselves.
      */
     @Test
     fun directory_createsMissingParentDirectories() = runTest {
@@ -94,14 +83,8 @@ class MacosStorageLocationTest {
     }
 
     /**
-     * The 1.x → 2.0 auto-migration looks for a legacy file at
-     * `NSDocumentDirectory/<basename>.preferences_pb`. On macOS the user's
-     * `~/Documents` folder is real and shared, so we deliberately do NOT
-     * plant a fake legacy file here. Instead we verify the migration path
-     * is a *safe no-op*: with `directory = <temp>`, the legacy lookup is
-     * skipped entirely (per the factory contract — legacy migration runs
-     * only when `directory == null`), and writes still land at the
-     * provided path.
+     * A real user's `~/Documents` is not somewhere to plant a fake legacy file, so this checks the
+     * safe half: an explicit `directory` skips the legacy lookup and the write lands there anyway.
      */
     @Test
     fun explicitDirectory_skipsLegacyMigrationCheck() = runTest {
@@ -125,7 +108,6 @@ class MacosStorageLocationTest {
         safe.close()
     }
 
-    /** Write, close, re-open at the same explicit directory and read back. */
     @Test
     fun directoryOverride_persistsAcrossInstances() = runTest {
         val name = MacosTestPaths.uniqueFileName("macospersist")

@@ -3,14 +3,8 @@ package eu.anifantakis.lib.ksafe.internal
 import kotlinx.coroutines.await
 import kotlin.js.Promise
 
-/**
- * Kotlin/JS actuals for [webKeyEnsure] et al. The store is [WebKeyStoreJsSource.FACTORY] and the
- * op dispatch is [WebKeyStoreJsSource.OP_ROUTING], both shared with the wasmJs twin; only the
- * binding and where the built store is cached are per-target. The `js(...)` string must reference
- * no Kotlin identifiers — the IR compiler renames parameters, so referencing them inside `js(...)`
- * fails at runtime — hence the closure-returning-a-dispatcher shape, which also keeps the built
- * store in module scope rather than a page global shared with any other loaded copy.
- */
+// `js(...)` may reference no Kotlin identifier — the IR compiler renames parameters — hence the
+// closure-returning-a-dispatcher shape, which also keeps the store in module scope, not a page global.
 private const val DISPATCH_JS: String = """
     (function() {
       var wk = null;

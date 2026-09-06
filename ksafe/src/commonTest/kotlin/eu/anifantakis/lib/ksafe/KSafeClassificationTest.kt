@@ -6,10 +6,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Locks in the fail-closed classification of a canonical value entry: a `__ksafe_value_*`
- * slot holds base64 IV‖ciphertext when encrypted, so it may only be treated as plaintext when its
- * metadata is present, parses, and EXPLICITLY marks it non-encrypted. Absent, unparseable, or
- * `p`-missing metadata is unresolved and must route through decrypt rather than serving raw bytes.
+ * Locks in the fail-closed classification of a canonical value entry: a `__ksafe_value_*` slot
+ * holds base64 IV‖ciphertext when encrypted, so it may be treated as plaintext only when its
+ * metadata is present, parses, and explicitly marks it non-encrypted. Anything else is unresolved
+ * and must route through decrypt rather than serving raw bytes.
  */
 class KSafeClassificationTest {
 

@@ -1,36 +1,31 @@
 package eu.anifantakis.lib.ksafe
 
-import androidx.compose.runtime.Stable
 import kotlinx.serialization.KSerializer
 import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
 
 /**
- * The handle returned by `ksafe(default, key)` and the mode-typed views' `invoke`. Dual-use:
- *
- * - **As a delegate** — `var counter by ksafe(0)`: the property name becomes the storage
- *   key when [key] is null, exactly as always.
- * - **Directly, without `by`** — `val counter = ksafe(0, key = "counter"); counter.value++`:
- *   [value] reads through the hot cache ([KSafe.getDirect]) and writes fire-and-forget
- *   ([KSafe.putDirect]) with the [KSafeWriteMode] captured at creation.
- *
- * Direct access requires an explicit [key]: a plain `=` assignment carries no property name
- * Kotlin could hand to KSafe, so a key-less handle can only be used with `by` — touching
- * [value] on one throws [IllegalStateException].
+ * The handle returned by `ksafe(default, key)` and the mode views' `invoke`. Use it as a delegate
+ * (`var counter by ksafe(0)`), where the property name becomes the key, or keep it in a `val` and
+ * go through [value], which needs an explicit [key]. Reads come from the cache via
+ * [KSafe.getDirect], blocking once while it loads and returning the default when nothing is
+ * stored; writes go through [KSafe.putDirect] in the mode the handle was created with.
  */
-@Stable
 class KSafeReference<T> @PublishedApi internal constructor(
     private val ksafe: KSafe,
     private val serializer: KSerializer<T>,
     private val defaultValue: T,
-    /** The storage key, or null when the handle is delegate-only (the property name becomes the key). */
+    /** The storage key, or `null` when the handle is delegate-only and the property name is used
+     *  instead. */
     val key: String?,
     private val mode: KSafeWriteMode,
 ) : ReadWriteProperty<Any?, T> {
 
     /**
-     * The persisted value, or the creation-time default while none exists. Setting persists
-     * immediately (fire-and-forget, like [KSafe.putDirect]). Requires an explicit [key].
+     * The stored value, or the creation-time default. Setting persists fire-and-forget. Both
+     * throw [IllegalStateException] when the handle was created without a [key]. A change here
+     * recomposes nothing; in composition use `rememberKSafeState` from `:ksafe-compose` or
+     * collect [KSafe.getStateFlow].
      */
     var value: T
         get() = read(requireKey())

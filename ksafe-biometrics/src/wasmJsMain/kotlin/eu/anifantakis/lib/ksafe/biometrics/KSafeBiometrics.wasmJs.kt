@@ -6,17 +6,11 @@ import kotlinx.coroutines.await
 import kotlin.js.JsString
 import kotlin.js.Promise
 
-/**
- * Kotlin/Wasm actuals for the WebAuthn interop surface (see `KSafeBiometrics.web.kt` for the
- * ceremony semantics and [WEBAUTHN_DISPATCHER_JS] for the dispatcher shared with Kotlin/JS).
- * External functions are private (Kotlin/WASM requirement) and the internal `actual` functions
- * delegate to them.
- */
+/** Kotlin/Wasm actuals for the WebAuthn interop; externals must be private, so the actuals delegate. */
 @JsFun(
     "(op, arg) => {" +
         " var G = (typeof globalThis !== 'undefined') ? globalThis : self;" +
-        // @JsFun takes a single function expression, so the dispatcher's closure state has
-        // nowhere to live between calls — instantiate it once and park it on the global object.
+        // @JsFun takes one function expression, so the dispatcher's state is parked on the global.
         " if (!G.__ksafeWebAuthn) { G.__ksafeWebAuthn = " + WEBAUTHN_DISPATCHER_JS + "; }" +
         " return G.__ksafeWebAuthn(op, arg);" +
         "}"
@@ -27,7 +21,7 @@ internal actual suspend fun webAuthnCall(op: String, arg: String?): String =
     _webAuthnCall(op, arg).await<JsString>().toString()
 
 internal actual fun webAuthnAbort() {
-    // Synchronous inside the dispatcher; the returned (already-resolved) Promise is irrelevant.
+    // Synchronous inside the dispatcher; the resolved Promise is irrelevant.
     _webAuthnCall("abort", null)
 }
 

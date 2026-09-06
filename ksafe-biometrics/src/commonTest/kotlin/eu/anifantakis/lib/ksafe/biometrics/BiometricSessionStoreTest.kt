@@ -5,10 +5,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Locks in the shared authorization cache every platform now reads and writes: an entry is fresh
- * because it EXISTS (never because its stamp is positive — a monotonic clock's origin is
- * arbitrary), a clear drops both strength slots of the scope it names and nothing else, and a
- * revocation that races the seed write rolls that write back.
+ * Locks in the shared authorization cache every platform reads and writes: an entry is fresh
+ * because it exists, never because its stamp is positive — a monotonic clock's origin is arbitrary.
+ * A clear drops both strength slots of the scope it names and nothing else, and a revocation that
+ * races the seed write rolls that write back.
  */
 class BiometricSessionStoreTest {
 

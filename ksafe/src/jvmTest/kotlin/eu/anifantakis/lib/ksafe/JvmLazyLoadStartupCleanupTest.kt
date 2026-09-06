@@ -26,7 +26,6 @@ class JvmLazyLoadStartupCleanupTest {
         val ksafe = KSafe(fileName = JvmKSafeTest.generateUniqueFileName(), lazyLoad = true, testEngine = engine)
         try {
             runBlocking {
-                // First access must trigger the one-time cleanup.
                 ksafe.get("k", "def")
                 val ran = withTimeoutOrNull(5_000) { engine.legacySweepCalled.await(); true } ?: false
                 assertTrue(ran, "a lazyLoad instance must run the legacy-key sweep on first access (low)")

@@ -17,17 +17,9 @@ import kotlin.test.assertEquals
 
 /**
  * Locks in, against a real store: a UI toggle flipped back to the value it started at is rolled
- * back when its persist fails, exactly like any other write.
- *
- * This is the module's default configuration — no `scope`, so nothing observes external changes
- * and nothing ever advances the state's in-sync baseline past the value it was created with. A
- * write back to that baseline is therefore indistinguishable from "no change" to any bookkeeping
- * keyed on the baseline, while storage has already moved on. The user-visible failure is a
- * setting that shows OFF forever while disk says ON, with no error and no way back.
- *
- * `KSafeComposeState`-level coverage of the same defect lives in `FailedPersistRollbackTest`;
- * this test exists because the claim is about the default wiring of the public factory, not
- * about the state class in isolation.
+ * back when its persist fails, like any other write. In the factory's default wiring (no `scope`)
+ * the in-sync baseline never advances, so a write back to it looks like "no change" while storage
+ * has moved on — the setting then shows off forever while disk says on, with no way back.
  */
 class JvmToggleRollbackTest {
 
@@ -45,9 +37,9 @@ class JvmToggleRollbackTest {
     }
 
     /**
-     * A settings flag whose serializer can be told to start rejecting the `off` state, so the
-     * store accepts `off` while it is being seeded and refuses it later — a persist that fails
-     * synchronously, on the caller's thread, for a value the state also started at.
+     * A settings flag whose serializer can be told to start rejecting the `off` state: the store
+     * accepts `off` while it is seeded and refuses it later — a persist that fails synchronously,
+     * on the caller's thread, for a value the state also started at.
      */
     data class Flag(val on: Boolean) {
         // Hand-written rather than generated: :ksafe-compose does not apply the serialization
@@ -79,9 +71,8 @@ class JvmToggleRollbackTest {
         try {
             runBlocking { ksafe.put(KEY, Flag(on = false), MODE) }
 
-            // The default differs from the stored value on purpose: the state then starts warm,
-            // so no cold-start self-heal coroutine runs and the rollback is the only thing that
-            // can move this state.
+            // The default differs from the stored value on purpose: the state starts warm, so no
+            // cold-start self-heal coroutine runs and the rollback is the only thing that moves it.
             val delegate = ksafe.mutableStateOf(Flag(on = true), key = KEY, mode = MODE)
                 .provideDelegate(null, ::probeFlag)
             assertEquals(
@@ -89,15 +80,14 @@ class JvmToggleRollbackTest {
                 "sanity: the state must start in sync with the stored value",
             )
 
-            // The user turns the setting on. This one persists.
+            // The user turns the setting on; this one still persists.
             delegate.setValue(null, ::probeFlag, Flag(on = true))
 
             // From here the store refuses the off state — the locked-device / quota-exhausted
             // shape, but synchronous so nothing here has to wait.
             ArmableFlagSerializer.rejectsOff = true
 
-            // The user turns it back off. The persist fails and the saver reconciles before this
-            // assignment returns.
+            // Turning it back off: the persist fails and the saver reconciles before setValue returns.
             delegate.setValue(null, ::probeFlag, Flag(on = false))
 
             assertEquals(

@@ -12,6 +12,7 @@ For the 60-second introduction, see the project [README](../README.md). This pag
 - [Suspend API (non-blocking)](#suspend-api-non-blocking)
 - [Direct API (Recommended for Performance)](#direct-api-recommended-for-performance)
 - [Write Mode API (Per-Entry Unlock Policy)](#write-mode-api-per-entry-unlock-policy)
+- [Mode-Typed Views (3.1.0+)](#mode-typed-views-310--ksafeplain--ksafeencrypted--ksafehardwareisolated)
 - [Isolating an app's keys (`appNamespace`)](#isolating-an-apps-keys-ksafeconfigappnamespace)
 - [Storing Complex Objects](#storing-complex-objects)
 - [Cryptographic Secrets (`getOrCreateSecret`)](#cryptographic-secrets-getorcreatesecret)
@@ -23,46 +24,62 @@ For the 60-second introduction, see the project [README](../README.md). This pag
 
 ## Property Delegation (One Liner)
 
+`ksafe` below is a `KSafe` instance built by the platform factory (see [docs/SETUP.md](SETUP.md)).
+Kotlin's `by` hands the property over to KSafe, so reading and writing the variable *is* reading
+and writing the store:
+
 ```kotlin
 var counter by ksafe(0)
 ```
 
 Parameters:
-* `defaultValue` - must be declared (type is inferred from it)
-* `key` - if not set, the variable name is used as a key
-* `mode` (overload) - `KSafeWriteMode.Plain` or `KSafeWriteMode.Encrypted(...)` for per-entry control
+* `defaultValue` — required; the type is inferred from it, and it is what you read while nothing readable is stored under the key.
+* `key` — optional; when omitted, the property name is the storage key (`"counter"` above).
+* `mode` — optional; `KSafeWriteMode.Plain` or `KSafeWriteMode.Encrypted(...)` for per-entry control (see [Write Mode API](#write-mode-api-per-entry-unlock-policy)). When omitted, writes use `KSafe.defaultWriteMode`: encrypted, with the instance's unlock policy.
+
+Reads come from the in-memory cache; writes update that cache at once and reach disk in the
+background, and a write that fails in the background is rolled back and logged.
 
 ```Kotlin
 class MyViewModel(ksafe: KSafe): ViewModel() {
   var counter by ksafe(0)
 
   init {
-    // then just use it as a regular variable
+    // then use it as a regular variable
     counter++
   }
 }
 ```
 
-> The property delegate works with any `KSafe` instance — the receiver of `by myKSafe(...)` becomes the storage backend. See [docs/SETUP.md](SETUP.md#multiple-instances) for the named-instance pattern (e.g. `var theme by prefs(...)`, `var token by vault("")`). The variable name is used as the storage key when no explicit `key` is supplied.
+> The property delegate works with any `KSafe` instance — the receiver of `by myKSafe(...)` is the store the value lives in. With several instances (see [docs/SETUP.md](SETUP.md#multiple-instances) for how to create and inject them) each one gets its own delegates: `var theme by prefs("light")`, `var token by vault("")`.
 
 **Prefer no delegation at all? Hold the handle directly (3.2.0+).** The same call that backs
-`by` returns a `KSafeReference` — keep it in a normal `val` and read/write `.value`. Direct
-access needs an explicit `key`: a plain `=` assignment carries no property name Kotlin could
-hand to KSafe (a key-less handle is delegate-only, and `.value` on it throws).
+`by` returns a `KSafeReference<T>` — keep it in a normal `val` and read/write `.value`. Direct
+access needs an explicit `key`: with `by`, Kotlin passes the property (and so its name) to the
+delegate, while a plain `=` assignment involves no property at all, so there is no name KSafe
+could use. A key-less handle stays delegate-only, and `.value` on it throws
+`IllegalStateException`.
 
 ```kotlin
 val counter = ksafe(0, key = "counter")   // KSafeReference<Int>
 counter.value++                           // read + write, no `by`
 ```
 
-Works on the mode-typed views too (`ksafePlain(0, key = "theme")`), where writes use the
-view's frozen mode.
+It works on the mode-typed views too — `ksafe.plain(0, key = "theme")`, or the same call on a
+[`KSafePlain`](#mode-typed-views-310--ksafeplain--ksafeencrypted--ksafehardwareisolated) you
+already hold — where writes use the view's frozen mode.
+
+`.value` is plain storage access: changing it recomposes nothing. Inside Compose use
+[`rememberKSafeState`](#rememberksafestate--composable-body-persistent-state-no-viewmodel-required) from `:ksafe-compose`, or collect a flow (see
+[Flow Delegates](#flow-delegates-reactive-reads) below).
 
 ## Flow Delegates (Reactive Reads)
 
-KSafe has always offered `getFlow()` and `getStateFlow()` with explicit key strings. These delegates extend the same property-name-as-key pattern from `invoke()` above to Flows and StateFlows — use whichever style you prefer.
+KSafe has always offered `getFlow()` and `getStateFlow()` with explicit key strings. These delegates extend the same property-name-as-key pattern from the `ksafe(...)` delegate above to Flows and StateFlows — use whichever style you prefer.
 
-**`asFlow`** returns a cold `Flow<T>` — ideal for repositories and data layers:
+**`asFlow`** returns a cold `Flow<T>` — *cold* means nothing runs until someone collects it, so
+it needs no `CoroutineScope` and costs nothing while unused — ideal for repositories and data
+layers:
 
 ```kotlin
 class UserRepository(private val kSafe: KSafe) {
@@ -102,7 +119,11 @@ fun set(value: T)  // calls ksafe.putDirect under the hood; respects the configu
 
 `asWritableFlow` defaults to encrypted writes carrying the instance's `KSafeConfig.requireUnlockedDevice` (exposed as `KSafe.defaultWriteMode`) — the same default as the property delegate `ksafe(...)`, `asMutableStateFlow`, and the Compose `mutableStateOf` delegate. Pass `mode = KSafeWriteMode.Plain` for unencrypted persistence. Reads happen only through flow collection — there is no synchronous getter, which keeps the contract identical on every platform (including web cold-start).
 
-**`asStateFlow`** returns a hot `StateFlow<T>` — ideal for ViewModels:
+Why does this one need no scope, when the StateFlow variants below do? A hot flow has to be kept collecting by someone, and the scope is who does that; a cold flow is collected only by whoever reads it. The missing synchronous getter above is the price of that freedom.
+
+**`asStateFlow`** returns a hot `StateFlow<T>` — *hot* means it always holds a current value you
+can read synchronously with `.value`, which is why it needs a `CoroutineScope` to keep it alive —
+ideal for ViewModels:
 
 ```kotlin
 class SettingsViewModel(private val kSafe: KSafe) : ViewModel() {
@@ -198,7 +219,18 @@ fun MoviesScreen(viewModel: MoviesViewModel) {
 }
 ```
 
-> `asFlow` and `asStateFlow` are **read-only** — writes go through `put`/`putDirect`. `asWritableFlow` gives you a writable cold `Flow<T>` (`set(value)`) without any scope; `asMutableStateFlow` gives you a hot `MutableStateFlow<T>` (`.value = ...`) with a scope. All four automatically pick up changes made anywhere — KSafe writes from another screen, background sync, or another delegate against the same key.
+Picking one:
+
+| Delegate | Returns | Needs a scope | Read | Write |
+|---|---|---|---|---|
+| `asFlow` | cold `Flow<T>` | no | collect | — (use `put`/`putDirect`) |
+| `asWritableFlow` | `WritableKSafeFlow<T>` (cold) | no | collect | `set(value)` |
+| `asStateFlow` | hot `StateFlow<T>` | yes | `.value` or collect | — (use `put`/`putDirect`) |
+| `asMutableStateFlow` | hot `MutableStateFlow<T>` | yes | `.value` or collect | `.value = …`, `update {}` |
+
+All four use the property name as the storage key unless you pass `key`, and the writable ones use `KSafe.defaultWriteMode` unless you pass `mode`.
+
+> All four automatically pick up changes made anywhere in the process — KSafe writes from another screen, background sync, or another delegate against the same key. One limit: on Web a flow only sees writes made through the *same* `KSafe` instance, so keep one instance per store there (the singleton rule in [docs/SETUP.md](SETUP.md#multiple-instances)).
 
 ## Composable State (One Liner)
 
@@ -206,7 +238,9 @@ fun MoviesScreen(viewModel: MoviesViewModel) {
 var counter by ksafe.mutableStateOf(0)
 ```
 
-Recomposition-proof and survives process death with zero boilerplate. Requires the `ksafe-compose` dependency.
+The value is Compose state — changing it recomposes whatever reads it — and it is persisted, so
+it is still there after the OS kills and restarts the app (*process death*, in Android's
+vocabulary). Requires the `ksafe-compose` dependency.
 
 ```Kotlin
 class MyViewModel(ksafe: KSafe): ViewModel() {
@@ -243,9 +277,9 @@ var ticks by ksafe.mutableStateOf(
 
 ### Reactive `mutableStateOf` with Cross-Screen Sync
 
-The existing `mutableStateOf` (available since v1.0.0) now accepts an optional `scope` parameter.
+`mutableStateOf` has been in KSafe since v1.0.0; since 1.8.0 it takes an optional `scope` parameter.
 
-**Without `scope`** — the state reads from cache at initialization and persists on write, but it's **isolated**. If another ViewModel or a background `put()` writes to the same key, this state won't see the change until the ViewModel is destroyed and recreated.
+**Without `scope`** — the state reads from the cache when the delegate is created and persists on write, but it is **isolated**: if another ViewModel or a background `put()` writes the same key later, this state does not see it until the ViewModel is destroyed and recreated. (One exception: if that first read returned the default because the value was not readable yet — the cache still loading on Web, a locked device elsewhere — the state applies the stored value once, when it arrives.)
 
 **With `scope`** — the state continuously observes the underlying flow. Changes from **any source** (another screen, another ViewModel, a background coroutine) are reflected **in real-time**.
 
@@ -304,7 +338,7 @@ fun TabbedScreen(ksafe: KSafe) {
 }
 ```
 
-This is the KSafe analogue of `rememberSaveable { mutableStateOf(...) }`, with stronger guarantees: `rememberSaveable` survives configuration changes and (via the saveable state registry) process death for `Bundle`-friendly types on Android only — state is cleared on a cold app launch. `rememberKSafeState` survives **app restart**, on every supported target (Android, iOS, JVM, Web), with optional encryption.
+This is the KSafe analogue of `rememberSaveable { mutableStateOf(...) }`, with stronger guarantees: `rememberSaveable` survives configuration changes and (via the saveable state registry) process death for `Bundle`-friendly types on Android only — state is cleared on a cold app launch. `rememberKSafeState` survives **app restart**, on every supported target (Android, iOS, macOS, JVM Desktop, Web), with optional encryption.
 
 #### When the value naturally lives in the composable, not in a ViewModel
 
@@ -334,7 +368,22 @@ The key auto-resolves to `"currentScreen"` from the property name, the value per
 
 #### How it works
 
-Under the hood the factory returns a `KSafeComposeStateProvider<T>`. The `provideDelegate` operator on that provider is `@Composable`, which is what lets the property name fall through to the storage key when `by` is used — same mechanism as `mutableStateOf`, just composable-aware. The provider materialises a `KSafeComposeState<T>` (which is both a `MutableState<T>` and a `ReadWriteProperty`) wrapped in `remember(key, instance, mode, policy, defaultValue)`, so the state survives recomposition and is disposed when the composition leaves. The optional self-heal coroutine (the WASM cold-start case where the cache is still warming up when first composition runs) and the optional `observeExternalChanges` collector are both launched inside a `LaunchedEffect(key, instance, mode, policy, defaultValue, observeExternalChanges)` — every value the memoized state bakes in participates in the keys, so a swapped instance/mode/policy/default rebuilds it with correctly-bound lambdas, and cancellation tracks the composition's lifetime — **no detached coroutines**, even when called at recomposition rate.
+`rememberKSafeState` returns a `KSafeComposeStateProvider<T>`. Its `provideDelegate` operator is
+`@Composable`, which is how the property name reaches KSafe as the storage key when you write
+`by` — the same mechanism as `mutableStateOf`, made composable-aware.
+
+The provider builds a `KSafeComposeState<T>` — both a Compose `MutableState<T>` and a property
+delegate — inside `remember(key, instance, mode, policy, defaultValue)`, so the state survives
+recomposition and is dropped when the composable leaves the composition.
+
+Storage observation runs in a `LaunchedEffect` keyed on those same values plus
+`observeExternalChanges`. If the first read returned the default because the value was not
+readable yet (WebCrypto still decrypting on Web, a locked device elsewhere), a one-shot self-heal
+applies the stored value once it arrives, waiting up to 5 seconds. With
+`observeExternalChanges = true` the effect keeps collecting for as long as the composable lives.
+Changing the instance, mode, policy or default rebuilds the state with correctly bound lambdas,
+and leaving the composition cancels everything — **no detached coroutines**, even when called at
+recomposition rate.
 
 ```kotlin
 inline fun <reified T> KSafe.rememberKSafeState(
@@ -379,6 +428,10 @@ ksafe.put("profile", userProfile)          // encrypt & persist
 val cached: User = ksafe.get("profile", User())
 ```
 
+`put` returns only once the value is committed to disk; `get` suspends instead of blocking while
+the cache loads. The [Direct API](#direct-api-recommended-for-performance) below is the
+non-suspending counterpart, and the note there says when to prefer which.
+
 ## Direct API (Recommended for Performance)
 
 ```Kotlin
@@ -386,18 +439,32 @@ ksafe.putDirect("counter", 42)
 val n = ksafe.getDirect("counter", 0)
 ```
 
-> **Performance Note:** Both APIs are competitive when used in their natural patterns. The Direct API is fire-and-forget (queue + return); use it when you don't need to know that the disk write committed. The Coroutine API awaits the disk commit; use it when persistence is a precondition for the next step (auth-token refresh, payment confirmation). When called from multiple concurrent coroutines (login flow saving 5 tokens, repository fan-out, etc.) the suspend API's coalescer batches the writes and individual call latency drops dramatically.
+> **Which one when?** Both APIs are fast when used in their natural patterns.
+>
+> - `putDirect` is *fire-and-forget*: it updates the in-memory cache and queues the disk write, then returns. Use it when you do not need to know that the value reached disk (UI state, counters, preferences). A write that fails in the background is rolled back and logged; use the `putDirect(key, value, mode, onWriteFailed)` overload if you need to hear about it.
+> - `put` *suspends until the write is committed to disk*. Use it when the next step must not run before the value is durable — an auth-token refresh, a payment confirmation.
+> - Reads: `getDirect` serves from the in-memory cache without touching disk (it blocks once if the cache is still doing its first load; on Web, which cannot block, it returns the default until that load finishes — call `awaitCacheReady()` at startup there). `get` suspends instead of blocking.
+>
+> Writes that are queued at the same moment — a login flow saving five tokens, a repository fan-out — are committed together in one batch, so they share a single disk commit instead of paying one each. A suspending `put` never waits for the batching window: it closes the batch, so it completes in one round trip.
 
 | API | Read | Write | Best For |
 |-----|------|-------|----------|
-| `getDirect`/`putDirect` | 0.0015 ms | 0.0010 ms | UI thread, fire-and-forget, hot cache |
+| `getDirect`/`putDirect` | 0.0015 ms | 0.0010 ms | UI thread, fire-and-forget, cache reads |
 | `get`/`put` (suspend) | 0.0024 ms | 0.86 ms | Guaranteed persistence; multiple concurrent callers |
 
-> Numbers from the unencrypted-operations table in [BENCHMARKS.md](BENCHMARKS.md) (Direct API row, rounded; Samsung Galaxy S24 Ultra). Measured on KSafe 2.1.2; the figures are current for 3.0.0 — an un-rotated (generation-1) store uses the same byte-for-byte crypto path. See that doc for methodology, hardware, and the full table.
+> Numbers from the unencrypted-operations table in [BENCHMARKS.md](BENCHMARKS.md) (Direct API row, rounded; Samsung Galaxy S24 Ultra), measured on KSafe 2.1.2. That document states which later versions the figures still describe, and gives the methodology, the hardware, and the full table.
 
 ## Write Mode API (Per-Entry Unlock Policy)
 
-Use `KSafeWriteMode` when you need encrypted-only options like `requireUnlockedDevice`:
+Every write carries a *mode* that says how the value is stored:
+
+- `KSafeWriteMode.Plain` — stored unencrypted; no key store is involved. For values that are not secret (theme, selected tab).
+- `KSafeWriteMode.Encrypted(protection, requireUnlockedDevice)` — encrypted with AES-GCM under a key KSafe keeps in the platform key store. This is the default.
+  - `protection = KSafeEncryptedProtection.DEFAULT` — the platform's normal key store: Android Keystore, Apple Keychain, the OS vault on JVM Desktop, a browser-origin key on Web.
+  - `protection = KSafeEncryptedProtection.HARDWARE_ISOLATED` — asks for the device's dedicated security chip (StrongBox on Android, Secure Enclave on Apple). A request, not a guarantee: where that hardware is missing the write lands in the same store as `DEFAULT`. To see which happened, read `getKeyInfo(key)?.level` for one entry, or `protectionInfo` for the custody the whole instance negotiated.
+  - `requireUnlockedDevice = true` — the entry's key is usable only while the device is unlocked. Enforced on Android and Apple; JVM and Web have no device lock and store an ordinary encrypted entry. On Android 28–34, removing the lock screen can silently delete such keys (the value then reads back as its default), so treat it as hardening, not a portable guarantee.
+
+Reads take no mode: KSafe records how each entry was written and decrypts it accordingly.
 
 ```kotlin
 // Direct API
@@ -424,7 +491,7 @@ ksafe.put(
 ksafe.putDirect("theme", "dark", mode = KSafeWriteMode.Plain)
 ```
 
-No-mode writes (`put`/`putDirect` without `mode`) use encrypted defaults and pick up `KSafeConfig.requireUnlockedDevice` as the default unlock policy.
+A write without `mode` uses `KSafe.defaultWriteMode`: `Encrypted` at the `DEFAULT` tier, with `requireUnlockedDevice` taken from `KSafeConfig.requireUnlockedDevice` (`false` unless you set it). The property delegate, the flow delegates and the Compose `mutableStateOf` delegate share that default; `rememberKSafeState` is the one exception — it defaults to `Plain`, because composable-body state is usually UI ephemera.
 
 > To check up front whether an encrypted write will actually succeed on the current device — as opposed to how *strong* the protection is — read `protectionInfo.isEncryptionOperational`. See **[docs/PROTECTION_INFO.md](PROTECTION_INFO.md)**.
 
@@ -441,7 +508,7 @@ val prefs = KSafePlain(ksafe)            // or: ksafe.plain
 val vault = KSafeHardwareIsolated(ksafe) // or: ksafe.hardwareIsolated
 
 prefs.putDirect("theme", "dark")         // always Plain — nothing to forget
-vault.put("master_key", secret)          // always requests StrongBox / Secure Enclave
+vault.put("master_key", secret)          // always requests the device's security chip
 
 var theme by prefs("dark")               // delegate: key = property name, writes Plain
 val pin by vault.asWritableFlow("", key = "pin")   // .set() writes hardware-isolated
@@ -453,7 +520,7 @@ result, given an explicit `key`, is also a direct no-`by` `.value` handle — 3.
 `:ksafe-compose`) `mutableStateOf` and `rememberKSafeState` — so the type guarantee has no
 gap where writes actually happen.
 
-**In Koin, the types replace stringly qualifiers.** One store, three injectable views:
+**In Koin, the types replace string qualifiers.** Instead of registering one `KSafe` three times under `named("prefs")`, `named("vault")` … and hoping every injection site spells the string right, register each view once and let the type do the matching. One store, three injectable views:
 
 ```kotlin
 single { KSafe(context = androidApplication(), fileName = "app") }
@@ -461,7 +528,7 @@ single { KSafePlain(get()) }
 single { KSafeHardwareIsolated(get()) }
 
 class SettingsRepository(private val prefs: KSafePlain)          // writes are always Plain
-class AuthRepository(private val vault: KSafeHardwareIsolated)   // writes always request SE/StrongBox
+class AuthRepository(private val vault: KSafeHardwareIsolated)   // writes always request StrongBox / Secure Enclave
 ```
 
 Every view shares the underlying store — same file, same key namespace, same cache, one
@@ -470,11 +537,12 @@ written through one view is immediately visible through any other.
 
 Three honest boundaries:
 
-- **The guarantee is write-side only.** Reads carry no mode (protection is auto-detected per
-  entry), so `KSafePlain.get()` happily reads a value some other handle wrote encrypted.
-- **`KSafeHardwareIsolated` requests, it does not guarantee.** Without StrongBox / Secure
-  Enclave the write degrades to the documented next-best custody and reports it via
-  `protectionInfo` / `getKeyInfo`.
+- **The guarantee is write-side only.** KSafe records how each entry was written and decrypts it
+  accordingly, so reads take no mode at all — `KSafePlain.get()` happily reads a value some other
+  handle wrote encrypted.
+- **`KSafeHardwareIsolated` requests, it does not guarantee.** Where the device has no security
+  chip the write falls back to the platform's normal key store — the same one `DEFAULT` uses —
+  and reports what it actually got via `protectionInfo` / `getKeyInfo`.
 - **Store-scoped operations are deliberately absent** (`rotateKeys`, `clearAll`, `close`,
   `protectionInfo`, `getKeyInfo`, `awaitCacheReady`, `getOrCreateSecret`) — they concern the
   whole store, not a mode view. Call them on the underlying instance, exposed as `view.ksafe`.
@@ -487,9 +555,15 @@ like a modeless `ksafe.put`.
 
 ## Isolating an app's keys (`KSafeConfig.appNamespace`)
 
-On **Android and iOS** the OS sandboxes each app's keystore, so different apps can never see each other's keys. On **JVM/Desktop** the OS secret store (macOS Keychain / Linux Secret Service) is **per-OS-user and shared by every process**, and on **Web** IndexedDB/localStorage is shared within a browser origin. Two different apps (or two KSafe setups) that use the same `fileName` would therefore collide on — and could overwrite — each other's encryption keys.
+KSafe stores two things: your values (in a store file, or in browser storage on Web) and the
+encryption keys that protect them (in the platform's key store — the OS service that holds key
+material for you). Whether anything else on the machine can reach them depends on the platform:
 
-Set a stable, app-unique `appNamespace` to isolate the key-store destination:
+- **Android and iOS/macOS** — the OS gives every app its own sandbox for both. Nothing to configure; `appNamespace` has no effect there.
+- **JVM/Desktop** — the OS secret store (macOS Keychain, Windows DPAPI, Linux Secret Service) is per OS user and shared by every process that user runs. Two desktop apps — or two builds of the same app — that use the same `fileName` would reach the same keys and could overwrite each other's.
+- **Web** — `localStorage` and IndexedDB (the browser's own storage) are shared by everything on the same browser origin. Two KSafe stores on one origin that share a `fileName` would collide the same way.
+
+On JVM and Web, set a stable, app-unique `appNamespace` (reverse-DNS works well):
 
 ```Kotlin
 val ksafe = KSafe(
@@ -498,7 +572,18 @@ val ksafe = KSafe(
 )
 ```
 
-If left `null`, new JVM keys go to a fixed default namespace (`"shared"`), so two apps that share a `fileName` and both leave `appNamespace` null will collide; the old launcher-derived id is no longer a default and survives only as a read-side migration source. Override the vault namespace via `-Dksafe.appNamespace=…` / env `KSAFE_APP_NAMESPACE`, or — best — set an explicit `KSafeConfig.appNamespace`; Web relies on its built-in per-origin isolation. **Production desktop apps should set it explicitly** so the namespace is stable across run modes and packaging. On JVM an explicit `appNamespace` isolates both the data directory (the DataStore file moves into a namespace subdirectory) and the key-store *destination*; existing un-namespaced data is copied forward, not stranded. (The `-Dksafe.appNamespace`/env override namespaces only the key store, not the data directory.)
+What it does:
+
+- **JVM** — the store file moves into a subdirectory named after the namespace, and the keys are stored under that namespace in the OS secret store. Data that already existed without a namespace is copied forward on the first launch, so nothing is stranded.
+- **Web** — the namespace becomes part of the storage prefix for both the stored values and the encryption-key record, so same-origin stores stay apart.
+
+Leave it `null` on JVM and new keys go to a fixed default namespace called `"shared"` — so two
+apps that share a `fileName` and both leave it unset will collide. The namespace can also be set
+from outside the app, with `-Dksafe.appNamespace=…` or the `KSAFE_APP_NAMESPACE` environment
+variable, but those move only the key store, not the data directory; production desktop apps
+should set `KSafeConfig.appNamespace` explicitly so the namespace is stable across run modes and
+packaging. Pick the value once and do not change it: it is part of where your data and keys live.
+Storage-layout changes between KSafe versions are listed in [docs/MIGRATION.md](MIGRATION.md).
 
 ## Storing Complex Objects
 
@@ -516,11 +601,11 @@ var authInfo by ksafe(AuthInfo())   // encryption + JSON automatically
 authInfo = authInfo.copy(accessToken = "newToken")
 ```
 
-> Seeing "Serializer for class X' is not found"? Add `@Serializable` and make sure you have added the Serialization plugin to your app.
+> Seeing "Serializer for class X is not found"? Add `@Serializable` to the class, and make sure the kotlinx-serialization Gradle plugin is applied — it is step 2 of the install in the [README](../README.md). For a type you cannot annotate because you don't own it (`java.util.UUID`, a value type from a library), see [docs/SERIALIZATION.md](SERIALIZATION.md).
 
 ### Example: Ktor bearer auth with zero encryption boilerplate
 
-Persisting a whole auth-token object is one line — it's encrypted, persisted, and JSON-serialized for you. Reads come from the hot cache (~0.002 ms; no disk, no `suspend`):
+Persisting a whole auth-token object is one line — it's encrypted, persisted, and JSON-serialized for you. Reads come from the in-memory cache (~0.002 ms; no disk, no `suspend`):
 
 ```Kotlin
 @Serializable
@@ -545,11 +630,17 @@ install(Auth) {
 
 ## Cryptographic Secrets (`getOrCreateSecret`)
 
-Generate-once, read-forever random secrets — ideal for a database passphrase (SQLCipher / SQLDelight / Room), an HMAC key, or an API signing key. On the first call KSafe mints a cryptographically secure random `ByteArray` and stores it encrypted; every later call returns the same bytes.
+Some values have to be random, secret, and reproduced exactly for the life of the app: a database
+passphrase (SQLCipher / SQLDelight / Room), an HMAC key, an API signing key. `getOrCreateSecret`
+is for those. On the first call KSafe generates cryptographically secure random bytes and stores
+them encrypted; every later call returns the same bytes.
+
+It is a `suspend` function — call it from a coroutine (a suspending database factory,
+`viewModelScope.launch`, or a `runBlocking` in your DI module at startup):
 
 ```kotlin
 // 32-byte (256-bit) secret, HARDWARE_ISOLATED — one line
-val passphrase = ksafe.getOrCreateSecret("main.db")
+val passphrase: ByteArray = ksafe.getOrCreateSecret("main.db")
 
 // Customise size / protection / unlock policy
 val signingKey = ksafe.getOrCreateSecret(
@@ -560,13 +651,17 @@ val signingKey = ksafe.getOrCreateSecret(
 )
 ```
 
-Defaults: 32 bytes, `HARDWARE_ISOLATED` protection (StrongBox on Android, Secure Enclave on iOS/macOS), device-unlock not required.
+Defaults: 32 bytes, `HARDWARE_ISOLATED` protection (the device's security chip — StrongBox on
+Android, Secure Enclave on iOS/macOS — where there is one, otherwise the platform's normal key
+store), device-unlock not required. `key` must not be blank and `size` must be positive; a call
+that breaks either rule throws `IllegalArgumentException`.
 
-> **The value is sacred.** A stored secret is *never* silently rotated: if it exists but can't be read back (backing key invalidated, vault temporarily locked, stored value corrupt) `getOrCreateSecret` **throws** instead of minting a fresh one — overwriting would permanently orphan everything encrypted under the old secret (your SQLCipher database would become unreadable). Resolve the vault/key problem and retry, or `delete` the key to deliberately rotate it. `rotateKeys()` re-wraps a secret's storage key for the same reason — it preserves the value.
+> **The value is never silently replaced.** If a secret exists but cannot be read back — its backing key was invalidated, the OS key vault is temporarily locked, the stored value is corrupt — `getOrCreateSecret` **throws** `IllegalStateException` instead of minting a fresh one. Overwriting would permanently orphan everything encrypted under the old secret: your SQLCipher database would never open again. Fix the vault or key problem and retry. To discard the secret on purpose, delete the storage slot named in the exception message — KSafe keeps secrets in reserved slots, not under the key you passed — and call `getOrCreateSecret` again. `rotateKeys()` keeps the value for the same reason: it only re-wraps the key that encrypts it.
 
 ### Example: Room + SQLCipher
 
 ```kotlin
+// inside a coroutine — e.g. a suspending database factory
 val passphrase = ksafe.getOrCreateSecret("main.db")
 val factory = SupportFactory(passphrase)
 
@@ -578,38 +673,47 @@ Room.databaseBuilder(context, AppDatabase::class.java, "main.db")
 ### Example: SQLDelight (cross-platform)
 
 ```kotlin
-val passphrase = ksafe.getOrCreateSecret("app.db")
+val passphrase = ksafe.getOrCreateSecret("app.db")   // suspend — call from a coroutine
 // pass to your platform-specific SqlDriver configuration
 ```
 
 ## Key Rotation
 
-`rotateKeys()` re-encrypts every entry under a fresh key generation and sweeps the superseded keys — values, defaults, and the on-disk layout are untouched:
+Every encrypted value is protected by a key KSafe holds in the platform key store. A *key
+generation* is a number, starting at 1, that names the set of keys a store currently writes under.
+`rotateKeys()` raises that number by one, mints fresh keys for the new generation, re-encrypts
+every encrypted entry under them, and deletes the keys it supersedes. Your values, your defaults
+and the on-disk layout do not change (plaintext entries are untouched — they have no key):
 
 ```kotlin
 val result: KSafeRotationResult = ksafe.rotateKeys()
-// result.rotated / result.skipped / result.failed / result.keyGeneration
+// result.rotated       — entries re-encrypted under the new generation
+// result.skipped       — entries left on the previous generation for now (a device-unlock entry
+//                        read while locked, or one a concurrent write won); still readable
+// result.failed        — entries whose decrypt or re-encrypt failed outright
+// result.keyGeneration — the store's generation after this pass; new writes use it
 ```
 
-It is crash-safe and never blocks startup or reads. Since 3.1.0, if the process dies
-mid-pass, the next KSafe instance automatically resumes the same generation — also under the
-default `Never` policy. A 3.0.0 generation record has no lifecycle marker, so the first 3.1.0
-startup safely labels it completed and does no rotation work rather than guessing. A policy
-can additionally start **new** rotations in the background. A normally completed pass that
-leaves retryable `skipped` entries writes `rp:N`, a bounded next-instance retry count (3 by
-default). The current instance stops; each new KSafe instance consumes at most one attempt and
-retries the same generation. The count is decremented durably before work, so a crash cannot
-refill it. If `MaxAge` is already due on that next run, the normal fresh-generation rotation
-takes precedence:
+Rotation is opt-in and off by default (`KSafeKeyRotationPolicy.Never`). Platform-held keys do not
+expire, so starting a new generation is a hygiene and compliance control rather than a security
+necessity, and most apps never call it. It never blocks startup or reads, and it is crash-safe: if
+the process dies mid-pass, the next `KSafe` instance finishes that same generation — also under
+`Never`. A pass that had to skip retryable entries is retried by later instances, one attempt
+each, up to `keyRotationRetryAttempts` (3 by default; `0` disables it). `rotateKeys()` throws
+`IllegalStateException`, leaving the store untouched, if a rotation is already running on the
+instance.
+
+To rotate on a schedule, set a policy:
 
 ```kotlin
 val ksafe = KSafe(config = KSafeConfig(
-    keyRotationPolicy = KSafeKeyRotationPolicy.MaxAge(90.days),
-    keyRotationRetryAttempts = 3, // default; set 0 to disable next-instance retries
+    keyRotationPolicy = KSafeKeyRotationPolicy.MaxAge(90.days), // rotate in the background once the keys are older than this
+    keyRotationRetryAttempts = 3,                               // default; set 0 to disable next-instance retries
 ))
 ```
 
-The full model, guarantees, and the policy API live in **[docs/KEY_ROTATION.md](KEY_ROTATION.md)**.
+The full model, the guarantees, the retry budget, the upgrade behaviour from older stores and the
+edge cases live in **[docs/KEY_ROTATION.md](KEY_ROTATION.md)**.
 
 ## Nullable Values
 
@@ -633,7 +737,7 @@ data class UserProfile(
 )
 ```
 
-> ⚠️ **Important:** Do **not** pass a bare `null` as the `defaultValue` argument (e.g. `ksafe.get("auth_token", null)`). KSafe relies on `reified` generics to infer the type `T`, and a bare `null` gives the compiler nothing to infer from — `T` collapses to `Nothing?` and the call always returns `null`, even if the key has a stored value.
+> ⚠️ **Important:** Do **not** pass a bare `null` as the `defaultValue` argument (e.g. `ksafe.get("auth_token", null)`). KSafe has to know the value's type at the call site — that is what `reified` generics give it: the type argument is kept at runtime, so KSafe can pick the right serializer. A bare `null` gives the compiler nothing to infer from — `T` collapses to `Nothing?` and the call always returns `null`, even when the key has a stored value.
 >
 > If you want a nullable type with a `null` default, make the type explicit so inference has something to work with:
 >
@@ -678,7 +782,7 @@ ksafe.delete("profile")       // suspend — awaits the durable delete
 ksafe.deleteDirect("profile") // non-suspending; cache cleared immediately, delete persisted in the background
 ```
 
-When you delete a value, its data and metadata are removed from the store, and any per-entry encryption key is deleted (best-effort). Note that `DEFAULT` entries — the default protection — share one master key: deleting a single entry does **not** delete that master, because it still encrypts your other entries. The master key is removed only by `clearAll()`, or when a rotation drops a generation that no entry references any more.
+When you delete a value, its data and its metadata are removed from the store. What happens to key material depends on how the entry was written. Encrypted entries at the `DEFAULT` protection tier share one key per store — the *master key*; on Android and Apple, where `requireUnlockedDevice` is enforced, entries written with it ride a second master of their own. Entries written `HARDWARE_ISOLATED` each get a key of their own, a *per-entry key*. Deleting an entry removes its per-entry key (best-effort) but never a master, because that master still encrypts your other entries. A master is removed only by `clearAll()`, or when a rotation drops a key generation that no entry references any more (see [Key Rotation](#key-rotation)).
 
 To wipe **everything** in an instance at once:
 
@@ -686,11 +790,19 @@ To wipe **everything** in an instance at once:
 ksafe.clearAll()   // suspend — removes every entry AND its encryption key
 ```
 
-`clearAll()` is destructive and irreversible: it clears all data for this instance and deletes every associated key from the OS key store. The data wipe fails loudly; the key deletions are best-effort — a platform-vault failure is logged rather than thrown, since the values are already gone and surviving key material only matters to out-of-store ciphertext copies (backups, quarantine files).
+`clearAll()` is destructive and irreversible: it clears the whole store — disk plus the caches of every live instance on this file (on web each instance still owns its own store handle) — and deletes every associated key from the OS key store. The data wipe fails loudly; the key deletions are best-effort — a platform-vault failure is logged rather than thrown, since the values are already gone and surviving key material only matters to out-of-store ciphertext copies (backups, quarantine files).
 
 ## Collecting Security Violations for the UI
 
-KSafe runs its root/jailbreak checks during construction — before your ViewModels exist. To surface any `SecurityViolation` in the UI, collect them from the policy's `onViolation` callback into a holder, then read that holder once the UI is up:
+KSafe can check whether the device is rooted or jailbroken, whether a debugger is attached to the
+process, whether this is a debug build, and whether it is running on an emulator or simulator —
+the four `SecurityViolation` values `RootedDevice`, `DebuggerAttached`, `DebugBuild` and
+`Emulator` (Web detects none). Every check is off (`IGNORE`) unless your `KSafeSecurityPolicy`
+turns it on.
+
+The checks run inside the `KSafe(...)` factory call — before your ViewModels exist — so to surface
+a violation in the UI, collect them from the policy's `onViolation` callback into a holder, then
+read that holder once the UI is up:
 
 ```kotlin
 // 1. Collect violations as KSafe initialises
@@ -721,7 +833,7 @@ class SecurityViewModel : ViewModel() {
 }
 ```
 
-The `ksafe-compose` module ships `UiSecurityViolation` — an `@Immutable` wrapper around `SecurityViolation` — so Compose can skip recomposition; prefer it over the raw enum in composable state. The policy actions (`WARN`/`BLOCK`), preset policies, and detection methods are documented in **[docs/SECURITY_MODEL.md](SECURITY_MODEL.md)**.
+The `ksafe-compose` module ships `UiSecurityViolation` — an `@Immutable` wrapper around `SecurityViolation` — so Compose can skip recomposition; prefer it over the raw enum in composable state. The policy actions (`IGNORE` — the default, where the check never runs — `WARN`, and `BLOCK`, which throws from the factory call), the preset policies, and the detection methods are documented in **[docs/SECURITY_MODEL.md](SECURITY_MODEL.md)**.
 
 ## Full ViewModel Example
 

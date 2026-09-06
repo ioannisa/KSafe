@@ -23,12 +23,9 @@ import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
 /**
- * iOS-specific tests for the new 2.0 storage-location behaviour:
- *
- *  1. The `directory` parameter routes the DataStore into a caller-supplied path.
- *  2. The 1.x → 2.0 auto-migration relocates a legacy file from
- *     `NSDocumentDirectory` to `NSApplicationSupportDirectory` on first launch.
- *  3. An explicit `directory` override skips the legacy migration.
+ * Locks in: the 2.0 storage-location rules — `directory` routes the DataStore into a caller-supplied
+ * path, `directory = null` relocates a 1.x file from `NSDocumentDirectory` to
+ * `NSApplicationSupportDirectory` on first launch, and an explicit `directory` skips that migration.
  */
 @OptIn(ExperimentalForeignApi::class, ExperimentalUuidApi::class)
 class IosStorageLocationTest {
@@ -90,7 +87,6 @@ class IosStorageLocationTest {
         }
     }
 
-    /** `directory = ...` routes the DataStore file into the caller-supplied path. */
     @Test
     fun directory_storesFileInProvidedDirectory() = runTest {
         val name = uniqueFileName("iosdir")
@@ -121,9 +117,8 @@ class IosStorageLocationTest {
     }
 
     /**
-     * 1.x → 2.0 auto-migration: when `directory == null` and the new
-     * NSApplicationSupportDirectory location is empty, a legacy file at the
-     * old NSDocumentDirectory path is relocated on KSafe construction.
+     * The relocation runs on construction only when `directory == null` and the new
+     * NSApplicationSupportDirectory location is still empty.
      */
     @Test
     fun legacyDocumentsFile_isMigratedToApplicationSupport() = runTest {
@@ -137,12 +132,10 @@ class IosStorageLocationTest {
         deleteFileIfExists(newPath)
 
         try {
-            // Simulate a 1.x install: legacy file present, new location empty.
             writeBytesAt(legacyPath, "legacy-1x-content")
             assertTrue(fileExists(legacyPath), "Setup: legacy file should exist before migration")
             assertFalse(fileExists(newPath), "Setup: new path should be empty before migration")
 
-            // Construct KSafe with default `directory = null` → migration runs.
             KSafe(fileName = name, testEngine = FakeEncryption())
 
             assertFalse(fileExists(legacyPath), "Legacy file should have been moved away")
@@ -153,11 +146,6 @@ class IosStorageLocationTest {
         }
     }
 
-    /**
-     * Locks in: data written at the legacy `NSDocumentDirectory` path is still
-     * readable after the 1.x → 2.0 auto-migration moves the file to
-     * `NSApplicationSupportDirectory`.
-     */
     @Test
     fun legacyDocumentsFile_dataIsReadableAfterMigration() = runTest {
         val name = uniqueFileName("iosmigdata")
@@ -169,8 +157,7 @@ class IosStorageLocationTest {
         deleteFileIfExists(newPath)
 
         try {
-            // Simulate a 1.x install: write a real DataStore file at
-            // NSDocumentDirectory through KSafe itself. FakeEncryption is
+            // A real 1.x file, written at NSDocumentDirectory through KSafe itself. FakeEncryption is
             // deterministic across instances, so a later instance can decrypt it.
             val v1Like = KSafe(
                 fileName = name,
@@ -181,17 +168,15 @@ class IosStorageLocationTest {
             v1Like.put("secretKey", "encrypted_value", KSafeWriteMode.Encrypted())
             v1Like.close()
 
-            // Durability barrier: close() does not flush DataStore, so poll the
-            // semantic invariant — a throwaway reader pinned to the legacy dir
-            // (directory != null ⇒ no migration) must read both values back.
-            // NSThread real-sleep because runTest's virtual clock skips kotlinx delay.
+            // close() does not flush DataStore, so poll the semantic invariant instead: a throwaway
+            // reader pinned to the legacy dir (directory != null ⇒ no migration) must read both values
+            // back. Real NSThread sleep, because runTest's virtual clock skips kotlinx delay.
             var durable = false
             var attempt = 0
             while (!durable && attempt < 80) {            // ~8s floor; longer if a reacquire blocks
                 attempt++
-                // Reopening the same file back-to-back can transiently throw
-                // "multiple DataStores active for the same file"; treat it as
-                // not-ready and retry rather than failing on the flake.
+                // Reopening the same file back-to-back can transiently throw "multiple DataStores
+                // active for the same file"; treat that as not-ready and retry rather than fail.
                 var probe: KSafe? = null
                 durable = try {
                     probe = KSafe(
@@ -216,7 +201,6 @@ class IosStorageLocationTest {
             assertTrue(fileExists(legacyPath), "Setup: legacy file should exist after writing")
             assertFalse(fileExists(newPath), "Setup: new path should be empty before migration")
 
-            // Default `directory = null` → auto-migration runs.
             val migrated = KSafe(fileName = name, testEngine = FakeEncryption())
             try {
                 assertFalse(fileExists(legacyPath), "Legacy file should have moved")
@@ -233,10 +217,6 @@ class IosStorageLocationTest {
         }
     }
 
-    /**
-     * Migration should NOT run when the consumer explicitly passes a `directory`,
-     * even if a legacy file happens to exist in NSDocumentDirectory.
-     */
     @Test
     fun explicitDirectory_skipsLegacyMigration() = runTest {
         val name = uniqueFileName("iosskipmig")
@@ -258,7 +238,6 @@ class IosStorageLocationTest {
             writeBytesAt(legacyPath, "legacy-content-should-stay-put")
             assertTrue(fileExists(legacyPath))
 
-            // Explicit `directory` → migration must not touch the legacy file.
             KSafe(fileName = name, directory = customDir, testEngine = FakeEncryption())
 
             assertTrue(

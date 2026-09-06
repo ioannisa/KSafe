@@ -12,25 +12,20 @@ internal fun isStringSerializer(serializer: KSerializer<*>): Boolean {
 }
 
 /**
- * [PrimitiveKind] of the serializer (nullable wrappers report the wrapped kind), or
- * `null` for non-primitives. Dispatching on the descriptor is required where runtime
- * type checks collapse — on Kotlin/JS `0f is Int` is true.
+ * [PrimitiveKind] of the serializer, or null for non-primitives; a nullable wrapper reports
+ * the wrapped kind.
  */
 @PublishedApi
 internal fun primitiveKindOrNull(serializer: KSerializer<*>): PrimitiveKind? {
-    // `.nullable` delegates `kind` to the wrapped type. Do NOT descend via
-    // getElementDescriptor(0): on a nullable @Serializable class that walks into the
-    // class's first field and can misreport it as a primitive.
+    // Descriptor, not a runtime check — on Kotlin/JS `0f is Int` is true. Do NOT descend via
+    // getElementDescriptor(0): on a nullable @Serializable class it misreports the first field.
     return serializer.descriptor.kind as? PrimitiveKind
 }
 
 /**
- * Like [primitiveKindOrNull], but only for the built-in primitive serializers.
- * Custom serializers (Duration, Uuid, kotlinx-datetime) declare primitive descriptors
- * yet are JSON-encoded by the write path; gating on the built-in serialName keeps the
- * read fast-path symmetric with what the write path stores raw. Nullable serialNames
- * carry a trailing `?`; inline (value-class) descriptors are excluded; BYTE/SHORT/CHAR
- * return null because they always round-trip through JSON.
+ * Like [primitiveKindOrNull] but only for the built-in primitive serializers: custom ones
+ * (Duration, Uuid, datetime) and BYTE/SHORT/CHAR are JSON-encoded by the write path, so gating
+ * on the built-in serialName keeps the read fast-path symmetric with it.
  */
 @PublishedApi
 internal fun builtInPrimitiveKindOrNull(serializer: KSerializer<*>): PrimitiveKind? {

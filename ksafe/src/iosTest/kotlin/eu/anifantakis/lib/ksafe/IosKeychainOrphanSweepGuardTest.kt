@@ -20,20 +20,10 @@ import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
 /**
- * Locks in, against the REAL Keychain and Secure Enclave, that a sweep over a store which
- * vouches for no encrypted entry destroys no key material: such a store is a partial view (failed
- * migration, quarantined file, a restore that recovered the Keychain but not the store), and the
- * keys it would reap cannot be recreated.
- *
- * The sweep is driven directly, as the macOS no-op test does, rather than through the `KSafe`
- * factory: the reaping path only exists for the DEFAULT store, and reaching it through the factory
- * would mean wiping the default DataStore file out from under the rest of the suite.
- *
- * Two environments weaken this today, and it asserts the property in both rather than the guard:
- * the Simulator has no reachable Keychain (the engine serves keys from a sandbox file store, so
- * the scans see nothing), and on a real device the scans DO return items but their attribute
- * lookup yields null for every one, so classification currently produces no candidates at all.
- * It begins discriminating the guard as soon as that lookup returns accounts again.
+ * Locks in, against the real Keychain and Secure Enclave, that a sweep over a store vouching for no
+ * encrypted entry destroys no key material: such a store is a partial view (failed migration,
+ * quarantined file, half-restored backup), and the keys it would reap cannot be recreated. Both
+ * environments are inert today — no Keychain on the Simulator, null attribute lookups on device.
  */
 @OptIn(ExperimentalUuidApi::class)
 class IosKeychainOrphanSweepGuardTest {
@@ -50,10 +40,9 @@ class IosKeychainOrphanSweepGuardTest {
     }
 
     /**
-     * The real engine, except that a delete is only CARRIED OUT for this test's own alias. The
+     * The real engine, except that deletes are only carried out for this test's own alias — the
      * root sweep classifies every unrecognised account under the service, so an unrestricted run
-     * on a real device could reap the rest of the suite's live keys; the recorded list still shows
-     * exactly what the sweep decided to destroy.
+     * on a device would reap the rest of the suite's live keys.
      */
     private class ScopedDeleteEngine(
         private val real: KSafeEncryption,
@@ -88,9 +77,8 @@ class IosKeychainOrphanSweepGuardTest {
 
     @Test
     fun secureEnclaveKeySurvivesASweepOverAStoreThatVouchesForNothing() = runBlocking {
-        // The Simulator's sandboxed test process has no reachable Keychain at all (key reads fail
-        // errSecNotAvailable, which is not the entitlement error the sandbox fallback engages on),
-        // so there is nothing here to mint, scan, or preserve.
+        // The Simulator's sandboxed test process has no reachable Keychain: reads fail
+        // errSecNotAvailable, not the entitlement error the sandbox fallback engages on.
         if (SecurityChecker.isEmulator()) {
             println("KSafe test: no Keychain on the Simulator — sweep unexercised.")
             return@runBlocking
@@ -102,8 +90,9 @@ class IosKeychainOrphanSweepGuardTest {
         try {
             assertContentEquals(plaintext, real.decrypt(alias, ciphertext), "precondition: the key is live")
 
-            // The whole store is one reserved rotation-state record: the encrypted entries it
-            // once had are gone, so it vouches for nothing and its keys are not orphans.
+            // Driven directly rather than through the KSafe factory: reaping only runs for the
+            // default store, and the factory route would wipe the default DataStore file out from
+            // under the rest of the suite. This store is one reserved record — it vouches for none.
             val scoped = ScopedDeleteEngine(real, setOf(alias))
             cleanupOrphanedKeychainEntries(
                 storage = SnapshotStorage(

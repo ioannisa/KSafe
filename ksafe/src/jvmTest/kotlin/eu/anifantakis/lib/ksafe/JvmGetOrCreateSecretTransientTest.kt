@@ -8,7 +8,9 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * Locks in: when a transient decrypt failure prevents reading back an existing secret, getOrCreateSecret raises the well-formed refuse-to-rotate IllegalStateException (never a raw keystore exception) and never regenerates, so the original secret survives.
+ * Locks in: when a transient decrypt failure prevents reading an existing secret back,
+ * getOrCreateSecret raises the well-formed refuse-to-rotate IllegalStateException — never a raw
+ * keystore exception — and never regenerates, so the original secret survives.
  */
 class JvmGetOrCreateSecretTransientTest {
 
@@ -41,7 +43,7 @@ class JvmGetOrCreateSecretTransientTest {
             "must NOT surface the raw keystore exception, was: ${ex.message}",
         )
 
-        // Device unlocks → the ORIGINAL secret is returned (never regenerated).
+        // Device unlocks → the original secret comes back.
         engine.failTransient = false
         val secret2 = ksafe.getOrCreateSecret(key = "db")
         assertContentEquals(secret1, secret2, "the existing secret must survive a transient-failure call — never rotated")

@@ -12,31 +12,26 @@ import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.random.Random
+import org.junit.runner.RunWith
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Randomized concurrency torture run — the CI job that hunts construction/teardown/coalescer
- * races on starved runners (the 2.2.0 cold-start race was exactly this failure class).
- *
- * OFF by default: enabled only with `-PksafeTorture` (CI's dedicated job), because it runs for
- * `ksafe.torture.seconds` (default 45) of wall-clock time. Reproduce a failure with the seed
- * printed at the start: `-PksafeTortureSeed=<seed>`.
- *
- * Philosophy: mid-run assertions on values are inherently racy, so the run only asserts
- * "no unexpected throw, no hang". Correctness is asserted at the quiesced boundaries:
- * every phase ends with a full write + read-back verification, a key rotation, and a
- * close/reopen cycle that must decrypt everything from cold state.
+ * Locks in: no unexpected throw and no hang under randomized concurrency on a starved runner — the
+ * failure class of the 2.2.0 cold-start race. Mid-run value assertions would be racy, so correctness
+ * is checked at the quiesced boundaries: write + read-back, rotation, cold reopen. Off unless
+ * `-PksafeTorture` (it burns `ksafe.torture.seconds`, default 45); replay with `-PksafeTortureSeed`.
  */
+@RunWith(SkipConditionRunner::class)
+@SkipUnless(TortureEnabled::class)
 class JvmTortureTest {
 
     private val tmp = File(System.getProperty("java.io.tmpdir"), "ksafe_torture_${System.nanoTime()}").apply { mkdirs() }
 
     @AfterTest fun tearDown() { tmp.deleteRecursively() }
 
-    private val enabled = System.getProperty("ksafe.torture") != null
     private val runSeconds = System.getProperty("ksafe.torture.seconds")?.toLongOrNull() ?: 45L
     private val seed = System.getProperty("ksafe.torture.seed")?.toLongOrNull() ?: Random.nextLong()
 
@@ -48,10 +43,6 @@ class JvmTortureTest {
 
     @Test
     fun randomizedConcurrencyTorture() {
-        if (!enabled) {
-            println("KSafe torture: skipped (enable with -PksafeTorture)")
-            return
-        }
         println("KSafe torture: seed=$seed seconds=$runSeconds workers=$workers")
 
         val unexpected = ConcurrentLinkedQueue<Throwable>()
@@ -62,7 +53,7 @@ class JvmTortureTest {
         try {
             runBlocking {
                 repeat(phases) { phase ->
-                    // ---- chaos window -------------------------------------------------------
+                    // Chaos window.
                     val deadline = System.currentTimeMillis() + phaseMs
                     val jobs = (0 until workers).map { workerId ->
                         launch(Dispatchers.Default) {
@@ -101,9 +92,8 @@ class JvmTortureTest {
                     }
                     jobs.joinAll()
 
-                    // ---- quiesced verification boundary -------------------------------------
-                    // Deterministic values for every key, then read-back — through the live
-                    // instance, after a rotation, and after a cold reopen.
+                    // Quiesced boundary: deterministic values for every key, then read back through
+                    // the live instance, after a rotation, and after a cold reopen.
                     runCatching {
                         val recs = ksafe.core.storage.snapshot().keys.filter { it.startsWith("ksafe_key_") }.sorted()
                         println(
@@ -142,7 +132,7 @@ class JvmTortureTest {
                         }
                     }
 
-                    // Pre-close forensic snapshot: which engine key records are on disk NOW.
+                    // Pre-close forensics: which engine key records are on disk at this point.
                     runCatching {
                         val snap = ksafe.core.storage.snapshot()
                         val recs = snap.keys.filter { it.startsWith("ksafe_key_") }.sorted()
@@ -188,7 +178,7 @@ class JvmTortureTest {
         assertTrue(true)
     }
 
-    /** Failure forensics: raw on-disk state for the missing key (meta, value presence, keygen, vault files). */
+    /** Failure forensics: the raw on-disk state behind a key that did not read back. */
     private suspend fun dumpDiagnostics(ksafe: KSafe, key: String, phase: Int) {
         runCatching {
             val snap = ksafe.core.storage.snapshot()
@@ -209,4 +199,9 @@ class JvmTortureTest {
         2 -> KSafeWriteMode.Encrypted(requireUnlockedDevice = true)
         else -> KSafeWriteMode.Encrypted()
     }
+}
+
+private object TortureEnabled : SkipCondition {
+    override fun skipReason(): String? =
+        if (System.getProperty("ksafe.torture") != null) null else "enable with -PksafeTorture"
 }

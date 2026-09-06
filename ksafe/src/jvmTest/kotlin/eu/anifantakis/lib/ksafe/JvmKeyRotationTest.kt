@@ -10,14 +10,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Locks in rotateKeys() (3.0.0): every encrypted entry is re-encrypted under a fresh key
- * generation, values keep reading back (same instance AND across a cold reopen), superseded
- * keys are deleted once unreferenced, new writes mint under the new generation, and a
- * concurrent user write is never clobbered by the rotation.
- *
- * FakeEncryption derives its XOR key from the alias string, so decrypting under the wrong
- * generation's alias yields garbage — a read that survives rotation proves the alias
- * bookkeeping end to end.
+ * Locks in rotateKeys(): every encrypted entry is re-encrypted under a fresh key generation, values
+ * keep reading back on the same instance and across a cold reopen, superseded keys are deleted once
+ * unreferenced, new writes mint under the new generation, and a concurrent user write is never
+ * clobbered. FakeEncryption keys its XOR on the alias, so a surviving read proves the bookkeeping.
  */
 class JvmKeyRotationTest {
 
@@ -48,15 +44,12 @@ class JvmKeyRotationTest {
         assertEquals(0, result.failed)
         assertEquals(2, result.keyGeneration)
 
-        // Every value still reads back after the rotation.
         assertEquals("secret-token", ksafe.get("token", ""))
         assertEquals(4711, ksafe.get("pin", 0))
         assertEquals("isolated", ksafe.get("hw", ""))
         assertEquals("not-encrypted", ksafe.get("plain", ""))
 
-        // The re-encrypts happened under generation-2 aliases...
         assertTrue(engine.encryptedKeys.any { it.endsWith(".g2") }, "rotation must mint .g2 aliases")
-        // ...and every generation-1 alias was deleted (fully-rotated store references nothing old).
         for (alias in generation1Aliases) {
             assertTrue(alias in engine.deletedKeys, "superseded generation-1 key '$alias' must be deleted")
         }
@@ -72,8 +65,8 @@ class JvmKeyRotationTest {
         first.rotateKeys()
         first.close()
 
-        // Fresh instance + fresh engine (FakeEncryption keys are derived from the alias, so a
-        // reopen decrypts iff the recorded generation resolves to the SAME alias).
+        // Fresh instance and engine: FakeEncryption keys off the alias, so the reopen decrypts only
+        // if the recorded generation resolves to the same alias.
         val reopened = newKSafe(fileName, FakeEncryption())
         assertEquals("persisted-secret", reopened.get("token", ""), "a rotated entry must decrypt after reopen")
         reopened.close()
@@ -108,9 +101,8 @@ class JvmKeyRotationTest {
         val ksafe = newKSafe("rot_race", FakeEncryption())
         ksafe.put("counter", "before")
 
-        // Whichever order the consumer serializes them in, the user write must win:
-        // rotate-then-put overwrites under the new generation; put-then-rotate makes the
-        // rotation's CAS skip the superseded snapshot.
+        // Either serialization order must let the user write win: rotate-then-put overwrites under
+        // the new generation, put-then-rotate makes the rotation's CAS skip the stale snapshot.
         coroutineScope {
             val rot = async { ksafe.rotateKeys() }
             ksafe.put("counter", "user-write-wins")

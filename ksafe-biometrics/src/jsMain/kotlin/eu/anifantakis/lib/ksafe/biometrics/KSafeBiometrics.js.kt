@@ -4,17 +4,14 @@ import kotlinx.browser.localStorage
 import kotlinx.coroutines.await
 import kotlin.js.Promise
 
-/**
- * Kotlin/JS actuals for the WebAuthn interop surface (see `KSafeBiometrics.web.kt` for the
- * ceremony semantics and [WEBAUTHN_DISPATCHER_JS] for the dispatcher shared with Kotlin/Wasm).
- */
+// Dispatcher source is shared with the Kotlin/Wasm twin.
 private val webAuthnDispatch: (String, String?) -> Promise<Any?> = js(WEBAUTHN_DISPATCHER_JS)
 
 internal actual suspend fun webAuthnCall(op: String, arg: String?): String =
     webAuthnDispatch(op, arg).await() as String
 
 internal actual fun webAuthnAbort() {
-    // Synchronous inside the dispatcher; the returned (already-resolved) Promise is irrelevant.
+    // Synchronous inside the dispatcher; the returned Promise is already resolved.
     webAuthnDispatch("abort", null)
 }
 

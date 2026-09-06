@@ -3,6 +3,7 @@ package eu.anifantakis.lib.ksafe
 import eu.anifantakis.lib.ksafe.internal.SecurityChecker
 import eu.anifantakis.lib.ksafe.internal.validateSecurityPolicy
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 
@@ -31,9 +32,21 @@ class JvmSecurityCheckerTest {
     }
 
     @Test
-    fun securityChecker_isDebugBuild_returnsBoolean() {
-        val result = SecurityChecker.isDebugBuild()
-        assertIs<Boolean>(result)
+    fun securityChecker_isDebugBuild_matchesTheJvmAssertionStatus() {
+        assertEquals(SecurityChecker::class.java.desiredAssertionStatus(), SecurityChecker.isDebugBuild())
+    }
+
+    @Test
+    fun securityChecker_isDebugBuild_isFalseWhenAssertionsAreDisabledForTheClass() {
+        val cls = SecurityChecker::class.java
+        val before = cls.desiredAssertionStatus()
+        cls.classLoader.setClassAssertionStatus(cls.name, false)
+        try {
+            assertFalse(cls.desiredAssertionStatus(), "precondition: the loader must honour the per-class switch")
+            assertFalse(SecurityChecker.isDebugBuild(), "no -ea for this class means not a debug build")
+        } finally {
+            cls.classLoader.setClassAssertionStatus(cls.name, before)
+        }
     }
 
     @Test
@@ -76,18 +89,11 @@ class JvmSecurityCheckerTest {
         assertFalse(callbackInvoked, "Callback should not be invoked when all actions are IGNORE")
     }
 
-    // Note: We can't easily test BLOCK behavior on JVM without mocking,
-    // since JVM typically doesn't have rooted/emulator conditions.
-    // Those tests would require dependency injection or mocking framework.
+    // BLOCK is unreachable here: a JVM never reports rooted or emulator, so provoking a
+    // violation would need mocking.
 
-    // Trimmed-JRE Throwable-safety is intentionally NOT unit-tested here. The
-    // scenario — a `jlink`-trimmed runtime missing `java.management` makes
-    // `ManagementFactory` throw `NoClassDefFoundError` (an Error, not an
-    // Exception) — cannot be reproduced in a standard test JVM, which always
-    // has the module. The production guard is the `catch (_: Throwable)` in
-    // SecurityChecker.jvm.kt (a plain `catch (Exception)` would let the Error
-    // escape and crash KSafe(...) construction). End-to-end verification lives
-    // in the demo's release distributable; see docs/JVM_PROTECTION.md. The
-    // `_returnsBoolean` tests above prove the probes are exception-safe under
-    // a healthy JVM.
+    // Trimmed-JRE Throwable-safety is not unit-tested: a `jlink` runtime missing java.management
+    // makes ManagementFactory throw NoClassDefFoundError — an Error that a plain catch(Exception)
+    // would let escape KSafe construction — and a healthy test JVM always has the module. The
+    // guard is the `catch (_: Throwable)` in SecurityChecker.jvm.kt; see docs/JVM_PROTECTION.md.
 }

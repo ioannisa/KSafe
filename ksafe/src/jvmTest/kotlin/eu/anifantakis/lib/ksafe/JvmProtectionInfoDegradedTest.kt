@@ -17,10 +17,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Locks in the `isEncryptionOperational` preflight on JVM: when an OS secret store EXISTS but fails
- * its construction self-test (locked Keychain/keyring, headless), KSafe refuses to mint keys so
- * every encrypted op throws — protectionInfo must report that as NON-operational, distinct from the
- * "no OS vault → software fallback" case which stays operational (weaker, but it encrypts fine).
+ * Locks in the `isEncryptionOperational` preflight on JVM: when an OS secret store exists but fails
+ * its construction self-test (locked Keychain/keyring, headless), KSafe refuses to mint keys, so
+ * protectionInfo must report it non-operational — unlike the "no OS vault → software fallback"
+ * case, which stays operational: weaker, but it encrypts fine.
  */
 class JvmProtectionInfoDegradedTest {
 
@@ -48,9 +48,8 @@ class JvmProtectionInfoDegradedTest {
 
     @Test
     fun protectionInfo_isNonOperational_whenOsVaultSelfTestFails() {
-        // jvmTest sets -Dksafe.jvm.keyVault=software; that opt-out would short-circuit pick() before
-        // it ever self-tests our candidate (and would make jvmProtectionInfo report opted-out).
-        // Clear it for the scope of this test so the self-test-failure path is exercised.
+        // jvmTest sets -Dksafe.jvm.keyVault=software, which short-circuits pick() before it can
+        // self-test our candidate — clear it so the self-test-failure path is reachable.
         val prop = "ksafe.jvm.keyVault"
         val saved = System.getProperty(prop)
         System.clearProperty(prop)
@@ -77,8 +76,8 @@ class JvmProtectionInfoDegradedTest {
 
     @Test
     fun protectionInfo_staysOperational_underSoftwareFallback() {
-        // The jvmTest default (-Dksafe.jvm.keyVault=software) selects the software vault: weaker than
-        // intended but fully operational — it must NOT be flagged non-operational.
+        // The jvmTest default (-Dksafe.jvm.keyVault=software) selects the software vault: weaker
+        // than intended, but fully operational.
         val ds = newDataStore()
         val engine = JvmSoftwareEncryption(dataStore = ds)
         val ksafe = KSafe(fileName = JvmKSafeTest.generateUniqueFileName(), testEngine = engine)

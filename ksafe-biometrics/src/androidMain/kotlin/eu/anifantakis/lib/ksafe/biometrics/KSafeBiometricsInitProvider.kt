@@ -7,10 +7,8 @@ import android.database.Cursor
 import android.net.Uri
 
 /**
- * Zero-config auto-initializer for [KSafeBiometrics]. Declared in the library manifest and
- * merged into the consumer's; Android instantiates it at startup with the application Context,
- * which bootstraps [BiometricHelper]'s activity-lifecycle tracking (the WorkManager/Firebase
- * pattern). To disable, remove the `<provider>` via `tools:node="remove"`.
+ * Declared in the library manifest, so Android runs it at process start and it initializes
+ * [BiometricHelper]. Remove the `<provider>` with `tools:node="remove"` to opt out.
  */
 internal class KSafeBiometricsInitProvider : ContentProvider() {
 
@@ -20,7 +18,6 @@ internal class KSafeBiometricsInitProvider : ContentProvider() {
         return true
     }
 
-    // Required ContentProvider methods — no-ops since we never serve data.
     override fun query(
         uri: Uri,
         projection: Array<out String>?,

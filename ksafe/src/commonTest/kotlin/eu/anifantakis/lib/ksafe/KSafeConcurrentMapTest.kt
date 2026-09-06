@@ -29,8 +29,7 @@ class KSafeConcurrentMapTest {
     @Test
     fun removeIf_neverClobbersAThirdWritersValue() {
         // Rollback safety: our repair inserted "mine", but a newer writer has since overwritten
-        // the slot with "theirs". Rolling back with our own value must be a no-op — it must not
-        // delete the newer writer's value.
+        // the slot — rolling back with our own value must be a no-op.
         val map = KSafeConcurrentMap<String>()
         map["k"] = "theirs"
 

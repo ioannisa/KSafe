@@ -84,7 +84,7 @@ class WebEncryptionProofTest {
 
     @Test
     fun negativeAssertionIsNotVacuous() = runTest {
-        // Guards the encrypted-write proof against a vacuous pass if containsUtf8 or encodeToByteArray regressed on a target.
+        // Guards the encrypted proof against a vacuous pass if containsUtf8 or encodeToByteArray regressed.
         val bytes = "prefix-$SENTINEL-suffix".encodeToByteArray()
         assertTrue(bytes.containsUtf8(SENTINEL))
         assertFalse(bytes.containsUtf8("NOT_PRESENT_MARKER_123"))

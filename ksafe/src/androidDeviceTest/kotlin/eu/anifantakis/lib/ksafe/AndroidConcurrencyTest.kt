@@ -7,6 +7,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.assertEquals
@@ -81,58 +82,62 @@ class AndroidConcurrencyTest {
     /** Pre-populated encrypted values must never transiently vanish while concurrent writes trigger DataStore emissions and cache refreshes. */
     @Test
     fun testExistingEncryptedValuesStableDuringConcurrentWrites() = runTest {
-        val ksafe = createKSafe()
-        val keyCount = 20
-        val defaultsReturned = AtomicInteger(0)
-        val errors = AtomicInteger(0)
+        // One thread per coroutine: the readers never suspend, so on a 2-vCPU emulator they
+        // would hold every Default worker and the writers would never run.
+        Executors.newFixedThreadPool(6).asCoroutineDispatcher().use { pool ->
+            val ksafe = createKSafe()
+            val keyCount = 20
+            val defaultsReturned = AtomicInteger(0)
+            val errors = AtomicInteger(0)
 
-        repeat(keyCount) { i ->
-            ksafe.put("stablekey$i", "stablevalue$i")
-        }
+            repeat(keyCount) { i ->
+                ksafe.put("stablekey$i", "stablevalue$i")
+            }
 
-        delay(300)
+            delay(300)
 
-        val running = AtomicBoolean(true)
+            val running = AtomicBoolean(true)
 
-        val readers = (0 until 3).map { readerId ->
-            launch(Dispatchers.Default) {
-                while (running.get()) {
-                    repeat(keyCount) { i ->
-                        try {
-                            val result = ksafe.getDirect("stablekey$i", "DEFAULT")
-                            if (result == "DEFAULT") {
-                                defaultsReturned.incrementAndGet()
+            val readers = (0 until 3).map {
+                launch(pool) {
+                    while (running.get()) {
+                        repeat(keyCount) { i ->
+                            try {
+                                val result = ksafe.getDirect("stablekey$i", "DEFAULT")
+                                if (result == "DEFAULT") {
+                                    defaultsReturned.incrementAndGet()
+                                }
+                            } catch (e: Exception) {
+                                errors.incrementAndGet()
                             }
+                        }
+                    }
+                }
+            }
+
+            // Writers churn new keys to trigger cache-refresh cycles.
+            val writers = (0 until 3).map { writerId ->
+                launch(pool) {
+                    repeat(50) { i ->
+                        try {
+                            ksafe.putDirect("churn${writerId}x$i", "churn$i")
                         } catch (e: Exception) {
                             errors.incrementAndGet()
                         }
                     }
                 }
             }
+
+            writers.joinAll()
+            running.set(false)
+            readers.joinAll()
+
+            assertEquals(0, errors.get(), "No exceptions during concurrent read/write")
+            assertEquals(
+                0, defaultsReturned.get(),
+                "Existing encrypted values must never transiently return default during concurrent writes"
+            )
         }
-
-        // Writers churn NEW keys to trigger cache-refresh cycles.
-        val writers = (0 until 3).map { writerId ->
-            launch(Dispatchers.Default) {
-                repeat(50) { i ->
-                    try {
-                        ksafe.putDirect("churn${writerId}x$i", "churn$i")
-                    } catch (e: Exception) {
-                        errors.incrementAndGet()
-                    }
-                }
-            }
-        }
-
-        writers.joinAll()
-        running.set(false)
-        readers.joinAll()
-
-        assertEquals(0, errors.get(), "No exceptions during concurrent read/write")
-        assertEquals(
-            0, defaultsReturned.get(),
-            "Existing encrypted values must never transiently return default during concurrent writes"
-        )
     }
 
     /** Mixed encrypted + unencrypted ops on one KSafe exercise cache handling for both key prefixes at once. */
@@ -207,7 +212,6 @@ class AndroidConcurrencyTest {
         assertEquals(0, errors.get(), "No exceptions during rapid overwrite")
     }
 
-    /** putDirect values are eventually persisted and readable via the suspend get API. */
     @Test
     fun testPutDirectEventuallyPersists() = runTest {
         val ksafe = createKSafe()
@@ -223,7 +227,6 @@ class AndroidConcurrencyTest {
         assertEquals("persistvalue", result, "putDirect value must be readable via suspend get after flush")
     }
 
-    /** getDirect on a missing key returns the default gracefully even before the background collector finishes. */
     @Test
     fun testGetDirectBeforeCacheInitReturnsDefault() = runTest {
         val ksafe = createKSafe()

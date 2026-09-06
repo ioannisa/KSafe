@@ -6,12 +6,10 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Pins how an entry's four routing fields are read out of its stored metadata.
- *
- * Every one of them decides which key an entry decrypts under, so a change of reading — not just
- * of writing — silently re-routes live data. The cases below are the ones where the four fields
- * DISAGREE about a record: a malformed value for one must not move the others, which is what
- * makes reading them field-by-field observably different from reading them together.
+ * Pins how an entry's four routing fields are read out of its stored metadata. Each one decides
+ * which key the entry decrypts under, so a change of reading — not just of writing — silently
+ * re-routes live data. The cases below are the ones where the fields disagree about a record: a
+ * malformed value for one must not take the others down with it.
  */
 class EntryRoutingParseTest {
 
@@ -67,9 +65,8 @@ class EntryRoutingParseTest {
     }
 
     /**
-     * The four fields are also readable one at a time, by callers holding only a raw string.
-     * Both ways must answer identically for every record — including the malformed ones, where
-     * a shared parse could otherwise let one bad field take the rest of the record down with it.
+     * The four fields are also readable one at a time, by callers holding only a raw string. Both
+     * ways must answer identically for every record, malformed ones included.
      */
     @Test
     fun readingTheFieldsSeparatelyAgreesWithReadingThemTogether() {

@@ -1,9 +1,6 @@
 package eu.anifantakis.lib.ksafe.internal
 
-/**
- * Web (wasmJs + js) security checker implementation.
- * Security checks are not applicable in browser environments.
- */
+/** A browser exposes no root, debugger or emulator signal, so every check reports clean. */
 internal actual object SecurityChecker {
     actual fun isDeviceRooted(): Boolean = false
     actual fun isDebuggerAttached(): Boolean = false

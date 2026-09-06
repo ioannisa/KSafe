@@ -10,28 +10,12 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * Injectivity of the alias grammar, as a property rather than a list of remembered witnesses.
- *
- * Every OS key store KSafe writes into is ONE flat namespace shared by every store instance on
- * the device: the Android Keystore, the Apple Keychain, the JVM vault, the web key store. Two
- * distinct logical identities that spell the same alias share one physical key — rotating,
- * tightening or deleting either destroys the other's data. So the map
- *
- *     (userKey x namespace x generation x strict/master/marker) -> alias
- *
- * must be injective, modulo one documented exception (see [isLegalByDesign]).
- *
- * THE COUPLING THAT MAKES THIS A TEST OF THE GUARD, NOT JUST OF THE FORMAT: a generated user key
- * that `requireWritableUserKey` rejects is SKIPPED, because such an entry cannot exist. Weaken
- * the guard and the skipped keys re-enter the corpus, collide, and turn this test red. The alias
- * format and the reservation guard are therefore locked to each other by construction.
- *
- * The corpus is adversarial by design and generated from a deterministic seeded LCG, never a
- * platform RNG: a failure here must reproduce byte-for-byte on every target.
+ * Locks in: the map (userKey x namespace x generation x strict/master/marker) -> alias is injective,
+ * modulo the one exception in [isLegalByDesign]. Each OS key store is one flat namespace, so two
+ * identities spelling the same alias share a physical key and mutating either destroys the other.
+ * Keys `requireWritableUserKey` rejects are skipped, which locks the alias format to the guard.
  */
 class KSafeAliasInjectivityTest {
-
-    // ---- identity model --------------------------------------------------------------------
 
     private enum class Kind { MASTER, MASTER_LOCKED, PER_ENTRY, STRICT }
 
@@ -56,9 +40,9 @@ class KSafeAliasInjectivityTest {
     }
 
     /**
-     * How a DEFAULT store must spell [key] for its base alias to land on the named store
-     * [namespace]'s: the plane's delimiter, WITHOUT the store-identity prefix the dotted format
-     * prepends to both sides anyway. This is the "dotted user key" of the documented collision.
+     * How a default store must spell [key] for its base alias to land on the named store
+     * [namespace]'s: the plane's delimiter, without the store-identity prefix the dotted format
+     * prepends to both sides anyway.
      */
     private fun twinSpelling(plane: Plane, namespace: String, key: String): String = when (plane) {
         Plane.DOTTED -> "$namespace.$key"
@@ -92,25 +76,16 @@ class KSafeAliasInjectivityTest {
     }
 
     /**
-     * THE ALLOWLIST — one entry, deliberate and documented.
-     *
-     * At generation 1 the relaxed per-entry alias IS the bare base alias: the exact name every
-     * pre-rotation release minted, frozen so existing keys need no migration. A default store's
-     * joined key (`"vault.token"` / `"vault:token"`) therefore spells the same base as the named
-     * store `"vault"`'s key `"token"`, and any marker hung off it inherits that. This is the
-     * documented published-format collision called out in
-     * `KSafeCore.perEntryAliasWithGeneration`; the fingerprint closes it for every rotated
-     * generation and the strict variant never had it.
-     *
-     * Nothing else is legal. A second entry here would be a format change, not a test fix.
+     * The one legal collision, and a second entry here would be a format change rather than a test
+     * fix: at generation 1 the relaxed per-entry alias is the bare base alias — the name every
+     * pre-rotation release minted — so a default store's joined key `"vault.token"` spells the same
+     * base as store `"vault"`'s key `"token"`. Rotation's fingerprint closes it; strict never had it.
      */
     private fun isLegalByDesign(plane: Plane, a: Identity, b: Identity): Boolean =
         a.kind == Kind.PER_ENTRY && b.kind == Kind.PER_ENTRY &&
             a.generation == 1 && b.generation == 1 &&
             a.marker == b.marker &&
             baseAlias(plane, a) == baseAlias(plane, b)
-
-    // ---- deterministic corpus --------------------------------------------------------------
 
     /** 64-bit LCG (Knuth's MMIX constants). Seeded and platform-independent — a failure reproduces. */
     private class Lcg(private var state: Long) {
@@ -127,8 +102,8 @@ class KSafeAliasInjectivityTest {
 
     /** Fragments that make an accidental alias spelling as likely as the generator can manage. */
     private fun fragments(): List<String> {
-        // Real fingerprints of identities that ARE in the corpus: a user key carrying the exact
-        // hex its neighbour's rotated alias ends in was a live collision once.
+        // Real fingerprints of identities in the corpus: a user key carrying the exact hex its
+        // neighbour's rotated alias ends in was a live collision once.
         val realFingerprints = buildList {
             for (ns in namespaces) for (k in listOf("foo", "token", "a.b", "")) {
                 add(".h${KSafeCore.aliasFingerprint(ns, k)}")
@@ -161,15 +136,14 @@ class KSafeAliasInjectivityTest {
         val frags = fragments()
         val keys = LinkedHashSet<String>()
         keys += ""
-        keys += "z".repeat(4000) // very long
+        keys += "z".repeat(4000)
         repeat(12_000) {
             val sb = StringBuilder()
             repeat(1 + lcg.nextInt(4)) { sb.append(lcg.pick(frags)) }
             keys += sb.toString()
         }
-        // Deliberate cross-namespace twins: the same logical entry reached as a named store's
-        // bare key and as the default store's joined key. Random generation would hit these only
-        // by luck and they are the whole point.
+        // Cross-namespace twins: one logical entry reached as a named store's bare key and as the
+        // default store's joined key. The generator would hit these only by luck.
         for (ns in namespaces.filterNotNull()) {
             for (k in twinBaseKeys) keys += twinSpelling(plane, ns, k)
         }
@@ -181,12 +155,10 @@ class KSafeAliasInjectivityTest {
         listOf("token", "foo", "", "a.b", ".g2", "__ksafe_master__", "x.__ksafe_strict__")
 
     /**
-     * User keys that SPELL another identity's alias, planted exhaustively rather than left to the
-     * generator: hitting a specific three-fragment composition by chance is a fraction of a
-     * percent, and these are the shapes that actually went wrong. Every historical rotated-alias
-     * format is here — the bare `.gN` suffix, the fingerprint-only suffix, and the current
-     * sentinel-bearing one — so removing any of the disambiguators from the format collides.
-     * The reserved shapes are dropped by the guard filter; that is the guard doing its job.
+     * User keys that spell another identity's alias, planted rather than left to the generator,
+     * which would hit a specific three-fragment composition only by luck. Every historical
+     * rotated-alias format is here — bare `.gN`, fingerprint-only, and the current sentinel-bearing
+     * one — so dropping any disambiguator collides. Reserved shapes fall out to the guard filter.
      */
     private fun aliasLookalikeKeys(): List<String> = buildList {
         for (ns in namespaces) {
@@ -220,7 +192,6 @@ class KSafeAliasInjectivityTest {
                 }
             }
         }
-        // The twins and the alias lookalikes, exhaustively rather than by sampling.
         val twinKeys = (twinBaseKeys + aliasLookalikeKeys() + namespaces.filterNotNull().flatMap { ns ->
             twinBaseKeys.map { twinSpelling(plane, ns, it) }
         }).filter { runCatching { KeySafeMetadataManager.requireWritableUserKey(it) }.isSuccess }
@@ -234,7 +205,6 @@ class KSafeAliasInjectivityTest {
                 }
             }
         }
-        // Sample the adversarial corpus up to the target.
         var attempts = 0
         while (identities.size < target && attempts < target * 8) {
             attempts++
@@ -248,8 +218,6 @@ class KSafeAliasInjectivityTest {
         }
         return identities.toList()
     }
-
-    // ---- the property ----------------------------------------------------------------------
 
     private fun assertInjective(plane: Plane) {
         val target = 20_000
@@ -293,9 +261,8 @@ class KSafeAliasInjectivityTest {
 
     @Test
     fun theDocumentedGeneration1Collision_closesAtEveryRotatedGeneration() {
-        // States the allowlist's boundary directly: the twins it covers at generation 1 must
-        // diverge the moment either is rotated, and must never have collided under the strict
-        // variant. This is what keeps the allowlist from quietly widening.
+        // The allowlist's boundary: its generation-1 twins must diverge the moment either is
+        // rotated, and must never have collided under strict. This keeps the allowlist from widening.
         for (plane in Plane.entries) {
             val defaultStoreKey = twinSpelling(plane, "vault", "token")
             val a = Identity("vault", "token", 1, Kind.PER_ENTRY, null)
@@ -317,8 +284,6 @@ class KSafeAliasInjectivityTest {
             )
         }
     }
-
-    // ---- readable failures -----------------------------------------------------------------
 
     private fun Identity.debug(): String =
         "Identity(ns=${namespace?.let { "\"$it\"" }}, key=${userKey?.debug()}, " +

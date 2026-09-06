@@ -9,12 +9,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /**
- * Locks in the fence the Android DEK cache and the Apple key-bytes cache now share: a value read
- * before a wipe must never enter the cache after it, or the engine keeps serving key material
- * whose persisted record is gone — readable for the session, unreadable after the next launch.
- *
- * The put-then-revalidate undo is not reachable single-threaded (it needs a wipe to land between
- * the helper's two epoch reads); its value-conditional half is covered by [KSafeConcurrentMapTest].
+ * Locks in the fence the Android DEK cache and the Apple key-bytes cache share: a value read before
+ * a wipe must never enter the cache after it, or the engine keeps serving key material whose
+ * persisted record is gone — readable for the session, unreadable after the next launch. The
+ * put-then-revalidate undo needs a real race; [KSafeConcurrentMapTest] covers its conditional half.
  */
 @OptIn(ExperimentalAtomicApi::class)
 class PurgeFenceInsertTest {

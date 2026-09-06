@@ -8,10 +8,9 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertNull
 
 /**
- * Locks in: the Simulator fallback's REAL sandbox file store on an actual iOS Simulator —
- * directory creation, atomic write, SHA-256 file naming, read-back across engine
- * instances, and deletion. The Keychain fake forces the -34018 path deterministically
- * regardless of the test runner's own entitlements.
+ * Locks in: the Simulator fallback's real sandbox file store on an actual iOS Simulator —
+ * directory creation, atomic write, SHA-256 file naming, read-back across engine instances and
+ * deletion. The Keychain fake forces the -34018 path whatever the runner's own entitlements are.
  */
 class IosSimulatorFallbackTest {
 

@@ -6,6 +6,7 @@ import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinAndroidTarget
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.android.kotlin.multiplatform.library)
+    alias(libs.plugins.gradle.test.retry)
     alias(libs.plugins.vanniktech.mavenPublish)
 }
 
@@ -111,6 +112,14 @@ kotlin {
         // appleMain is shared by iosX64/iosArm64/iosSimulatorArm64 + macosX64/macosArm64.
         // LocalAuthentication framework is part of the Apple SDKs — no extra dep needed.
 
+        // The Apple actuals deliver on Dispatchers.Main, which a test binary never pumps:
+        // the native tests swap it for a test dispatcher.
+        getByName("appleTest") {
+            dependencies {
+                implementation(libs.kotlinx.coroutines.test)
+            }
+        }
+
         jvmMain {
             dependencies {
                 // Native bridges for real desktop prompts: macOS Touch ID via the ObjC
@@ -133,6 +142,23 @@ tasks.withType<Test>().configureEach {
     // Forward the live-probe opt-in (`-Dksafe.biometrics.live=1`) to test workers:
     // it gates DesktopBiometricsTest.livePrompt, which pops a REAL system prompt.
     System.getProperty("ksafe.biometrics.live")?.let { systemProperty("ksafe.biometrics.live", it) }
+}
+
+// Same isolation as :ksafe's jvmTest: software key vault (no OS Keychain/keyring), a disposable
+// user.home under build/, and CI-only flaky-test retry.
+tasks.named<Test>("jvmTest") {
+    if (providers.environmentVariable("KSAFE_KEYVAULT_IT").orNull.isNullOrBlank()) {
+        systemProperty("ksafe.jvm.keyVault", "software")
+    }
+    val testHome = layout.buildDirectory.dir("ksafe-test-home").get().asFile
+    systemProperty("user.home", testHome.absolutePath)
+    doFirst { testHome.mkdirs() }
+    retry {
+        val onCi = providers.environmentVariable("CI").orNull?.equals("true", ignoreCase = true) == true
+        maxRetries.set(if (onCi) 2 else 0)
+        maxFailures.set(8)
+        failOnPassedAfterRetry.set(false)
+    }
 }
 
 // Coordinates, licence, developer and SCM metadata come from the root build script.

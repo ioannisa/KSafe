@@ -30,16 +30,10 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * The rotation lifecycle invariants, exercised on EVERY target rather than on the JVM alone.
- *
- * The state machine lives in commonMain, but its coroutine behaviour does not: web is
- * single-threaded, native has its own memory model, and Android runs the same code on a different
- * dispatcher. `JvmGenerationAuthorityTest` remains the exhaustive suite; this one carries the cases
- * whose failure would be silent and unrecoverable — crash resume, the bounded retry claim, and the
- * conservative adoption of a 3.0.0 record — so they are proven wherever KSafe ships.
- *
- * Storage here is an in-memory fake, so this suite proves the machine, not the substrate: real
- * write atomicity and cross-instance exclusion remain a per-backend property.
+ * Locks in the rotation lifecycle on EVERY target, not the JVM alone: web is single-threaded, native
+ * has its own memory model, Android uses another dispatcher. Carries the cases whose failure would be
+ * silent — crash resume, the bounded retry claim, adoption of a 3.0.0 record. Storage is an in-memory
+ * fake, so this proves the machine; write atomicity stays a per-backend property.
  */
 class KSafeRotationLifecycleTest {
 
@@ -61,6 +55,15 @@ class KSafeRotationLifecycleTest {
         override suspend fun snapshot(): Map<String, StoredValue> = state.value
         override fun snapshotFlow(): Flow<Map<String, StoredValue>> = state
         override suspend fun applyBatch(ops: List<StorageOp>) {
+            state.update { cur ->
+                val m = cur.toMutableMap()
+                for (op in ops) when (op) {
+                    is StorageOp.Put -> m[op.rawKey] = op.value
+                    is StorageOp.Delete -> m.remove(op.rawKey)
+                }
+                m
+            }
+            // Counted after the state carries it, or a poll can see the claim before the record.
             for (op in ops) {
                 if (
                     op is StorageOp.Put &&
@@ -71,14 +74,6 @@ class KSafeRotationLifecycleTest {
                 ) {
                     inProgressKeygenWrites++
                 }
-            }
-            state.update { cur ->
-                val m = cur.toMutableMap()
-                for (op in ops) when (op) {
-                    is StorageOp.Put -> m[op.rawKey] = op.value
-                    is StorageOp.Delete -> m.remove(op.rawKey)
-                }
-                m
             }
         }
         override suspend fun clear() { state.value = emptyMap() }
@@ -128,9 +123,8 @@ class KSafeRotationLifecycleTest {
     private fun valueKey(key: String) = KeySafeMetadataManager.valueRawKey(key)
 
     /**
-     * Startup maintenance runs on a background scope, so these assertions need real elapsed time.
-     * `runTest`'s virtual clock would spin the poll loop to its deadline without ever yielding to
-     * that scope, hence the hop onto a real dispatcher.
+     * Startup maintenance runs on a background scope, so these waits need real elapsed time:
+     * `runTest`'s clock would spin the poll loop to its deadline without ever yielding to that scope.
      */
     private suspend fun awaitUntil(
         what: String,
@@ -158,9 +152,8 @@ class KSafeRotationLifecycleTest {
         val storage = InMemoryStorage()
         val engine = StatefulFakeEncryption()
 
-        // The exact durable state a process can leave after bumping to g2: one older v2/g1 entry,
-        // one write that already landed at v3/g2, and the in-progress marker. Both masters exist,
-        // so the mixed store is readable before recovery.
+        // The exact durable state a process can leave after bumping to g2: one older v2/g1 entry, one
+        // write already at v3/g2, the in-progress marker. Both masters exist, so it reads pre-recovery.
         val oldCiphertext = engine.encrypt(
             identifier = "master",
             data = "\"old-value\"".encodeToByteArray(),
@@ -203,8 +196,8 @@ class KSafeRotationLifecycleTest {
             keygenKey to StoredValue.Text("""{"g":2,"ts":123,"r":1}"""),
         )
 
-        // Constructing the next eager instance is enough: KSafeConfig() is Never, because crash
-        // recovery is lifecycle repair rather than a scheduled-rotation policy.
+        // Constructing the next eager instance is enough even under Never: crash recovery is
+        // lifecycle repair, not a scheduled-rotation policy.
         val reopened = buildCore(storage, engine, lazyLoad = false)
         awaitUntil("the interrupted g2 pass to finish and disarm") {
             KeySafeMetadataManager.parseKeyGeneration(storage.text(metaKey("old"))) == 2 &&
@@ -237,9 +230,8 @@ class KSafeRotationLifecycleTest {
             mode = KSafeWriteMode.Encrypted(requireUnlockedDevice = true),
             serializer = String.serializer(),
         )
-        // The durable state left when the last remaining attempt was decremented before work and
-        // the process then died: the claimed retry still needs crash recovery, but no later
-        // normally-completed retry remains.
+        // What dying right after decrementing the last attempt leaves behind: a claimed retry that
+        // still needs crash recovery, with no further retry left to run normally.
         storage.seed(keygenKey to StoredValue.Text("""{"g":2,"ts":123,"r":1,"rp":0}"""))
         creator.cancel()
 
@@ -578,11 +570,8 @@ class KSafeRotationLifecycleTest {
     // ---- a metadata record whose value never landed ----------------------------------------
 
     /**
-     * The web batch ordering deliberately lets metadata survive a tear without its value. Such a
-     * record is invisible to both reapers — rotation needs a ciphertext to build a candidate, and
-     * the orphan sweep enumerates value records — so if the master sweep counts it as a live
-     * reference, the superseded master is never retired and rotation silently stops achieving the
-     * one thing it exists for.
+     * The web backend writes metadata before its value, so a tear leaves a record both reapers ignore.
+     * If the master sweep counts it as a live reference, the superseded master is never retired.
      */
     @Test
     fun metadataWithoutItsValueDoesNotPinASupersededMaster() = runTest {
@@ -680,9 +669,8 @@ class KSafeRotationLifecycleTest {
         creator.startupCleanupDone.set(true)
         creator.putRaw("old", "old-value", KSafeWriteMode.Encrypted(), String.serializer())
 
-        // The mixed-generation state 3.0.0 could leave after a crash: the store bumped to g2, a
-        // later write already used g2, one older entry remains on g1. 3.0.0 had no lifecycle field,
-        // so absence must be adopted as completed rather than guessed to be an interrupted pass.
+        // The mixed-generation state 3.0.0 could leave after a crash. It had no lifecycle field, so
+        // absence must be adopted as completed rather than guessed to be an interrupted pass.
         storage.seed(keygenKey to StoredValue.Text("""{"g":2,"ts":1}"""))
         creator.putRaw("new", "new-value", KSafeWriteMode.Encrypted(), String.serializer())
         val oldValueBefore = storage.text(valueKey("old"))

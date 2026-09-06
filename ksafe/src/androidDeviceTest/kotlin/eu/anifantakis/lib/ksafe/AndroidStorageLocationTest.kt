@@ -21,7 +21,6 @@ class AndroidStorageLocationTest {
         return "${prefix.lowercase()}_$salt"
     }
 
-    /** `baseDir = customDir` routes the DataStore file into the provided directory. */
     @Test
     fun baseDir_storesFileInProvidedDirectory() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
@@ -42,7 +41,7 @@ class AndroidStorageLocationTest {
         }
     }
 
-    /** Same fileName + different baseDir must yield isolated DataStores: the cache key is the absolute path, so they don't collapse onto one store and trip "multiple active instances". */
+    /** The cache key is the absolute path, so same-fileName instances in different dirs stay isolated. */
     @Test
     fun baseDir_dataStoreCacheKey_isolatesByPath() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
@@ -62,8 +61,7 @@ class AndroidStorageLocationTest {
             assertTrue(fileA.exists(), "File should exist in dirA")
             assertTrue(fileB.exists(), "File should exist in dirB")
 
-            // Reaching here without a "multiple active instances" crash already proves path
-            // isolation; the values confirm each instance has its own store.
+            // Reaching here without a "multiple active instances" crash already proves path isolation.
             assertEquals("value_a", safeA.get("k", "fallback"))
             assertEquals("value_b", safeB.get("k", "fallback"))
         } finally {

@@ -47,7 +47,6 @@ class DataStoreStorageCrossTypeTest {
         storage.applyBatch(listOf(StorageOp.Put(rawKey, StoredValue.IntVal(42))))
         assertEquals(StoredValue.IntVal(42), storage.snapshot()[rawKey])
 
-        // Re-write as encrypted Text under the SAME raw key.
         storage.applyBatch(listOf(StorageOp.Put(rawKey, StoredValue.Text("ciphertext-base64"))))
 
         val snap = storage.snapshot()

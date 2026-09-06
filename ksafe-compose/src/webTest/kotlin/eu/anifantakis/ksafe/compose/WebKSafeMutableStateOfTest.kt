@@ -34,12 +34,12 @@ class WebKSafeMutableStateOfTest {
         // Fresh instance (same fileName) simulates a page reload: the cache is empty until warmed.
         val reader = KSafe(fileName = fileName)
 
-        // Cold start: synchronous reads return the default until the cache warms — this is what
-        // makes mutableStateOf boot with the default and trigger self-heal.
+        // Cold start: sync reads return the default until the cache warms — which is what makes
+        // mutableStateOf boot with the default and then self-heal.
         assertEquals(default, reader.getDirect(key, default))
 
-        // Self-heal relies on getFlow's first emission already carrying the persisted value, even
-        // with a cold cache, because LocalStorageStorage seeds its flow from localStorage on construction.
+        // Self-heal relies on getFlow's first emission already carrying the persisted value on a
+        // cold cache: LocalStorageStorage seeds its flow from localStorage on construction.
         val flowed = reader.getFlow(key, default).first()
         assertEquals(stored, flowed)
 
@@ -49,8 +49,8 @@ class WebKSafeMutableStateOfTest {
             mode = KSafeWriteMode.Plain,
         )
         assertEquals(default, value, "cold-start initial read returns default")
-        // The self-heal runs on a real Dispatchers.Default scope; yield() drives the browser event
-        // loop. Poll with an early exit rather than a fixed yield count, which flakes on a slow loop.
+        // Self-heal runs on a real Dispatchers.Default scope and yield() drives the browser event
+        // loop; poll with an early exit, since a fixed yield count flakes on a slow loop.
         var polls = 0
         while (value != stored && polls < 2_000) { yield(); polls++ }
         assertEquals(stored, value, "self-heal must update Compose state to the persisted value")

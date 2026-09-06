@@ -8,11 +8,9 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 /**
- * Locks in: a strict (`requireUnlockedDevice`) access evicts any plaintext key bytes that a
- * previous non-strict write left in the engine's in-process key-bytes cache.
- *
- * Real Keychain round-trips can't run in the Kotlin/Native test runner, so an in-memory
- * [AppleKeychainStore] stands in.
+ * Locks in: a strict (`requireUnlockedDevice`) access evicts any plaintext key bytes a previous
+ * non-strict write left in the engine's in-process cache. Real Keychain round-trips can't run in
+ * the Kotlin/Native test runner, so an in-memory [AppleKeychainStore] stands in.
  */
 class MacosStrictKeyCacheEvictionTest {
 
@@ -21,11 +19,9 @@ class MacosStrictKeyCacheEvictionTest {
         val engine = AppleKeychainEncryption(keychainStore = FakeKeychainStore())
         val id = "alias1"
 
-        // A non-strict write caches the plaintext key in-process.
         engine.getOrCreateKeychainKey(id, hardwareIsolated = false, requireUnlockedDevice = false)
         assertNotNull(engine.cachedKeyBytesForTest(id), "precondition: a non-strict write caches the plaintext key")
 
-        // Rewriting the SAME key strict must evict the lingering plaintext bytes.
         engine.getOrCreateKeychainKey(id, hardwareIsolated = false, requireUnlockedDevice = true)
         assertNull(
             engine.cachedKeyBytesForTest(id),

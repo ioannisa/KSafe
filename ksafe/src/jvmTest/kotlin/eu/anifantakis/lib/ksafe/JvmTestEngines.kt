@@ -3,12 +3,10 @@ package eu.anifantakis.lib.ksafe
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
 
 /**
- * The [KSafeEncryption] doubles shared across the jvmTest suite.
- *
- * They live here rather than nested in each test class because each was pasted into two to four
- * files verbatim, and a double whose failure phrase drifts in one copy silently stops exercising
- * the classification path the test exists to prove. They stay in jvmTest — `@Volatile` has no
- * js/wasm target, so commonTest is not a reachable home.
+ * The [KSafeEncryption] doubles shared across the jvmTest suite. They live here because each was
+ * pasted into two to four files verbatim, and a double whose failure phrase drifts in one copy
+ * silently stops exercising the classification path its test exists to prove. jvmTest rather than
+ * commonTest: `@Volatile` has no js/wasm target.
  */
 
 /** Ciphertext == plaintext bytes, so a seeded snapshot's `Text` decrypts to exactly what it encodes. */
@@ -31,7 +29,7 @@ internal class IdentityEngine : KSafeEncryption {
     override fun deleteKey(identifier: String) {}
 }
 
-/** XOR-encrypts, but `decrypt` throws a TRANSIENT (device-locked) error while armed. */
+/** XOR-encrypts, but `decrypt` throws a transient device-locked error while armed. */
 internal class ToggleTransientEngine : KSafeEncryption {
     @Volatile var failTransient = false
     private val xor = FakeEncryption()
@@ -58,9 +56,8 @@ internal class ToggleTransientEngine : KSafeEncryption {
 }
 
 /**
- * XOR [FakeEncryption] whose `encrypt` throws when the plaintext contains [failMarker].
- * Keying failure off the payload (not the alias) fails one DEFAULT key while its
- * master-alias siblings still succeed.
+ * XOR [FakeEncryption] whose `encrypt` throws when the plaintext contains [failMarker]. Keying
+ * failure off the payload rather than the alias fails one key while its siblings still succeed.
  */
 internal class MarkerFailEncryption(private val failMarker: String) : KSafeEncryption {
     private val xor = FakeEncryption()

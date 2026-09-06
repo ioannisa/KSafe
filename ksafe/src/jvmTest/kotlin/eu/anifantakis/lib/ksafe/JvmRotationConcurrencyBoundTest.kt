@@ -10,14 +10,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Locks in the two properties a rotation over a LARGE store has to keep, both of which the
- * per-entry tests are blind to because they never rotate enough entries to reach the limit.
- *
- * 1. Every entry rotates, however many there are — no straggler left on the old generation.
- * 2. Only a bounded number of entries are decrypted at once. Rotation is the one operation
- *    that holds plaintext for entries the caller never asked for, so how much of the store
- *    can be in the clear simultaneously is a property in its own right, independent of
- *    whatever loop shape produces it.
+ * Locks in the two properties a rotation over a large store has to keep, which the per-entry tests
+ * never reach: every entry rotates however many there are, and only a bounded number is decrypted
+ * at once. Rotation is the one operation holding plaintext for entries nobody asked for, so how
+ * much of the store can be in the clear at the same time is a property in its own right.
  */
 class JvmRotationConcurrencyBoundTest {
 
@@ -26,9 +22,8 @@ class JvmRotationConcurrencyBoundTest {
     @AfterTest fun tearDown() { tmp.deleteRecursively() }
 
     /**
-     * Counts entries between their decrypt and the re-encrypt that consumes the plaintext.
-     * The suspend entry points are interface defaults delegating to these, so counting here
-     * catches the rotation path.
+     * Counts entries between their decrypt and the re-encrypt that consumes the plaintext. The
+     * suspend entry points are interface defaults delegating to these, so counting here catches it.
      */
     private class InFlightCountingEngine : StatefulFakeEncryption() {
         private val inFlight = AtomicInteger(0)

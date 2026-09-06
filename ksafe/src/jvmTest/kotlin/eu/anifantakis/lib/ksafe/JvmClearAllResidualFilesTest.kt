@@ -25,7 +25,7 @@ class JvmClearAllResidualFilesTest {
         val migratedJson = File(tmp, "$base.ksafe.json.migrated").apply { writeText("CIPHERTEXT") }
         val migratedKeys = File(tmp, "$base.ksafe-keys.json.migrated").apply { writeText("PLAINTEXT-AES-KEYS") }
         val corrupt = File(tmp, "$base.ksafe.json.corrupt-123").apply { writeText("CIPHERTEXT") }
-        // A DIFFERENT safe in the same directory — its residue must NOT be touched.
+        // A different safe in the same directory — its residue must not be touched.
         val siblingMigrated = File(tmp, "eu_anifantakis_ksafe_datastore_other.ksafe-keys.json.migrated")
             .apply { writeText("OTHER-SAFE-KEYS") }
 
@@ -45,10 +45,10 @@ class JvmClearAllResidualFilesTest {
         val fileName = "residualtmp"
         val base = "eu_anifantakis_ksafe_datastore_$fileName"
 
-        // A FileKeyVault.write() killed before its atomic move leaves a `<keys>.<rand>.tmp`
-        // orphan holding the full plaintext key map — clearAll() must wipe it too.
+        // A FileKeyVault.write() killed before its atomic move leaves a `<keys>.<rand>.tmp` orphan
+        // holding the full plaintext key map.
         val staleKeyTemp = File(tmp, "$base.ksafe-keys.json8481920.tmp").apply { writeText("PLAINTEXT-AES-KEYS") }
-        // A DIFFERENT safe's temp orphan in the same dir must be spared.
+        // A different safe's temp orphan in the same dir must be spared.
         val siblingTemp = File(tmp, "eu_anifantakis_ksafe_datastore_other.ksafe-keys.json777.tmp")
             .apply { writeText("OTHER-SAFE-KEYS") }
 

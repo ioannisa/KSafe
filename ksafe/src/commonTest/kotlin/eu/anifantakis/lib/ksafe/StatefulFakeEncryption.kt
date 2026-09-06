@@ -1,20 +1,19 @@
 package eu.anifantakis.lib.ksafe
 
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
+import eu.anifantakis.lib.ksafe.internal.KSafeEngineMessage
 import eu.anifantakis.lib.ksafe.internal.KSafeInitLock
 
 /**
- * Test-only [KSafeEncryption] with REAL key-lifecycle semantics: key material is minted per
- * alias on first encrypt, [deleteKey] destroys it, and decrypt throws for a missing or
- * replaced key. [FakeEncryption] derives keys from the alias string and keeps decrypting
- * after deletion, so it cannot observe key-loss bugs — a destroyed alias still "decrypts".
- * Use this fake whenever a test must prove that key destruction makes ciphertext unreadable.
+ * Test-only [KSafeEncryption] with real key-lifecycle semantics: key material is minted per alias on
+ * first encrypt, [deleteKey] destroys it, and decrypt throws for a missing or replaced key.
+ * [FakeEncryption] derives keys from the alias string and keeps decrypting after deletion, so use
+ * this one whenever a test must prove that key destruction makes ciphertext unreadable.
  */
 internal open class StatefulFakeEncryption : KSafeEncryption {
 
-    // The commit path encrypts a batch's entries CONCURRENTLY, so the mint must be
-    // atomic: an unsynchronized getOrPut can hand two callers different key ids for
-    // the same alias, leaving one ciphertext permanently undecryptable.
+    // The commit path encrypts a batch's entries concurrently, so the mint must be atomic: an
+    // unsynchronized getOrPut can hand two callers different key ids for the same alias.
     private val lock = KSafeInitLock()
 
     private var nextKeyId = 1
@@ -52,7 +51,7 @@ internal open class StatefulFakeEncryption : KSafeEncryption {
         // Same phrasing as the real engines' definitive missing-key failure, so the orphan
         // classifier and rotation treat it as permanent, not transient.
         val keyId = lock.withLock { keysByAlias[identifier] }
-            ?: throw IllegalStateException("No encryption key found for alias '$identifier'")
+            ?: throw IllegalStateException(KSafeEngineMessage.noKeyFound(identifier))
         check(data.size >= 8) { "corrupt ciphertext for '$identifier'" }
         val mintedWith = intFrom(data, 0)
         check(mintedWith == keyId) {

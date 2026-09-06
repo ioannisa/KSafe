@@ -11,12 +11,9 @@ import kotlin.test.assertEquals
 
 /**
  * Locks in: `updateFromFlow` never lets the stale pre-write disk snapshot clobber a value the user
- * just wrote, yet stays live — any other emission (the write's echo OR a genuine external change)
- * is reflected and clears the guard, so an echo lost to a failed/conflated persist can't leave the
- * flow permanently deaf. In the real `distinctUntilChanged` flow the only value that can momentarily
- * revert an optimistic write is the pre-write snapshot ([syncedValue]), so the tests feed that.
- * Also locks in `reconcileAfterFailedPersist`: a failed fire-and-forget persist reverts the
- * optimistic value to the durable one unless a newer write owns the state.
+ * just wrote, yet stays live — any other emission is reflected and clears the guard, so an echo lost
+ * to a failed or conflated persist can't leave the flow permanently deaf. Also
+ * `reconcileAfterFailedPersist`: a failed persist reverts unless a newer write owns the state.
  */
 class KSafeStateFlowClobberTest {
 
@@ -29,8 +26,7 @@ class KSafeStateFlowClobberTest {
 
         msf.value = "user"
 
-        // The pre-write snapshot ("external") is the value a lagging disk read would carry; it must
-        // not revert the user's write.
+        // The pre-write snapshot ("external") is what a lagging disk read would carry.
         msf.updateFromFlow("external")
         assertEquals("user", msf.value, "a stale observer emission must not clobber the user's write")
     }
@@ -45,7 +41,6 @@ class KSafeStateFlowClobberTest {
         assertEquals("user_cas", msf.value, "compareAndSet must arm the guard like a plain set")
     }
 
-    /** The guard is precise, not permanent: once the write's echo arrives, newer external changes reflect again. */
     @Test
     fun updateFromFlow_resumesExternalReflection_afterEchoCatchesUp() {
         val msf = KSafeMutableStateFlow(initialValue = "init", persist = { /* no-op */ })
@@ -67,7 +62,6 @@ class KSafeStateFlowClobberTest {
         )
     }
 
-    /** A second write re-arms the guard until its own echo arrives. */
     @Test
     fun updateFromFlow_secondWrite_reArmsGuard_untilItsOwnEcho() {
         val msf = KSafeMutableStateFlow(initialValue = "init", persist = { /* no-op */ })
@@ -85,15 +79,13 @@ class KSafeStateFlowClobberTest {
     }
 
     /**
-     * An idempotent write (`value = X` when already X and in sync with storage) must not
-     * permanently latch the guard: `distinctUntilChanged` eats the re-write so no echo ever
-     * arrives, and a latched guard would suppress every future external change.
+     * `distinctUntilChanged` eats the re-write, so no echo ever arrives and a latched guard would
+     * suppress every future external change.
      */
     @Test
     fun updateFromFlow_idempotentWrite_doesNotLatchGuard() {
         val msf = KSafeMutableStateFlow(initialValue = "init", persist = { /* no-op */ })
 
-        // Sync with storage, then re-write the same value (a common no-op update).
         msf.updateFromFlow("synced")
         msf.value = "synced"
 
@@ -104,16 +96,12 @@ class KSafeStateFlowClobberTest {
         )
     }
 
-    /**
-     * A write sequence that nets back to the synced value (A→B→A within one coalescing window)
-     * produces no distinct echo either, so it must not latch the guard permanently.
-     */
+    /** A→B→A within one coalescing window produces no distinct echo either. */
     @Test
     fun updateFromFlow_netZeroToggle_doesNotLatchGuard() {
         val msf = KSafeMutableStateFlow(initialValue = "A", persist = { /* no-op */ })
         msf.updateFromFlow("A")
 
-        // A → B → A: distinctUntilChanged emits nothing for the net-unchanged value, so no echo arrives.
         msf.value = "B"
         msf.value = "A"
 
@@ -125,11 +113,8 @@ class KSafeStateFlowClobberTest {
     }
 
     /**
-     * The user-write guard's check-then-apply in `updateFromFlow` is not atomic against the
-     * setter, so a stale emission that read the guard as clear before the setter armed it can
-     * clobber the visible value after the setter ran. The source flow is distinctUntilChanged, so
-     * the user's value is never re-emitted — the clobber would be permanent. The user-write echo
-     * must re-apply the value (self-heal).
+     * The guard's check-then-apply is not atomic against the setter, and the source flow never
+     * re-emits the user's value, so without the echo re-applying it the clobber is permanent.
      */
     @Test
     fun updateFromFlow_userWriteEcho_selfHealsAStaleClobber() {
@@ -138,7 +123,7 @@ class KSafeStateFlowClobberTest {
         msf.value = "B"           // arms the guard
         assertEquals("B", msf.value)
 
-        // A stale "A" emission clobbers the visible value after the guard was armed (the raced check-then-apply).
+        // A stale "A" emission lands after the guard was armed — the raced check-then-apply.
         msf.simulateStaleClobberForTest("A")
         assertEquals("A", msf.value, "precondition: the stale emission diverged the visible state")
 
@@ -151,10 +136,8 @@ class KSafeStateFlowClobberTest {
     }
 
     /**
-     * Liveness: if the write's echo never arrives (failed or conflated persist), the guard must not
-     * latch forever. The stale pre-write snapshot is still suppressed, but a later genuine external
-     * change must reflect — before the fix, only an exact `lastUserWrite` match cleared the guard, so
-     * a lost echo left the flow permanently deaf to external updates for that key.
+     * Liveness: only an exact `lastUserWrite` match once cleared the guard, so a lost echo left the
+     * flow permanently deaf to external updates for that key.
      */
     @Test
     fun updateFromFlow_lostEcho_stillReflectsExternalChange() {
@@ -174,11 +157,8 @@ class KSafeStateFlowClobberTest {
     }
 
     /**
-     * A fire-and-forget persist that fails leaves the flow showing a value that never became
-     * durable: storage never changed, so no echo arrives, and the durable value can't correct
-     * it — its re-emission is either impossible (distinctUntilChanged) or suppressed as the
-     * pre-write snapshot. The failure callback's reconcile must revert to the durable value
-     * and release the latch.
+     * Storage never changed, so no echo arrives and the durable value can't correct the phantom on
+     * its own — its re-emission is either impossible or suppressed as the pre-write snapshot.
      */
     @Test
     fun reconcileAfterFailedPersist_revertsThePhantom_toTheDurableValue() {
@@ -194,7 +174,6 @@ class KSafeStateFlowClobberTest {
         assertEquals("external", msf.value, "external changes must keep reflecting after the reconcile")
     }
 
-    /** A newer user write owns the state; a stale failure of an older write must not clobber it. */
     @Test
     fun reconcileAfterFailedPersist_isANoOp_whenANewerWriteOwnsTheState() {
         val msf = KSafeMutableStateFlow(initialValue = "A", persist = { /* no-op */ })

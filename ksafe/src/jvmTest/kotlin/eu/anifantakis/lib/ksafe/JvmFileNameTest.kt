@@ -1,10 +1,14 @@
 package eu.anifantakis.lib.ksafe
 
 import app.cash.turbine.test
+import eu.anifantakis.lib.ksafe.internal.KSafeReservedKeys
 import eu.anifantakis.lib.ksafe.internal.keyvault.DataStoreKeyVault
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlin.test.*
 import kotlinx.serialization.Serializable
@@ -25,13 +29,21 @@ class JvmFileNameTest {
             return "fnrun${runId}test${numberToLetters(count.toLong())}"
         }
 
+        private val vaultBookkeepingSuffixes = listOf(
+            KSafeReservedKeys.VAULT_SOFTWARE_FALLBACK,
+            KSafeReservedKeys.VAULT_TOMBSTONE,
+        )
+
+        private fun isVaultKeyRecord(rawKey: String): Boolean =
+            rawKey.startsWith(DataStoreKeyVault.KEY_PREFIX) &&
+                vaultBookkeepingSuffixes.none { rawKey.endsWith(".$it") }
     }
 
     private fun newStore(): KSafe = KSafe(generateUniqueFileName())
 
     @Test
     fun filename_accepts_valid_names() {
-        // These should not throw.
+        // The check is that none of these throws.
         KSafe("abc123")
         KSafe("with_underscore")
         KSafe("data_v2")
@@ -65,14 +77,10 @@ class JvmFileNameTest {
             val storeFile = java.io.File(tmpDir, "eu_anifantakis_ksafe_datastore_$name.preferences_pb")
             assertTrue(storeFile.exists(), "Expected $storeFile to exist before clearAll()")
 
-            // Capture the key material that exists BEFORE the wipe. That is what clearAll()
-            // promises to destroy. It does NOT promise the store never holds a key record again:
-            // every KSafeCore.init eagerly mints both masters off-thread (prewarmMasterKeys), and
-            // in jvmTest the software fallback keeps key records in this very file — so asserting
-            // "no ksafe_key_ prefix anywhere afterwards" is a race against an unrelated mint, not
-            // a wipe check. Assert the specific pre-clear bytes are gone instead.
+            // clearAll() promises the key material from before the wipe is destroyed, not that the
+            // store never holds a key record again — every init mints both masters off-thread.
             val preClearKeyMaterial = safe.dataStore.data.first().asMap()
-                .filterKeys { it.name.startsWith(DataStoreKeyVault.KEY_PREFIX) }
+                .filterKeys { isVaultKeyRecord(it.name) }
                 .values.map { it.toString() }
             assertTrue(
                 preClearKeyMaterial.isNotEmpty(),
@@ -81,18 +89,23 @@ class JvmFileNameTest {
 
             safe.clearAll()
 
-            // clearAll() guarantees no RECOVERABLE data remains — not that the physical file is
-            // gone. The live DataStore file is intentionally NOT deleted out-of-band: a raw
-            // File.delete() on the caller thread races a concurrent consumer write (e.g. a key
-            // mint during a rotation) and can strand a just-persisted record, leaving an in-RAM-
-            // only key that is unreadable after restart. storage.clear() already emptied it; an
-            // empty preferences file holds no ciphertext and no key material.
+            // The physical file deliberately stays: a raw File.delete() on the caller thread races
+            // a concurrent key mint and can strand a just-persisted record as an in-RAM-only key,
+            // unreadable after restart. storage.clear() already emptied it of ciphertext.
             assertEquals("default", safe.get("k", "default"), "the value must be wiped")
             val reopened = KSafe(fileName = name, baseDir = tmpDir)
             assertEquals("default", reopened.get("k", "default"), "the wipe must survive a cold reopen")
+            // Let the reopened instance's off-thread prewarm mint land first, so the residue check
+            // runs against a store that was actually rewritten after the wipe.
+            withContext(Dispatchers.Default) {
+                withTimeoutOrNull(30.seconds) {
+                    reopened.dataStore.data.first { prefs ->
+                        prefs.asMap().keys.any { isVaultKeyRecord(it.name) }
+                    }
+                }
+            }
             reopened.close()
 
-            // No pre-clear key material and no ciphertext survives in the on-disk store.
             val residue = if (storeFile.exists()) storeFile.readBytes().decodeToString() else ""
             for (keyMaterial in preClearKeyMaterial) {
                 assertFalse(

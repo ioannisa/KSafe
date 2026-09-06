@@ -177,10 +177,9 @@ class JvmV2EnvelopeTest {
 
     @Test
     fun clearAllDeletesPerEntryHardwareIsolatedKeyNotJustMaster() = runTest {
-        // Per-entry HARDWARE_ISOLATED (and legacy v1) keys live OUTSIDE the DataStore on real
+        // Per-entry HARDWARE_ISOLATED (and legacy v1) keys live outside the DataStore on real
         // OS-vault/web backends with no startup orphan sweep, so clearAll must delete them
-        // explicitly or they leak across cycles. FakeEncryption records every deleteKey
-        // identifier, so we can assert the engine was asked to drop them.
+        // explicitly or they leak across cycles.
         val fileName = JvmKSafeTest.generateUniqueFileName()
         val fake = FakeEncryption()
         val ksafe = KSafe(fileName = fileName, testEngine = fake)
@@ -208,9 +207,8 @@ class JvmV2EnvelopeTest {
 
     @Test
     fun clearAll_onFreshLazyInstance_stillDeletesPerEntryKeys() = runTest {
-        // clearAll reads protectionMap for per-entry engine keys; on a fresh lazyLoad instance
-        // that map is empty until loaded, so clearAll must load the cache first
-        // (ensureCacheReadySuspend) or the on-disk HARDWARE_ISOLATED key leaks.
+        // clearAll reads protectionMap for per-entry keys, and on a fresh lazyLoad instance that map
+        // is empty until loaded — so it must ensureCacheReadySuspend first or the on-disk key leaks.
         val fileName = JvmKSafeTest.generateUniqueFileName()
 
         val seed = KSafe(fileName = fileName, testEngine = FakeEncryption())

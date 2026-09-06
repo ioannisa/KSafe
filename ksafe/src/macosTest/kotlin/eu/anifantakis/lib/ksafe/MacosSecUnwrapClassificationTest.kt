@@ -62,9 +62,8 @@ class MacosSecUnwrapClassificationTest {
         assertFalse(AppleKeychainEncryption.isTransientUnwrapFailure(null))
     }
 
-    // isTransientDecryptFailure in internal.coreparts (used on the DECRYPT path) matches the
-    // "Keychain" brand, not the osstatus tag, so the SE failure message must carry that
-    // brand when — and only when — the code is transient.
+    // isTransientDecryptFailure in internal.coreparts matches the "Keychain" brand, not the osstatus
+    // tag, so the SE failure message must carry that brand when — and only when — the code is transient.
 
     @Test
     fun seFailureMessage_transientCode_isBrandedForCoreClassifier() {

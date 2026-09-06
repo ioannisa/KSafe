@@ -14,8 +14,7 @@ class JvmClearAllSerializationTest {
         val fileName = JvmKSafeTest.generateUniqueFileName()
         val ksafe = KSafe(fileName = fileName, testEngine = FakeEncryption())
 
-        // clearAll() enqueues its wipe on the SAME FIFO channel, after this put — so
-        // the put is ordered before the wipe and must not survive it.
+        // clearAll() enqueues its wipe on the same FIFO channel, behind this put.
         ksafe.putDirect("token", "secret")
         ksafe.clearAll()
 

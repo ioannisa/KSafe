@@ -104,7 +104,6 @@ class JvmNumericTypeMigrationTest {
         assertEquals(7, ksafe.get("k", -1))
     }
 
-    /** Documents the lossy boundary: a Long that can't fit in Int falls back to the default. */
     @Test
     fun plain_longWritten_readAsInt_outOfRange_fallsBackToDefault() = runTest {
         val ksafe = newKSafe()

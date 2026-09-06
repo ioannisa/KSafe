@@ -11,17 +11,14 @@ import eu.anifantakis.lib.ksafe.internal.KSafeInitLock
 @PublishedApi
 internal class FakeEncryption : KSafeEncryption {
 
-    // The commit path encrypts a batch's entries concurrently; unguarded set adds
-    // race (lost tracking entries at best, a corrupted HashSet at worst).
+    // The commit path encrypts a batch concurrently, so unguarded set adds would race:
+    // lost tracking entries at best, a corrupted HashSet at worst.
     private val lock = KSafeInitLock()
 
-    /** Key identifiers that have been encrypted. */
     val encryptedKeys = mutableSetOf<String>()
 
-    /** Key identifiers that have been decrypted. */
     val decryptedKeys = mutableSetOf<String>()
 
-    /** Key identifiers that have been deleted. */
     val deletedKeys = mutableSetOf<String>()
 
     override fun encrypt(
@@ -46,7 +43,6 @@ internal class FakeEncryption : KSafeEncryption {
         lock.withLock { deletedKeys.add(identifier) }
     }
 
-    /** Clears all tracking sets; call between tests for isolation. */
     fun reset() {
         lock.withLock {
             encryptedKeys.clear()

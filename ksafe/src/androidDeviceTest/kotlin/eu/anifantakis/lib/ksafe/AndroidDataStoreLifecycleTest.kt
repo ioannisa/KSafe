@@ -18,8 +18,8 @@ class AndroidDataStoreLifecycleTest {
     fun closeThenRecreate_sameFile_survives_andDataPersists() = runBlocking {
         val fileName = "lifecycle_${System.nanoTime()}"
         try {
-            // Each iteration recreates a safe on the SAME file, writes, reads, and closes;
-            // a regressed await would throw "multiple DataStores active for the same file".
+            // Each iteration recreates a safe on the same file; a regressed await would throw
+            // "multiple DataStores active for the same file".
             repeat(30) { i ->
                 val ks = KSafe(context, fileName = fileName)
                 ks.put("counter", i)

@@ -3,12 +3,16 @@ package eu.anifantakis.ksafe.compose
 import androidx.compose.runtime.AbstractApplier
 import androidx.compose.runtime.Composition
 import androidx.compose.runtime.Recomposer
+import androidx.compose.runtime.structuralEqualityPolicy
 import eu.anifantakis.lib.ksafe.KSafe
 import eu.anifantakis.lib.ksafe.KSafeConfig
 import eu.anifantakis.lib.ksafe.KSafeWriteMode
 import eu.anifantakis.lib.ksafe.compose.KSafeComposeState
+import eu.anifantakis.lib.ksafe.compose.KSafeComposeStateProvider
 import eu.anifantakis.lib.ksafe.compose.mutableStateOf
 import eu.anifantakis.lib.ksafe.compose.rememberKSafeState
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
@@ -19,27 +23,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 /**
- * Locks in: what each persisted-state factory reconciles to when a persist fails and the durable
- * value cannot be resolved — the one outcome where the two factories used to disagree, and now
- * agree. Both settle on the value the state last had in sync with storage. `rememberKSafeState`
- * used to publish the CALLER'S DEFAULT over data that is intact on disk — for a token, reading
- * to the app as logged out.
- *
- * The motivating case is a strict entry on a locked device: it cannot be decrypted, so a read
- * yields exactly the fallback it was given and is indistinguishable from "no value". These tests
- * drive the "no value" side of that same indistinguishability (the key is deleted before the
- * failing write), because it reaches the identical code path without needing the crypto engine
- * seam, which is internal to `:ksafe` and unreachable from this module.
- *
- * The two factories reach that outcome by different routes, which is why the pair matters.
- * `mutableStateOf` is inline and holds the store, so it re-reads storage with the last in-sync
- * value as the re-read's fallback — picking up a fresher durable value when one exists.
- * `rememberKSafeState` reads through a memoized seam that binds the caller's default as its
- * fallback and cannot be handed a different one without moving the module's binary surface, so
- * it reverts to the last in-sync value directly instead of re-reading.
- *
- * Both assertions below are therefore the same assertion, made through the two factories. They
- * stay as a pair so that a change which moves only one of them fails here.
+ * Locks in: after a failed persist every state factory reconciles to what is durable at that
+ * moment, re-read with the last in-sync value as that read's own fallback. `rememberKSafeState`
+ * once published the caller's default over intact data instead, so both factories are asserted as
+ * a pair and a change that moves only one of them fails here.
  */
 class JvmFailedPersistFallbackTest {
 
@@ -66,10 +53,9 @@ class JvmFailedPersistFallbackTest {
         const val DEFAULT = 0.0
 
         /**
-         * KSafe's default Json enables `allowSpecialFloatingPointValues` precisely so an
-         * encrypted put of a special float does not crash; this instance keeps kotlinx's own
-         * default instead, which makes writing one fail while serializing — a synchronous,
-         * deterministic persist failure reachable from public API alone.
+         * KSafe's default Json allows special floats so an encrypted put of one does not crash;
+         * kotlinx's own default rejects them, which makes the write fail while serializing — a
+         * synchronous, deterministic persist failure reachable from public API alone.
          */
         val STRICT_JSON = KSafeConfig(json = Json { ignoreUnknownKeys = true })
         val UNWRITABLE = Double.POSITIVE_INFINITY
@@ -78,10 +64,7 @@ class JvmFailedPersistFallbackTest {
         val MODE = KSafeWriteMode.Encrypted()
     }
 
-    /**
-     * Seeds the key, then removes it, so the post-failure re-read has nothing to resolve and
-     * must return whichever fallback the factory passed it.
-     */
+    /** Seeds the key; the tests then delete it, so the post-failure re-read has only the fallback. */
     private fun newKSafeWithVanishedEntry(): KSafe {
         val ksafe = KSafe(fileName = uniqueFileName(), config = STRICT_JSON)
         runBlocking { ksafe.put(KEY, STORED, MODE) }
@@ -89,9 +72,8 @@ class JvmFailedPersistFallbackTest {
     }
 
     /**
-     * Guards the premise of the two tests below. They can only observe a fallback if the persist
-     * actually fails, and it must fail *synchronously* for them to assert without waiting. If
-     * this store ever starts accepting the value, this fails first and says why.
+     * Premise guard for the two tests below: they can only observe a fallback if the persist fails,
+     * and it must fail synchronously for them to assert without waiting.
      */
     @Test
     fun theSeededStore_failsAnEncryptedPersistSynchronously_forAnUnwritableValue() {
@@ -118,14 +100,12 @@ class JvmFailedPersistFallbackTest {
         )
 
         runBlocking { ksafe.delete(KEY) }
-        // The persist throws while serializing, so the saver's own catch reconciles before
-        // this assignment returns — nothing here is asynchronous.
+        // The persist throws while serializing, so the saver reconciles before this returns.
         delegate.setValue(null, ::probeProperty, UNWRITABLE)
 
-        // If this ever reds, check WHY before touching the expectation: the deleted key here is a
-        // stand-in for an undecryptable one (see the class KDoc), so republishing the last in-sync
-        // value is the desired outcome for the case being documented, even though under a literal
-        // delete it looks like resurrecting removed data.
+        // The deleted key stands in for an undecryptable one — that read path without the crypto
+        // seam, which is internal to `:ksafe` — so republishing the last in-sync value is the wanted
+        // outcome, even though under a literal delete it looks like resurrecting removed data.
         assertEquals(
             STORED, delegate.getValue(null, ::probeProperty),
             "mutableStateOf re-reads with the last in-sync value as its fallback, so a re-read " +
@@ -139,10 +119,9 @@ class JvmFailedPersistFallbackTest {
     fun rememberKSafeState_reconcilesToTheLastInSyncValue_whenTheDurableReReadCannotResolve() {
         val ksafe = newKSafeWithVanishedEntry()
 
-        // rememberKSafeState is not itself @Composable, but its provideDelegate is, so the real
-        // saver can only be built inside a composition. The recomposer is deliberately never
-        // started: one setContent pass is all this needs, and it keeps the state's LaunchedEffect
-        // from doing anything observable.
+        // provideDelegate is @Composable, so the real saver can only be built inside a composition.
+        // The recomposer is deliberately never started: one setContent pass is enough, and it keeps
+        // the state's LaunchedEffect from doing anything observable.
         val recomposer = Recomposer(EmptyCoroutineContext)
         val composition = Composition(NoOpApplier(), recomposer)
         lateinit var state: KSafeComposeState<Double>
@@ -159,8 +138,7 @@ class JvmFailedPersistFallbackTest {
         runBlocking { ksafe.delete(KEY) }
         state.value = UNWRITABLE
 
-        // Same caveat as above: the deleted key stands in for an undecryptable one, so keeping
-        // the last in-sync value is the desired outcome for the case being documented.
+        // Same caveat as above: the deleted key stands in for an undecryptable one.
         assertEquals(
             STORED, state.value,
             "rememberKSafeState reverts to the last in-sync value, keeping the value the state " +
@@ -173,15 +151,8 @@ class JvmFailedPersistFallbackTest {
     }
 
     /**
-     * The case the deleted-key tests cannot see: the durable value RESOLVES, and it is fresher
-     * than anything the state last synced.
-     *
-     * `syncedValue` only advances when storage tells the state something — a successful write
-     * never touches it — so with the default `observeExternalChanges = false` it stays pinned to
-     * whatever the composition read at startup. Reverting to it rewinds past every write that did
-     * reach disk; the user then edits from the stale value they were shown and overwrites the real
-     * one. The rollback must prefer what storage holds and yield to the synced value only when the
-     * read cannot resolve.
+     * `syncedValue` only advances when storage speaks, so it stays pinned to the startup read;
+     * rolling back to it rewinds past writes that did reach disk, and the next edit overwrites them.
      */
     @Test
     fun rememberKSafeState_afterASuccessfulWrite_rollsBackToWhatIsOnDisk_notToTheStartupValue() {
@@ -217,7 +188,134 @@ class JvmFailedPersistFallbackTest {
         recomposer.cancel()
         ksafe.close()
     }
+
+    /**
+     * Storing the default is an ordinary write, so "the re-read came back as the default" cannot mean
+     * "the re-read could not resolve": deciding by value shows data the user already cleared.
+     */
+    @Test
+    fun rememberKSafeState_afterSuccessfullyStoringTheDefaultValue_rollsBackToDisk_notToTheStartupValue() {
+        val ksafe = KSafe(fileName = uniqueFileName(), config = STRICT_JSON)
+        runBlocking { ksafe.put(KEY, STORED, MODE) }
+
+        val recomposer = Recomposer(EmptyCoroutineContext)
+        val composition = Composition(NoOpApplier(), recomposer)
+        lateinit var state: KSafeComposeState<Double>
+        composition.setContent {
+            state = ksafe.rememberKSafeState(DEFAULT, key = KEY, mode = MODE)
+                .provideDelegate(null, ::probeProperty)
+        }
+        assertEquals(STORED, state.value, "sanity: the state starts in sync with the stored value")
+
+        state.value = DEFAULT
+        assertEquals(
+            DEFAULT, runBlocking { ksafe.get(KEY, STORED) },
+            "sanity: clearing the value must reach disk, or the rollback below proves nothing",
+        )
+
+        state.value = UNWRITABLE
+
+        assertEquals(
+            DEFAULT, state.value,
+            "the rollback must land on the value that is on disk even when that value equals the " +
+                "default: resurrecting the startup value shows data the user already cleared",
+        )
+        assertEquals(
+            DEFAULT, state.lastSyncedValue,
+            "and the synced baseline must follow it, or the next failure rewinds there again",
+        )
+
+        composition.dispose()
+        recomposer.cancel()
+        ksafe.close()
+    }
+
+    /**
+     * The same scenario down the asynchronous route, reported later through `onWriteFailed`. The
+     * store seam is faked: the engine that fails an encrypted commit that way is internal to `:ksafe`.
+     */
+    @Test
+    fun rememberKSafeState_asyncPersistFailure_afterStoringTheDefaultValue_rollsBackToDisk() {
+        val (state, dispose) = asyncFailureScenario(legacyConstructor = false)
+
+        assertEquals(
+            "", state.value,
+            "an asynchronously reported failure must also land on the cleared durable value",
+        )
+        assertEquals("", state.lastSyncedValue, "and re-pin the synced baseline to it")
+        dispose()
+    }
+
+    /**
+     * Call sites inlined against an older release bind the constructor without `readDurable` and
+     * keep the behaviour they were compiled against: a durable value equal to the default is
+     * still read as unresolvable.
+     */
+    @Test
+    fun legacyInlinedCallSite_keepsThePreviousRollbackHeuristic() {
+        val (state, dispose) = asyncFailureScenario(legacyConstructor = true)
+
+        assertEquals("A", state.value, "deliberately locks the OLD outcome for binaries inlined before readDurable existed")
+        assertEquals("A", state.lastSyncedValue, "the legacy path also re-pins the baseline to that value")
+        dispose()
+    }
+
+    private fun asyncFailureScenario(legacyConstructor: Boolean): Pair<KSafeComposeState<String>, () -> Unit> {
+        var durable = "A"
+        var notifyFailure: ((Throwable) -> Unit)? = null
+        val neverEmits = flow<String> { awaitCancellation() }
+        val readInitial: (String) -> String = { durable }
+        val writeValue: (String, String, (Throwable) -> Unit) -> Unit = { _, newValue, onWriteFailed ->
+            if (newValue == "B") notifyFailure = onWriteFailed else durable = newValue
+        }
+        val provider = if (legacyConstructor) {
+            KSafeComposeStateProvider(
+                explicitKey = "draft",
+                defaultValue = "",
+                observeExternalChanges = false,
+                policy = structuralEqualityPolicy(),
+                instanceKey = null,
+                modeKey = null,
+                readInitial = readInitial,
+                writeValue = writeValue,
+                flowProvider = { neverEmits },
+            )
+        } else {
+            KSafeComposeStateProvider(
+                explicitKey = "draft",
+                defaultValue = "",
+                observeExternalChanges = false,
+                policy = structuralEqualityPolicy(),
+                instanceKey = null,
+                modeKey = null,
+                readInitial = readInitial,
+                readDurable = { _, _ -> durable },
+                writeValue = writeValue,
+                flowProvider = { neverEmits },
+            )
+        }
+
+        val recomposer = Recomposer(EmptyCoroutineContext)
+        val composition = Composition(NoOpApplier(), recomposer)
+        lateinit var state: KSafeComposeState<String>
+        composition.setContent { state = provider.provideDelegate(null, ::draftProperty) }
+        assertEquals("A", state.value, "sanity: the state starts in sync with the stored value")
+
+        state.value = ""
+        assertEquals("", durable, "sanity: clearing the value must reach the store")
+
+        state.value = "B"
+        notifyFailure!!(IllegalStateException("KSafe: async persist failed (test)"))
+
+        return state to {
+            composition.dispose()
+            recomposer.cancel()
+        }
+    }
 }
 
-/** Delegate target; both tests pass an explicit key, so the property name is never used. */
+/** Delegate target; every test passes an explicit key, so the property name is never used. */
 private var probeProperty: Double = 0.0
+
+/** Delegate target for the faked-store test, which is typed on String. */
+private var draftProperty: String = ""

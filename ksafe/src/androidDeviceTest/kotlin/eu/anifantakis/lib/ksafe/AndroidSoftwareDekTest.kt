@@ -8,6 +8,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import eu.anifantakis.lib.ksafe.internal.AndroidKeystoreEncryption
 import eu.anifantakis.lib.ksafe.internal.DataStoreDekStore
 import eu.anifantakis.lib.ksafe.internal.DataStoreStorage
+import eu.anifantakis.lib.ksafe.internal.SecurityChecker
 import eu.anifantakis.lib.ksafe.internal.StorageOp
 import eu.anifantakis.lib.ksafe.internal.StoredValue
 import kotlinx.coroutines.CoroutineScope
@@ -28,16 +29,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Locks in: the Android software-DEK fast path — relaxed DEFAULT entries wrap a userspace DEK
- * while strict/hardware-isolated writes stay on the per-call TEE path, legacy TEE ciphertext
- * survives the upgrade, and DEK self-heal/regeneration never lose acknowledged writes.
- *
- * Known flake (device-side, not a product bug): under the full suite's burst of key ops,
- * keystore2 can throttle and make an `encrypt(...)`/key-creation call throw a transient
- * AndroidKeyStore error — surfacing at the `encrypt` line, never at a DEK assertion. It
- * reproduces only under the full suite (each test, and this class, passes reliably in
- * isolation) and is independent of the strict/DEK logic. Re-run in isolation before
- * suspecting a regression.
+ * Locks in: the Android software-DEK fast path — relaxed DEFAULT entries wrap a userspace DEK,
+ * strict/hardware-isolated writes stay on the per-call TEE path, legacy TEE ciphertext survives
+ * the upgrade, and DEK self-heal never loses an acknowledged write. Known device flake: under
+ * the full suite keystore2 throttles and throws at an `encrypt` line, never a DEK assertion — re-run alone.
  */
 @RunWith(AndroidJUnit4::class)
 class AndroidSoftwareDekTest {
@@ -50,8 +45,11 @@ class AndroidSoftwareDekTest {
     private val scopes = mutableListOf<CoroutineScope>()
     private val files = mutableListOf<File>()
 
+    private val savedApplicationContext = SecurityChecker.applicationContext
+
     @After
     fun tearDown() {
+        SecurityChecker.applicationContext = savedApplicationContext
         scopes.forEach { runCatching { it.cancel() } }
         files.forEach { runCatching { it.delete() } }
     }
@@ -102,7 +100,6 @@ class AndroidSoftwareDekTest {
         }
     }
 
-    /** Legacy TEE ciphertext (written before the DEK path) must stay decryptable, and new DEK writes coexist with it. */
     @Test
     fun crossVersion_legacyTeeBlob_staysReadable_andNewDekBlobCoexists() {
         val storage = newStorage()
@@ -128,6 +125,9 @@ class AndroidSoftwareDekTest {
 
     @Test
     fun lockedVariant_staysTee_noMagic_noDekEntry() {
+        // Below API 35 with no secure lock screen the engine mints the strict key relaxed; it reads
+        // the app context for that, which the factory normally sets.
+        SecurityChecker.applicationContext = context
         val storage = newStorage()
         val alias = uniqueAlias()
         val e = engine(storage)
@@ -256,7 +256,7 @@ class AndroidSoftwareDekTest {
         }
     }
 
-    /** Concurrent regeneration must be atomic: writers that all read the same corrupt DEK regenerate concurrently, and no sibling's freshly-minted (already-written-under) DEK may be discarded — exactly one DEK survives and every blob still decrypts. */
+    /** Concurrent regeneration is atomic: writers all reading the same corrupt DEK regenerate at once, no sibling's already-written-under DEK is discarded, one survives, every blob decrypts. */
     @Test
     fun concurrentRegenerate_doesNotDiscardAnotherWritersFreshDek() {
         val storage = newStorage()
@@ -303,13 +303,13 @@ class AndroidSoftwareDekTest {
         }
     }
 
-    /** A corrupt-DEK self-heal must mint a fresh DEK under the SAME healthy KEK, never deleting the KEK — or legacy TEE ciphertext encrypted directly under it would be destroyed. */
+    /** A corrupt-DEK self-heal mints a fresh DEK under the same healthy KEK, never deleting it — legacy TEE ciphertext encrypted directly under that KEK would otherwise be destroyed. */
     @Test
     fun corruptDek_selfHeals_withoutDestroyingLegacyTeeCiphertextUnderSameKek() {
         val storage = newStorage()
         val master = uniqueAlias()
         try {
-            // Legacy TEE blob encrypted DIRECTLY under the master KEK (DEK off).
+            // Legacy TEE blob encrypted directly under the master KEK (DEK off).
             val legacy = engine(storage, useSoftwareDek = false)
             val legacyBlob = legacy.encrypt(master, "legacy-value".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
             assertFalse(legacyBlob.startsWithMagic(), "precondition: legacy TEE blob has no DEK header")
@@ -403,7 +403,7 @@ class AndroidSoftwareDekTest {
         }
     }
 
-    /** Lazy DEK: prewarm warms only the wrapping KEK and must NOT persist a DEK — it appears on the first real encrypt, so an unencrypted-only safe never writes one. */
+    /** Lazy DEK: prewarm warms only the wrapping KEK and persists no DEK — one appears on the first real encrypt, so an unencrypted-only safe never writes one. */
     @Test
     fun prewarmKey_doesNotPersistDek_butFirstEncryptDoes() {
         val storage = newStorage()
@@ -420,7 +420,7 @@ class AndroidSoftwareDekTest {
         }
     }
 
-    /** The per-safe DEK has ONE storage key, so deleting an unrelated (per-entry / HARDWARE_ISOLATED) key must never remove it — or every relaxed DEFAULT value would be bricked. */
+    /** The per-safe DEK has one storage key, so deleting an unrelated (per-entry / hardware-isolated) key must never remove it — every relaxed DEFAULT value would be bricked. */
     @Test
     fun deleteUnrelatedKey_doesNotRemoveSharedDek() {
         val storage = newStorage()

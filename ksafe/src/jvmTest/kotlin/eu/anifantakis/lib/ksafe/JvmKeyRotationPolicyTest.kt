@@ -11,12 +11,10 @@ import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
- * Locks in KSafeConfig.keyRotationPolicy (3.0.0): Never (default) performs no automatic
- * rotation; MaxAge stamps the generation's birth on the first launch under the policy and
- * rotates in the background on a later launch once the generation is older than allowed.
- *
- * Uses runBlocking (not runTest): the policy runs on the real background scope, so the test
- * polls in real time.
+ * Locks in KSafeConfig.keyRotationPolicy: Never (the default) never rotates; MaxAge stamps the
+ * generation's birth on the first launch under the policy and rotates in the background on a later
+ * launch once it is older than allowed. Uses runBlocking, not runTest — the policy runs on the real
+ * background scope, so the test has to poll in real time.
  */
 class JvmKeyRotationPolicyTest {
 
@@ -43,10 +41,10 @@ class JvmKeyRotationPolicyTest {
     @Test
     fun maxAge_firstLaunchStampsBirth_laterLaunchRotates() = runBlocking {
         val fileName = "rotpol_maxage"
-        // Launch 1: no stamped birth yet — the policy stamps it and does NOT rotate.
+        // Launch 1: no stamped birth yet, so the policy stamps one and does not rotate.
         val first = newKSafe(fileName, KSafeKeyRotationPolicy.MaxAge(1.milliseconds))
         first.put("token", "v1-secret")
-        // Give the background stamp a moment, then confirm no rotation happened.
+        // Long enough for the background stamp to land.
         delay(500)
         assertEquals(1, first.core.currentKeyGeneration.get(), "the first launch only stamps the birth")
         first.close()

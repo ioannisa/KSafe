@@ -13,11 +13,10 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Locks in: the iOS-Simulator fallback for an entitlement-blocked Keychain
- * (`errSecMissingEntitlement`, -34018). With a fallback store injected, an unentitled
- * process mints/serves keys from the sandbox store and encrypted writes keep working;
- * without one (a real device), -34018 still fails loudly. Fakes stand in for both
- * stores — real Keychain round-trips can't run in the Kotlin/Native test runner.
+ * Locks in: the iOS-Simulator fallback for an entitlement-blocked Keychain (-34018). With a fallback
+ * store injected, an unentitled process mints and serves keys from the sandbox store and encrypted
+ * writes keep working; without one (a real device) -34018 still fails loudly. Both stores are faked:
+ * real Keychain round-trips can't run in the Kotlin/Native test runner.
  */
 class MacosSimulatorFallbackTest {
 
@@ -160,8 +159,7 @@ class MacosSimulatorFallbackTest {
 
     @Test
     fun decrypt_neverMintsAFallbackKey() {
-        // Decrypt has no create-on-miss: with no key anywhere it must throw, not mint a
-        // fresh key that would poison the ciphertext as permanently undecryptable.
+        // Minting on a decrypt miss would poison the ciphertext as permanently undecryptable.
         val fallback = InMemoryFallbackStore()
         val engine = AppleKeychainEncryption(
             keychainStore = EntitlementBlockedKeychainStore(),

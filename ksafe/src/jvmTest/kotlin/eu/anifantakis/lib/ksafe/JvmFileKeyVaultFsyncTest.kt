@@ -38,9 +38,8 @@ class JvmFileKeyVaultFsyncTest {
 
     @Test
     fun clearAll_removesThePlaintextKeyFileAndItsTempSiblings() {
-        // clearAll runs through FileKeyVault.clearAll on the write consumer (not a caller-thread
-        // raw file delete that races writes), and must leave no plaintext key material — neither
-        // the live file nor a crash-leftover temp copy.
+        // clearAll runs on the write consumer (not a caller-thread raw delete that races writes) and
+        // must leave no plaintext key material — neither the live file nor a crash-leftover temp copy.
         val file = File(tmp, "vault.ksafe-keys.json")
         val vault = FileKeyVault(file)
         vault.put("alias", byteArrayOf(1, 2, 3))
@@ -66,7 +65,6 @@ class JvmFileKeyVaultFsyncTest {
         val staleTemp = File(tmp, "${file.name}8481920.tmp").apply { writeText("{\"alias\":\"plaintext-key\"}") }
         assertTrue(staleTemp.exists())
 
-        // The next legitimate write must sweep the orphan away before creating its own temp.
         FileKeyVault(file).put("alias", byteArrayOf(9, 9, 9))
 
         assertFalse(staleTemp.exists(), "a crashed write's plaintext temp file must be swept on the next write")

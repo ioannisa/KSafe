@@ -10,7 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** Locks in: the root-detection build signal — build type (userdebug/eng), not signing tag, marks a root-capable image, so rooted userdebug emulators aren't missed and user-build dev-keys emulators aren't false-flagged. */
+/** Locks in: build type (userdebug/eng), not the signing tag, marks a root-capable image — so rooted userdebug emulators aren't missed and dev-keys user builds aren't false-flagged. */
 @RunWith(AndroidJUnit4::class)
 class AndroidSecurityCheckerTest {
 
@@ -29,8 +29,8 @@ class AndroidSecurityCheckerTest {
 
     @Test
     fun userBuildEmulatorWithDevKeysIsNotRootIndicating() {
-        // Google Play / foldable images are user + dev-keys but ship no su — dev-keys must
-        // NOT count as root, or they false-positive.
+        // Google Play / foldable images are user + dev-keys but ship no su — dev-keys alone
+        // must not count as root, or they false-positive.
         assertFalse(isRootIndicatingBuild("user", "dev-keys"))
     }
 
@@ -42,8 +42,7 @@ class AndroidSecurityCheckerTest {
 
     @Test
     fun rootCapableImageIsReportedAsRooted() {
-        // On a root-capable image (userdebug/eng), isDeviceRooted() must agree; on a user
-        // build the precondition is false and this is skipped.
+        // On a root-capable image isDeviceRooted() must agree; on a user build this is skipped.
         if (isRootIndicatingBuild(Build.TYPE, Build.TAGS)) {
             assertTrue(
                 SecurityChecker.isDeviceRooted(),
@@ -55,9 +54,8 @@ class AndroidSecurityCheckerTest {
 
     @Test
     fun physicalUserdebugTestKeysDeviceIsNotAnEmulator() {
-        // A physical engineering device (userdebug/test-keys retail hardware) is correctly
-        // flagged root-capable, but must not ALSO trip the emulator probe: build type and
-        // signing tags are root signals, not emulator signals.
+        // A physical engineering device (userdebug/test-keys retail hardware) is root-capable,
+        // but build type and signing tags are root signals, not emulator ones.
         assertFalse(
             isEmulatorBuild(
                 fingerprint = "samsung/dm3qxxx/dm3q:14/UP1A.231005.007/S918BXXU3AWK7:userdebug/test-keys",
@@ -108,8 +106,7 @@ class AndroidSecurityCheckerTest {
 
     @Test
     fun nonRootedUserBuildEmulatorIsNotReportedAsRooted() {
-        // A user-build emulator must not be flagged. Guarded to emulators (never a real
-        // rooted retail device) and excludes test-keys.
+        // Guarded to emulators (never a real rooted retail device) and excluding test-keys.
         val tags = Build.TAGS ?: ""
         if (SecurityChecker.isEmulator() && Build.TYPE == "user" && !tags.contains("test-keys")) {
             assertFalse(

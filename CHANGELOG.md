@@ -2,7 +2,7 @@
 
 All notable changes to KSafe will be documented in this file.
 
-## [Unreleased]
+## [3.2.0] - 2026-09-07
 
 ### Added
 
@@ -13,7 +13,435 @@ All notable changes to KSafe will be documented in this file.
   mode-typed views' `invoke` returns the same handle with their frozen mode. Direct `.value`
   access requires the explicit `key` — a plain `=` assignment carries no property name Kotlin
   could supply — so a key-less handle stays delegate-only and `.value` on it throws
-  `IllegalStateException`. Delegate behaviour is unchanged.
+  `IllegalStateException`. The deprecated `encrypted: Boolean` overload is the other carve-out: it
+  still returns the delegate type, so move such a call to `mode` before reaching for `.value`.
+  Delegate behaviour is unchanged.
+
+### Short Demo
+> Note the key cannot be infered in the new direct-handle approach and must be provided via param only.
+
+That is so far we had only property delegation:
+```kotlin
+var counter by ksafe(0)
+counter++
+```
+
+Now we also support a direct handle:
+```kotlin
+var counter = ksafe(0, key = "counter")
+counter.value++
+```
+
+### Fixed
+
+- **JVM: a software-fallback key can no longer be left without its custody marker.** The
+  marker that tells a fallback-minted key apart from a genuine pre-2.x legacy key is now
+  written before the key, and a failed marker write fails the mint instead of being ignored.
+  Previously a crash or a swallowed write between the two commits left an unmarked fallback key,
+  which the next OS-backed launch migrated over the real OS-vault key, making every value
+  encrypted under the real key unreadable.
+- **JVM: `clearAll()` on a store with an `appNamespace` is no longer undone by the next
+  launch.** The un-namespaced store files were copied into the namespace directory on every
+  construction, gated only on the destination file being absent. After `clearAll()` had removed
+  the drained fallback archive and its marker, the next launch re-copied the still-present
+  un-namespaced fallback ciphertext and plaintext key map and drained every pre-wipe value back
+  into the freshly wiped store; the same re-copy also recreated those two files in the namespace
+  directory on every normal launch. The carry-forward is now one-shot: once the cohort has been
+  fully published (or there was nothing to carry), a marker in the destination directory ends it,
+  and a failed publish leaves no marker so the next launch retries.
+- **A write arriving at the edge of the coalesce window can no longer be lost (all platforms).**
+  The write consumer waited for the next queued write inside a timed receive; when the window
+  timer fired after a sender had already handed that receive its element but before the consumer
+  was scheduled again, the receive was cancelled and the element vanished from both the queue and
+  the batch. A fire-and-forget write then survived only in memory until restart, and a suspending
+  `put`, `delete`, `clearAll` or `rotateKeys` whose request was the one lost waited forever. The
+  consumer now polls the queue inside the window and sleeps in short slices between polls, so no
+  receiver is ever parked where the timer can cancel it.
+- **Android: a transient Keystore failure no longer destroys every encrypted value.** The Android
+  Keystore reports a permanently unreadable key and a temporary daemon fault — keystore2
+  restarting, a busy backend, a StrongBox HAL that has not come up yet — through the very same
+  `UnrecoverableKeyException`, and KSafe treated all of them as permanent. One such hiccup at cold
+  start deleted the master key and its wrapped data key and minted fresh ones, silently and
+  irreversibly making every value written before it unreadable. Only a fault the Keystore proves
+  is permanent now leads to a key being deleted and re-minted; anything else surfaces as the same
+  retryable Keystore error a locked device raises, so the value survives and the read can be
+  retried. The Keystore only reports that proof from Android 13; below it the one fault still taken
+  as permanent is the cause-less `UnrecoverableKeyException` the Keystore raises for a permanently
+  invalidated key, and every fault carrying a cause is treated as retryable.
+- **Android: a biometric prompt for an Activity that has stopped no longer hangs the caller.**
+  The host Activity is resolved before the process-wide single-prompt gate is entered, so another
+  caller's user-paced prompt could leave it stale by the time our turn came. androidx drops a
+  prompt silently once the host's fragment state is saved, so no callback ever fired: the caller
+  suspended forever holding the gate, and every later prompt in the process queued behind it. The
+  host is now re-checked on the main thread immediately before the prompt is shown and the call
+  fails with `BiometricAuthException` instead.
+- **iOS/macOS: an unexpected Secure Enclave unwrap failure no longer destroys a hardware-isolated
+  key.** Only a handful of error codes were recognised as temporary, so any other failure while
+  unwrapping the Enclave-wrapped AES key — a securityd or SEP hiccup, or an error carrying no
+  status code at all — was read as a corrupt key: the Enclave key pair and the wrapped key were
+  deleted and re-created, making every `HARDWARE_ISOLATED` value for that alias unreadable, and a
+  failed re-creation then fell back to a plain Keychain key under the same identifier, silently
+  downgrading the alias for good. Only an envelope the system proves is undecodable is now
+  replaced; every other failure surfaces as an error with both halves of the key intact.
+- **A `getOrCreateSecret` secret is no longer deleted by the startup orphan sweep.** A secret
+  slot is an ordinary encrypted entry, so when its backing key was gone — an Android Auto Backup
+  restore onto a new phone, a Keystore invalidation, an evicted web CryptoKey — the sweep reclaimed
+  the ciphertext, and the next `getOrCreateSecret` call found nothing to refuse and minted a fresh
+  random secret. Secret slots are now exempt from the sweep, so the ciphertext survives and
+  `getOrCreateSecret` throws its documented refuse-to-rotate error instead of handing back a
+  passphrase that opens nothing. Stores whose slot an earlier version already reaped are not
+  recoverable.
+- **JVM: adding an `appNamespace` no longer hides keys stored under `-Dksafe.appNamespace` or
+  `KSAFE_APP_NAMESPACE`.** An app running with only the system property or environment variable
+  set kept its encryption keys under that namespace while its data stayed un-namespaced. Setting
+  `KSafeConfig.appNamespace` in a later release made the config value win: the data was copied
+  forward into the new namespace directory, the old key namespace was never probed, and every
+  encrypted entry read back as its default before the startup sweep deleted it, while the keys sat
+  untouched in the OS vault. That namespace is now probed as a read-only recovery source whenever
+  the property or variable is still set, and never deleted from, since another process may still
+  run with it.
+- **A same-value rewrite can no longer leave a key's cache holding ciphertext its disk never
+  got.** A write that re-saved a key's current value while an earlier write for the same key was
+  still committing could leave the in-memory copy holding the earlier write's ciphertext while
+  disk held the later one. When the two writes routed differently, an unlock-policy change or a
+  hardware-isolated rewrite, the entry then read back as its default for the rest of the session;
+  with identical routing it stayed readable but wedged at the next `rotateKeys()`, whose cache
+  check no longer matched. The post-commit plaintext-to-ciphertext cache swap is now anchored on
+  write ownership rather than on the staged value, so a superseded batch leaves the newer writer's
+  state alone.
+- **A `Flow` first read on a locked device now recovers by itself once the device unlocks.** A
+  `Flow`, `StateFlow` or Compose state observing an encrypted entry that could not be decrypted at
+  that moment (most often a `requireUnlockedDevice` entry read while the device was locked) kept
+  showing the caller's default: the
+  undecryptable snapshot was skipped, and storage only emits again on a write, so the observer
+  stayed at the default until some unrelated value happened to be saved — while `getDirect`
+  already returned the real value. Such a read is now retried on a slow backoff, so the flow
+  picks the value up on its own within about half a minute of unlock (sooner if the lock was
+  brief), with no write needed, and a warning naming the key is logged once per observer on the
+  first failed read.
+- **An empty biometric `reason` no longer terminates the process.** Passing `reason = ""` to
+  `verifyBiometric` / `verifyBiometricDirect` — typically a missing translation assigned to
+  `KSafeBiometrics.defaultReason` at startup — raised inside `LAContext.evaluatePolicy` and
+  killed the app on iOS, macOS and JVM Desktop on macOS, with no exception a caller could catch.
+  A blank reason now falls back to the built-in default before any platform call is made.
+- **JVM: an OS key vault whose native bridge cannot link no longer bricks the store.** When the
+  vault's native library failed to load in-process — JNA is first resolved inside the
+  construction self-test — the self-test read the failure as a
+  locked-but-present vault, so every encrypted write was refused and every encrypted read
+  returned its default, on that launch and every launch after it. A link failure is now treated
+  as the runtime failure it is: custody degrades to the software vault and the store keeps
+  working, while reads still report the vault as unavailable rather than the key as missing, so
+  the startup sweep leaves existing ciphertext intact.
+- **JVM: `KSafeSecurityPolicy`'s debug-build probe no longer reports every launch as a debug
+  build.** The probe relied on Kotlin's `assert`, which evaluates its argument even when
+  assertions are disabled, so it returned `true` on every JVM. `Strict` and `WarnOnly` policies
+  reported a `DebugBuild` violation on every desktop launch, and a `BLOCK` action refused to
+  construct `KSafe` at all. The probe now asks the JVM whether assertions are enabled for the
+  class, which is `false` in a normal production launch and honours `-ea`/`-da`.
+- **Android and iOS/macOS: a second `KSafe` on the same file no longer misses another instance's
+  write.** Each instance built its own storage layer over the shared DataStore, and with it its
+  own commit relay, so a write committed through one instance was never announced to the other.
+  DataStore's own read filter can drop that write's emission from a sibling that subscribed while
+  it was in flight, leaving the new value invisible to that sibling until some later write
+  happened to arrive. The storage layer is now shared per file, as it already was on JVM Desktop.
+- **`clearAll()` no longer leaves a wiped secret readable from another instance on the same
+  file.** The wipe cleared the disk and the calling instance's own caches, but every other live
+  `KSafe` on that file kept its in-memory copy — its cached ciphertext, the plaintext it had
+  already decrypted, and the entry's routing metadata — so after a logout wiped the store through
+  one instance, a sibling instance still handed the old token back for the rest of the process.
+  Sibling instances on the same store now have their caches, metadata and key generation cleared
+  as part of the wipe (Android, iOS/macOS and JVM Desktop; on web each instance still owns its own
+  store handle, so the singleton rule still applies there).
+- **`rotateKeys()` on one instance no longer turns another instance's own writes into their
+  default values.** A rotation re-encrypts every stored entry under a new key generation and then
+  reclaims the superseded one, but a second live `KSafe` on the same file kept holding the previous
+  generation's ciphertext in memory — so under the ciphertext-at-rest memory policies every value
+  that instance had written itself read back as its default for the rest of the process. Rotating
+  an entry now also moves a sibling instance's cached copy onto the new generation, and the
+  superseded-key sweep keeps a key alive while any live instance still reads through it (Android,
+  iOS/macOS and JVM Desktop; on web each instance still owns its own store handle, so the
+  singleton rule still applies there).
+- **A read racing a write to the same key can no longer pin the pre-write value in the plaintext
+  side cache.** Under the two memory policies that keep a decrypted copy beside the encrypted one,
+  a read that decrypts an entry writes the result back into that side cache, but only while the
+  encrypted copy it decrypted is still the current one. That check and the write-back were two
+  separate steps, so a write landing in between was overwritten by the older value the read had
+  just finished decrypting — after which every read of that key returned the pre-write value while
+  the store on disk held the new one: permanently under the default `LAZY_PLAIN_TEXT`, and until
+  the entry expired under `ENCRYPTED_WITH_TIMED_CACHE`. The write-back now re-checks after storing
+  and withdraws its own entry when it lost the race, so the newer write's value is what every
+  later read sees.
+- **Compose: a failed write no longer rewinds `rememberKSafeState` to the composition-time value
+  when what is stored happens to equal the default.** After a persist failed, the state re-read
+  storage through a seam that carried the caller's default as the read's own fallback, so a value
+  that legitimately equals the default was indistinguishable from a read that could not resolve —
+  a cleared text field, a zeroed counter, a `false` flag. Both were resolved toward the last value
+  the state knew to be in sync, which without `observeExternalChanges` never advances past what
+  the composition read at startup: the UI resurrected data the user had already cleared, the next
+  edit was made from it, and the following save overwrote what was really stored. The re-read now
+  carries that last in-sync value as its own fallback, so an unresolvable read still yields it
+  while a stored value equal to the default comes back as itself. `rememberKSafeState` is `inline`,
+  so a call site reaches the fix only once it is recompiled against 3.2.0: a dependency whose body
+  was inlined against 3.1.0 or earlier binds the previous entry point and keeps the old behaviour.
+- **`asMutableStateFlow` no longer keeps showing a write that failed before it left the caller's
+  thread.** A write whose persist fails is reverted to the durable value, but that revert was
+  driven only by the core's asynchronous failure callback. A serializer that throws — a special
+  float under a stricter `Json`, a polymorphic subtype missing from the serializers module — fails
+  before the core has created anything that callback could travel through, so it never fired. The
+  flow had already published the value to every collector and armed its echo guard, and nothing
+  arriving from storage could clear either: the only value storage could still emit was the
+  durable one, which is exactly what the guard suppressed. The phantom outlived the failure while
+  `getDirect` on the same key returned the value still on disk. Such a failure now reconciles the
+  flow the same way an asynchronous one does, and still propagates to the caller.
+- **Web: losing IndexedDB no longer strands every encrypted value forever.** Ciphertext lives in
+  `localStorage` and the AES-GCM key in IndexedDB, so "key gone, data present" — a DevTools clear
+  with only IndexedDB ticked, an eviction under storage pressure, a Safari ITP purge — is the
+  platform's characteristic failure, and the one-time startup sweep reclaims it by recognising the
+  probe's "web key missing". But construction pre-warmed the master key through the generic path,
+  which mints one when it is absent: the probes then failed as an AES-GCM `OperationError`, which
+  matches no orphan pattern, so nothing was reclaimed, the freshly minted master persisted, and
+  every later launch's sweep hit the same unclassifiable error — leaving unreadable ciphertext
+  occupying the origin's quota and `rotateKeys()` reporting it failed. The web engine now
+  pre-warms read-only: a store with no key yet simply pays the key generation on its first
+  encrypted write, and a plain-only store writes nothing to IndexedDB at all.
+- **A `clearAll()` that fails now leaves the store exactly as it was.** When the wipe itself threw
+  — a full disk or an I/O error while the store file was being rewritten — the caller got the
+  exception, but two things had already gone wrong behind it. Every write sharing the wipe's batch
+  kept its never-persisted value in memory under a dirty flag nothing ever cleared, so reads served
+  a value that was not on disk for the rest of the session, and the per-entry encryption keys had
+  already been deleted before the wipe was attempted, leaving `HARDWARE_ISOLATED` entries, and
+  entries written by pre-2.x releases, that survived on disk permanently undecryptable. The keys
+  are now reclaimed only after the data wipe succeeds, and a failed wipe rolls back the whole
+  batch's in-memory state.
+- **JVM: a namespace carry-forward that fails no longer strands the store it could not copy.**
+  With an `appNamespace` set, copying the existing store files into the namespace directory can
+  fail on a full disk, an antivirus or indexer lock, or a permission error; construction then went
+  on against the empty namespace directory, so every value read back as its default and the first
+  write of that session — an ordinary `put`, or the generation birth-stamp a `MaxAge` rotation
+  policy issues at startup with no user action — created a store file there. Because the retry
+  decides per destination name, the next launch skipped exactly that file while publishing the
+  rest of the cohort around it: the un-namespaced values never arrived, and a fallback JSON
+  published without its pending marker re-armed the migration's "fallback wins" over what the
+  previous session had written. A failed carry-forward now runs that session from the directory it
+  could not copy out of — exactly where the app ran before the namespace was added — and logs a
+  warning, so the next launch carries the whole cohort forward, this session's writes included. For
+  that session every read, every write and `clearAll()` therefore act on the source store, which on
+  the default base directory is the un-namespaced store shared by every KSafe app of that OS
+  user — a known limitation of this fallback, to be tightened in 3.2.1. A store already stranded
+  this way by 3.0.0 or 3.1.0 is not repaired: its namespaced store file already exists, so the
+  retry still skips it.
+- **Web: `lazyLoad = true` no longer makes every non-suspend read return its default.** The web
+  target has no blocking cold-load, so suppressing the snapshot collector left the cache empty for
+  the whole session: `getDirect`, `by ksafe(...)` handles, `asStateFlow` and Compose state all
+  served the caller's default over live persisted data, and the first read-modify-write overwrote
+  it. The preload now always runs on web, where reading `localStorage` is synchronous and there is
+  nothing to defer; `lazyLoad` is accepted for API parity and documented as ignored there.
+- **A write landing mid-merge can no longer be pinned under the value it replaced.** When a
+  snapshot from disk was merged into the cache, each key was stored right after checking that no
+  write was in flight for it; a `putDirect` arriving between those two steps had its value
+  overwritten by the older disk value, and because the key counted as in-flight from then on, no
+  later merge revisited it — reads served the pre-write value for the rest of the process while
+  disk held the new one. The merge now stores a key only while its cache slot still holds what
+  the check saw, so the racing write keeps its value.
+- **A failed write whose rollback cannot reach the disk no longer leaves its value in memory.**
+  Rolling a failed write back released the key and re-read the store to restore whatever was really
+  persisted, but that read fails in exactly the cases that matter — the generation read that opens
+  an encrypting batch is itself a store read, and a disk fault that fails the write usually fails
+  the read right after it. The never-persisted value then stayed cached (as plaintext, in the
+  encrypted slot) and, with `lazyLoad = true` and no collector to correct it, was served for the
+  rest of the process although nothing had been written. The rollback now drops the failed write's
+  own cache and metadata entries when the re-read fails, so the key reads back as the caller's
+  default instead of a value that was never written; the slot repopulates on the next merge, which
+  under `lazyLoad = true` means the next write to that key or a new instance, and `getFlow`, which
+  reads the store directly, is unaffected.
+- **A key whose own name reads like an error message can no longer decide that entry's fate.**
+  KSafe tells "this key is gone for good" apart from "the vault is busy, come back later" by
+  reading the engine's failure message, and it searched for the phrases anywhere in the text —
+  while the messages themselves quote the key: a Keychain account, a JVM alias, an IndexedDB
+  record name. A key called something like `api key not found counter` therefore turned its own
+  transient vault outage into a permanent-loss verdict, and the startup sweep deleted ciphertext
+  a healthy vault would have read back on the next launch. The phrases are now recognised only in
+  their branded `KSafe: ` opening, so quoted key names are just text; the same anchoring also
+  teaches the retry classifier about a dead browser key, which a store or key named `keystore`
+  could previously disguise as a passing hiccup that a `Flow` would retry forever. The trade is
+  deliberate and one-directional: a platform error that says "key not found" in its own wording,
+  without KSafe's opening, is now left alone rather than reclaimed.
+- **Compose: the cold-start self-heal no longer overwrites a value the user is still typing.** The
+  one-shot heal that applies the stored value when the first read came back as the default (an
+  async decrypt on web, a locked device elsewhere) asked only the stale-emission latch whether a
+  write was pending — and that latch is deliberately down for a write whose value happens to equal
+  the last synced one, such as a field edited and then cleared back to its starting text. The heal
+  now consults the write record itself, so it stands aside while any write is unresolved and never
+  clears the record a failed persist needs in order to roll back.
+- **Compose: a `KSafeReference` read inside a composable is no longer skipped over.** The handle
+  `ksafe(default, key)` returns — new in this release — was marked `@Stable`, which promises
+  Compose that the same instance holds the same observable value, while its `value` reads and
+  writes storage directly with no snapshot state behind it; a composable taking the handle as a
+  parameter could therefore be skipped and keep showing an old value. The marker is gone, and
+  `value` now documents that composition should read through `:ksafe-compose` or
+  `asStateFlow().collectAsState()` instead.
+- **Android: a cancelled `verifyBiometric` can no longer raise the system prompt anyway.** The
+  show is posted to the main thread, and on a busy looper it could still be waiting there when the
+  user navigated away and the calling scope was cancelled — the block then ran unguarded and put
+  the sheet over the new screen. It now checks the call is still live before showing, and registers
+  its dismiss-on-cancellation handler before the sheet goes up rather than after.
+- **Web: `resetRegistration()` no longer throws out of a storage-blocked browser.** Removing the
+  stored credential id was the one `localStorage` touch in the file left unguarded, so in an origin
+  that blocks storage ("block all cookies", a sandboxed iframe) the `SecurityError` escaped a
+  non-suspending public API straight into the click handler, and skipped the title-slot removal and
+  the abandoned-credential signal that follow it. The removal is now tolerated like every other.
+- **Docs: `biometricsAvailable()` says that Android needs a live Activity host.** The enumerated
+  `false` cases omitted it while the surrounding advice was "probe once at startup and keep the
+  result", so an app probing from `Application.onCreate` cached a permanent `false` and showed its
+  PIN fallback for the whole process. The KDoc, `docs/BIOMETRICS.md` and the skill now say to probe
+  from a composition or an Activity, and note that `verifyBiometric` waits for the host while this
+  probe does not. No behaviour change.
+- **JVM: adding an `appNamespace` no longer risks stranding the un-namespaced data.** The
+  carry-forward decided what to copy from single `exists()` samples of the source directory, and
+  the underlying store rewrites its file by deleting it and renaming a scratch file into place — so
+  a sample landing in that window read as "there is nothing here", the import completed with
+  nothing copied, and the marker that ends the one-shot import was written anyway, skipping the
+  real data on every later launch. A file whose scratch sibling is present is now waited for, and
+  an import that found nothing leaves no marker so a later launch re-scans.
+- **A sibling instance's legacy-format entries are now counted when a key is reclaimed.** An entry
+  written by a pre-2.0 release carries no metadata record, so the instance holding it in memory
+  knows only its protection literal — and the check that asks a sibling which keys it still reads
+  through looked only at the metadata, so those entries were invisible. Another instance on the
+  same store could then destroy the key a sibling's legacy value decrypted through, turning that
+  value into its default. Both the sibling check and the instance's own live-key check now derive
+  the answer the same way reads do.
+- **A suspending encrypted write no longer publishes its routing metadata before its value.** The
+  entry was marked encrypted while its ciphertext slot was still empty, so a read arriving in that
+  window was routed to the empty slot and served the default; both write paths now stage through
+  one shared step that writes the value first.
+- **The startup sweeps read an entry's recorded protection the same way the cache does.** The
+  sweep-side collector treated a canonical record that says "plain" as absent, so a stale legacy
+  protection record for the same key could make it look encrypted and be probed and reaped as an
+  orphan. It now applies the cache's rule: a canonical record always wins over a legacy one.
+- **Windows: a store reached through a symlink or junction now resolves to the same identity as its
+  real path.** The identity bound into a rotated entry's authenticated envelope came from
+  `getCanonicalPath()`, which on Windows walks straight through a link rather than resolving it —
+  and the newer JDKs that do resolve one need the file to exist, which a store's base name never
+  does. One store reached both through a link (a redirected Documents folder, `mklink /J`) and
+  through its real path therefore carried two identities, so an entry written and rotated under one
+  spelling read back as its default under the other. The identity now follows the link-resolved real
+  path, and the previous spelling is kept as the fallback identity so entries already written under
+  it still decrypt.
+- **Windows: a store rewrite no longer fails because another program briefly held the file open.**
+  Every write replaces the store by renaming a scratch file over it, and Windows refuses that
+  rename while an antivirus scanner, the search indexer or a backup agent has either file open —
+  reported, misleadingly, as "multiple instances of DataStore for this file". The write failed and
+  the value rolled back. The rewrite is now retried a few times over a fraction of a second, which
+  is longer than the condition lasts, and a retry that succeeded is logged as a warning.
+- **`close()` now waits for a store write that is already running.** Closing returned as soon as
+  the background work was cancelled, so a store reopened straight after could inspect the files
+  while the outgoing instance was still rewriting them, and start from an empty store. `close()`
+  now waits for the commit in progress, and for the store's own writer to finish before the file
+  is released, bounded to a few seconds so a hung disk cannot hang shutdown; writes still queued
+  behind it are dropped with a cancellation, as before. Web, which cannot block, is unchanged.
+- **JVM desktop: a strict biometric gate no longer opens when the native bridge fails to load.**
+  When the macOS LocalAuthentication or Windows Hello bridge could not be loaded through JNA,
+  `verifyBiometric(allowDeviceCredentialFallback = false)` returned `true` and seeded the
+  authorization cache, exactly as if no prompt path existed. A failed load is now told apart from
+  Linux's designed pass-through: strict calls refuse and log why, permissive calls keep the
+  documented pass-through, and `biometricsAvailable()` reports `false` in both modes.
+- **Apple: many concurrent cold `getDirect()` reads can no longer deadlock the store.** On iOS
+  and macOS the DataStore backend ran on `Dispatchers.Default`, which there is GCD's global queue;
+  a cold non-suspend read parks its thread until DataStore answers, and once enough such reads
+  were parked at the same time (GCD's per-process thread cap, typically 64) the store had no
+  thread left to answer on and every one of them waited forever. The backend now runs on its own
+  slice of `Dispatchers.IO`, so readers parked on `Default` or on `IO` cannot starve it.
+- **A cold sync read racing startup no longer resurrects an entry the startup sweep just
+  deleted.** The first `getDirect`, delegate or `getKeyInfo` call on a cache that has not yet
+  received its first snapshot reads the store itself; that read could take its snapshot before
+  the startup orphan sweep ran and merge it after the collector had already merged the
+  post-sweep state, putting the deleted entry's protection metadata back into memory, where it
+  stayed until the store's next write and made `getKeyInfo` report an entry the store no longer
+  holds. A cold read that finds another merge landed around its own now re-reads the store and
+  merges a fresh snapshot rather than its own stale one. The sweep also drops the deleted entry's
+  metadata itself, for lazy-load instances that have no collector to do it.
+- **JVM desktop: a pass-through no longer fills the biometric authorization cache.** Where no
+  prompt path exists, on Linux or under the `-Dksafe.biometrics.jvm.prompts=off` opt-out,
+  `verifyBiometric` returns `true` without asking the user anything, yet it still seeded that
+  scope's `authorizationDuration` slot, including the biometrics-only one. An app that lifted the
+  opt-out at runtime therefore had its next strict call inside the window answered `true` with no
+  prompt at all. Those two pass-throughs no longer seed; what they return is unchanged. A
+  permissive call that passes through because Windows Hello is unavailable or not configured, or
+  because the platform's native bridge failed to load, still seeds its slot.
+- **JVM: a launch whose OS key vault could not link no longer shadows the real OS key.** When the
+  native bridge behind DPAPI, the login Keychain or the Secret Service fails to load, KSafe keeps
+  the store usable by moving key custody to the software vault. But the startup pre-warm minted a
+  fresh master key there on every such launch, even for a session that only read, and the custody
+  marker beside it made that key outrank the live OS key on the next healthy launch, so every value
+  written before the failure read back as its default. A key minted while the bridge is dead is now
+  recorded as provisional: the first launch that reaches the OS vault again continues with the OS
+  key, keeps the provisional one, and retries a failed tag check under it — so nothing written
+  before, during or after the failure is lost. The pre-warm no longer mints while the bridge is
+  dead, so a read-only session leaves the store untouched.
+- **JVM: a key vault that degrades mid-migration no longer deletes the only copy of a key.** Copying
+  a software-vault key into the OS store re-read the active vault as it went. A native-bridge death
+  on another thread could flip that vault to the software store between the reads, so the copy wrote
+  the key onto itself, the read-back trivially matched, and the delete that follows a verified copy
+  removed the key and its custody marker; the next launch found no key and the startup orphan sweep
+  deleted the ciphertext it protected. The migration now takes one snapshot of the active vault and
+  stops immediately if that snapshot is the software vault itself.
+- **A cold read racing the startup sweep can no longer put a swept entry back into the cache.** The
+  guard that tells a cold reader another merge landed around its own counts completed merges, but it
+  bumped that count by reading it and then raising it to one more — two merges finishing together
+  therefore advanced it once, the reader compared equal and kept its older snapshot as the last
+  writer, so `getKeyInfo` and `protectionInfo` went on reporting an entry the store no longer held
+  until the next write. The bump is a real atomic increment now, and the clear epoch's two
+  hand-rolled increments go through the same helper.
+- **A write handed to the consumer in the instant the instance was cancelled no longer leaves its
+  caller waiting forever.** Sending to a consumer parked on the write queue passes the write
+  straight into that continuation, so a `close()` landing in that window left it in neither the
+  batch teardown cancels nor the queue teardown drains, and the awaiting `put`, `delete` or
+  `clearAll` never completed and never failed. The queue now hands any undelivered write the same
+  cancellation the drain does.
+- **`clearAll()` now reclaims the master keys another instance's rotation minted.** The sweep
+  bounded itself by the generation this instance had cached, and an instance built with `lazyLoad =
+  true` runs no collector, so a sibling's rotations never reached it: the wipe deleted the base
+  generation's master, left the live one behind with nothing to protect, and logged nothing, because
+  that delete was never attempted. The bound now also reads the store's own generation record and
+  every live instance's.
+- **A rotation now tells every other live instance to re-read the store's generation before its
+  next batch.** The rotation teaches each other instance's cache the new generation for the entries
+  it holds, but an instance whose collector had not yet seen the generation record still committed
+  at the generation it had cached, so a write staged before the rotation persisted a record one
+  generation below what that instance's own routing metadata said, and nothing repaired it. Every
+  other instance is now asked to re-read the record before its next batch. That request is a flag,
+  and a cache merge already in flight when the rotation lands clears it, so such an instance can
+  still write at the old generation until its next snapshot.
+
+### Changed
+
+- **`kotlinx-coroutines-core` and `compose-runtime` are now `api` dependencies.** `Flow`,
+  `StateFlow` and `CoroutineScope` appear in `:ksafe`'s public API and `KSafeComposeState`
+  publicly implements `MutableState`, yet both libraries were declared `implementation`, so a
+  consumer module without its own dependency on them could not compile the documented surface.
+  Consumers now get both transitively; nothing changes for projects that already declared them.
+- **The Android public API now has an ABI baseline that `apiCheck` enforces.** The binary
+  compatibility validator only registers its Android dump for a compilation named `release`,
+  and the Android multiplatform library plugin names that compilation `main` — so it registered
+  no Android task at all, and the committed dumps described every target except Android. The
+  `KSafe(context, …)` factory (whose `Duration` parameter puts a hash of the whole parameter list
+  into its JVM name, so any change silently renames it) and the biometrics module's
+  `BiometricHelper` surface were outside the lock, and `:ksafe-compose` had no Android baseline
+  at all. They are now dumped to `api/android/` and compared on every `check`.
+- **Android API 28-34: a `requireUnlockedDevice` key is minted without `setUnlockedDeviceRequired`
+  when the device has no secure lock screen, instead of failing the write.** The Keystore cannot
+  bind a key to an unlock that does not exist, so the first strict put died deep inside key
+  generation. Such writes still take the per-call TEE path, never the software DEK, and the degrade
+  is disclosed as `android_lock_screen_absent` in `protectionInfo.notes` and in a one-shot warning
+  logged on the first relaxed mint of the process. KSafe records the relaxed mint, so the note
+  keeps being reported while any such key is in use, a per-entry
+  `HARDWARE_ISOLATED` one included, even after the user later sets a lock screen: Keystore parameters are fixed at mint time and the existing
+  key is not re-bound. Only a new key generation re-takes the decision, and rotation is opt-in
+  (`keyRotationPolicy` defaults to `Never`): call `rotateKeys()` once, or configure a rotation
+  policy, to get the unlock binding back. API 35+ is unaffected. Because that record has to be
+  consulted, reading `protectionInfo` on a device that does have a secure lock screen (API 35+
+  included) now performs one blocking store read per process — and again after each
+  `clearAll()` — so read it off the main thread.
 
 ## [3.1.0] - 2026-08-24
 

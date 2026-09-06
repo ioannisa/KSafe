@@ -6,12 +6,12 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Locks in: a failure in the post-commit, best-effort engine.deleteKey does not fail the batch — the value is already gone from storage and the awaiting delete() completes normally.
+ * Locks in: a failure in the post-commit, best-effort engine.deleteKey does not fail the batch —
+ * the value is already gone from storage, so the awaiting delete() completes normally.
  */
 class JvmDeleteKeyCleanupFailureTest {
 
-    /** Encrypts/decrypts like [FakeEncryption], but `deleteKey` always throws — simulating a
-     *  Keystore/Keychain delete hiccup during the post-commit cleanup. */
+    /** Like [FakeEncryption], but `deleteKey` always throws — a Keychain hiccup during cleanup. */
     private class DeleteKeyFailEncryption : KSafeEncryption {
         private val xor = FakeEncryption()
         override fun encrypt(identifier: String, data: ByteArray, hardwareIsolated: Boolean, requireUnlockedDevice: Boolean?,    aad: ByteArray?,): ByteArray =
@@ -31,8 +31,7 @@ class JvmDeleteKeyCleanupFailureTest {
         ksafe.put("token", "secret", KSafeWriteMode.Encrypted())
         assertEquals("secret", ksafe.get("token", "none"))
 
-        // engine.deleteKey runs AFTER the storage delete commits, best-effort, so
-        // delete() completes normally despite the throwing deleteKey.
+        // engine.deleteKey runs after the storage delete commits, best-effort.
         ksafe.delete("token")
 
         assertEquals("none", ksafe.get("token", "none"), "the delete must have persisted despite the key-delete failure")

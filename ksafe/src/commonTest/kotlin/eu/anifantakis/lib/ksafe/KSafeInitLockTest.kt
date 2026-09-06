@@ -6,7 +6,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Locks in: KSafeInitLock is per-instance and reentrant — distinct locks nest, and a thread can re-acquire its own lock without self-deadlock.
+ * Locks in: KSafeInitLock is per-instance and reentrant — distinct locks nest, and a thread can
+ * re-acquire its own lock without self-deadlock.
  */
 class KSafeInitLockTest {
 
@@ -19,7 +20,7 @@ class KSafeInitLockTest {
     @Test
     fun reentrantAcquire_onSameThread_doesNotSelfDeadlock() {
         val lock = KSafeInitLock()
-        // A non-reentrant lock would hang on the inner acquire; a reentrant one re-enters and returns.
+        // A non-reentrant lock would hang on the inner acquire.
         val result = lock.withLock {
             lock.withLock {
                 lock.withLock { "reentered" }
@@ -33,7 +34,7 @@ class KSafeInitLockTest {
         val a = KSafeInitLock()
         val b = KSafeInitLock()
         val c = KSafeInitLock()
-        // Holding one lock must not block acquiring another; a single process-wide lock would deadlock here.
+        // A single process-wide lock would deadlock here.
         val order = ArrayList<String>()
         a.withLock {
             order.add("a")
@@ -47,7 +48,6 @@ class KSafeInitLockTest {
 
     @Test
     fun distinctInstances_areNotShared() {
-        // Distinct locks are separate objects: re-acquiring the same lock succeeds while another is held.
         val a = KSafeInitLock()
         val b = KSafeInitLock()
         var reached = false

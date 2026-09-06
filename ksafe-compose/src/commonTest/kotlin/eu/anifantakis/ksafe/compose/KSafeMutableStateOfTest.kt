@@ -89,7 +89,6 @@ abstract class KSafeMutableStateOfTest {
 
         assertEquals("SecretData", ksafe.getDirect("secretKey", "fallback"))
 
-        // Encryption-by-default is observable via metadata: getKeyInfo must report a non-null protection tier.
         val keyInfo = ksafe.getKeyInfo("secretKey")
         assertNotNull(keyInfo, "Key info should exist for stored value")
         assertNotNull(
@@ -109,7 +108,6 @@ abstract class KSafeMutableStateOfTest {
 
         assertEquals("PlainData", ksafe.getDirect("plain_key", "fallback"))
 
-        // Plain writes record protection = null, observable via getKeyInfo.
         val keyInfo = ksafe.getKeyInfo("plain_key")
         assertNotNull(keyInfo, "Key info should exist for stored value")
         assertNull(
@@ -225,10 +223,9 @@ abstract class KSafeMutableStateOfTest {
     }
 
     /**
-     * A persist that fails must not leave the Compose state showing a value that never
-     * reached disk. Keys in KSafe's reserved namespace are readable (they return the
-     * default) but writes are rejected synchronously on every platform, giving a
-     * deterministic persist failure without engine seams.
+     * A failed persist must not leave the Compose state showing a value that never reached disk.
+     * Writes to KSafe's reserved namespace are rejected synchronously on every platform, which is
+     * a deterministic persist failure with no engine seam.
      */
     @Test
     fun mutableStateOf_failedPersist_rollsBackTheOptimisticValue() {

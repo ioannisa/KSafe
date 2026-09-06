@@ -9,17 +9,10 @@ import java.io.File
 import kotlin.test.assertTrue
 
 /**
- * Locks in that the Android factory WIRES the store identity home-relative, not merely that the
- * helper computing it can.
- *
- * Android is where this breaks and nowhere else can see it: `applicationInfo.dataDir` is
- * `/data/user/0/<pkg>`, a symlink to `/data/data/<pkg>`. Canonicalizing the store path while
- * leaving that prefix raw means the two can never match, so the identity silently stays absolute —
- * which shipped once, with every host test green, because feeding the helper hand-written
- * arguments cannot see which arguments the factory actually passes.
- *
- * An absolute identity survives until the OS moves the app's data (adoptable storage, restore),
- * and then every rotated entry fails authentication and the startup sweep treats it as an orphan.
+ * Locks in that the Android factory WIRES the identity home-relative, not merely that the helper can:
+ * `applicationInfo.dataDir` is a symlink, so canonicalizing the store path while leaving that prefix
+ * raw leaves the identity absolute — which shipped once with every host test green. An absolute
+ * identity breaks the day the OS moves the app's data, and the sweep then reaps every rotated entry.
  */
 @RunWith(AndroidJUnit4::class)
 class AndroidStoreIdentityWiringTest {

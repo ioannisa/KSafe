@@ -11,11 +11,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Locks in: [seedBiometricSessionIfActive] skips the seed (and propagates cancellation) when the
- * coroutine is no longer active — a cancelled auth must not grant a later call a prompt-free pass —
- * skips it when the key's revocation epoch moved while the prompt was up — a `clearBiometricAuth()`
- * must not be undone by an in-flight success — and seeds normally otherwise. The commonMain helper
- * backs the Android + JVM + web verify-paths; verified here on JVM.
+ * Locks in: [seedBiometricSessionIfActive] skips the seed when the coroutine is no longer active
+ * (a cancelled auth must not buy a later call a prompt-free pass) or when the key's revocation
+ * epoch moved while the prompt was up (a `clearBiometricAuth()` must not be undone by an in-flight
+ * success), and seeds normally otherwise. The commonMain helper backs Android, JVM and web.
  */
 class SeedBiometricSessionIfActiveTest {
 

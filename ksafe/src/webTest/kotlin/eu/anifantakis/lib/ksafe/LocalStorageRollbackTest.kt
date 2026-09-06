@@ -26,7 +26,7 @@ class LocalStorageRollbackTest {
         }
     }
 
-    /** Removing touched keys FIRST frees space so a deleted prior can be restored without hitting quota; arbitrary-order restore would lose it. */
+    /** Removing touched keys first frees the space a deleted prior needs; any other order loses it to quota. */
     @Test
     fun rollback_removesTouchedKeysFirst_soNoDeletedValueIsLost() {
         val big = "x".repeat(100)
@@ -62,7 +62,6 @@ class LocalStorageRollbackTest {
         assertEquals(true, error.message?.contains("may be lost"))
     }
 
-    /** A clean rollback (everything fits) restores priors and removes new keys. */
     @Test
     fun rollback_restoresPriorsAndRemovesNewKeys_whenSpaceFits() {
         val store = FakeQuotaStore(capacityChars = 1000)

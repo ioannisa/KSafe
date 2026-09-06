@@ -29,7 +29,6 @@ class ObserveFromStorageTest {
             policy = structuralEqualityPolicy(),
         )
 
-    // Live mode: emissions reflect until the user writes, then stale disk echoes are suppressed.
     @Test
     fun observeFromStorage_liveMode_appliesUntilUserWrites_thenStopsClobbering() = runTest {
         val state = newState("initial")
@@ -52,7 +51,6 @@ class ObserveFromStorageTest {
         advanceUntilIdle()
         assertEquals("second", state.value)
 
-        // After a user write, the racing pre-write snapshot ("second") must not revert it.
         state.value = "user_wrote"
         flow.emit("second")
         advanceUntilIdle()
@@ -61,7 +59,6 @@ class ObserveFromStorageTest {
         job.cancel()
     }
 
-    // The write guard is precise, not permanent: once the write's echo arrives, newer external changes reflect again.
     @Test
     fun observeFromStorage_liveMode_resumesExternalReflection_afterEchoCatchesUp() = runTest {
         val state = newState("initial")
@@ -78,7 +75,6 @@ class ObserveFromStorageTest {
 
         state.value = "user_wrote"
 
-        // The stale pre-write snapshot ("initial"): suppressed.
         flow.emit("initial")
         advanceUntilIdle()
         assertEquals("user_wrote", state.value)
@@ -88,7 +84,6 @@ class ObserveFromStorageTest {
         advanceUntilIdle()
         assertEquals("user_wrote", state.value)
 
-        // A genuinely newer external write must now reflect again.
         flow.emit("external_new")
         advanceUntilIdle()
         assertEquals(
@@ -96,7 +91,6 @@ class ObserveFromStorageTest {
             "after the write's echo, newer external changes must reflect again",
         )
 
-        // A fresh user write re-arms the guard until its own echo.
         state.value = "user_2"
         flow.emit("external_new")
         advanceUntilIdle()
@@ -105,9 +99,8 @@ class ObserveFromStorageTest {
         job.cancel()
     }
 
-    // A user write whose echo never arrives (a persist that failed without a synchronous
-    // error, so storage never changes and getFlow never re-emits) must not freeze observation
-    // forever — a bounded-timeout backstop releases the write-echo latch once the window elapses.
+    // A write whose echo never arrives (a persist that failed without a synchronous error, so storage
+    // never changes and getFlow never re-emits) must not freeze observation forever.
     @Test
     fun observeFromStorage_liveMode_writeThatNeverEchoes_releasesLatchAfterTimeout() = runTest {
         val state = newState("initial")
@@ -127,22 +120,18 @@ class ObserveFromStorageTest {
         // Arm the latch; no matching echo will ever arrive.
         state.value = "user_wrote"
 
-        // Before the window elapses the latch still suppresses the pre-write snapshot.
         flow.emit("initial")
         runCurrent()
         assertEquals("user_wrote", state.value, "the latch suppresses the pre-write snapshot before the window")
 
-        // Cross the timeout window: the backstop releases the latch.
         advanceTimeBy(timeout + 1)
         runCurrent()
 
-        // The pre-write value now applies — proof the TIMEOUT released the latch, since an
-        // armed latch would still suppress this exact value as the pre-write snapshot.
+        // Proof the timeout released the latch: an armed latch would still suppress this exact value.
         flow.emit("initial")
         runCurrent()
         assertEquals("initial", state.value, "after the window, even the pre-write value must reflect")
 
-        // A later external change reflects too — observation is not frozen.
         flow.emit("external_after")
         advanceUntilIdle()
         assertEquals(
@@ -153,9 +142,8 @@ class ObserveFromStorageTest {
         job.cancel()
     }
 
-    // A durable external change that lands while the user's write-echo is still in flight is a
-    // value the source flow will never re-emit — it must apply immediately and clear the latch,
-    // not be dropped until the timeout backstop fires.
+    // A durable external change landing while the write-echo is in flight is a value the source flow
+    // will never re-emit, so it must apply and clear the latch, not wait for the timeout backstop.
     @Test
     fun observeFromStorage_liveMode_externalChangeDuringEchoWindow_appliesImmediately() = runTest {
         val state = newState("A")
@@ -185,8 +173,6 @@ class ObserveFromStorageTest {
         job.cancel()
     }
 
-    // Echo-after-external ordering: the external change C clears the latch, so the write's own
-    // echo B landing after it applies like any emission — state tracks disk-emission order.
     @Test
     fun observeFromStorage_liveMode_echoArrivingAfterExternalChange_stateTracksEmissionOrder() = runTest {
         val state = newState("A")
@@ -207,7 +193,6 @@ class ObserveFromStorageTest {
         runCurrent()
         assertEquals("C", state.value)
 
-        // B's write finally commits and echoes; the latch is already down, so it applies.
         flow.emit("B")
         runCurrent()
         assertEquals(
@@ -231,11 +216,9 @@ class ObserveFromStorageTest {
         state.value = "B"                     // arms the guard; _internalState = "B", lastUserWrite = "B"
         assertEquals("B", state.value)
 
-        // Reproduce the raced outcome: a stale "A" emission clobbers the visible value after the guard was armed.
         state.simulateStaleClobberForTest("A")
         assertEquals("A", state.value, "precondition: the stale emission diverged the visible state")
 
-        // The echo of the user's own write arrives.
         state.updateFromFlow("B")
 
         assertEquals(
@@ -245,9 +228,8 @@ class ObserveFromStorageTest {
         )
     }
 
-    // updateFromStorage is a one-shot cold-start self-heal with the same check-then-apply race but no later emission
-    // to recover. A user write racing between its guard check and publish must not be clobbered: it re-checks the
-    // guard after publishing and re-applies the user's value.
+    // updateFromStorage is a one-shot cold-start self-heal with the same check-then-apply race but no
+    // later emission to recover, so it re-checks the guard after publishing and re-applies the write.
     @Test
     fun updateFromStorage_racingUserWrite_isNotClobbered() {
         val state = newState("A") // syncedValue = "A"
@@ -257,7 +239,6 @@ class ObserveFromStorageTest {
             state.value = "B"
         }
 
-        // The cold-start heal delivers the stale persisted value.
         state.updateFromStorage("A-persisted")
 
         assertEquals(
@@ -267,7 +248,37 @@ class ObserveFromStorageTest {
         )
     }
 
-    // Cold-start one-shot: observeExternalChanges=false + coldStart=true takes the first emission via updateFromStorage.
+    // A write that nets back to the last synced value leaves the latch down, so the latch cannot stand
+    // in for "a write is in flight": the heal must consult the unresolved-write slot instead.
+    @Test
+    fun updateFromStorage_writeNettingBackToSyncedValue_isNotClobberedAndKeepsItsRollbackSlot() {
+        val state = newState("A") // syncedValue = "A"
+
+        state.value = "B"         // arms the latch
+        state.value = "A"         // nets back to the synced value: the latch drops, the write is in flight
+        val inFlight = state.writeTokenInFlight()
+
+        state.updateFromStorage("hello")
+
+        assertEquals("A", state.value, "the cold-start heal must not publish over a write that is still in flight")
+        assertEquals("A", state.lastSyncedValue, "storage never confirmed anything, so the baseline must not move")
+
+        // The slot must still name that write, else its persist failing has no rollback record.
+        state.reconcileAfterFailedPersist(inFlight, durableValue = "durable")
+        assertEquals("durable", state.value, "the heal must not settle a write it did not observe echo")
+    }
+
+    // Control: with nothing in flight the one-shot heal still does its job.
+    @Test
+    fun updateFromStorage_withNoWriteInFlight_publishesAndRepinsTheBaseline() {
+        val state = newState("A")
+
+        state.updateFromStorage("hello")
+
+        assertEquals("hello", state.value)
+        assertEquals("hello", state.lastSyncedValue)
+    }
+
     @Test
     fun observeFromStorage_coldStart_takesFirstEmissionAndCompletes() = runTest {
         val state = newState("default")
@@ -281,7 +292,6 @@ class ObserveFromStorageTest {
         assertEquals("persisted", state.value)
     }
 
-    // Warm-start no-op: observeExternalChanges=false + coldStart=false subscribes to nothing and mutates nothing.
     @Test
     fun observeFromStorage_warmStart_noScope_noOp() = runTest {
         val state = newState("warm_initial")
@@ -301,7 +311,6 @@ class ObserveFromStorageTest {
         assertEquals(false, flowCollected, "warm-start path must not subscribe to flow")
     }
 
-    // Cold-start self-heal must not clobber a value written between launch and the flow's first emission (gated by the user-write guard).
     @Test
     fun observeFromStorage_coldStart_doesNotClobberUserWrite() = runTest {
         val state = newState("default")
@@ -316,7 +325,6 @@ class ObserveFromStorageTest {
         }
         advanceUntilIdle()
 
-        // User writes before the persisted value arrives.
         state.value = "user_set"
 
         // Persisted value finally lands; it must not overwrite the user's value.
@@ -327,7 +335,6 @@ class ObserveFromStorageTest {
         job.cancel()
     }
 
-    // Cold-start self-heal honors selfHealTimeoutMs: if the flow never emits, state stays initial and the helper returns.
     @Test
     fun observeFromStorage_coldStart_timeoutLeavesStateUntouched() = runTest {
         val state = newState("default")

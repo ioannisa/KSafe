@@ -350,8 +350,7 @@ class KSafeComposeStateTest {
 
     /**
      * A fire-and-forget persist that fails leaves the state showing a value that never became
-     * durable: storage never changed, so no echo can arrive to correct it. The failure
-     * reconcile must revert to the durable value and release the write-echo latch.
+     * durable — storage never changed, so no echo can arrive to correct it.
      */
     @Test
     fun composeState_reconcileAfterFailedPersist_revertsThePhantomToTheDurableValue() {
@@ -370,7 +369,6 @@ class KSafeComposeStateTest {
 
         assertEquals("A", state.value, "a failed persist must revert the state to the durable value")
 
-        // The latch must have been released: external emissions reflect again.
         state.updateFromFlow("external")
         assertEquals("external", state.value, "external changes must keep reflecting after the reconcile")
     }

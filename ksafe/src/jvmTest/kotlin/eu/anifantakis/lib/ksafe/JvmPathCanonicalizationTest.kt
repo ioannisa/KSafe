@@ -11,10 +11,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 
 /**
- * Locks in the KFA-014 path-canonicalization fix: one physical store reached under different
- * baseDir spellings (symlinked, `..`, relative) resolves to ONE v3 AAD identity, so a rotated
- * entry written under one spelling reads back under another — and entries written by a prior
- * (non-canonical) build are recovered through the core's fallback-identity decrypt path.
+ * Locks in: one physical store reached under different baseDir spellings (symlinked, `..`, relative)
+ * resolves to ONE v3 AAD identity, so a rotated entry written under one spelling reads back under
+ * another — and entries a prior non-canonical build wrote are recovered through the core's
+ * fallback-identity decrypt path.
  */
 class JvmPathCanonicalizationTest {
 
@@ -59,9 +59,8 @@ class JvmPathCanonicalizationTest {
     }
 
     /**
-     * The fallback-identity decrypt path: a v3 entry whose AAD was written under the raw
-     * (pre-canonicalization) identity is re-bound to that identity on disk, then read back by a
-     * fresh instance whose PRIMARY identity is canonical — the read must fall back, not default.
+     * A v3 entry re-bound on disk to the raw pre-canonicalization identity, then read by a fresh
+     * instance whose primary identity is canonical: the read must fall back, not default.
      */
     @Test
     fun fallbackIdentityV3Entry_isRecovered() = runTest {
@@ -72,15 +71,13 @@ class JvmPathCanonicalizationTest {
         ks.put("secret", "value-1")
         ks.rotateKeys() // v3, bound to the store's (canonical) identity
 
-        // Read the store's ACTUAL identities from the live core — the symlink spelling is
-        // non-canonical, so a distinct fallback identity exists.
+        // The symlink spelling is non-canonical, so the live core carries a distinct fallback.
         val fallback = ks.core.fallbackStoreIdentity
         assertNotEquals("", fallback, "precondition: a symlink baseDir yields a distinct fallback identity")
         assertNotEquals(ks.core.storeIdentity, fallback)
 
-        // Decrypt the entry's EXACT stored plaintext (JSON-encoded) under its current canonical
-        // AAD, then re-encrypt it under the LEGACY identity's AAD and overwrite the record —
-        // simulating an entry a pre-canonicalization build wrote.
+        // Re-encrypt the entry's exact stored plaintext under the legacy identity's AAD and overwrite
+        // the record, standing in for an entry a pre-canonicalization build wrote.
         val protection = KSafeProtection.DEFAULT
         val meta = ks.core.encMetaMap["secret"]!!
         val alias = ks.core.aliasForRead("secret", protection)

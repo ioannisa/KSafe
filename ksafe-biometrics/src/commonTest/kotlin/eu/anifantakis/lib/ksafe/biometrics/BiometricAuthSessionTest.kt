@@ -77,15 +77,14 @@ class BiometricAuthSessionTest {
         // A caller scope ending in a strictness marker must not collide with another scope's strict/permissive slot.
         assertNotEquals(permissive("a|strict"), strict("a"))
         assertNotEquals(permissive("aS"), strict("a"))
-        // The strength discriminator is a prefix, so a scope string that looks like a
-        // full key can never land in a different (scope, strength) slot.
+        // The strength discriminator is a prefix, so a scope string that looks like a full key
+        // can never land in a different (scope, strength) slot.
         assertNotEquals(strict("vault"), permissive("S ksafe-global-scope"))
         assertNotEquals(strict(null), permissive("Sscope: ksafe-global-scope"))
     }
 
     // ---- revocation epochs (the seed-time guard against clear-during-prompt) ----
-    // Epoch state is process-global and only ever grows, so these assert relative
-    // changes from captured values, never absolute ones.
+    // Epoch state is process-global and only ever grows, so these assert relative changes.
 
     @Test
     fun markRevoked_changesTheRevokedKeysEpoch_only() {

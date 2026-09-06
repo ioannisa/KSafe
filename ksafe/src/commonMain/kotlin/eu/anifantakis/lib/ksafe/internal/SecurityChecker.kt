@@ -5,7 +5,6 @@ import eu.anifantakis.lib.ksafe.SecurityAction
 import eu.anifantakis.lib.ksafe.SecurityViolation
 import eu.anifantakis.lib.ksafe.SecurityViolationException
 
-/** Platform detection of rooted/jailbroken devices, debuggers, emulators, and debug builds. */
 internal expect object SecurityChecker {
     fun isDeviceRooted(): Boolean
     fun isDebuggerAttached(): Boolean
@@ -13,15 +12,12 @@ internal expect object SecurityChecker {
     fun isEmulator(): Boolean
 }
 
-/**
- * Validates [policy] at KSafe initialization; throws [SecurityViolationException]
- * for the first violation whose action is BLOCK.
- */
+/** Validates [policy] at initialization; throws [SecurityViolationException] for the first BLOCK violation. */
 internal fun validateSecurityPolicy(policy: KSafeSecurityPolicy) {
     val violations = mutableListOf<Pair<SecurityViolation, SecurityAction>>()
 
-    // `detect` stays a lambda so an IGNOREd check never runs its probe — root and emulator
-    // detection touch the filesystem and the PackageManager.
+    // A lambda so an IGNOREd check never runs its probe: root/emulator detection hits the
+    // filesystem and the PackageManager.
     fun check(action: SecurityAction, violation: SecurityViolation, detect: () -> Boolean) {
         if (action != SecurityAction.IGNORE && detect()) violations.add(violation to action)
     }
@@ -35,7 +31,6 @@ internal fun validateSecurityPolicy(policy: KSafeSecurityPolicy) {
     var firstBlockingViolation: SecurityViolation? = null
 
     for ((violation, action) in violations) {
-        // Callback fires for every violation, including non-blocking ones
         policy.onViolation?.invoke(violation)
 
         if (action == SecurityAction.BLOCK) {

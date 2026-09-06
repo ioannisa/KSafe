@@ -60,7 +60,6 @@ class AndroidDekPrewarmTest {
             val blob = e1.encrypt(master, "secret".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = false)
             assertTrue(dekPresent(storage))
 
-            // A fresh cold-cache engine on the same storage warms the DEK.
             val e2 = engine(storage)
             assertFalse(e2.isDekCachedForTest(master), "precondition: the cold engine has no cached DEK")
             runBlocking { e2.prewarmDekReadIfPresent(master, requireUnlockedDevice = false) }

@@ -16,9 +16,8 @@ class JvmMutableStateFlowConcurrencyTest {
         val msf = KSafeMutableStateFlow(0) { /* no-op persist */ }
         val t2Done = CountDownLatch(1)
 
-        // The test seam fires inside T1's write, between markUserWrite and the publish;
-        // launching T2 there forces the mid-transition interleave, and the sleep gives
-        // T2 a real chance to run (under the lock it stays blocked until T1 finishes).
+        // The seam fires inside T1's write, between markUserWrite and the publish, so launching T2
+        // there forces the interleave; the sleep gives it a real chance (the lock blocks it).
         msf.betweenMarkAndPublishForTest = {
             msf.betweenMarkAndPublishForTest = null // one-shot
             Thread {

@@ -6,12 +6,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * The v3 AAD binds the full store identity, so two stores whose only difference is their directory
- * (same fileName) get different associated data — a rotated ciphertext can't be transplanted between
- * them and still authenticate. This locks the injective, directory-sensitive encoding. Each platform
- * factory feeds a directory/path-inclusive identity into [KeySafeMetadataManager.aadFor] (Android
- * datastorePath, Apple datastoreFilePath, JVM resolvedBaseDir + fileName); same-store v3
- * authentication (record swap / metadata tamper) is covered by the per-platform AAD binding tests.
+ * Locks in: the v3 AAD binds the full store identity, so two stores differing only in directory get
+ * different associated data and a rotated ciphertext cannot be transplanted between them and still
+ * authenticate. Every platform factory feeds a path-inclusive identity into
+ * [KeySafeMetadataManager.aadFor]; same-store authentication lives in the per-platform AAD tests.
  */
 class AadStoreIdentityBindingTest {
 

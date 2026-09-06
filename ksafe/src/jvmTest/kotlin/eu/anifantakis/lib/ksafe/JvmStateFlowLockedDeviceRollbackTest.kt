@@ -9,21 +9,16 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Locks in: when a `asMutableStateFlow` write fails and the durable re-read cannot resolve, the
- * flow falls back to the value it last had in sync with storage — not to the caller's default.
- *
- * A locked device produces both halves at once: the strict write cannot be encrypted, and the
- * entry that is still intact on disk cannot be decrypted, so the re-read returns whatever
- * fallback it was handed. Handing it the caller's default publishes "no value" over live data —
- * for the token below, the app sees a logged-out user while the session is intact on disk and
- * readable again the moment the device unlocks.
+ * Locks in: when an `asMutableStateFlow` write fails and the durable re-read cannot resolve, the
+ * flow keeps the value it last had in sync with storage rather than the caller's default. A locked
+ * device produces both halves at once, and the default there publishes "no value" over live data —
+ * a logged-out user, while the session sits intact on disk and readable again once unlocked.
  */
 class JvmStateFlowLockedDeviceRollbackTest {
 
     /**
-     * XOR engine that refuses to encrypt a marked payload, and — once locked — cannot decrypt
-     * anything either. Keying the write failure off the payload leaves the master-alias writes
-     * working, so only the test's own write fails.
+     * XOR engine that refuses to encrypt a marked payload and, once locked, decrypts nothing.
+     * Keying the failure off the payload leaves the master-alias writes working.
      */
     private class LockableMarkerEngine(private val failMarker: String) : KSafeEncryption {
         @Volatile
@@ -87,9 +82,8 @@ class JvmStateFlowLockedDeviceRollbackTest {
                 // An optimistic renewal whose encrypt fails in the write consumer.
                 flow.value = "BAD_renewed"
 
-                // An awaited write enqueued afterwards is processed in (or after) the failing
-                // write's batch, and the fire-and-forget failure callback runs first — so the
-                // reconcile has completed by the time this put returns.
+                // An awaited write lands in (or after) the failing write's batch and the failure
+                // callback runs first, so the reconcile has completed once this put returns.
                 ksafe.put("flush", "x", KSafeWriteMode.Encrypted())
 
                 assertEquals(

@@ -13,14 +13,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Locks in: the Apple orphan sweep stands down whenever the store holds no evidence of ANY
- * encrypted entry, however many other records it happens to hold. The sweep deletes Keychain and
- * Secure Enclave key material that cannot be recreated, so a store whose encrypted view is only
- * PARTIALLY present (failed migration, quarantined-corrupt file, a restore that brought the
- * Keychain back but not the DataStore) must not be read as "these keys are orphans".
- *
- * Composed from the same pure steps the Apple sweep runs, so the decision is exercised on every
- * target — the sweep itself is Keychain I/O a sandboxed unit-test process cannot reach.
+ * Locks in: the Apple orphan sweep stands down whenever the store shows no evidence of any
+ * encrypted entry — a partial view (failed migration, a restore that brought the Keychain back but
+ * not the DataStore) must not read as "these keys are orphans", because the sweep deletes key
+ * material that cannot be recreated. Built from the sweep's own pure steps, all a test can reach.
  */
 class KeychainSweepFailClosedTest {
 
@@ -62,10 +58,9 @@ class KeychainSweepFailClosedTest {
 
     @Test
     fun storeHoldingOnlyAReservedInternalRecord_reapsNothing() {
-        // A rotation leaves `__ksafe_keygen__` behind. If the entries themselves are missing —
-        // the store was reinitialised, or its file never arrived — that single record is the
-        // whole store: it says nothing about which Keychain keys are live, so a sweep that
-        // treats "the store has records" as proof would destroy every Secure Enclave key.
+        // A rotation leaves `__ksafe_keygen__` behind. If the entries themselves are missing — the
+        // store was reinitialised, or its file never arrived — that one record is the whole store,
+        // and a sweep treating "the store has records" as proof destroys every Secure Enclave key.
         val snapshot = mapOf(
             KeySafeMetadataManager.KEYGEN_RAW_KEY to StoredValue.Text("{\"g\":2}"),
         )
@@ -79,8 +74,7 @@ class KeychainSweepFailClosedTest {
     @Test
     fun storeHoldingOnlyPlainValues_reapsNothing() {
         // The same partial view, reached the ordinary way: after the store was lost the app wrote
-        // one unencrypted setting. A plain entry carries no protection metadata, so it accounts
-        // for no Keychain key — and must not vouch for the store's encrypted view either.
+        // one unencrypted setting, which accounts for no Keychain key and vouches for nothing.
         val snapshot = mapOf(
             KeySafeMetadataManager.valueRawKey("theme") to StoredValue.Text("dark"),
             KeySafeMetadataManager.metadataRawKey("theme") to StoredValue.Text(
@@ -96,9 +90,8 @@ class KeychainSweepFailClosedTest {
 
     @Test
     fun storeThatLostOnlyItsProtectionMetadata_reapsNothing() {
-        // Half a partial view: the ciphertext rows survived but their metadata did not, so no
-        // entry can be matched to a key. Reaping here destroys the keys for ciphertext that is
-        // still on disk — the most recoverable state there is, made unrecoverable.
+        // The ciphertext rows survived but their metadata did not, so no entry can be matched to a
+        // key. Reaping here would destroy the keys for ciphertext that is still on disk.
         val snapshot = mapOf(
             KeySafeMetadataManager.valueRawKey("token") to StoredValue.Text("ciphertext"),
         )

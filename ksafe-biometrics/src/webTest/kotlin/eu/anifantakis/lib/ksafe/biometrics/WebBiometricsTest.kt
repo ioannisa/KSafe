@@ -1,10 +1,13 @@
 package eu.anifantakis.lib.ksafe.biometrics
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -15,18 +18,19 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * Locks in: the 2.2.0 WebAuthn gate on JS/Wasm — first use registers (and counts as a
- * verification), later calls verify against the stored credential id, denials and
- * ceremony errors fail closed, genuine unavailability passes through permissive / refuses
- * strict, the opt-out restores the legacy always-`true` no-op, and the authorization
- * cache keeps the same strength-keyed semantics as every other platform. The real
- * WebAuthn ceremony is replaced by the test seam, so no browser dialogs appear.
+ * Locks in: the WebAuthn gate on JS/Wasm — first use registers (and counts as a verification),
+ * later calls verify against the stored credential id, denials and ceremony errors fail closed,
+ * unavailability passes permissive and refuses strict, the opt-out restores the legacy always-`true`
+ * no-op, and the cache stays strength-keyed. The real ceremony is a test seam: no browser dialogs.
  */
 class WebBiometricsTest {
 
     private fun reset() {
         webAuthnCallOverrideForTest = null
         webAuthnAbortOverrideForTest = null
+        webBioLocalGetOverrideForTest = null
+        webBioLocalSetOverrideForTest = null
+        webBioLocalRemoveOverrideForTest = null
         KSafeBiometricsWeb.promptsEnabled = true
         KSafeBiometricsWeb.resetRegistration()
         KSafeBiometrics.clearBiometricAuth()
@@ -116,9 +120,8 @@ class WebBiometricsTest {
 
     @Test
     fun resetRegistration_signalsTheAbandonedCredentialToThePasskeyProvider() = runTest {
-        // A reset forgets the credential locally, but the passkey itself survives in the user's
-        // password manager and would sit beside the next enrollment. The signal asks the provider
-        // to drop it; it is advisory and best-effort, so the reset must complete either way.
+        // A reset forgets the credential locally, but the passkey survives in the password manager
+        // and would sit beside the next one. The drop signal is advisory: the reset completes anyway.
         val signalled = CompletableDeferred<String?>()
         webAuthnCallOverrideForTest = { op, arg ->
             when (op) {
@@ -139,6 +142,40 @@ class WebBiometricsTest {
             "the abandoned credential id must reach the provider, not the new one",
         )
         assertFalse(KSafeBiometricsWeb.isRegistered, "the local record is cleared regardless")
+    }
+
+    @Test
+    fun resetRegistration_survivesAStorageBlockedRemoval() = runTest {
+        // "Block all cookies" / a sandboxed iframe: the localStorage getter throws SecurityError.
+        // resetRegistration is wired straight to a button, so the throw must not escape it — nor
+        // cost the title slot and the abandoned-credential signal that follow.
+        val signalled = CompletableDeferred<String?>()
+        webAuthnCallOverrideForTest = { op, arg ->
+            when (op) {
+                "available" -> "yes"
+                "register" -> "registered:cred-blocked"
+                "signalUnknown" -> { signalled.complete(arg); "signal:ok" }
+                else -> fail("unexpected op $op")
+            }
+        }
+
+        KSafeBiometrics.defaultTitle = "Blocked Origin"
+        assertTrue(KSafeBiometrics.verifyBiometric("Unlock"))
+        assertEquals("Blocked Origin", KSafeBiometricsWeb.registeredTitle)
+
+        webBioLocalRemoveOverrideForTest = { key ->
+            if (key == WEBAUTHN_CREDENTIAL_ID_KEY) throw IllegalStateException("SecurityError")
+            webBioLocalRemove(key)
+        }
+        try {
+            KSafeBiometricsWeb.resetRegistration()
+        } finally {
+            webBioLocalRemoveOverrideForTest = null
+            webBioLocalRemove(WEBAUTHN_CREDENTIAL_ID_KEY)
+        }
+
+        assertNull(KSafeBiometricsWeb.registeredTitle, "the title slot must still be cleared")
+        assertEquals("cred-blocked", signalled.await(), "the abandoned credential must still be signalled")
     }
 
     @Test
@@ -411,5 +448,123 @@ class WebBiometricsTest {
         val result = CompletableDeferred<Boolean>()
         KSafeBiometrics.verifyBiometricDirect("Auth") { ok -> result.complete(ok) }
         assertFalse(result.await(), "the Direct variant must deliver the ceremony outcome")
+    }
+
+    // ---- Blocked localStorage: getItem/setItem throw SecurityError ("block all cookies", sandboxed iframe) ----
+
+    private fun blockReads() {
+        webBioLocalGetOverrideForTest = { throw IllegalStateException("SecurityError") }
+    }
+
+    private fun blockWrites() {
+        webBioLocalSetOverrideForTest = { _, _ -> throw IllegalStateException("SecurityError") }
+    }
+
+    @Test
+    fun storageBlockedOnRead_treatsTheStoredIdAsAbsent_andRegisters() = runTest {
+        webBioLocalSet(WEBAUTHN_CREDENTIAL_ID_KEY, "cred-hidden") // present, but unreadable below
+        blockReads()
+        val ops = mutableListOf<String>()
+        webAuthnCallOverrideForTest = { op, _ ->
+            ops += op
+            when (op) { "available" -> "yes"; "register" -> "registered:cred-new"; else -> fail("unexpected op $op") }
+        }
+
+        assertTrue(KSafeBiometrics.verifyBiometric("Unlock"), "an unreadable id must not escape as a throw")
+        assertEquals(listOf("available", "register"), ops, "unreadable id -> enroll, which verifies the user")
+        assertFalse(KSafeBiometricsWeb.isRegistered, "the record cannot be read, so it reads unregistered")
+        assertNull(KSafeBiometricsWeb.registeredTitle)
+    }
+
+    @Test
+    fun storageBlockedOnRead_aDeniedEnrollment_stillFailsClosed() = runTest {
+        blockReads()
+        webAuthnCallOverrideForTest = { op, _ ->
+            when (op) { "available" -> "yes"; "register" -> "denied:NotAllowedError"; else -> fail(op) }
+        }
+
+        assertFalse(KSafeBiometrics.verifyBiometric("Unlock", allowDeviceCredentialFallback = false))
+        assertFalse(
+            KSafeBiometrics.verifyBiometric("Unlock", allowDeviceCredentialFallback = true),
+            "a denial on a reachable authenticator blocks even in permissive mode",
+        )
+    }
+
+    @Test
+    fun storageBlockedOnWrite_theVerifiedUserPasses_butNothingIsRemembered() = runTest {
+        blockWrites()
+        val ops = mutableListOf<String>()
+        webAuthnCallOverrideForTest = { op, _ ->
+            ops += op
+            when (op) { "available" -> "yes"; "register" -> "registered:cred-1"; else -> fail("unexpected op $op") }
+        }
+        KSafeBiometrics.defaultTitle = "Blocked Origin"
+
+        assertTrue(KSafeBiometrics.verifyBiometric("Unlock"), "create() verified the user: a lost setItem must not deny")
+        assertFalse(KSafeBiometricsWeb.isRegistered, "the id never persisted")
+        assertNull(KSafeBiometricsWeb.registeredTitle)
+
+        // Current contract: with no persisted id every call enrolls again (a passkey per call).
+        assertTrue(KSafeBiometrics.verifyBiometric("Unlock"))
+        assertEquals(listOf("available", "register", "available", "register"), ops)
+    }
+
+    @Test
+    fun storageBlockedOnWrite_theSuccessStillSeedsTheAuthorizationWindow() = runTest {
+        blockWrites()
+        var ceremonies = 0
+        webAuthnCallOverrideForTest = { op, _ ->
+            when (op) { "available" -> "yes"; "register" -> { ceremonies++; "registered:cred-1" }; else -> fail(op) }
+        }
+        val duration = BiometricAuthorizationDuration(60_000L, scope = "vault")
+
+        assertTrue(KSafeBiometrics.verifyBiometric("Unlock", duration))
+        assertTrue(KSafeBiometrics.verifyBiometric("Unlock", duration))
+        assertEquals(1, ceremonies, "the cache lives in memory, so a blocked store must not cost the window")
+    }
+
+    @Test
+    fun storageBlocked_availabilityAndOptOutAreUnaffected() = runTest {
+        blockReads()
+        blockWrites()
+        webAuthnCallOverrideForTest = { op, _ -> assertEquals("available", op); "yes" }
+        assertTrue(KSafeBiometrics.biometricsAvailable())
+
+        webAuthnCallOverrideForTest = { _, _ -> "no:no-platform-authenticator" }
+        assertFalse(KSafeBiometrics.biometricsAvailable())
+        assertTrue(KSafeBiometrics.verifyBiometric("Unlock"), "unavailable + permissive passes through")
+        assertFalse(KSafeBiometrics.verifyBiometric("Unlock", allowDeviceCredentialFallback = false))
+
+        KSafeBiometricsWeb.promptsEnabled = false
+        webAuthnCallOverrideForTest = { _, _ -> fail("opt-out must not reach the ceremony") }
+        assertTrue(KSafeBiometrics.verifyBiometric("Unlock"))
+    }
+
+    @Test
+    fun storageBlockedOnRead_theDirectDoor_deliversTheOutcome() = runTest {
+        blockReads()
+        webAuthnCallOverrideForTest = { op, _ ->
+            when (op) { "available" -> "yes"; "register" -> "registered:cred-1"; else -> fail(op) }
+        }
+        val result = CompletableDeferred<Boolean>()
+        KSafeBiometrics.verifyBiometricDirect("Unlock") { ok -> result.complete(ok) }
+        assertTrue(result.await())
+    }
+
+    @Test
+    fun resetRegistration_survivesAStorageBlockedRead() = runTest {
+        webBioLocalSet(WEBAUTHN_CREDENTIAL_ID_KEY, "cred-hidden")
+        webBioLocalSet(WEBAUTHN_REGISTERED_TITLE_KEY, "Old Name")
+        var signalled = false
+        webAuthnCallOverrideForTest = { op, _ -> if (op == "signalUnknown") signalled = true; "signal:ok" }
+        blockReads()
+
+        KSafeBiometricsWeb.resetRegistration() // must not throw
+
+        webBioLocalGetOverrideForTest = null
+        assertFalse(KSafeBiometricsWeb.isRegistered, "the slots are still removed")
+        assertNull(KSafeBiometricsWeb.registeredTitle)
+        withContext(Dispatchers.Default) { delay(20) }
+        assertFalse(signalled, "an id it could not read cannot be signalled")
     }
 }

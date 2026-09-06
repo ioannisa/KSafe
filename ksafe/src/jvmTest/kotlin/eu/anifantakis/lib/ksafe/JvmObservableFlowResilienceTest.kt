@@ -13,7 +13,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Locks in: a transient decrypt failure (locked device / busy Keystore) on a snapshot is skipped by `getFlow` — never rethrown into long-lived collectors — and the flow stays alive for the next good value.
+ * Locks in: a transient decrypt failure (locked device / busy Keystore) is skipped by `getFlow` — never rethrown into a long-lived collector — and the flow stays alive for the next good value.
  */
 class JvmObservableFlowResilienceTest {
 
@@ -38,8 +38,8 @@ class JvmObservableFlowResilienceTest {
         ksafe.close()
     }
 
-    /** decrypt fails with an Apple-Keychain-shaped transient error whose message contains
-     *  "Keychain" but NOT "device is locked"/"Keystore". */
+    /** decrypt fails with an Apple-Keychain-shaped transient error: the message says "Keychain"
+     *  but not "device is locked"/"Keystore". */
     private class KeychainErrorEngine : KSafeEncryption {
         @Volatile var fail = false
         private val xor = FakeEncryption()

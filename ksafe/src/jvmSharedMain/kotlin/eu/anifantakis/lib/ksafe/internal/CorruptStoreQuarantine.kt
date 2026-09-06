@@ -2,15 +2,8 @@ package eu.anifantakis.lib.ksafe.internal
 
 import java.io.File
 
-/**
- * Copies an unparseable store file aside as `<name>.corrupt-<timestamp>` before DataStore's
- * corruption handler continues from empty, so the bytes stay recoverable instead of being
- * overwritten by the next write. Best-effort: a failed copy must not turn a recoverable corruption
- * back into a read that throws forever.
- *
- * The name comes from [corruptQuarantineName] because it is load-bearing in both directions —
- * `clearAll()` sweeps quarantine copies by it, as they still hold decryptable ciphertext.
- */
+// Copies an unparseable store file aside before DataStore's corruption handler continues from
+// empty, so the bytes outlive the next write; a failed copy is swallowed to keep the store readable.
 internal fun quarantineCorruptStoreFile(file: File) {
     runCatching {
         file.copyTo(
@@ -20,11 +13,7 @@ internal fun quarantineCorruptStoreFile(file: File) {
     }
 }
 
-/**
- * The `java.io.File` half of [sweepCorruptQuarantineCopies], beside the writer whose output it
- * reclaims. Android and JVM both reach a store file's own directory this way; Apple drives
- * `NSFileManager` and calls the platform-neutral overload directly.
- */
+// The java.io.File half; Apple drives NSFileManager and calls the neutral overload directly.
 internal fun sweepCorruptQuarantineCopies(storeFile: File) {
     val dir = storeFile.absoluteFile.parentFile ?: return
     sweepCorruptQuarantineCopies(

@@ -27,7 +27,7 @@ class JvmClearAllCorruptFileTest {
         // The DataStore corruption handler names quarantine copies like this.
         val ourCorrupt = File(tmp, "$base.preferences_pb.corrupt-1700000000000")
             .apply { writeText("recoverable-ciphertext") }
-        // A DIFFERENT safe living in the same directory — must NOT be touched.
+        // A different safe living in the same directory — must not be touched.
         val siblingCorrupt = File(tmp, "eu_anifantakis_ksafe_datastore_other.preferences_pb.corrupt-1700000000000")
             .apply { writeText("other-safe-ciphertext") }
 
@@ -53,9 +53,8 @@ class JvmClearAllCorruptFileTest {
 
     @Test
     fun clearAll_deletesLiveResidualFallbackFiles_butNotSiblingSafes() {
-        // A LIVE <base>.ksafe.json (ciphertext) and <base>.ksafe-keys.json (plaintext
-        // AES key) can linger in the OS-backed store's directory; clearAll() must wipe
-        // those too, while sparing a different safe's files.
+        // A live <base>.ksafe.json (ciphertext) and <base>.ksafe-keys.json (plaintext AES key) can
+        // linger in the OS-backed store's directory; clearAll() must wipe those too.
         val base = "eu_anifantakis_ksafe_datastore_wipe"
         val liveJson = File(tmp, "$base.ksafe.json").apply { writeText("residual-ciphertext") }
         val liveKeys = File(tmp, "$base.ksafe-keys.json").apply { writeText("residual-plaintext-key") }

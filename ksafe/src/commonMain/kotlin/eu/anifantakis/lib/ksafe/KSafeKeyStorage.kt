@@ -1,17 +1,20 @@
 package eu.anifantakis.lib.ksafe
 
 /**
- * Device-capability vocabulary for where cryptographic key material can be stored.
- * Ordinal orders [SOFTWARE] < [HARDWARE_BACKED] < [HARDWARE_ISOLATED];
- * `deviceKeyStorages.max()` gives the highest level available on the device.
+ * Coarse scale of where key material can live, ordered [SOFTWARE] < [HARDWARE_BACKED] <
+ * [HARDWARE_ISOLATED]. Used by [KSafe.deviceKeyStorages]; for what a key actually got, prefer
+ * [KSafeProtectionLevel], which also separates OS-vault and browser-origin custody from raw files.
  */
 enum class KSafeKeyStorage {
-    /** Software only — file system / localStorage (JVM, WASM). */
+    /**
+     * No secure hardware: JVM (OS secret store or key file) and Web (WebCrypto key in IndexedDB).
+     * [KSafeProtectionLevel.SANDBOX_PROTECTED] keys also report this value.
+     */
     SOFTWARE,
 
-    /** On-chip hardware — Android TEE, iOS Keychain with Secure Element backing. */
+    /** On-chip secure hardware — the Android TEE, or the Apple Keychain. */
     HARDWARE_BACKED,
 
-    /** Dedicated, physically separate security chip — Android StrongBox, iOS Secure Enclave. */
+    /** Dedicated security chip — Android StrongBox, Apple Secure Enclave. */
     HARDWARE_ISOLATED
 }

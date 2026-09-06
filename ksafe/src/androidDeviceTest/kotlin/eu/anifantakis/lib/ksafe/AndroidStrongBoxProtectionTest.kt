@@ -19,13 +19,10 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * Locks in: what KSafe reports on a device WITH StrongBox versus one WITHOUT — the one
- * per-device difference the rest of the device suite cannot see, since every other test
- * passes identically on both classes.
- *
- * The two capability tests are mutually exclusive by construction ([assumeTrue] /
- * [assumeFalse] on the same probe), so exactly one runs per device and the other is
- * reported skipped: the run report itself records which class the device is in.
+ * Locks in: what KSafe reports on a device with StrongBox versus one without — the one per-device
+ * difference the rest of the suite cannot see. The two capability tests are mutually exclusive by
+ * construction ([assumeTrue] / [assumeFalse] on the same probe), so exactly one runs per device and
+ * the run report itself records which class that device is in.
  */
 @RunWith(AndroidJUnit4::class)
 class AndroidStrongBoxProtectionTest {
@@ -68,7 +65,6 @@ class AndroidStrongBoxProtectionTest {
         )
     }
 
-    /** Writes [value] under an explicit HARDWARE_ISOLATED request and returns its recorded key info. */
     private fun writeIsolatedEntry(safe: KSafe, key: String, value: String): KSafeKeyInfo {
         runBlocking {
             safe.put(key, value, KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED))
@@ -78,9 +74,8 @@ class AndroidStrongBoxProtectionTest {
     }
 
     /**
-     * Runs on EVERY device: the Android instance baseline is the TEE on both device classes.
-     * StrongBox is a per-write opt-in, never an instance-level level, so `protectionInfo`'s
-     * two levels are equal and HARDWARE_BACKED even where StrongBox exists.
+     * StrongBox is a per-write opt-in, never an instance-level tier, so both of `protectionInfo`'s
+     * levels read HARDWARE_BACKED on every device — including one that has StrongBox.
      */
     @Test
     fun baselineLevel_isHardwareBacked_andNeverFallsBack_onEveryDevice() {
@@ -97,9 +92,8 @@ class AndroidStrongBoxProtectionTest {
     }
 
     /**
-     * StrongBox devices only. The capability is advertised, the absent-note is withheld, and a
-     * HARDWARE_ISOLATED write must land in a key whose custody the API 31+ probe verifies as
-     * StrongBox — a silent StrongBox-to-TEE fallback would report HARDWARE_BACKED here.
+     * StrongBox devices only: a silent StrongBox-to-TEE fallback would surface here as an isolated
+     * write whose key the API 31+ custody probe reports as merely HARDWARE_BACKED.
      */
     @Test
     fun strongBoxDevice_advertisesIsolatedTier_andIsolatedWriteGetsAnIsolatedKey() {
@@ -132,8 +126,7 @@ class AndroidStrongBoxProtectionTest {
     }
 
     /**
-     * Non-StrongBox devices only. The absent-note is present, the isolated tier is not
-     * advertised, and a HARDWARE_ISOLATED write is honestly downgraded: the REQUEST stays
+     * Non-StrongBox devices only: an isolated write is downgraded honestly — the request stays
      * recorded as HARDWARE_ISOLATED while the key's actual level reports the TEE.
      */
     @Test

@@ -16,7 +16,7 @@ class JvmFlowDelegateInitRaceTest {
     private val threads = 8
     private val iterations = 200
 
-    /** N barrier-synchronized threads read the SAME holder's delegated property; every read must observe the same instance. */
+    /** Barrier-synchronized threads read one holder's delegated property; every read must see one instance. */
     private fun assertSingleInstancePerFirstAccess(newReader: (KSafe, CoroutineScope) -> () -> Any) {
         repeat(iterations) {
             val ksafe = KSafe(fileName = JvmKSafeTest.generateUniqueFileName(), testEngine = FakeEncryption())

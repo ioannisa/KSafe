@@ -105,11 +105,10 @@ class Jvm200To210FixtureTest {
 
     @Test
     fun frozen2_0_0_decrypts_even_when_os_vault_holds_a_STALE_key() {
-        // The OS secret store is global per-user and long-lived, so on upgrade it can already hold a
-        // DIFFERENT (stale, from a prior lifecycle) key under the same `<file>:<alias>` while the REAL
-        // legacy key still sits in the 2.0.0 DataStore. The legacy key provably encrypted this ciphertext
-        // and must NOT be shadowed: trusting the OS vault first would silently reset every encrypted
-        // value to its default (plaintext values, needing no key, survive).
+        // The OS secret store is global per-user and long-lived, so on upgrade it can already hold
+        // a stale key under the same `<file>:<alias>` while the real legacy key — the one that
+        // provably encrypted this ciphertext — still sits in the 2.0.0 DataStore. Trusting the
+        // vault first would silently reset every encrypted value to its default.
         val (ds, _) = freshDataStoreFromFixture()
         val ciphertext = storedCiphertext(ds)
 

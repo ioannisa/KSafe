@@ -535,6 +535,9 @@ pass through / refuse without gating, so route to your own PIN/password flow ins
 ```kotlin
 // suspend — never shows UI, no gesture needed. Probe ONCE at startup (on web: next to
 // awaitCacheReady()) and keep the result in app state for synchronous `if (available)` use.
+// On Android probe from a composition/Activity, NOT Application.onCreate — no FragmentActivity
+// host exists that early, so the cached answer is a permanent false. verifyBiometric waits for
+// the host; this probe does not.
 if (KSafeBiometrics.biometricsAvailable()) { /* biometric flow */ } else { /* PIN screen */ }
 
 // callback twin (non-suspending) — for a non-coroutine call site
@@ -545,7 +548,8 @@ KSafeBiometrics.biometricsAvailableDirect { available -> if (available) showUnlo
 `onResult` on the **main thread** on Android and Apple (2.1.2+) — safe to touch UI from it.
 Concurrent calls are serialized on **every** platform (Apple since 3.1.0): a second prompt queues
 behind the first and skips entirely if the holder just authorized the same scope. Sequential calls
-never prompt twice inside the window regardless.
+never prompt twice inside the window regardless. On Android a queued caller whose host Activity
+stopped while it waited (e.g. a Home press) returns `false` instead of hanging (3.2.0+).
 Prompt text comes from three process-wide defaults set once at startup, with per-call
 overrides (`title`/`cancelLabel` are appended AFTER the existing params):
 
@@ -572,8 +576,8 @@ longer seeds the prompt-free window.
 |---|---|---|
 | Android | BiometricPrompt | `false` |
 | iOS / native macOS | `LAContext` | `false` |
-| JVM macOS (2.2.1+) | `LocalAuthentication` (policy maps like native macOS) | strict + no Touch ID → `false` |
-| JVM Windows (2.2.1+) | Windows Hello (`UserConsentVerifier`) | strict + Hello not-configured → `false` |
+| JVM macOS (2.2.1+) | `LocalAuthentication` (policy maps like native macOS) | strict + no Touch ID, or the bridge fails to load → `false` |
+| JVM Windows (2.2.1+) | Windows Hello (`UserConsentVerifier`) | strict + Hello not-configured, or the bridge fails to load → `false` |
 | JS / WasmJS (2.2.1+) | WebAuthn platform authenticator (Touch ID / Hello / fingerprint) | permissive `true` / strict `false` |
 | **JVM Linux** | none (no portable API) | **always `true`** (pass-through) |
 
@@ -931,6 +935,11 @@ it. Can also be set without code: `-Dksafe.appNamespace=…` or env `KSAFE_APP_N
      section above.
    - `jvm_user_opted_out` → `-Dksafe.jvm.keyVault=software` is set.
    - `android_strongbox_absent` → only matters for `HARDWARE_ISOLATED`.
+   - `android_lock_screen_absent` → API 28-34 device with no secure lock screen; `requireUnlockedDevice`
+     keys are minted without the unlock binding (writes still work, per-op TEE path). Reported until a
+     new key generation re-decides — the note stays after the user sets a lock screen, because the
+     minted key is not re-bound. Rotation is opt-in (`keyRotationPolicy` defaults to `Never`), so call
+     `rotateKeys()` once to get the binding back. Never on API 35+.
    - `apple_secure_enclave_absent` → simulator or pre-T2 Intel Mac.
    - `apple_keychain_entitlement_missing` → iOS Simulator app with no Keychain
      entitlement (2.2.1+; keys transparently fall back to a sandbox file store so

@@ -11,24 +11,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Lockstep between the alias PRODUCER and everything that has to reproduce or undo it.
- *
- * Three places touch the alias grammar: `KSafeCore` (authoritative producer), the JVM fallback
- * migration (forward re-derivation) and the Keychain orphan classifier (backward parse). The
- * migration now routes through `KSafeCore.aliasForRecordedMeta` / `aadForEnvelope` instead of
- * re-deriving — that half is locked in by `JvmFallbackMigrationAliasLockstepTest` in jvmTest,
- * because `JvmFallbackMigration` lives in jvmMain and commonTest cannot reach it.
- *
- * This file holds the two halves that ARE common:
- *
- *  - FORWARD: an entry's alias and associated data must survive the round-trip through its own
- *    persisted metadata. Every consumer derives from the metadata record, not from the write's
- *    live arguments, so a field the write routes on but the record does not carry (or does carry
- *    but nothing parses back) silently sends the read to a different key. That is exactly what
- *    the `sa` strict-variant marker was.
- *  - BACKWARD: `parse(build(x)) == x`. Stating the round-trip as a property covers the whole
- *    ambiguity class the `foo.g2` witness in [KeychainOrphanClassificationTest] samples one
- *    point of.
+ * Locks in: an entry's alias and associated data survive the round-trip through its own persisted
+ * metadata — every consumer derives from the record, not the write's live arguments, and a field the
+ * record drops sends reads to a different key — and `parse(build(x)) == x` for the Keychain orphan
+ * classifier. The JVM migration's half lives in `JvmFallbackMigrationAliasLockstepTest`.
  */
 class KSafeAliasDerivationLockstepTest {
 
@@ -55,8 +41,6 @@ class KSafeAliasDerivationLockstepTest {
     private val generations = listOf(1, 2, 3)
 
     private val userKeys = listOf("token", "a.b", "a:b", "foo.g2", "")
-
-    // ---- FORWARD: the metadata record must carry every field the alias routes on ------------
 
     @Test
     fun everyAliasRoutingField_survivesTheRoundTripThroughItsPersistedMetadata() {
@@ -163,12 +147,10 @@ class KSafeAliasDerivationLockstepTest {
         assertTrue(strictPerEntry in aliases, "the strict per-entry branch must be reachable")
     }
 
-    // ---- BACKWARD: parse(build(x)) == x ----------------------------------------------------
-
     /**
-     * User keys chosen to make the backward parse ambiguous by shape: `.gN` tails that could be
-     * read as the alias's own generation suffix, embedded fingerprints, embedded sentinel
-     * lookalikes, both delimiters, line terminators, unicode, empty and long.
+     * User keys chosen to make the backward parse ambiguous by shape: `.gN` tails readable as the
+     * alias's own generation suffix, embedded fingerprints and sentinel lookalikes, both
+     * delimiters, line terminators, unicode, empty and long.
      */
     private fun parseCorpus(): List<String> {
         val fingerprint = KSafeCore.aliasFingerprint(keyNamespace, "foo")
@@ -187,9 +169,8 @@ class KSafeAliasDerivationLockstepTest {
 
     @Test
     fun everyBuiltStrictVariantKeyId_parsesBackToTheIdentityItWasBuiltFrom() {
-        // A named store: ownership is proved by ownedKeyIds, so the classifier's dot heuristic
-        // (a root-store guard, not a parse step) never masks a wrong parse. A recovered owner
-        // that is not the original therefore fails the ownership check and surfaces as null.
+        // A named store: ownership is proved by ownedKeyIds, so the classifier's dot heuristic (a
+        // root-store guard, not a parse step) never masks a wrong parse — it surfaces as null.
         val prefix = "eu.anifantakis.ksafe.$fileName."
         for (userKey in parseCorpus()) {
             for (generation in listOf(1, 2, 3, 10_000)) {
@@ -221,9 +202,8 @@ class KSafeAliasDerivationLockstepTest {
 
     @Test
     fun aLiveOwnerVetoesItsOwnParsedKeyId_atEveryGeneration() {
-        // The other direction of the same property: because the parse recovers the true owner,
-        // that owner being live must preserve the key. A parse that resolved the wrong owner
-        // would let a live entry's key be reaped.
+        // The other direction: the parse recovers the true owner, so that owner being live must
+        // preserve the key. A parse resolving the wrong owner would let a live key be reaped.
         val prefix = "eu.anifantakis.ksafe.$fileName."
         for (userKey in parseCorpus()) {
             for (generation in listOf(1, 2, 3)) {

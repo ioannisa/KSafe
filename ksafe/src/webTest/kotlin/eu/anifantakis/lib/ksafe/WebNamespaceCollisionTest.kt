@@ -14,9 +14,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFails
 
 /**
- * Locks in: a lossy `appNamespace` sanitization can no longer collide two DIFFERENT
- * configured ids (`a/b` vs `a?b` both → `a_b`) onto one data prefix / key custody — while
- * data and keys written by ≤ 2.2.1 under the old lossy token still carry forward.
+ * Locks in: a lossy `appNamespace` sanitization can no longer collide two different configured ids
+ * (`a/b` and `a?b` both → `a_b`) onto one data prefix or key custody, while data and keys written
+ * by ≤ 2.2.1 under the old lossy token still carry forward.
  */
 @OptIn(ExperimentalEncodingApi::class)
 class WebNamespaceCollisionTest {
@@ -32,13 +32,12 @@ class WebNamespaceCollisionTest {
         slash.put("k", "from-slash", KSafeWriteMode.Plain)
         question.put("k", "from-question", KSafeWriteMode.Plain)
 
-        // Each store must read ITS OWN value from disk — one shared lossy prefix would make
-        // the second write clobber the first.
+        // Each store must read its own value back from disk; one shared lossy prefix would
+        // have let the second write clobber the first.
         val slashReopened = KSafe(fileName = file, config = KSafeConfig(appNamespace = "a/b"), testEngine = FakeEncryption())
         slashReopened.awaitCacheReady()
         assertEquals("from-slash", slashReopened.get("k", "GONE"), "'a/b' must keep its own data slot")
 
-        // And one store's clearAll must not wipe the other.
         slashReopened.clearAll()
         val questionReopened = KSafe(fileName = file, config = KSafeConfig(appNamespace = "a?b"), testEngine = FakeEncryption())
         questionReopened.awaitCacheReady()
@@ -75,7 +74,7 @@ class WebNamespaceCollisionTest {
         val file = WebKSafeTest.generateUniqueFileName()
         val enginePrefix = "ksafe_${file}_"
 
-        // REAL WebCrypto engines: one shared lossy token would resolve both to ONE IndexedDB
+        // Real WebCrypto engines: one shared lossy token would resolve both to a single IndexedDB
         // key record, silently sharing key custody across two logical apps.
         val slash = WebSoftwareEncryption(KSafeConfig(appNamespace = "a/b"), enginePrefix)
         val question = WebSoftwareEncryption(KSafeConfig(appNamespace = "a?b"), enginePrefix)
@@ -91,7 +90,7 @@ class WebNamespaceCollisionTest {
         val file = WebKSafeTest.generateUniqueFileName()
         val enginePrefix = "ksafe_${file}_"
 
-        // Seed a key + ciphertext under the FROZEN ≤ 2.2.1 record name ("a_b:" + engine prefix).
+        // Seed a key and ciphertext under the frozen ≤ 2.2.1 record name ("a_b:" + engine prefix).
         val oldIdbName = "a_b:${enginePrefix}ksafe_key_token"
         webKeyEnsure(
             oldIdbName,

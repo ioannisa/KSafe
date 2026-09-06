@@ -37,8 +37,8 @@ abstract class KSafeTest {
     @Test
     fun getOrCreateSecret_safeKeyFirst_specialCharSiblingDoesNotShareSecret() = runTest {
         val ksafe = createKSafe()
-        // Safe key created FIRST owns "ksafe_secret_main_db"; the special-char sibling's legacy probe
-        // collapses to that SAME slot and must not adopt the safe key's live secret.
+        // The safe key gets "ksafe_secret_main_db" first; the special-char sibling's legacy probe
+        // collapses onto that same slot and must not adopt the live secret sitting there.
         val safe = ksafe.getOrCreateSecret("main_db")
         val special = ksafe.getOrCreateSecret("main.db")
         assertFalse(
@@ -65,9 +65,8 @@ abstract class KSafeTest {
         assertContentEquals(safe, ksafe.getOrCreateSecret("main_db"))
     }
 
-    // Serializers with a PRIMITIVE descriptor but non-primitive runtime values (Duration,
-    // Uuid, datetime) are JSON-encoded on the plain path; reads must JSON-decode them,
-    // else the caller's reified cast fails.
+    // Serializers with a primitive descriptor but non-primitive runtime values (Duration, Uuid,
+    // datetime) are JSON-encoded on the plain path; a read that skips decoding fails the cast.
 
     @Serializable(with = TagSerializer::class)
     data class Tag(val raw: String)
@@ -96,10 +95,8 @@ abstract class KSafeTest {
         assertEquals(7.seconds, ksafe.get("dur_enc", kotlin.time.Duration.ZERO))
     }
 
-    // NOTE: this class is AT the Kotlin/JS test-registration size limit — adding a @Test here
-    // makes Kotlin/JS silently drop the last one (verifyWebTestParity catches it as js<wasmJs).
-    // Add new shared cases to a smaller focused class instead (see KSafeNullableDefaultTest),
-    // or to a platform subclass when platform coverage suffices.
+    // This class is at the Kotlin/JS test-registration size limit: one more @Test and Kotlin/JS
+    // silently drops the last one (verifyWebTestParity catches it as js < wasmJs).
 
     @Test
     fun testCustomPrimitiveDescriptorSerializer_roundTrips_inPlainMode() = runTest {
@@ -388,7 +385,6 @@ abstract class KSafeTest {
             ksafe.put(key, value, KSafeWriteMode.Plain)
             assertEquals(value, awaitItem())
 
-            // Writing the same value must not emit.
             ksafe.put(key, value, KSafeWriteMode.Plain)
             expectNoEvents()
 
@@ -437,7 +433,6 @@ abstract class KSafeTest {
             cancelAndIgnoreRemainingEvents()
         }
 
-        // Direct read confirms persistence; getKeyInfo confirms it was written encrypted.
         assertEquals("secret", ksafe.get("test_writable_default_mode", "fallback"))
         val info = ksafe.getKeyInfo("test_writable_default_mode")
         assertNotNull(info, "Expected metadata for written key")
@@ -486,7 +481,6 @@ abstract class KSafeTest {
         val host = Host(ksafe)
 
         host.derived.set("named_by_property")
-        // The property name "derived" must be the persisted key.
         assertEquals("named_by_property", ksafe.get("derived", "fallback"))
     }
 
@@ -933,9 +927,8 @@ abstract class KSafeTest {
     }
 
     /**
-     * Sequential writes of different types to the same key: the second write cleanly
-     * replaces the first, reads return the value for the type actually written (Long),
-     * and a read of a type it no longer fits (Int) falls back to the default.
+     * The Long write replaces the Int one cleanly, and reading back as the type it no
+     * longer fits returns the default.
      */
     @Test
     fun testSequentialTypeMigrationIntThenLong() = runTest {
@@ -954,7 +947,6 @@ abstract class KSafeTest {
             "v2 write should replace v1 and read back as Long"
         )
 
-        // Reading as Int must refuse to silently truncate — returns the default.
         assertEquals(
             -1,
             ksafe.get(key, -1),
@@ -1065,7 +1057,6 @@ abstract class KSafeTest {
         assertEquals(p, ksafe.get(k, Person(0, "")))
     }
 
-    // Do not append @Tests here: the legacy Kotlin/JS kotlin-test runner silently
-    // truncates trailing @Tests from an oversized class. Put new tests in small
-    // focused classes (e.g. KSafeNullableDefaultTest) so every target runs them.
+    // Do not append @Tests here — the oversized class loses its trailing ones on Kotlin/JS.
+    // New cases go in small focused classes (e.g. KSafeNullableDefaultTest).
 }

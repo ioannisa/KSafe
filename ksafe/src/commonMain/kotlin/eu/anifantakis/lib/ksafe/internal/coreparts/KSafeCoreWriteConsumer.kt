@@ -5,11 +5,11 @@ import eu.anifantakis.lib.ksafe.internal.KSafeCore.PendingWrite
 import eu.anifantakis.lib.ksafe.internal.ksafeLogError
 import kotlin.time.TimeSource
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.Duration.Companion.milliseconds
 
 internal fun KSafeCore.startWriteConsumer() {
     writeScope.launch {
@@ -18,21 +18,20 @@ internal fun KSafeCore.startWriteConsumer() {
         while (isActive) {
             batch.add(writeChannel.receive())
 
-            // Greedy drain: take everything already queued so a burst of writes
-            // coalesces into a single applyBatch transaction.
             while (batch.size < maxBatchSize) {
                 val next = writeChannel.tryReceive().getOrNull() ?: break
                 batch.add(next)
             }
 
-            // The coalesce window applies only when nobody is awaiting a commit —
-            // awaiting puts skip it so a single suspend put completes in ~one round-trip.
+            // An awaiting put skips the coalesce window so it completes in one round-trip.
             if (batch.size < maxBatchSize && batch.none { it.completion != null }) {
                 val windowStart = TimeSource.Monotonic.markNow()
                 while (batch.size < maxBatchSize) {
                     val remaining = writeCoalesceWindowMs - windowStart.elapsedNow().inWholeMilliseconds
                     if (remaining <= 0) break
-                    val next = withTimeoutOrNull(remaining) { writeChannel.receive() } ?: break
+                    // Poll, never park: a timer-cancelled receive drops an element already handed to it.
+                    val next = writeChannel.tryReceive().getOrNull()
+                    if (next == null) { delay(minOf(remaining, 2L).milliseconds); continue }
                     batch.add(next)
                     if (next.completion != null) break
                 }
@@ -41,8 +40,7 @@ internal fun KSafeCore.startWriteConsumer() {
             runCatching { processBatch(batch) }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
-                    // Awaiters were already failed inside processBatch; this log is
-                    // for fire-and-forget callers with no Deferred to listen on.
+                    // Awaiters already failed inside processBatch; this log is for fire-and-forget writes.
                     ksafeLogError(
                         "KSafe SEVERE: processBatch failed " +
                             "(${e::class.simpleName}: ${e.message}); " +
@@ -52,9 +50,7 @@ internal fun KSafeCore.startWriteConsumer() {
             batch.clear()
         }
         } finally {
-            // Cancelled mid-assembly: writes pulled into this batch but not yet processed
-            // would otherwise leave their awaiters hung forever. Hand them the same
-            // cancellation a still-queued write gets in cancel().
+            // Writes already pulled off the channel would leave their awaiters hung forever.
             if (batch.isNotEmpty()) {
                 val cause = CancellationException("KSafe write consumer was cancelled")
                 batch.forEach { it.completion?.cancel(cause) }
@@ -70,18 +66,13 @@ internal suspend fun KSafeCore.processBatch(batch: List<PendingWrite>) {
 
     var failure: Throwable? = null
     try {
-        // Serialized across same-file instances (the shared backend passes one mutex to
-        // every core on the physical store): a sibling's encrypt→CAS-snapshot→commit,
-        // clearAll, or rotation sweep can no longer interleave inside this batch's own
-        // sequence. Within one instance the single consumer already serialized it, so a
-        // private default mutex is free. Batches never await another instance's consumer
-        // (completions fire after processBatchBody returns), so no deadlock path exists.
+        // One mutex per physical store, so a sibling instance's commit, clearAll or rotation sweep
+        // cannot interleave here. Completions fire after processBatchBody, so no cross-instance wait.
         commitMutex.withLock {
             processBatchBody(batch)
         }
     } catch (e: Throwable) {
         if (e is CancellationException) {
-            // Cancellation propagates to callers so they don't hang.
             deferreds.forEach { it.cancel(e) }
             throw e
         }
@@ -90,23 +81,29 @@ internal suspend fun KSafeCore.processBatch(batch: List<PendingWrite>) {
 
     if (failure != null) {
         deferreds.forEach { it.completeExceptionally(failure) }
-        // Fire-and-forget callers have no deferred to fail; notify their callbacks (the
-        // optimistic rollback already ran inside processWrites' catch). runCatching so a
-        // callback can never wedge the write consumer.
+        // Fire-and-forget callers have no deferred; runCatching so one cannot wedge the consumer.
         val cause: Throwable = failure
         batch.forEach { op -> op.onWriteFailed?.let { cb -> runCatching { cb(cause) } } }
-        throw failure  // surfaces to startWriteConsumer's runCatching for logging
+        throw failure
     } else {
         deferreds.forEach { it.complete(Unit) }
     }
 }
 
 internal suspend fun KSafeCore.processBatchBody(batch: List<PendingWrite>) {
-    // The last ClearAll is a batch boundary: everything before it is wiped and only
-    // later writes survive — FIFO ordering keeps an earlier put from resurrecting data.
+    // The last ClearAll is a batch boundary: only writes after it survive, so an earlier put
+    // cannot resurrect wiped data.
     val lastClear = batch.indexOfLast { it is PendingWrite.ClearAll }
     if (lastClear >= 0) {
-        performClearAll()
+        try {
+            performClearAll()
+        } catch (e: Throwable) {
+            if (e is CancellationException) throw e
+            // Nothing in this batch is durable, so both sides of the boundary roll back.
+            reclaimBatchOwnershipToSurvivors(batch, batch)
+            rollbackOptimisticState(batch)
+            throw e
+        }
         val after = batch.subList(lastClear + 1, batch.size)
         if (after.isNotEmpty()) processWrites(after)
         return
@@ -114,22 +111,12 @@ internal suspend fun KSafeCore.processBatchBody(batch: List<PendingWrite>) {
     processWrites(batch)
 }
 
-/**
- * Reverts optimistic in-memory state for failed writes and reconciles the keys against
- * disk via [updateCache] (a previously-persisted value is restored, a never-persisted one
- * is evicted). Ownership gate: a failed op only rolls back a key it still OWNS
- * (`writeOwners[key] === op.writeToken`); a newer write for the same key now owns the dirty
- * flags and optimistic cache, so clearing them here would strip its state.
- */
 internal fun KSafeCore.reclaimBatchOwnershipToSurvivors(
     batch: Collection<PendingWrite>,
     survivors: Collection<PendingWrite>,
 ) {
-    // writeOwners is claimed in caller-thread order but the commit winner is chosen in channel
-    // order, so a coalesced-out same-batch loser (e.g. a delete before the winning put) can still
-    // own the key's token and gate the winner's cache re-assert / rollback out, wedging the key
-    // for the session. Reclaim ownership to the winner via CAS; a live later-batch writer's token
-    // isn't in this batch, so it's left untouched and the winner correctly yields to it.
+    // writeOwners is claimed in caller-thread order but the winner is chosen in channel order, so a
+    // coalesced-out loser can still hold the key's token and wedge it; a later batch's token is left alone.
     val batchTokens = batch.mapTo(HashSet<Any>()) { it.writeToken }
     for (op in survivors) {
         val current = writeOwners[op.userKey] ?: continue
@@ -139,37 +126,55 @@ internal fun KSafeCore.reclaimBatchOwnershipToSurvivors(
     }
 }
 
+private class RolledBackSlots(
+    val userKey: String,
+    val rawCacheKey: String,
+    val cachedValue: Any?,
+    val protectionLiteral: String?,
+    val meta: KSafeCore.EncMeta?,
+)
+
+/** Reverts failed writes' optimistic state and re-merges from disk, only for keys they still own. */
 internal suspend fun KSafeCore.rollbackOptimisticState(failedOps: Collection<PendingWrite>) {
-    var rolledBackAny = false
+    val rolledBack = mutableListOf<RolledBackSlots>()
     for (op in failedOps) {
         val key = op.userKey
-        // Gate the clear on an ATOMIC ownership release (CAS), not a plain read-then-clear.
-        // A newer caller-thread write B claims `writeOwners[key]` BEFORE it adds its dirty flag
-        // / optimistic value; a non-atomic `if (writeOwners[key] !== token)` read could pass on
-        // a stale value and then strip B's freshly-added flags. `removeIf` removes the entry
-        // only while it still equals this failed op's token — so if B has already claimed, we
-        // never owned it at this instant and skip B's state untouched (same CAS discipline the
-        // post-commit repair uses). A failed op relinquishing ownership here is also correct: it
-        // is no longer pending.
+        // Read before the release: once ownership is gone a newer writer may stage its value, and
+        // the CAS drop below would then take that value instead of this op's.
+        val cachedValue = memoryCache[op.rawCacheKey]
+        val protectionLiteral = protectionMap[key]
+        val meta = encMetaMap[key]
+        // CAS, not read-then-clear: a newer write claims the key before adding its dirty flag, so
+        // a stale read here would strip flags that write has already added.
         if (!writeOwners.removeIf(key, op.writeToken)) continue
-        rolledBackAny = true
+        rolledBack += RolledBackSlots(key, op.rawCacheKey, cachedValue, protectionLiteral, meta)
         dirtyKeys.remove(valueRawKey(key))
         dirtyKeys.remove(legacyEncryptedRawKey(key))
         dirtyKeys.remove(key)
-        // updateCache does NOT manage the secondary plaintextCache, so evict
-        // the failed key's optimistic plaintext here too — otherwise reads
-        // under ENCRYPTED_WITH_TIMED_CACHE / LAZY_PLAIN_TEXT keep serving the
-        // phantom from the side cache (permanently, under LAZY_PLAIN_TEXT
-        // which never expires). Covers both rawCacheKey forms (encrypted =
-        // legacyEncryptedRawKey, plain = userKey).
+        // updateCache does not manage plaintextCache, so evict here too, or the timed and lazy
+        // policies keep serving the phantom from the side cache.
         plaintextCache.remove(legacyEncryptedRawKey(key))
         plaintextCache.remove(key)
     }
-    if (!rolledBackAny) return
+    if (rolledBack.isEmpty()) return
     runCatching {
         // Epoch BEFORE snapshot — the argument-order default would read it after.
         val epoch = clearEpoch.get()
         updateCache(storage.snapshot(), epoch)
     }
-        .onFailure { if (it is CancellationException) throw it }
+        .onFailure {
+            if (it is CancellationException) throw it
+            // The re-merge never reached the disk, so drop what the failed write staged; the slot
+            // repopulates on the next merge, which under lazyLoad means the next write to that key
+            // or a new instance. Metadata drops only when its value drop won the CAS.
+            for (slot in rolledBack) {
+                val dropped = slot.cachedValue != null &&
+                    memoryCache.removeIf(slot.rawCacheKey, slot.cachedValue)
+                if (!dropped && memoryCache.containsKey(slot.rawCacheKey)) continue
+                slot.protectionLiteral?.let { literal ->
+                    protectionMap.removeIf(slot.userKey, literal)
+                }
+                slot.meta?.let { m -> encMetaMap.removeIf(slot.userKey, m) }
+            }
+        }
 }

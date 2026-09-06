@@ -8,20 +8,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Coverage for the `appleMain` actual of [secureRandomBytes]
- * (`KSafeSecureRandom.apple.kt`), which backs **AES-256 master-key generation**
- * on iOS and macOS (`AppleKeychainEncryption.getOrCreateKeychainKeySE` /
- * `getOrCreateKeychainKeyPlain`).
- *
- * The Apple actual must draw from `SecRandomCopyBytes` (the Security framework
- * CSPRNG) — `kotlin.random.Random.nextBytes(size)` is NOT a CSPRNG and must
- * never back key generation on this security-critical path.
- *
- * macOS runs the identical `appleMain` actual that iOS does, so exercising it
- * here covers both. These are statistical sanity checks, not a crypto-grade
- * randomness battery — they catch the failure modes that actually matter
- * (constant output, zero buffer, repeated output, wrong length, non-positive
- * size) without flaking.
+ * Locks in that the `appleMain` actual of [secureRandomBytes], which backs AES-256 master-key
+ * generation on both iOS and macOS, draws from `SecRandomCopyBytes` and not from
+ * `kotlin.random.Random`. Statistical sanity checks rather than a randomness battery: constant
+ * output, a zero buffer, repeated draws, wrong length, non-positive size — the modes that matter.
  */
 class MacosSecureRandomTest {
 
@@ -41,8 +31,7 @@ class MacosSecureRandomTest {
 
     @Test
     fun doesNotReturnAllZeros() {
-        // A no-op'd buffer or failed CSPRNG call yields all zeros; a real
-        // CSPRNG does so with probability 2^-256.
+        // A no-op'd buffer or failed CSPRNG call yields all zeros; a real one does at 2^-256.
         val bytes = secureRandomBytes(32)
         assertFalse(bytes.all { it == 0.toByte() }, "secureRandomBytes returned an all-zero buffer")
     }
@@ -57,8 +46,7 @@ class MacosSecureRandomTest {
 
     @Test
     fun outputSpansAWideByteRange() {
-        // 4 KiB of CSPRNG output covers nearly all 256 byte values; 200/256 is
-        // far above any degenerate source yet low enough not to flake.
+        // 4 KiB covers nearly all 256 values; 200 is far above degenerate yet low enough not to flake.
         val bytes = secureRandomBytes(4096)
         val distinct = bytes.toSet().size
         assertTrue(distinct > 200, "only $distinct distinct byte values in 4 KiB — suspiciously low entropy")

@@ -48,9 +48,8 @@ class JvmDelegateUnlockPolicyTest {
         var token by ksafe("", key = "auth_token")
         token = "secret" // `by ksafe(...)` delegate write, fire-and-forget
 
-        // FIFO flush: a Plain write enqueued after the delegate write; when its suspend await
-        // completes, the earlier encrypted delegate write has already reached the engine. Plain
-        // does no encryption, so it records nothing itself.
+        // FIFO flush: a Plain write enqueued after the delegate write, so when its await returns
+        // the delegate write has reached the engine. Plain encrypts nothing, so it records nothing.
         runBlocking { ksafe.put("__flush__", "x", KSafeWriteMode.Plain) }
 
         assertTrue(engine.requireUnlockByAlias.isNotEmpty(), "the delegate write must have reached the engine")
@@ -89,8 +88,7 @@ class JvmDelegateUnlockPolicyTest {
 
     @Test
     fun defaultWriteMode_reflectsTheConfiguredUnlockPolicy() {
-        // The public accessor adapters (Compose state) default through: it must mirror
-        // KSafeConfig.requireUnlockedDevice exactly, both ways.
+        // The Compose adapters default through this, so it must mirror the config exactly.
         val strict = KSafe(
             fileName = JvmKSafeTest.generateUniqueFileName(),
             config = KSafeConfig(requireUnlockedDevice = true),

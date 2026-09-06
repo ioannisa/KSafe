@@ -64,7 +64,6 @@ class JvmMultiInstanceTest {
 
         a.close(); b.close()
 
-        // A fresh instance reads from disk: both writes must have persisted.
         val c = KSafe(fileName = file, testEngine = FakeEncryption())
         assertEquals("va", c.get("ka", ""), "first instance's write must persist")
         assertEquals("vb", c.get("kb", ""), "a co-existing same-file instance's write must also persist")

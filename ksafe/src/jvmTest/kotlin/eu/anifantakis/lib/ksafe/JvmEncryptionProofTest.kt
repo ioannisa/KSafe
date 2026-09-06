@@ -9,7 +9,9 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Locks in: on the JVM production path (real AES-256-GCM), an encrypted write never leaves its plaintext sentinel in the raw `.preferences_pb` file yet still round-trips, while a KSafeWriteMode.Plain write does leak it verbatim — proving the negative check is meaningful.
+ * Locks in: on the JVM production path with real AES-256-GCM, an encrypted write round-trips
+ * without leaving its plaintext sentinel in the raw `.preferences_pb` file, while a Plain write
+ * does leak it verbatim — which is what makes the negative check meaningful.
  */
 class JvmEncryptionProofTest {
 
@@ -20,8 +22,8 @@ class JvmEncryptionProofTest {
     }
 
     /**
-     * Waits in REAL time until [file] exists with a stable size. runTest's `delay` is virtual, but the
-     * write flushes on a background coroutine, so `Thread.sleep` is the real settle barrier.
+     * Waits in real time until [file] has a stable size. runTest's `delay` is virtual, but the write
+     * flushes on a background coroutine, so `Thread.sleep` is the only real settle barrier.
      */
     private fun awaitFileReady(file: File, timeoutMs: Long = 15_000) {
         val deadline = System.currentTimeMillis() + timeoutMs
@@ -59,8 +61,8 @@ class JvmEncryptionProofTest {
 
     @Test
     fun plainModeWriteDoesLeakPlaintextToDataStoreFile() = runTest {
-        // Positive baseline: a Plain write must store the sentinel verbatim, else the raw-bytes search
-        // in the encrypted test would be meaningless (both would pass even if writes never happened).
+        // Positive baseline: without it the encrypted test's raw-bytes search would pass even if
+        // the write never happened at all.
         val fileName = JvmKSafeTest.generateUniqueFileName()
         val ksafe = KSafe(fileName = fileName)
 
@@ -78,7 +80,7 @@ class JvmEncryptionProofTest {
     }
 
     companion object {
-        // High-entropy sentinel: negligible odds of appearing as a random substring of ciphertext or protobuf framing.
+        // High entropy, so it cannot turn up by chance in ciphertext or protobuf framing.
         private const val SENTINEL = "KSAFE_PLAINTEXT_PROOF_SENTINEL_XYZABC_1234567890"
         private const val KEY = "proof_token"
     }

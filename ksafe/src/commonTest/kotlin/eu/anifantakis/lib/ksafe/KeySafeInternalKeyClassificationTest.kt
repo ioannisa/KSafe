@@ -26,7 +26,6 @@ class KeySafeInternalKeyClassificationTest {
 
     @Test
     fun flatUserKeyBeginningWithKsafe_isNotTreatedAsInternal() {
-        // A flat plaintext user key named "ksafe_theme".
         assertFalse(
             KeySafeMetadataManager.isInternalStorageKey("ksafe_theme"),
             "a user key that merely begins with 'ksafe_' must NOT be filtered as internal",
@@ -36,8 +35,7 @@ class KeySafeInternalKeyClassificationTest {
 
     @Test
     fun flatPlaintextUserKey_survivesClassification_asAUserValue() {
-        // classifyStorageEntry routes non-internal, non-enveloped raw keys to a flat
-        // plaintext user value, so "ksafe_theme" survives as a user value rather than being dropped.
+        // classifyStorageEntry routes non-internal, non-enveloped raw keys to a flat plaintext value.
         val classified = KeySafeMetadataManager.classifyStorageEntry(
             rawKey = "ksafe_theme",
             legacyEncryptedPrefix = "encrypted_",
@@ -49,7 +47,6 @@ class KeySafeInternalKeyClassificationTest {
         assertEquals("ksafe_theme", classified.userKey)
         assertFalse(classified.encrypted)
 
-        // ...while a genuine internal key still classifies as null (skipped).
         assertNull(
             KeySafeMetadataManager.classifyStorageEntry(
                 rawKey = "ksafe_key_master",

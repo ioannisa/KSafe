@@ -10,15 +10,10 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * `localStorage` has no transaction API, so a batch is not atomic: a process death between two
- * `setItem` calls commits a prefix of it. The ordering therefore has to choose which half survives,
- * and one choice is unsafe — committing new metadata over a value slot that still holds the PREVIOUS
- * entry's bytes. `isCanonicalValueEncrypted` treats an explicit `p:NONE` as plaintext, so a plain
- * write over an encrypted entry would otherwise hand the old ciphertext back to the caller as its
- * value.
- *
- * These tests state the property over EVERY prefix rather than asserting one op order, so the
- * invariant survives a future reshuffle of the ordering.
+ * `localStorage` has no transaction API, so process death between two `setItem` calls commits a
+ * prefix of a batch. The unsafe half to survive is new metadata over a value slot still holding the
+ * previous entry's bytes: `isCanonicalValueEncrypted` reads an explicit `p:NONE` as plaintext and
+ * hands the old ciphertext back verbatim. Stated over every prefix, so a reshuffle stays covered.
  */
 class WebTornWriteOrderingTest {
 

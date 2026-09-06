@@ -23,7 +23,7 @@ class Jvm160FixesTest {
 
     }
 
-    /** Concurrent encrypted writes to the SAME key must all use one key, so any thread's data stays readable. */
+    /** Concurrent encrypted writes to one key must all use one key, so any thread's data stays readable. */
     @Test
     fun testConcurrentEncryptedWritesSameKey_noDataLoss() = runTest {
         val ksafe = KSafe(generateUniqueFileName())
@@ -67,7 +67,6 @@ class Jvm160FixesTest {
         )
     }
 
-    /** Concurrent encrypted writes to DIFFERENT keys each get their own stable key — no cross-contamination. */
     @Test
     fun testConcurrentEncryptedWritesDifferentKeys_allReadable() = runTest {
         val ksafe = KSafe(generateUniqueFileName())
@@ -294,7 +293,7 @@ class Jvm160FixesTest {
         }
     }
 
-    /** The lock map serializes concurrent writes per alias (no corruption) while different aliases proceed in parallel. */
+    /** Different aliases proceed in parallel while writes to one alias stay serialized. */
     @Test
     fun testLockMapSerializesPerAlias() = runTest {
         val ksafe = KSafe(generateUniqueFileName())

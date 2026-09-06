@@ -28,11 +28,8 @@ internal fun KSafeCore.resolveFromCache(
         val entryMeta = encMetaMap[key]
         val reqUnlocked = entryMeta?.requireUnlockedDevice == true
 
-        // Strict (requireUnlockedDevice) entries ALWAYS take the native-decrypt branch, even
-        // under a plaintext memory policy, so a locked-device read never returns the secret
-        // straight from RAM. Their slot normally holds ciphertext, but TRANSIENTLY holds
-        // plaintext during the optimistic write window — so the failure path below must also
-        // refuse to fall through to that plaintext (the reqUnlocked guard on the fallback).
+        // Strict entries always take the native-decrypt branch, even under a plaintext memory
+        // policy, so a locked-device read never returns the secret straight from RAM.
         if (cacheHoldsCiphertext || reqUnlocked) {
             if (usesPlaintextSideCache && !reqUnlocked) {
                 val cached = plaintextCache[cacheKey]
@@ -42,7 +39,7 @@ internal fun KSafeCore.resolveFromCache(
                         return jsonDecode(json, serializer, cached.value)
                     } catch (e: Throwable) {
                         if (e is CancellationException) throw e
-                        /* fall through */
+                        // Corrupt side-cache entry: fall through to the native decrypt below.
                     }
                 }
             }
@@ -50,8 +47,6 @@ internal fun KSafeCore.resolveFromCache(
             try {
                 val encryptedString = cachedValue as? String
                 if (encryptedString != null) {
-                    // Future-format entries fail closed (non-transient → the default),
-                    // never misread as v3.
                     val plainBytes = decryptEntryBlocking(
                         key, protection, KSafeBase64.decode(encryptedString), entryMeta,
                     )
@@ -59,30 +54,28 @@ internal fun KSafeCore.resolveFromCache(
                     deserialized = if (candidate == NULL_SENTINEL) nullOrDefault(defaultValue, serializer)
                     else jsonDecode(json, serializer, candidate)
                     success = true
-                    // Guarded write-back: the decrypt is a slow round-trip during which a
-                    // put/delete may have landed, so only repopulate the side cache when the
-                    // primary still holds the exact ciphertext we decrypted (CAS discipline) —
-                    // otherwise we'd serve stale plaintext, permanently under LAZY_PLAIN_TEXT.
+                    // Write back only while the primary still holds the ciphertext we decrypted, then
+                    // re-check and undo ours: a put may land between guard and store.
                     if (usesPlaintextSideCache && !reqUnlocked && memoryCache[cacheKey] == encryptedString) {
-                        plaintextCache[cacheKey] = CachedPlaintext(candidate, plaintextExpiry())
+                        sideCacheWriteBackHook?.invoke()
+                        val entry = CachedPlaintext(candidate, plaintextExpiry())
+                        plaintextCache[cacheKey] = entry
+                        if (memoryCache[cacheKey] != encryptedString) plaintextCache.removeIf(cacheKey, entry)
                     }
                 }
             } catch (e: Throwable) {
                 if (e is CancellationException) throw e
-                // Transient keystore failures (locked device, hardware busy) must
-                // propagate so callers can retry instead of getting silent defaults.
+                // Transient keystore failures (locked device, hardware busy) must propagate so
+                // callers can retry instead of getting silent defaults.
                 if (isTransientDecryptFailure(e)) throw e
-                /* else fall through to plain-text fallback */
             }
         } else {
             jsonString = cachedValue as? String
         }
 
         if (success) return deserialized
-        // A strict entry must NEVER fall through to the cached value when native-decrypt
-        // didn't succeed: during the optimistic write window the slot transiently holds
-        // plaintext, and serving it would return the secret from RAM on a locked device.
-        // Return the default instead (a committed strict entry holds ciphertext here anyway).
+        // A failed strict decrypt must not fall through to the cached value: during the
+        // optimistic write window that slot transiently holds plaintext.
         if (reqUnlocked) return defaultValue
         if (jsonString == null) jsonString = cachedValue as? String
         if (jsonString == null) return defaultValue
@@ -101,23 +94,21 @@ internal fun KSafeCore.resolveFromCache(
 
 internal fun KSafeCore.ensureCacheReadyBlocking() {
     if (cacheInitialized.get()) return
-    // Best-effort cold-start freshness. Android/iOS/JVM block once to
-    // populate the cache; web can't block so the call throws and we fall
-    // through — a concurrent `getDirect` there returns its default until
-    // the background preload completes.
+    // Android/iOS/JVM block once to populate the cache; web can't block, so this throws and a
+    // concurrent `getDirect` there returns its default until the background preload completes.
     try {
         runBlockingOnPlatform {
             if (!cacheInitialized.get()) {
-                // Epoch BEFORE snapshot — the argument-order default would read it after.
+                // Epoch and merge count read before the snapshot: the parameter default would read
+                // after, and a clearAll landing between the two would republish its wiped secrets.
                 val epoch = clearEpoch.get()
-                updateCache(storage.snapshot(), epoch)
+                val merges = mergeSequence.get()
+                mergePreloadSnapshot(storage.snapshot(), epoch, merges)
             }
         }
     } catch (e: Throwable) {
         if (e is CancellationException) throw e
-        /* web: no blocking available */
     }
-    // lazyLoad has no collector to run the one-time startup cleanup — trigger it once
-    // here, off the caller's thread, now that a first access has readied the cache.
+    // lazyLoad has no collector to run the one-time startup cleanup, so trigger it here.
     triggerLazyStartupCleanupOnce()
 }

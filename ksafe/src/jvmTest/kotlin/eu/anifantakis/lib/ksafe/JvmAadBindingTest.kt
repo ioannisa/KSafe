@@ -3,21 +3,20 @@ package eu.anifantakis.lib.ksafe
 import eu.anifantakis.lib.ksafe.internal.KeySafeMetadataManager
 import eu.anifantakis.lib.ksafe.internal.StorageOp
 import eu.anifantakis.lib.ksafe.internal.StoredValue
+import eu.anifantakis.lib.ksafe.internal.dataStoreBaseFileName
 import kotlinx.coroutines.test.runTest
 import java.io.File
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
- * Locks in the v3 authenticated envelope (3.0.0, invariant 10): after a rotation, the AES-GCM
- * associated data binds each ciphertext to its entry's identity and security metadata, so an
- * attacker with file access can no longer move a ciphertext to another slot (or tamper the
- * metadata it routes on) and have it decrypt in the wrong context — reads fail closed to the
- * caller's default. Pre-rotation (generation-1, v2) entries keep the exact pre-3.0.0 bytes,
- * so the swap boundary is also locked in: v2 is movable (the documented legacy behaviour),
- * v3 is not.
+ * Locks in the v3 authenticated envelope: after a rotation the AES-GCM associated data binds each
+ * ciphertext to its entry's identity and security metadata, so an attacker with file access can no
+ * longer move a ciphertext to another slot or tamper the metadata it routes on — reads fail closed
+ * to the caller's default. Pre-rotation v2 entries keep the old bytes, so v2 stays movable.
  */
 class JvmAadBindingTest {
 
@@ -60,8 +59,8 @@ class JvmAadBindingTest {
         ksafe.put("token", "secret-token")
         ksafe.rotateKeys()
 
-        // Rewrite the entry's metadata with a doctored generation: the read path now derives
-        // a different alias AND a different AAD — either way the read must fail closed.
+        // A doctored generation makes the read path derive both a different alias and a different
+        // AAD — either way the read must fail closed.
         val metaKey = KeySafeMetadataManager.metadataRawKey("token")
         val doctored = KeySafeMetadataManager.buildMetadataJson(
             protection = KSafeProtection.DEFAULT,
@@ -87,9 +86,8 @@ class JvmAadBindingTest {
         val meta = (ksafe.core.storage.snapshot()[KeySafeMetadataManager.metadataRawKey("one")] as StoredValue.Text).value
         assertEquals(KeySafeMetadataManager.ENVELOPE_VERSION_V2, KeySafeMetadataManager.parseEnvelopeVersion(meta))
 
-        // The documented v2 limitation: same-master ciphertexts are relocatable. This lock-in
-        // makes the security BOUNDARY explicit — authentication of entry identity begins at v3
-        // (i.e. after the store's first rotation).
+        // The documented v2 limitation: same-master ciphertexts are relocatable. Authentication of
+        // entry identity begins at v3, i.e. after the store's first rotation.
         swapValueRecords(ksafe, "one", "two")
         ksafe.close()
         val reopened = KSafe(fileName = "aad_v2", baseDir = tmp)
@@ -103,17 +101,42 @@ class JvmAadBindingTest {
         ksafe.put("token", "secret")
         ksafe.rotateKeys() // -> generation 2 -> v3
 
-        // aadForRead reflects the core's own storeIdentity. The LIVE core must bind the full baseDir
-        // path (matching what the fallback migration binds), not just the fileName. Regression guard:
-        // the factory fed the path identity to createJvmBackend/migration but left KSafeCore on
-        // fileName only, so a v3 entry written live would fail the migration's path-AAD decrypt.
+        // The live core must bind the full baseDir path, matching what the fallback migration binds.
+        // The factory once left KSafeCore on fileName only, so live v3 entries failed its decrypt.
         val aad = ksafe.core.aadForRead("token", KSafeProtection.DEFAULT)
             ?: error("expected a non-null v3 AAD after rotation")
         val aadStr = aad.decodeToString()
         assertTrue(
-            aadStr.contains(tmp.absolutePath),
+            aadStr.contains(expectedStoreIdentity(tmp, "aad_dir")),
+            "live v3 AAD must bind the factory's store identity; got: $aadStr",
+        )
+        assertTrue(
+            aadStr.contains(tmp.name),
             "live v3 AAD must bind the baseDir path, not just the fileName; got: $aadStr",
         )
+
+        // Same fileName, different baseDir: the identity — and so the AAD — must not be shared.
+        val otherDir = File(tmp, "other").apply { mkdirs() }
+        val sibling = KSafe(fileName = "aad_dir", baseDir = otherDir)
+        sibling.put("token", "secret")
+        sibling.rotateKeys()
+        val siblingAad = sibling.core.aadForRead("token", KSafeProtection.DEFAULT)
+            ?: error("expected a non-null v3 AAD after rotation")
+        assertNotEquals(
+            aadStr, siblingAad.decodeToString(),
+            "two baseDirs holding the same fileName must not share one v3 AAD",
+        )
+        sibling.close()
         ksafe.close()
+    }
+
+    /** The identity the JVM factory derives for this store, spelled exactly as production does. */
+    private fun expectedStoreIdentity(baseDir: File, fileName: String): String {
+        val base = File(baseDir, dataStoreBaseFileName(fileName))
+        val home = System.getProperty("user.home")
+        return KeySafeMetadataManager.stableStoreIdentity(
+            realStorePath(base) ?: base.canonicalPath,
+            home?.let { realStorePath(File(it)) ?: File(it).canonicalPath },
+        )
     }
 }

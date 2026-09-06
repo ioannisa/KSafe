@@ -17,7 +17,6 @@ internal object MacosTestPaths {
 
     private val counter = AtomicInt(0)
 
-    /** Creates and returns a unique temp directory; safe to call repeatedly. */
     fun uniqueTempDir(prefix: String = "ksafe-macostest"): String {
         val salt = counter.incrementAndGet().toString(36)
         val uuid = Uuid.random().toString().lowercase().filter { it in 'a'..'z' || it in '0'..'9' }.take(8)

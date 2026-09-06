@@ -27,21 +27,12 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Forward half of the alias-derivation lockstep, for the one consumer commonTest cannot reach:
- * `JvmFallbackMigration` lives in jvmMain. (The common halves — metadata round-trip and the
- * backward parse — are in `KSafeAliasDerivationLockstepTest`.)
+ * Locks in: the jvmMain fallback migration derives every alias from `KSafeCore`'s producers, driven
+ * through the whole recorded-metadata matrix rather than sampled. A one-byte divergence fails
+ * quietly — the decrypt fails, the entry is a permanent skip, the fallback file is archived anyway
+ * and the entry is gone. This copy drifted twice: the `sa` strict marker, then the envelope gate.
  *
- * The migration decrypts every fallback entry under an alias it derives from the entry's RECORDED
- * metadata. A derivation that differs from the core's by one byte does not fail loudly: the
- * decrypt fails, the entry counts as a permanent skip, the fallback file is archived anyway, and
- * the entry is GONE from the live store. This copy drifted from the shared formula twice — first
- * missing the `sa` strict-variant marker, then missing the unknown-envelope gate — so the whole
- * metadata matrix is driven through the real migration here rather than sampled.
- *
- * Method: seed each row's ciphertext under the alias/AAD `KSafeCore` derives, run the real
- * migration, and require that every row landed and still decrypts under that same alias/AAD. The
- * target engine also records the identifiers it was asked to encrypt under, so a mismatch names
- * the alias instead of only reporting a missing entry.
+ * @see KSafeAliasDerivationLockstepTest for the common halves (metadata round-trip, backward parse)
  */
 @OptIn(ExperimentalEncodingApi::class)
 class JvmFallbackMigrationAliasLockstepTest {
@@ -60,7 +51,7 @@ class JvmFallbackMigrationAliasLockstepTest {
         tmp.deleteRecursively()
     }
 
-    // A NAMED store: keyNamespace feeds the rotated/strict fingerprint, and passing it wrong is
+    // A named store: keyNamespace feeds the rotated/strict fingerprint, and passing it wrong is
     // one of the ways this copy can silently diverge.
     private val fileName = "vault"
     private val keyNamespace: String? = fileName
@@ -162,7 +153,7 @@ class JvmFallbackMigrationAliasLockstepTest {
         val keysFallback = File(tmp, "lockstep.ksafe-keys.json")
         val config = KSafeConfig()
 
-        // Seed the fallback: each row's ciphertext minted under the alias + AAD the CORE derives
+        // Seed the fallback: each row's ciphertext minted under the alias + AAD the core derives
         // for that recorded metadata. If the migration derives anything else, its decrypt fails.
         val srcScope = newScope()
         runBlocking {
@@ -189,9 +180,8 @@ class JvmFallbackMigrationAliasLockstepTest {
                     StoredValue.Text(metadata(row)),
                 )
             }
-            // An envelope from a newer KSafe: the migration must NOT probe it as a known version
-            // (a failed probe is a permanent skip, and permanent skips do not block archiving, so
-            // the entry would vanish into the .migrated file). It must be carried verbatim.
+            // An envelope from a newer KSafe: probing it as a known version costs the entry — a
+            // failed probe is a permanent skip, and skips do not block archiving.
             ops += StorageOp.Put(
                 KeySafeMetadataManager.valueRawKey(futureEnvelopeKey),
                 StoredValue.Text(futureEnvelopeCiphertext),
@@ -272,16 +262,14 @@ class JvmFallbackMigrationAliasLockstepTest {
                     "verbatim, not probed, skipped and archived away",
             )
 
-            // The recorded encrypt identifiers are the aliases the migration actually derived.
             assertEquals(
                 rows.map { expectedAlias(it) }.toSet(),
                 targetEngine.encryptedUnder.toSet(),
                 "the set of aliases the migration re-encrypted under must equal the set " +
                     "KSafeCore derives for the same recorded metadata",
             )
-            // Exactly one re-encrypt per matrix row and none for the future-envelope entry. (Its
-            // alias cannot be checked by name: a DEFAULT entry rides the shared master alias, so
-            // the name is not unique to it — the call COUNT is what distinguishes it.)
+            // Count, not name: the future-envelope entry is DEFAULT, so it would ride the shared
+            // master alias and only the call count can show the migration never touched it.
             assertEquals(
                 rows.size, targetEngine.encryptedUnder.size,
                 "the migration must re-encrypt each of the ${rows.size} known-envelope rows exactly " +
@@ -293,9 +281,8 @@ class JvmFallbackMigrationAliasLockstepTest {
 
     @Test
     fun aliasDerivationIsSharedWithTheCore_notReDerivedInTheMigration() {
-        // The matrix above proves lockstep behaviourally; this states the structural reason it
-        // holds, so a future re-derivation in JvmFallbackMigration has to break something visible
-        // rather than merely drifting. Every row's alias must come out of the core's producers.
+        // The matrix above proves lockstep behaviourally; this pins the structural reason, so a
+        // re-derivation inside JvmFallbackMigration breaks something visible instead of drifting.
         for (row in matrix()) {
             val fromCore = expectedAlias(row)
             val expected = when {

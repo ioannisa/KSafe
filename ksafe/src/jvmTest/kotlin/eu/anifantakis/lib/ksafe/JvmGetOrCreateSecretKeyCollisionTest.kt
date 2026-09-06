@@ -8,7 +8,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertFalse
 
 /**
- * Locks in: getOrCreateSecret derives an injective storage key, so distinct logical keys (e.g. "main.db" vs "main_db") get distinct secrets, and a special-char key's legacy secret migrates forward non-destructively.
+ * Locks in: getOrCreateSecret derives an injective storage key, so "main.db" and "main_db" get distinct secrets, and a special-char key's legacy secret migrates forward non-destructively.
  */
 @OptIn(ExperimentalEncodingApi::class)
 class JvmGetOrCreateSecretKeyCollisionTest {
@@ -41,13 +41,11 @@ class JvmGetOrCreateSecretKeyCollisionTest {
             val seeded = Base64.encode(ByteArray(32) { 7 })
             ksafe.put("ksafe_secret_main_db", seeded, KSafeWriteMode.Encrypted())
 
-            // The special-char key migrates it forward…
             val migrated = ksafe.getOrCreateSecret("main.db")
             assertContentEquals(
                 Base64.decode(seeded), migrated,
                 "a special-char key's legacy secret must migrate forward from the collapsed slot",
             )
-            // …and the shared legacy slot survives (a co-existing safe key still reads it).
             val safe = ksafe.getOrCreateSecret("main_db")
             assertContentEquals(
                 Base64.decode(seeded), safe,

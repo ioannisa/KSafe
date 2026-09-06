@@ -9,14 +9,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 /**
- * Every Apple entry written before 3.1.0 was sealed by the third-party CryptoKit provider that
- * [AppleAesGcm] replaced. These vectors were produced by that provider (KSafe 3.0.0, commit
- * 5c1f2ac) and are decrypted here by the KSafe-owned bridge.
- *
- * A round-trip test cannot catch a framing change — it agrees with itself by construction. This
- * is the only check that fails if the persisted layout ever drifts, and the consequence of that
- * drift is not a broken read: an entry KSafe cannot decrypt is swept as an orphan, so a silent
- * framing change deletes shipped user data.
+ * Vectors produced by the third-party CryptoKit provider [AppleAesGcm] replaced (KSafe 3.0.0),
+ * decrypted here by the KSafe-owned bridge. A round-trip test agrees with itself by construction, so
+ * this is the only check that catches a framing drift — and the cost of that drift is not a broken
+ * read but deletion: an entry KSafe cannot decrypt is swept as an orphan.
  */
 @OptIn(ExperimentalEncodingApi::class)
 class AppleLegacyCiphertextTest {
@@ -40,9 +36,8 @@ class AppleLegacyCiphertextTest {
     fun preRefactorCiphertext_isFramedAsNonceCiphertextTag() {
         val overhead = AppleAesGcm.NONCE_SIZE_BYTES + AppleAesGcm.TAG_SIZE_BYTES
         assertEquals(plaintext.size + overhead, legacyWithoutAad.size)
-        // Re-sealing under the SAME nonce must reproduce the legacy bytes exactly: proof the
-        // ciphertext and tag sit where the old provider put them, not merely that a decrypt
-        // happens to succeed.
+        // Re-sealing under the same nonce must reproduce the legacy bytes exactly — proof the
+        // ciphertext and tag still sit where the old provider put them.
         val nonce = legacyWithoutAad.copyOfRange(0, AppleAesGcm.NONCE_SIZE_BYTES)
         assertContentEquals(
             legacyWithoutAad,

@@ -11,7 +11,7 @@ class WebEngineKeyNamespaceTest {
     fun sameFileNameDifferentAppNamespace_keysAreIsolated_soClearAllDoesNotBreakSibling() = runTest {
         val file = WebKSafeTest.generateUniqueFileName()
 
-        // REAL engine (no testEngine) → real AES-GCM CryptoKey in IndexedDB.
+        // Real engine (no testEngine) → real AES-GCM CryptoKey in IndexedDB.
         val appA = KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.a"))
         val appB = KSafe(fileName = file, config = KSafeConfig(appNamespace = "com.example.b"))
         appA.awaitCacheReady(); appB.awaitCacheReady()
@@ -33,9 +33,9 @@ class WebEngineKeyNamespaceTest {
     }
 
     /**
-     * A namespaced instance's clearAll must NOT delete the un-namespaced IndexedDB key record:
+     * A namespaced instance's clearAll must not delete the un-namespaced IndexedDB key record:
      * `unNamespacedIdbName(alias)` is byte-identical to the `idbName` a co-existing no-appNamespace
-     * KSafe on the same fileName uses, so deleting it would destroy that sibling's LIVE key. The
+     * KSafe on the same fileName uses, so deleting it would destroy that sibling's live key. The
      * orphaned pre-namespace record (a non-extractable key, no plaintext) is the accepted cost.
      */
     @Test

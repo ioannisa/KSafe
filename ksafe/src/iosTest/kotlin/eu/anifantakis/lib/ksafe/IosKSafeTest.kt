@@ -3,10 +3,7 @@ package eu.anifantakis.lib.ksafe
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
-/**
- * iOS-specific test implementation for KSafe.
- * Generates unique file names using UUID to avoid DataStore conflicts.
- */
+/** iOS [KSafeTest]: UUID-derived file names, so DataStore never sees two instances on one file. */
 class IosKSafeTest : KSafeTest() {
     
     @OptIn(ExperimentalUuidApi::class)

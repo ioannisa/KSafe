@@ -8,12 +8,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * End-to-end regression guard for the per-entry alias namespace, using an engine with REAL
- * key-lifecycle semantics ([StatefulFakeEncryption]): with the plain `.gN` suffix, rotating
- * a store holding both `"foo"` and `"foo.g2"` reused/deleted one entry's vault key for the
- * other (silent, unrecoverable loss for hardware-isolated data), and `delete()`/`clearAll()`
- * issued engine-key deletions for entries that never owned a per-entry alias — deletions
- * whose derived alias can be another store's live key.
+ * Locks in the per-entry alias namespace end to end, over an engine with real key-lifecycle
+ * semantics. With the plain `.gN` suffix, rotating a store holding both "foo" and "foo.g2" reused
+ * one entry's vault key for the other, and delete()/clearAll() issued engine-key deletions for
+ * entries that never owned an alias — whose derived alias can be another store's live key.
  */
 class JvmAliasCollisionTest {
 
@@ -34,14 +32,13 @@ class JvmAliasCollisionTest {
         assertEquals(2, result.rotated)
         assertEquals(0, result.failed)
 
-        // Pre-fix, "foo"'s rotated alias was byte-identical to "foo.g2"'s live generation-1
-        // alias: rotating both in one pass deleted the shared key under the freshly-rotated
-        // ciphertext while still counting it as rotated.
+        // "foo"'s rotated alias was once byte-identical to "foo.g2"'s live generation-1 alias, so
+        // one pass deleted the shared key under fresh ciphertext and still counted it as rotated.
         assertEquals("foo-secret", ksafe.get("foo", ""), "rotated entry must stay readable")
         assertEquals("twin-secret", ksafe.get("foo.g2", ""), "its .g2-named sibling must stay readable")
 
-        // Pre-fix, delete("foo") swept alias generations 1..2, and its g2 alias WAS the
-        // sibling's bare alias — destroying the sibling's key.
+        // delete("foo") sweeps alias generations 1..2, and its g2 alias once was the sibling's
+        // bare alias.
         ksafe.delete("foo")
         assertEquals("twin-secret", ksafe.get("foo.g2", ""), "deleting 'foo' must not destroy 'foo.g2'")
         ksafe.close()
@@ -64,8 +61,8 @@ class JvmAliasCollisionTest {
         ksafe.delete("default.key")
         ksafe.delete("absent.key")
 
-        // None of the three ever owned a per-entry alias; issuing the delete anyway would
-        // destroy a sibling store's live key when the derived alias collides.
+        // None of the three ever owned a per-entry alias, and the alias derived for one of them
+        // can be a sibling store's live key.
         assertTrue(
             engine.deletedKeys.none { alias ->
                 "plain.key" in alias || "default.key" in alias || "absent.key" in alias

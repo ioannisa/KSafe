@@ -10,10 +10,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Three commonMain read/write behaviours (JVM exercises the shared logic): a plain→encrypted
- * upgrade evicts the stale plaintext cache slot; a Plain-written primitive read with a complex
- * @Serializable type returns the default instead of throwing; and an encrypted (default-mode)
- * write of a special float round-trips.
+ * Locks in: a plain↔encrypted overwrite evicts the stale plaintext cache slot in both directions,
+ * a Plain-written primitive read back as a complex @Serializable type returns the default instead
+ * of throwing, and an encrypted default-mode write of a special float round-trips. Shared
+ * commonMain logic, exercised on the JVM.
  */
 class JvmMediumFixesTest {
 
@@ -52,11 +52,9 @@ class JvmMediumFixesTest {
 
     @Test
     fun encryptedToPlainOverwrite_evictsThePlaintextSideCacheSlot() = runTest {
-        // Mirror of the plain→encrypted eviction, reverse direction. Default policy is
-        // LAZY_PLAIN_TEXT: an encrypted write caches the decrypted secret in the side cache under
-        // legacyEncryptedRawKey(key). Overwriting the key with a Plain write must evict that slot
-        // from BOTH caches, or the old secret's plaintext lingers for the process lifetime on a
-        // permanently-dirty slot the eviction sweep skips (heap-dump exposure).
+        // Under the default LAZY_PLAIN_TEXT policy an encrypted write caches the decrypted secret
+        // under legacyEncryptedRawKey(key). A Plain overwrite must evict it from both caches, or
+        // the old plaintext lingers for the process lifetime on a slot the eviction sweep skips.
         val ksafe = newKSafe()
         val key = "token"
         val encSlot = KeySafeMetadataManager.legacyEncryptedRawKey(key)

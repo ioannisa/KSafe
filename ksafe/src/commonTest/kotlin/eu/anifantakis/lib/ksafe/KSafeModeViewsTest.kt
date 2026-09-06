@@ -147,8 +147,7 @@ abstract class KSafeModeViewsTest {
 
         KSafePlain(ksafe).put("shared_key", "written-plain")
 
-        // Same value through the raw instance AND through a differently-typed view:
-        // the type constrains writes, never reads.
+        // The view type constrains writes, never reads.
         assertEquals("written-plain", ksafe.get("shared_key", ""))
         assertEquals("written-plain", KSafeEncrypted(ksafe).get("shared_key", ""))
         assertEquals("written-plain", KSafeHardwareIsolated(ksafe).getDirect("shared_key", ""))

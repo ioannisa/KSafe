@@ -14,7 +14,6 @@ class WebSecureRandomChunkTest {
         val bytes = secureRandomBytes(size)
 
         assertEquals(size, bytes.size, "must return the requested number of bytes without throwing")
-        // Bytes past the first 64KB chunk must be filled, proving the second chunk ran.
         val tail = bytes.copyOfRange(65_536, size)
         assertTrue(tail.any { it != 0.toByte() }, "the chunk past the 64KB boundary must be randomized")
         assertTrue(bytes.copyOfRange(0, 65_536).any { it != 0.toByte() }, "the first chunk must be randomized")

@@ -179,9 +179,8 @@ class JvmNullFilenameTest {
 
         ksafe.put(key, "secret")
         stateFlow.test(timeout = 30.seconds) {
-            // getFlow decrypts on Dispatchers.Default, so the write propagates to the
-            // StateFlow asynchronously — an intermediate default emission may precede the
-            // written value.
+            // getFlow decrypts on Dispatchers.Default, so the write reaches the StateFlow
+            // asynchronously — an intermediate default emission may precede the written value.
             var item = awaitItem()
             while (item == "def") item = awaitItem()
             assertEquals("secret", item)

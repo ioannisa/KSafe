@@ -21,15 +21,10 @@ import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
 /**
- * Proves an encrypted KSafe write never lands the raw plaintext in the
- * DataStore file — anything that accidentally routed a `put()` through the
- * plain path would immediately fail.
- *
- * The Kotlin/Native test runner lacks the Keychain entitlement, so the
- * production [AppleKeychainEncryption] path fails with `errSecMissingEntitlement`
- * (-25291). [FakeEncryption] is injected to exercise the write plumbing; the
- * real Keychain + CryptoKit round-trip is covered by the iOS integration app
- * and [IosKeychainEncryptionTest].
+ * Locks in: an encrypted write never lands raw plaintext in the DataStore file, so anything that
+ * accidentally routes a `put()` through the plain path fails here. The Native test runner has no
+ * Keychain entitlement, so [FakeEncryption] is injected to exercise the write plumbing; the real
+ * Keychain + CryptoKit round-trip is covered by the iOS integration app and [IosKeychainEncryptionTest].
  */
 class IosEncryptionProofTest {
 
@@ -39,8 +34,7 @@ class IosEncryptionProofTest {
 
     @OptIn(ExperimentalForeignApi::class)
     private fun readDataStoreFile(fileName: String): ByteArray? {
-        // Since 2.0, iOS stores the DataStore in NSApplicationSupportDirectory
-        // (pre-2.0 it was NSDocumentDirectory).
+        // Since 2.0 the DataStore lives in NSApplicationSupportDirectory (pre-2.0: NSDocumentDirectory).
         val supportDir: NSURL = NSFileManager.defaultManager.URLForDirectory(
             directory = NSApplicationSupportDirectory,
             inDomain = NSUserDomainMask,

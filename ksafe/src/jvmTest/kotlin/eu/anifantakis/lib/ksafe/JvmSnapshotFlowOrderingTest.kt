@@ -22,12 +22,10 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Locks in the ordering contract of the snapshot flow the DataStore-backed storages expose:
- * a store read that began before a commit must never be delivered as the newer state, while
- * the commit re-broadcast and genuinely later store emissions both keep flowing.
- *
- * Drives [DataStoreCommitRelay] against a store whose `data` flow the test emits into by
- * hand, so every interleaving below is exact — no sleeps, no thread races.
+ * Locks in the ordering contract of the snapshot flow the DataStore-backed storages expose: a store
+ * read that began before a commit must never be delivered as the newer state, while the commit
+ * re-broadcast and genuinely later store emissions keep flowing. Drives [DataStoreCommitRelay]
+ * against a hand-emitted store flow, so every interleaving is exact — no sleeps, no thread races.
  */
 class JvmSnapshotFlowOrderingTest {
 
@@ -60,8 +58,7 @@ class JvmSnapshotFlowOrderingTest {
     ): Collected {
         val out = Collected()
         out.job = launch(Dispatchers.Default) { relay.snapshotFlow().collect { out.seen.add(it) } }
-        // The store arm has actually started collecting — every emit below is therefore
-        // delivered, and every ordering the test asserts is the one it set up.
+        // Wait until the store arm is collecting, so every emit below is actually delivered.
         withTimeout(5.seconds) { emissions.subscriptionCount.first { it > 0 } }
         return out
     }
@@ -69,8 +66,6 @@ class JvmSnapshotFlowOrderingTest {
     private suspend fun Collected.awaitCount(n: Int) {
         withTimeout(5.seconds) { while (seen.size < n) delay(1) }
     }
-
-    // ---- a read that predates the commit must not be applied over it ----------------------
 
     @Test
     fun storeReadThatPredatesACommit_isNotDeliveredAfterIt() = runBlocking {
@@ -83,10 +78,10 @@ class JvmSnapshotFlowOrderingTest {
         relay.publish(mapOf("token" to "fresh"))
         collected.awaitCount(1)
 
-        // The in-flight read now completes, carrying the PRE-commit file content.
+        // The in-flight read now completes, carrying the pre-commit file content.
         emissions.emit(mapOf("token" to "stale"))
-        // A genuinely later store change, so the assertion below has a barrier to wait on
-        // instead of a sleep — and so a fix that simply drops the store arm is caught.
+        // A genuinely later store change: a barrier to wait on instead of a sleep, and it catches
+        // a "fix" that simply drops the store arm.
         emissions.emit(mapOf("token" to "external"))
         collected.awaitCount(2)
 
@@ -103,8 +98,6 @@ class JvmSnapshotFlowOrderingTest {
 
         collected.job.cancelAndJoin()
     }
-
-    // ---- the store arm still seeds and still carries external changes ---------------------
 
     @Test
     fun withNoCommitYet_theStoresOwnReadIsDelivered() = runBlocking {
@@ -131,8 +124,8 @@ class JvmSnapshotFlowOrderingTest {
 
         relay.publish(mapOf("token" to "committed"))
 
-        // Subscribing AFTER the commit: this read cannot predate it, so it is authoritative
-        // even though it disagrees with the last committed state.
+        // Subscribing after the commit: this read cannot predate it, so it is authoritative even
+        // though it disagrees with the last committed state.
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val collected = scope.collect(relay, emissions)
         collected.awaitCount(1)

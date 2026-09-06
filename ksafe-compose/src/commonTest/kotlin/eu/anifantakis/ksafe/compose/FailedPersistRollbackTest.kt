@@ -18,19 +18,15 @@ import kotlin.test.assertEquals
 
 /**
  * Locks in: when a persist fails, the rollback fires for every write that still owns the visible
- * value — in every mode the module offers — and for no write that has been superseded.
- *
- * The rollback used to be gated on the write-echo latch, which exists for a different job:
- * suppressing stale flow emissions while a write propagates. That latch is deliberately down
- * for a write that nets back to the last synced value, and a timeout releases it while the
- * write is still unresolved, so it was never a usable proxy for "this write is still in flight".
- * Each test below pins one mode in which the two concerns disagree.
+ * value — in every mode the module offers — and for no write that has been superseded. It once
+ * hung off the write-echo latch, which suppresses stale flow emissions: that latch stays down for
+ * a write netting back to the last synced value, and a timeout releases it mid-flight.
  */
 class FailedPersistRollbackTest {
 
     /**
-     * The saver records each write's token exactly as the real ones do — on the setter's own
-     * stack — so the tests reconcile the write they mean rather than whatever is armed later.
+     * The saver records each write's token on the setter's own stack, as the real savers do, so a
+     * test reconciles the write it means rather than whatever is armed later.
      */
     private fun newState(
         initial: String = "A",
@@ -47,10 +43,8 @@ class FailedPersistRollbackTest {
     }
 
     /**
-     * Without external observation nothing ever advances the last-synced baseline, so a toggle
-     * flipped back to the value the state started with looks identical to that baseline while
-     * storage has since moved on. Its persist failing must still roll the phantom back — this is
-     * the module's DEFAULT configuration (no scope / observeExternalChanges = false).
+     * The module's default configuration (no scope, observeExternalChanges = false) never advances
+     * the last-synced baseline, so a toggle back to the starting value looks like no write at all.
      */
     @Test
     fun failedPersist_ofAWriteBackToTheStartingValue_rollsBack() {
@@ -69,11 +63,7 @@ class FailedPersistRollbackTest {
         )
     }
 
-    /**
-     * With external observation a write that never echoes has its emission-suppression latch
-     * released by the timeout backstop. The write is still unresolved at that point — storage
-     * never changed — so a failure landing after the window must still roll it back.
-     */
+    /** The timeout backstop drops the echo latch while the write is still unresolved. */
     @Test
     fun failedPersist_arrivingAfterTheWriteEchoTimeout_rollsBack() = runTest {
         val tokens = mutableListOf<Long>()
@@ -94,8 +84,7 @@ class FailedPersistRollbackTest {
         state.value = "B"
 
         // Cross the backstop window with no emission at all: the latch drops while the write is
-        // still unresolved. Feeding an emission here would resolve the write legitimately and the
-        // test would pass for the wrong reason.
+        // still unresolved. An emission here would resolve it and the test would pass for free.
         advanceTimeBy(timeout + 1)
         runCurrent()
 
@@ -136,9 +125,8 @@ class FailedPersistRollbackTest {
     }
 
     /**
-     * A value cannot name a write. Under a policy that fires the setter for every assignment,
-     * two writes can carry equal values, and the first one's failure must not claim — and revert —
-     * the second, which may still be on its way to disk.
+     * A value cannot name a write: under a policy that fires the setter for every assignment, two
+     * writes carry equal values and the first one's failure must not revert the second.
      */
     @Test
     fun failedPersist_ofASupersededWriteCarryingAnEqualValue_leavesTheLaterWriteAlone() {

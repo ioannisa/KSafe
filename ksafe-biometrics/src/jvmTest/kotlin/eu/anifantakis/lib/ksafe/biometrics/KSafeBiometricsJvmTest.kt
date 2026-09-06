@@ -5,13 +5,14 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * Locks in: with desktop prompts opted out (`ksafe.biometrics.jvm.prompts=off` — the pre-2.2.0
- * migration path), every static [KSafeBiometrics] method is a no-op that succeeds, exactly like
- * the legacy JVM behavior and like Kotlin/JS and Kotlin/Wasm today.
+ * Locks in: every static [KSafeBiometrics] method is a no-op that succeeds where no prompt path
+ * exists — under the `ksafe.biometrics.jvm.prompts=off` opt-out on macOS and Windows, and with
+ * prompts left on under Linux, where the OS branch itself is the pass-through.
  */
 class KSafeBiometricsJvmTest {
 
@@ -20,7 +21,9 @@ class KSafeBiometricsJvmTest {
     @kotlin.test.BeforeTest
     fun optOutOfRealPrompts() {
         priorPromptsProperty = System.getProperty("ksafe.biometrics.jvm.prompts")
-        System.setProperty("ksafe.biometrics.jvm.prompts", "off")
+        // Opting out on Linux would mask the branch this suite exists to assert there.
+        if (HostOs.isOther) System.clearProperty("ksafe.biometrics.jvm.prompts")
+        else System.setProperty("ksafe.biometrics.jvm.prompts", "off")
         KSafeBiometrics.clearBiometricAuth() // no cross-test cache hits masking the opt-out path
     }
 
@@ -141,6 +144,12 @@ class KSafeBiometricsJvmTest {
 
         assertTrue(latch.await(2, TimeUnit.SECONDS))
         assertTrue(result.get(), "Callback must receive true on JVM even with allowDeviceCredentialFallback=false")
+    }
+
+    @Test
+    fun biometricsAvailable_reportsFalse_whereVerifyIsAPassThrough() = runBlocking {
+        assertFalse(KSafeBiometrics.biometricsAvailable())
+        assertFalse(KSafeBiometrics.biometricsAvailable(allowDeviceCredentialFallback = false))
     }
 
     @Test

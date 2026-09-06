@@ -9,15 +9,12 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Locks in the key-rotation generation plumbing (3.0.0):
- * - metadata `g` field: absent for generation 1 (byte-identical payload to pre-rotation
- *   releases, so un-rotated stores never churn), present and round-tripping for rotated entries;
- * - alias derivation: generation 1 IS the un-suffixed base alias every existing key uses
- *   (zero-migration invariant), later generations get a deterministic `.gN` suffix.
+ * Locks in the key-rotation generation plumbing: metadata's `g` field is absent for generation 1, so
+ * an un-rotated store's payload stays byte-identical to pre-rotation releases and never churns, and
+ * round-trips for rotated entries. Generation 1 is the un-suffixed base alias every existing key
+ * already uses (zero migration); later generations get a deterministic `.gN` suffix.
  */
 class KSafeKeyGenerationTest {
-
-    // ---- metadata `g` field --------------------------------------------------------------
 
     @Test
     fun buildMetadataJson_generation1_isByteIdenticalToPreRotationPayload() {
@@ -75,18 +72,14 @@ class KSafeKeyGenerationTest {
 
     @Test
     fun parseKeyGeneration_clampsFabricatedHugeValues() {
-        // Generation records are plaintext routing metadata: an attacker-fabricated
-        // Int.MAX_VALUE would drive the per-generation sweep loops for billions of vault
-        // round-trips and wrap the rotation increment negative. Nothing legitimate ever
-        // writes above the bound, so clamping changes no honest store.
+        // Generation records are plaintext: a fabricated Int.MAX_VALUE would drive the sweep loops
+        // for billions of vault round-trips and wrap the rotation increment negative.
         val max = KeySafeMetadataManager.MAX_KEY_GENERATION
         assertEquals(max, KeySafeMetadataManager.parseKeyGeneration("""{"g":2147483647}"""))
         assertEquals(max, KeySafeMetadataManager.parseKeyGeneration("""{"g":${max + 1}}"""))
         assertEquals(max, KeySafeMetadataManager.parseKeyGeneration("""{"g":$max}"""), "the bound itself is legal")
         assertEquals(max - 1, KeySafeMetadataManager.parseKeyGeneration("""{"g":${max - 1}}"""))
     }
-
-    // ---- envelope-version fail-closed gate ------------------------------------------------
 
     @Test
     fun checkKnownEnvelopeVersion_acceptsEveryKnownVersion_failsClosedOnFuture() {
@@ -98,9 +91,8 @@ class KSafeKeyGenerationTest {
                 KeySafeMetadataManager.ENVELOPE_VERSION_MAX_KNOWN + 1, "k",
             )
         }
-        // The refusal must never read as a MISSING-KEY or TRANSIENT failure: the orphan sweep
-        // reaps entries on the former (destroying a future-format entry an upgrade could read)
-        // and read paths spin awaiting unlock on the latter.
+        // The refusal must not read as missing-key or transient: the sweep reaps entries on the
+        // former, destroying a future-format entry an upgrade could read; reads spin on the latter.
         val msg = e.message!!.lowercase()
         assertFalse("no encryption key found" in msg)
         assertFalse("key not found" in msg)
@@ -209,8 +201,6 @@ class KSafeKeyGenerationTest {
         )
     }
 
-    // ---- alias derivation ----------------------------------------------------------------
-
     @Test
     fun aliasWithGeneration_generation1_isTheUnsuffixedBaseAlias() {
         // The zero-migration invariant: every pre-rotation key keeps its exact alias.
@@ -224,24 +214,20 @@ class KSafeKeyGenerationTest {
         assertEquals("ks.vault.token.g7", KSafeCore.aliasWithGeneration("ks.vault.token", 7))
     }
 
-    // ---- reserved-namespace write guard ----------------------------------------
-
     @Test
     fun reservedNamespaceKeys_areRejectedForWrite_readsUnaffected() {
-        // `__ksafe_` internal namespace (incl. the rotation keygen entry) and the
-        // `encrypted_` legacy/cache prefix must not be writable through the public API.
+        // The `__ksafe_` internal namespace and the `encrypted_` legacy/cache prefix must not be
+        // writable through the public API.
         assertTrue(KeySafeMetadataManager.isReservedNamespaceKey("__ksafe_keygen__"))
         assertTrue(KeySafeMetadataManager.isReservedNamespaceKey("__ksafe_value_x"))
         assertTrue(KeySafeMetadataManager.isReservedNamespaceKey("__ksafe_anything"))
         assertTrue(KeySafeMetadataManager.isReservedNamespaceKey("encrypted_foo"), "collision key")
-        // Ordinary keys — including a single-underscore 'ksafe_' and the secret slot prefix —
-        // stay writable.
         assertFalse(KeySafeMetadataManager.isReservedNamespaceKey("token"))
         assertFalse(KeySafeMetadataManager.isReservedNamespaceKey("ksafe_theme"), "single-underscore is a user key")
         assertFalse(KeySafeMetadataManager.isReservedNamespaceKey("ksafe_secret_db"), "getOrCreateSecret slot")
         assertFalse(KeySafeMetadataManager.isReservedNamespaceKey("my_encrypted_note"), "prefix must be at the START")
 
-        // isReservedUserKey (the exact master-sentinel predicate the sweep relies on) stays EXACT.
+        // isReservedUserKey is the exact master-sentinel predicate the sweep relies on.
         assertTrue(KeySafeMetadataManager.isReservedUserKey("__ksafe_master__"))
         assertFalse(KeySafeMetadataManager.isReservedUserKey("__ksafe_master__x"), "sweep predicate is exact")
         assertFalse(KeySafeMetadataManager.isReservedUserKey("__ksafe_keygen__"), "not a master sentinel")

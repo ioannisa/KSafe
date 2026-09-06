@@ -8,7 +8,9 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Locks in: a write that lands during updateCache's second-pass decrypt is not clobbered by the stale on-disk value — neither its value nor its protection/routing metadata reverts — because mergeability is re-decided from the live dirtyKeys just before each merge write.
+ * Locks in: a write landing during updateCache's second-pass decrypt is not clobbered by the stale
+ * on-disk value — neither its value nor its protection/routing metadata reverts — because
+ * mergeability is re-decided from the live dirtyKeys just before each merge write.
  */
 class JvmCollectorWriteRaceTest {
 
@@ -46,8 +48,8 @@ class JvmCollectorWriteRaceTest {
 
     /**
      * The live re-check must also cover the protectionMap/encMetaMap syncs, not just memoryCache: a
-     * write that CHANGES a key's protection mid-merge (encrypted on disk → racing Plain rewrite) must
-     * keep its fresh routing metadata, or reads route to the wrong slot for the rest of the session.
+     * write that changes a key's protection mid-merge (encrypted on disk → racing Plain rewrite)
+     * must keep its fresh routing metadata, or reads hit the wrong slot for the rest of the session.
      */
     @Test
     fun updateCache_doesNotRevertProtection_ofAWriteThatLandsDuringDecrypt() {

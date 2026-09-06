@@ -14,11 +14,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Locks in: the 2.2.0 JVM desktop-prompt dispatch — a prompt denial propagates as `false`,
- * success seeds the authorization cache
- * with strength-keyed slots, and the WinRT pinterface-GUID computation the Windows Hello
- * bridge depends on reproduces published reference GUIDs. The OS prompt itself is
- * replaced by the test seam, so no real dialogs appear.
+ * Locks in: the JVM desktop-prompt dispatch — a denial propagates as `false`, a success seeds the
+ * authorization cache in strength-keyed slots, and the WinRT pinterface-GUID computation the
+ * Windows Hello bridge depends on reproduces published reference GUIDs. The OS prompt is replaced
+ * by the test seam, so no real dialogs appear.
  */
 class DesktopBiometricsTest {
 
@@ -43,6 +42,38 @@ class DesktopBiometricsTest {
         )
     }
 
+    /**
+     * A blank reason must never reach the OS layer: Apple's `evaluatePolicy` raises
+     * `NSInvalidArgumentException` for an empty `localizedReason`, and that raise kills the
+     * process instead of failing the call.
+     */
+    @Test
+    fun blankReason_reachesThePlatformAsTheBuiltInDefault() = runBlocking {
+        val seen = mutableListOf<String>()
+        desktopPromptOverrideForTest = { reason, _ -> seen += reason; true }
+
+        assertTrue(KSafeBiometrics.verifyBiometric(reason = ""))
+        assertTrue(KSafeBiometrics.verifyBiometric(reason = "   "))
+        assertTrue(KSafeBiometrics.verifyBiometric(reason = "Unlock the vault"))
+
+        assertEquals(
+            listOf("Authenticate to continue", "Authenticate to continue", "Unlock the vault"),
+            seen,
+        )
+    }
+
+    @Test
+    fun blankReason_isAlsoNormalisedByTheDirectDoor() {
+        val seen = mutableListOf<String>()
+        val latch = java.util.concurrent.CountDownLatch(1)
+        desktopPromptOverrideForTest = { reason, _ -> seen += reason; true }
+
+        KSafeBiometrics.verifyBiometricDirect(reason = "") { latch.countDown() }
+
+        assertTrue(latch.await(2, java.util.concurrent.TimeUnit.SECONDS), "callback within 2s")
+        assertEquals(listOf("Authenticate to continue"), seen)
+    }
+
     @Test
     fun promptSuccess_returnsTrue_andSeedsTheCache() = runBlocking {
         var prompts = 0
@@ -52,7 +83,6 @@ class DesktopBiometricsTest {
         assertTrue(KSafeBiometrics.verifyBiometric("Authenticate", duration))
         assertEquals(1, prompts)
 
-        // Within the window: served from the cache, no second prompt.
         assertTrue(KSafeBiometrics.verifyBiometric("Authenticate", duration))
         assertEquals(1, prompts, "a cached authorization must not re-prompt inside its window")
     }
@@ -66,8 +96,7 @@ class DesktopBiometricsTest {
         assertTrue(KSafeBiometrics.verifyBiometric("Auth", duration, allowDeviceCredentialFallback = true))
         assertEquals(1, prompts)
 
-        // Strength keys the cache injectively: the permissive success must not grant
-        // a strict (biometrics-only) call a prompt-free pass.
+        // The cache is keyed by strength, so the two calls occupy different slots.
         assertTrue(KSafeBiometrics.verifyBiometric("Auth", duration, allowDeviceCredentialFallback = false))
         assertEquals(2, prompts, "a strict call must re-prompt despite a cached permissive success")
     }
@@ -80,7 +109,6 @@ class DesktopBiometricsTest {
         val duration = BiometricAuthorizationDuration(60_000L, scope = "vault")
 
         assertFalse(KSafeBiometrics.verifyBiometric("Auth", duration))
-        // The failure must not have seeded the window — the next call prompts again.
         assertTrue(KSafeBiometrics.verifyBiometric("Auth", duration))
         assertEquals(2, prompts)
     }
@@ -184,10 +212,9 @@ class DesktopBiometricsTest {
     }
 
     /**
-     * The single-shot version above only catches the redundant prompt when the scheduler happens to
-     * expose it — it is the test that fails on a loaded CI runner roughly once in fifteen runs.
-     * Repeating the handoff turns that into a reliable signal: the queued caller must observe the
-     * holder's authorization the instant it takes the gate, on every one of these iterations.
+     * The single-shot version above only exposes the redundant prompt when the scheduler happens to
+     * cooperate — roughly one loaded-CI run in fifteen. Repeating the handoff makes it a reliable
+     * signal: the queued caller must see the holder's authorization the instant it takes the gate.
      */
     @Test
     fun queuedCaller_neverRePrompts_acrossRepeatedHandoffs() = runBlocking(Dispatchers.Default) {
@@ -234,6 +261,42 @@ class DesktopBiometricsTest {
         }
     }
 
+    @Test
+    fun optOutPassThrough_doesNotSeedTheAuthorizationCache() = runBlocking {
+        // A pass-through is not an authentication: seeding one would hand a later real prompt a free ride.
+        val prior = System.getProperty("ksafe.biometrics.jvm.prompts")
+        System.setProperty("ksafe.biometrics.jvm.prompts", "off")
+        val duration = BiometricAuthorizationDuration(60_000L, scope = "vault")
+        try {
+            assertTrue(KSafeBiometrics.verifyBiometric("Auth", duration, allowDeviceCredentialFallback = false))
+            assertFalse(
+                BiometricSessionStore.isFresh(
+                    BiometricAuthSession.cacheKey(duration, allowDeviceCredentialFallback = false),
+                    duration,
+                ),
+                "an opted-out pass-through must leave the strict slot empty",
+            )
+
+            assertTrue(KSafeBiometrics.verifyBiometric("Auth", duration, allowDeviceCredentialFallback = true))
+            assertFalse(
+                BiometricSessionStore.isFresh(
+                    BiometricAuthSession.cacheKey(duration, allowDeviceCredentialFallback = true),
+                    duration,
+                ),
+                "an opted-out pass-through must leave the permissive slot empty too",
+            )
+        } finally {
+            prior?.let { System.setProperty("ksafe.biometrics.jvm.prompts", it) }
+                ?: System.clearProperty("ksafe.biometrics.jvm.prompts")
+        }
+
+        // With prompts back on, the same scope must still prompt — the opt-out opened no window.
+        var prompts = 0
+        desktopPromptOverrideForTest = { _, _ -> prompts++; true }
+        assertTrue(KSafeBiometrics.verifyBiometric("Auth", duration, allowDeviceCredentialFallback = false))
+        assertEquals(1, prompts, "the pass-through must not have opened a prompt-free window")
+    }
+
     // ---- biometricsAvailable ----
 
     @Test
@@ -274,7 +337,7 @@ class DesktopBiometricsTest {
         assertTrue(received)
     }
 
-    // ---- WinRT pinterface GUID computation (the Windows Hello bridge depends on it) ----
+    // ---- WinRT pinterface GUID computation ----
 
     @Test
     fun pinterfaceGuid_reproducesPublishedReferenceGuids() {
@@ -307,7 +370,6 @@ class DesktopBiometricsTest {
         assertTrue(WindowsHello.classifyResult(0, allowDeviceCredentialFallback = false), "Verified is always true")
         // A real denial blocks even in permissive mode — Hello was shown and refused.
         assertFalse(WindowsHello.classifyResult(6, allowDeviceCredentialFallback = true), "Canceled must block")
-        // Genuine "Hello not usable" → permissive passes through, strict refuses.
         assertTrue(WindowsHello.classifyResult(2, allowDeviceCredentialFallback = true), "NotConfigured + permissive → pass")
         assertFalse(WindowsHello.classifyResult(2, allowDeviceCredentialFallback = false), "NotConfigured + strict → refuse")
         assertFalse(WindowsHello.classifyResult(1, allowDeviceCredentialFallback = false), "DeviceNotPresent + strict → refuse")
@@ -316,10 +378,9 @@ class DesktopBiometricsTest {
 
     @Test
     fun vtableOffsets_scaleWithTheNativePointerSize() {
-        // COM vtable entries are pointer-sized: 8-byte stride on 64-bit, 4 on a 32-bit JVM.
-        // A literal stride would fetch the wrong function pointer on 32-bit and crash natively;
-        // true 32-bit runtime verification needs a Windows x86 JRE this CI does not have, so
-        // this pins the arithmetic to the pointer size instead.
+        // COM vtable entries are pointer-sized: 8-byte stride on 64-bit, 4 on a 32-bit JVM. A
+        // literal stride would fetch the wrong function pointer and crash natively; there is no
+        // Windows x86 JRE here, so this pins the arithmetic to the pointer size instead.
         assertEquals(0L, WindowsHello.vtableByteOffset(0))
         assertEquals(6L * com.sun.jna.Native.POINTER_SIZE, WindowsHello.vtableByteOffset(6))
         assertEquals(8L * com.sun.jna.Native.POINTER_SIZE, WindowsHello.vtableByteOffset(8))
@@ -338,7 +399,7 @@ class DesktopBiometricsTest {
         )
     }
 
-    // ---- Live probe (opt-in): pops a REAL system prompt; excluded from normal runs ----
+    // ---- Live probe (opt-in): pops a real system prompt, so normal runs skip it ----
 
     @Test
     fun livePrompt_realSystemDialog_optIn() = runBlocking {

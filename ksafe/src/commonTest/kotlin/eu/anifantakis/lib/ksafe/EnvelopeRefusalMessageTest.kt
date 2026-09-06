@@ -8,16 +8,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Locks in that a future-envelope refusal cannot be mistaken for a missing key.
- *
- * The refusal exists to PRESERVE an entry a newer KSafe wrote. The engine-to-core protocol is
- * matched on message substrings, so if this message ever carried one of those phrases the entry
- * would be classified as definitively absent and the orphan sweep would delete live ciphertext —
- * the exact opposite of what the refusal is for.
- *
- * Key names are the caller's, and an app that derives them from its own data (a per-user key, say)
- * does not control what ends up inside them, so an interpolated key is untrusted text in a
- * security decision.
+ * Locks in that a future-envelope refusal cannot be mistaken for a missing key. The refusal exists
+ * to preserve an entry a newer KSafe wrote, but the engine-to-core protocol matches on message
+ * substrings — carrying one of those phrases would have the orphan sweep delete live ciphertext.
+ * Key names are the caller's, so an interpolated key is untrusted text in a security decision.
  */
 class EnvelopeRefusalMessageTest {
 

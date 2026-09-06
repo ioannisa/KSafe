@@ -4,25 +4,26 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.edit
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
+import eu.anifantakis.lib.ksafe.internal.KSafeEngineMessage
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.Executors
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertNotNull
-import kotlin.time.Duration.Companion.seconds
 
 /** Locks in: each test uses a unique DataStore file name — JVM forbids two instances on one file, and files persist across runs. */
 class JvmKSafeTest : KSafeTest() {
 
     companion object {
         /**
-         * Stress intensity multiplier (default 1.0 = full local load). CI passes a small scale
-         * so the concurrency tests stay drainable on a 2-vCPU runner without a writer/coalescer
+         * Stress intensity multiplier (default 1.0 = full local load). CI passes a small scale so
+         * the concurrency tests stay drainable on a 2-vCPU runner without a writer/coalescer
          * livelock; floored so a tiny scale can't no-op a test.
          */
         private val STRESS_SCALE: Double =
@@ -115,7 +116,6 @@ class JvmKSafeTest : KSafeTest() {
         assertEquals(0, errors.get(), "Should have no errors during concurrent encrypted writes")
     }
 
-    /** Simultaneous reads and writes on the same keys must not race. */
     @Test
     fun testConcurrentReadWriteStress() = runTest {
         val ksafe = createKSafe()
@@ -252,7 +252,7 @@ class JvmKSafeTest : KSafeTest() {
             ): ByteArray = delegate.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
 
             override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray {
-                if (failOnDecrypt) throw IllegalStateException("No encryption key found")
+                if (failOnDecrypt) throw IllegalStateException(KSafeEngineMessage.noKeyFound(identifier))
                 return delegate.decrypt(identifier, data)
             }
 
@@ -305,7 +305,7 @@ class JvmKSafeTest : KSafeTest() {
             ): ByteArray = delegate.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice)
 
             override fun decrypt(identifier: String, data: ByteArray, requireUnlockedDevice: Boolean?, aad: ByteArray?): ByteArray {
-                if (failOnDecrypt) throw IllegalStateException("No encryption key found")
+                if (failOnDecrypt) throw IllegalStateException(KSafeEngineMessage.noKeyFound(identifier))
                 return delegate.decrypt(identifier, data)
             }
 
@@ -353,64 +353,62 @@ class JvmKSafeTest : KSafeTest() {
 
     /** Encrypted putDirect + getDirect must never transiently return the default (mutableStateOf on an encrypted value once did). */
     @Test
-    fun testEncryptedPutGetNeverReturnsDefault() = runTest(timeout = 90.seconds) {
-        // Many encrypted writes + 5 decrypting readers need more than runTest's default 60s
-        // budget on a 2-vCPU runner; the yield() below prevents a reader/writer livelock.
-        val ksafe = createKSafe()
-        val defaultsReturned = AtomicInteger(0)
-        val errors = AtomicInteger(0)
+    fun testEncryptedPutGetNeverReturnsDefault() = runTest {
+        // One thread per coroutine: on Dispatchers.Default a spinning reader re-queues itself on
+        // its own worker via yield(), and coroutines stranded on permit-less workers are never stolen.
+        Executors.newFixedThreadPool(10).asCoroutineDispatcher().use { pool ->
+            val ksafe = createKSafe()
+            val defaultsReturned = AtomicInteger(0)
+            val errors = AtomicInteger(0)
 
-        val keyCount = 50
-        repeat(keyCount) { i ->
-            ksafe.putDirect("enc_key_$i", "value_$i")
-        }
+            val keyCount = 50
+            repeat(keyCount) { i ->
+                ksafe.putDirect("enc_key_$i", "value_$i")
+            }
 
-        delay(200)
+            delay(200)
 
-        val running = AtomicBoolean(true)
+            val running = AtomicBoolean(true)
 
-        val readers = (0 until 5).map { readerId ->
-            launch(Dispatchers.Default) {
-                while (running.get()) {
-                    repeat(keyCount) { i ->
-                        try {
-                            val result = ksafe.getDirect("enc_key_$i", "DEFAULT")
-                            if (result == "DEFAULT") {
-                                defaultsReturned.incrementAndGet()
+            val readers = (0 until 5).map {
+                launch(pool) {
+                    while (running.get()) {
+                        repeat(keyCount) { i ->
+                            try {
+                                val result = ksafe.getDirect("enc_key_$i", "DEFAULT")
+                                if (result == "DEFAULT") {
+                                    defaultsReturned.incrementAndGet()
+                                }
+                            } catch (e: Exception) {
+                                errors.incrementAndGet()
                             }
+                        }
+                    }
+                }
+            }
+
+            val writers = (0 until 5).map { writerId ->
+                launch(pool) {
+                    repeat(scaled(100)) { i ->
+                        try {
+                            ksafe.putDirect("new_enc_${writerId}_$i", "new_$i")
                         } catch (e: Exception) {
                             errors.incrementAndGet()
                         }
                     }
-                    // getDirect never suspends; without this yield the CPU-bound readers
-                    // monopolise Dispatchers.Default and starve the writers on a ≤2-vCPU runner.
-                    yield()
                 }
             }
+
+            writers.joinAll()
+            running.set(false)
+            readers.joinAll()
+
+            assertEquals(0, errors.get(), "No exceptions during test")
+            assertEquals(
+                0, defaultsReturned.get(),
+                "Encrypted getDirect must never transiently return default for written keys"
+            )
         }
-
-        val writers = (0 until 5).map { writerId ->
-            launch(Dispatchers.Default) {
-                repeat(scaled(100)) { i ->
-                    try {
-                        ksafe.putDirect("new_enc_${writerId}_$i", "new_$i")
-                    } catch (e: Exception) {
-                        errors.incrementAndGet()
-                    }
-                    yield() // putDirect doesn't suspend either
-                }
-            }
-        }
-
-        writers.joinAll()
-        running.set(false)
-        readers.joinAll()
-
-        assertEquals(0, errors.get(), "No exceptions during test")
-        assertEquals(
-            0, defaultsReturned.get(),
-            "Encrypted getDirect must never transiently return default for written keys"
-        )
     }
 
     /**
@@ -476,7 +474,6 @@ class JvmKSafeTest : KSafeTest() {
 
         assertEquals(41, ksafe.getDirect(key, 0), "Legacy plaintext value should be readable before migration")
 
-        // Next write should migrate the key shape.
         ksafe.put(key, 42, KSafeWriteMode.Plain)
 
         val prefs = ksafe.dataStore.data.first()
@@ -505,7 +502,6 @@ class JvmKSafeTest : KSafeTest() {
 
         assertEquals("legacy_v1", ksafe.getDirect(key, "DEFAULT"), "Legacy encrypted value should be readable")
 
-        // Next encrypted write should migrate key names and metadata.
         ksafe.put(key, "legacy_v2", KSafeWriteMode.Encrypted())
 
         val prefs = ksafe.dataStore.data.first()
@@ -522,8 +518,8 @@ class JvmKSafeTest : KSafeTest() {
     @Test
     fun plainString_equalToInternalNullMarker_roundTrips_notNull() = runTest {
         val ksafe = createKSafe()
-        // A user value byte-for-byte equal to the internal "stored null" marker must come back
-        // as the literal string, not as null.
+        // A value byte-for-byte equal to the internal "stored null" marker must come back as
+        // the literal string, not as null.
         val collision = "__KSAFE_NULL_VALUE__"
         ksafe.put("collision", collision, KSafeWriteMode.Plain)
         assertEquals(collision, ksafe.get("collision", "fallback"))

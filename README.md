@@ -206,57 +206,134 @@ Multi-instance setups, web `awaitCacheReady()`, custom storage directories, key 
 
 ## Basic Usage
 
-A handful of examples cover 95% of real-world use. Full reference (Compose `policy`, cross-screen sync, write modes, nullables, deletion, full ViewModel): **[docs/USAGE.md](docs/USAGE.md)**.
+There are two ways to reach your data, and they share the same store and the same hot cache, so you can mix them freely. Full reference (Compose `policy`, cross-screen sync, write modes, nullables, deletion, full ViewModel): **[docs/USAGE.md](docs/USAGE.md)**.
+
+### A variable per stored key
+
+You declare one variable per value. KSafe persists it, encrypts it, and keeps it in the hot cache, so reads and writes are synchronous and never suspend.
+
+**Property delegation** — the key is the property name:
 
 ```kotlin
-// 1. Property delegate — synchronous, non-suspending, encrypted, persisted
 var counter by ksafe(0)
 counter++
-
-// 2. Compose state on a ViewModel / class field — reactive UI + persistence (requires ksafe-compose)
-var username by ksafe.mutableStateOf("Guest")
-
-// 3. Compose state inside a @Composable body — the rememberSaveable analogue, but persists across app restarts
-//    var currentTab by ksafe.rememberKSafeState(Tab.Home)   // key auto-resolves to "currentTab"; no ViewModel needed
-
-// 4. Reactive flows — read-only StateFlow, read/write MutableStateFlow, or read/write Flow without a scope
-val user: StateFlow<User> by ksafe.asStateFlow(User(), viewModelScope)         // read-only
-private val _state by ksafe.asMutableStateFlow(MoviesState(), viewModelScope)  // read/write, hot
-val state = _state.asStateFlow()
-val themeMode: WritableKSafeFlow<ThemeMode> by ksafe.asWritableFlow(ThemeMode.DEVICE) // read/write, cold; set() to write
-
-// 5. Suspend API — when you want to await the disk flush
-viewModelScope.launch {
-    ksafe.put("profile", user)
-    val loaded: User = ksafe.get("profile", User())
-}
-
-// 6. Direct API — non-suspend, hot-cache reads, background-flushed writes (~1000x faster for bulk ops)
-ksafe.putDirect("counter", 42)
-val n = ksafe.getDirect("counter", 0)
 ```
 
-**Per-entry plain / encrypted toggle** via `KSafeWriteMode`:
+**Direct handle (3.2.0+)** — the same call without `by`. Keep the handle in a `val`, pass it around, read and write `.value`. The key must be given explicitly, because there is no property name to infer it from:
 
 ```kotlin
-var theme by ksafe("light", mode = KSafeWriteMode.Plain)
-
-ksafe.putDirect(
-    "pin", pin,
-    mode = KSafeWriteMode.Encrypted(
-        protection = KSafeEncryptedProtection.HARDWARE_ISOLATED,
-        requireUnlockedDevice = true
-    )
-)
-
-// 3.1.0+: or freeze the mode at the TYPE level — no mode parameter exists to forget
-val prefs = KSafePlain(ksafe)            // every write plain
-val vault = KSafeHardwareIsolated(ksafe) // every write requests StrongBox / Secure Enclave
-var theme2 by prefs("light")
-vault.put("pin", pin)
+val counter = ksafe(0, key = "counter")   // KSafeReference<Int>
+counter.value++
 ```
 
-**Complex objects** — just mark them `@Serializable`; JSON and encryption are automatic:
+### Through the KSafe instance
+
+No variable per key. You address any key, at any time, straight on the instance. Each operation comes in two forms: a `suspend` one that waits for the disk flush, and a `Direct` one that returns at once, serves reads from the hot cache and flushes writes in the background (about 1000x faster for bulk work).
+
+```kotlin
+// Put
+ksafe.put("profile", user)              // suspend — returns after the disk flush
+ksafe.putDirect("counter", 42)          // non-suspend — background flush
+
+// Get
+val loaded: User = ksafe.get("profile", User())
+val n = ksafe.getDirect("counter", 0)
+
+// Delete
+ksafe.delete("profile")
+ksafe.deleteDirect("counter")
+```
+
+### Flows
+
+Reactive reads that pick up changes made anywhere: another screen, a background sync, a delegate against the same key. Four shapes, two read-only and two writable:
+
+| Delegate | Type | Reads | Writes | Scope |
+|---|---|---|---|---|
+| `asFlow` | `Flow<T>` | cold | no | none |
+| `asStateFlow` | `StateFlow<T>` | hot, `.value` | no | needed |
+| `asMutableStateFlow` | `MutableStateFlow<T>` | hot, `.value` | `.value = …` persists | needed |
+| `asWritableFlow` | `WritableKSafeFlow<T>` | cold | `set(value)` persists | none |
+
+```kotlin
+// Observe here, update anywhere: the instance API feeds the flow
+val isLoggedIn: StateFlow<Boolean> by ksafe.asStateFlow(true, viewModelScope)
+ksafe.putDirect("isLoggedIn", false)                 // every collector sees false
+
+val toggleMode: Flow<Boolean> by ksafe.asFlow(defaultValue = false)   // cold, read-only
+
+// The _state / state pattern, persisted
+private val _state by ksafe.asMutableStateFlow(MoviesState(), viewModelScope)
+val state = _state.asStateFlow()
+```
+
+**WritableFlow** — a writable cold `Flow<T>` with no scope to manage. Collect it like any flow; call `set()` to write. The natural fit for a setting that a screen both shows and edits:
+
+```kotlin
+val themeMode: WritableKSafeFlow<ThemeMode> by ksafe.asWritableFlow(ThemeMode.DEVICE)
+
+themeMode.collect { mode -> applyTheme(mode) }   // reacts to every change, from anywhere
+themeMode.set(ThemeMode.DARK)                    // persists, and every collector sees it
+```
+
+### Compose
+
+Persistent state inside a `@Composable` body. The `rememberSaveable` analogue that also survives app restarts; the key resolves to the property name and no ViewModel is needed. `KSafe` is `@Stable`, so it can be passed as a parameter without breaking skipping. The default mode here is `Plain`, because this is UI state, not a secret. Requires `ksafe-compose`.
+
+```kotlin
+@Composable
+fun TabbedScreen(ksafe: KSafe) {
+    var currentTab by ksafe.rememberKSafeState(Tab.Home)
+    // ...
+}
+```
+
+### State
+
+Compose `MutableState` on a ViewModel or any class field. The UI recomposes on change, the value persists, and two screens holding the same key stay in sync. Requires `ksafe-compose`.
+
+```kotlin
+var username by ksafe.mutableStateOf("Guest")
+```
+
+### Helper classes (3.1.0+)
+
+Every write above takes an optional `KSafeWriteMode`. The default is encrypted; you can step up or step down per entry:
+
+```kotlin
+var token by ksafe("")                                                            // encrypted, the default
+var token by ksafe("", mode = KSafeWriteMode.Encrypted())                         // the same, spelled out
+var pin   by ksafe("", mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.HARDWARE_ISOLATED)) // step up: StrongBox / Secure Enclave
+var theme by ksafe("light", mode = KSafeWriteMode.Plain)                          // step down: no encryption
+```
+
+The helper classes freeze that mode at the type level, so no call site can forget it or pick the wrong one. They wrap an existing instance and offer every API shape above. With Koin:
+
+```kotlin
+val appModule = module {
+    single<KSafe> { KSafe() }
+    single { KSafePlain(get()) }              // every write plain
+    single { KSafeEncrypted(get()) }          // every write encrypted
+    single { KSafeHardwareIsolated(get()) }   // every write requests StrongBox / Secure Enclave
+}
+
+class PreferencesViewModel(
+    private val prefs: KSafePlain,
+    private val secrets: KSafeEncrypted,
+    private val vault: KSafeHardwareIsolated,
+) : ViewModel() {
+    var counter by prefs(0)                   // delegate, plain
+    var pin by vault("0000")                  // delegate, hardware-isolated
+
+    fun save(token: String) = secrets.putDirect("token", token)   // instance API, encrypted
+}
+```
+
+`KSafeWriteMode.Encrypted(requireUnlockedDevice = true)` additionally binds the key to the lock screen, so the value cannot be read while the device is locked. On Android 9 to 14 without a secure lock screen the key is minted without that binding, and `ksafe.protectionInfo.notes` says so: [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md#known-limitations).
+
+### More in one line
+
+**Complex objects** — mark them `@Serializable`; JSON and encryption are automatic:
 
 ```kotlin
 @Serializable
@@ -266,7 +343,7 @@ var authInfo by ksafe(AuthInfo())
 authInfo = authInfo.copy(accessToken = "newToken")
 ```
 
-**Key rotation** — re-encrypt everything under fresh keys, one line on every platform:
+**Key rotation** — re-encrypt everything under fresh keys, on every platform:
 
 ```kotlin
 val result = ksafe.rotateKeys()   // on demand: rotated / skipped / failed counts + new generation
@@ -277,17 +354,17 @@ val ksafe = KSafe(config = KSafeConfig(
 ))
 ```
 
-Crash-safe and resumable: an interrupted rotation keeps everything readable and finishes automatically on the next KSafe instance. Values never change — only key material does. Details: **[docs/KEY_ROTATION.md](docs/KEY_ROTATION.md)**.
+Crash-safe and resumable: an interrupted rotation keeps everything readable and finishes on the next KSafe instance. Values never change, only key material does. Details: **[docs/KEY_ROTATION.md](docs/KEY_ROTATION.md)**.
 
-**Encrypted database passphrase** — a stable, hardware-isolated 256-bit secret for SQLCipher / SQLDelight / Room, in one line:
+**Encrypted database passphrase** — a stable, hardware-isolated 256-bit secret for SQLCipher / SQLDelight / Room:
 
 ```kotlin
 val passphrase = ksafe.getOrCreateSecret("main.db")  // generated once, same value on every call after
 ```
 
-It refuses to overwrite a secret it can't read back — so it can never silently orphan your database — and key rotation preserves its value. Sizes, protection tiers, full Room + SQLCipher examples: **[docs/SECURITY_MODEL.md#cryptographic-utilities](docs/SECURITY_MODEL.md#cryptographic-utilities)**.
+It refuses to overwrite a secret it cannot read back, so it can never silently orphan your database, and key rotation preserves its value. Sizes, protection tiers, full Room + SQLCipher examples: **[docs/SECURITY_MODEL.md#cryptographic-utilities](docs/SECURITY_MODEL.md#cryptographic-utilities)**.
 
-> **Note:** The property delegate works with **any** KSafe instance — `var x by myKsafe(default)` makes `myKsafe` the storage backend. The bare `var x by ksafe(default)` form requires an in-scope `ksafe` (the conventional name, typically your default instance). See [docs/SETUP.md](docs/SETUP.md#multiple-instances) for the multi-instance pattern.
+> **Note:** The property delegate and the direct handle work with **any** KSafe instance — `var x by myKsafe(default)` makes `myKsafe` the storage backend. The bare `ksafe(default)` form requires an in-scope `ksafe` (the conventional name, typically your default instance). See [docs/SETUP.md](docs/SETUP.md#multiple-instances) for the multi-instance pattern.
 
 ***
 

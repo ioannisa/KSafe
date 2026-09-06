@@ -58,8 +58,8 @@ class JvmDirectReadTransientTest {
         engine.failTransient = true
         val scope = CoroutineScope(SupervisorJob())
         try {
-            // getStateFlow seeds its initial value synchronously via getDirectRaw — this
-            // must not throw during StateFlow construction on a locked device.
+            // getStateFlow seeds synchronously via getDirectRaw, so construction itself is what
+            // must survive a locked device.
             val sf = ksafe.getStateFlow("k", "def", scope)
             assertEquals("def", sf.value, "the StateFlow seed must fall back to the default, not crash")
         } finally {
@@ -70,8 +70,8 @@ class JvmDirectReadTransientTest {
 
     @Test
     fun suspendGet_stillThrows_onTransientDecryptFailure() {
-        // Guard rail: the suspend get() path keeps throwing so coroutine callers can
-        // await unlock and retry — the intentional asymmetry with getDirect.
+        // The deliberate asymmetry with getDirect: suspend get() keeps throwing so coroutine
+        // callers can await unlock and retry.
         val engine = ToggleTransientEngine()
         val ksafe = newKsafe(engine)
         runBlocking { ksafe.put("k", "v1", KSafeWriteMode.Encrypted()) }

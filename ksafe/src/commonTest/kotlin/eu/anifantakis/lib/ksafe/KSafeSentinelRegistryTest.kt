@@ -9,31 +9,16 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * Completeness of the reserved-sentinel registry, in both directions.
- *
- * `KSafeReservedKeys` is the single declaration site of every segment KSafe writes into the
- * engine's alias plane, and `KeySafeMetadataManager.requireWritableUserKey`'s reservation
- * pattern is BUILT from it. That closes "a sentinel was re-typed in one of the two places";
- * it does not close "a sentinel was added, or decorated, in a shape the guard doesn't reject".
- * This suite closes the rest:
- *
- *  - every registry entry is rejected behind BOTH platform alias delimiters — `.` for the
- *    Android Keystore / Apple Keychain, `:` for the JVM vault and the web key store. The colon
- *    was missing once and a DEFAULT-store user key `"vault:__ksafe_master__"` was accepted for
- *    writing (and deleting) the named store `"vault"`'s master key.
- *  - every sentinel the alias PRODUCERS actually emit is a registry entry, and the whole alias
- *    tail from that sentinel onwards is rejected as a user-key suffix. This half is
- *    observational — it reads the sentinels off real produced aliases — so a new sentinel, or a
- *    new decoration around an existing one, cannot be introduced without being reserved.
- *
- * Generalises [KSafeAliasNamespaceTest], which is the hand-written witness suite for the
- * individual collisions; it stays as the record of what each one destroyed.
+ * Locks in: the reserved-sentinel registry is complete in both directions — every entry is rejected
+ * as a user key behind both alias delimiters (`.` for Android/Apple, `:` for JVM/web), and every
+ * sentinel the alias producers actually emit is an entry. The colon was missing once, and the user
+ * key `"vault:__ksafe_master__"` could write and delete the `"vault"` store's master key.
  */
 class KSafeSentinelRegistryTest {
 
     /**
-     * The registry, referenced never re-typed. Kotlin has no common-source reflection over an
-     * object's members, so this list is the one hand-maintained copy — which is exactly why
+     * Referenced, never re-typed. Kotlin has no common-source reflection over an object's members,
+     * so this list is the one hand-maintained copy — which is why
      * [everySentinelTheAliasProducersEmit_isRegisteredAndReserved] does not use it.
      */
     private val registry = listOf(
@@ -112,10 +97,8 @@ class KSafeSentinelRegistryTest {
         )
         for (fileName in listOf(null, "vault")) {
             for (join in joins) {
-                // Master aliases: the base is assembled by the platform factories, each reading
-                // the sentinel from the registry (KSafe.android.kt:232/276, KSafe.apple.kt:254,
-                // KSafe.jvm.kt:184, KSafe.web.kt:197) — reproduced here because commonTest
-                // cannot reach a platform source set.
+                // Master aliases: the base is assembled by the platform factories, each reading the
+                // sentinel from the registry — commonTest cannot reach a platform source set.
                 for (master in listOf(KSafeReservedKeys.MASTER, KSafeReservedKeys.MASTER_LOCKED)) {
                     val base = join(fileName, master)
                     for (generation in listOf(1, 2, 10_000)) {
@@ -131,9 +114,8 @@ class KSafeSentinelRegistryTest {
                 }
             }
         }
-        // The JVM vault markers wrap an arbitrary vault alias. Their producers are private to
-        // jvmMain (JvmKeyVault.kt:400, JvmSoftwareEncryption.kt:43) and both spell the marker as
-        // "$alias.${registry entry}" — reproduced here so the marker plane is covered too.
+        // The JVM vault markers wrap an arbitrary vault alias; their producers are private to
+        // jvmMain and spell it "<alias>.<registry entry>", reproduced here to cover that plane too.
         return aliases + aliases.flatMap {
             listOf(
                 "$it.${KSafeReservedKeys.VAULT_TOMBSTONE}",
@@ -155,9 +137,8 @@ class KSafeSentinelRegistryTest {
                         "KSafeReservedKeys — an unregistered sentinel is not covered by " +
                         "requireWritableUserKey's pattern, so a user key can alias it",
                 )
-                // The reservation must cover the whole tail the producer wrote, not just the
-                // sentinel: a user key spelling that tail behind either delimiter is a
-                // byte-identical alias to this one.
+                // The reservation must cover the whole tail, not just the sentinel: a user key
+                // spelling that tail behind either delimiter is a byte-identical alias to this one.
                 val tail = alias.substring(match.range.first)
                 for (delimiter in delimiters) {
                     assertRejected(
