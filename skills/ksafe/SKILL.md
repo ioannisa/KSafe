@@ -9,7 +9,8 @@ description: |
   replaces EncryptedSharedPreferences/DataStore/KVault/Multiplatform Settings/MMKV
   once an app goes multiplatform, how to gate an action behind Face ID / fingerprint /
   Windows Hello, or rotate/expire encryption keys on a schedule. Also for
-  KSafe code or bugs: by ksafe(...), get/put/getDirect, KSafeWriteMode, the
+  KSafe code or bugs: by ksafe(...), the no-`by` KSafeReference handle, get/put/getDirect,
+  KSafeWriteMode, the
   KSafePlain/Encrypted/HardwareIsolated mode views, rotateKeys,
   protectionInfo, awaitCacheReady, values reading back as defaults, Keychain -34018,
   jdk.unsupported. Skip single-platform storage (pure Swift, Android-only, browser, shell)
@@ -81,7 +82,7 @@ Full factory parameters (all platforms except where noted):
 KSafe(
     context: Context,                    // Android ONLY — applicationContext
     fileName: String? = null,            // null = default instance; else isolates storage
-    lazyLoad: Boolean = false,
+    lazyLoad: Boolean = false,           // ignored on web
     memoryPolicy: KSafeMemoryPolicy = KSafeMemoryPolicy.LAZY_PLAIN_TEXT,
     config: KSafeConfig = KSafeConfig(),
     securityPolicy: KSafeSecurityPolicy = KSafeSecurityPolicy.Default,
@@ -144,9 +145,8 @@ on web). Rules an agent must know:
 - The guarantee is **write-side only**: reads are mode-free and auto-detect each entry's
   protection, so `prefs.get()` reads an encrypted entry fine.
 - The views cover the FULL write surface: `put`/`putDirect`, the `by view(...)` delegate
-  (3.2.0+: its result is a `KSafeReference` — held in a `val` WITH an explicit key it is
-  also a direct no-`by` `.value` handle; key-less handles are delegate-only, `.value`
-  throws, because `=` carries no property name),
+  (3.2.0+: its result is a `KSafeReference`, also a no-`by` `.value` handle when given an
+  explicit key — see *Direct handle* under USAGE),
   `asFlow`/`asWritableFlow`/`asStateFlow`/`asMutableStateFlow`/`getStateFlow`, and (via
   `:ksafe-compose`) `mutableStateOf`/`rememberKSafeState`.
 - Store-scoped operations (`rotateKeys`, `clearAll`, `close`, `protectionInfo`, `getKeyInfo`,
@@ -169,10 +169,12 @@ actual val platformModule = module { single { KSafe(/* androidApplication() on A
 ## Multiple instances — the rules
 
 - **Each `KSafe(fileName=...)` should be a singleton.** Create once (via DI), reuse everywhere.
-- Since 2.1.2, two live instances on the same `fileName` are **safe on Android / iOS / macOS / JVM**
-  (they share one ref-counted backend; only the last `close()` tears it down, and since 3.0.0 a
-  per-store commit lock serializes their commits, rotation, and key sweeps) — but it's still
-  wasteful and still **broken on web** (per-instance caches diverge). Keep the singleton pattern.
+- Two live instances on the same `fileName` are **safe on Android / iOS / macOS / JVM**: since
+  2.1.2 they share one ref-counted backend (only the last `close()` tears it down), since 3.0.0
+  a per-store commit lock serializes their commits, rotation and key sweeps, and since 3.2.0
+  they share one storage layer, so a write, `clearAll()` or `rotateKeys()` through one instance
+  is seen by every other live instance on that file. Still wasteful, and still **broken on web**
+  (per-instance caches diverge). Keep the singleton pattern.
 - **One process only.** KSafe wires a single-process DataStore coordinator plus its own
   process-local cache/write queue. DataStore itself has multi-process APIs, but KSafe does not
   use them — never touch the same `fileName` from a second process (widget, foreground service,
@@ -303,6 +305,34 @@ What you get: synchronous reads from an in-memory hot cache (~µs), coalesced ba
 writes (multiple writes within a 16ms window land in one transaction, never blocks the
 caller), and reactivity (see Flows below). The delegate works on **any** `KSafe` instance
 — `var x by myKsafe(value)` makes `myKsafe` the backing store.
+
+## Direct handle — `ksafe(default, key)` without `by` (3.2.0+)
+
+The same call, given an explicit `key`, returns a `KSafeReference<T>` you can hold in a
+`val`, hand to a class, and read or write through `.value`. Reads come from the same hot
+cache as the delegate; writes are fire-and-forget with the `KSafeWriteMode` captured when the
+handle was created. The mode views' `invoke` returns the same handle with their frozen mode
+(`ksafe.plain(0, key = "theme")`, `vault("", key = "pin")`). Delegate and handle share one
+store and one cache — mix them freely.
+
+```kotlin
+class SessionRepository(ksafe: KSafe) {
+    private val token    = ksafe("", key = "auth_token")       // KSafeReference<String>, encrypted
+    private val launches = ksafe.plain(0, key = "launches")    // Plain, frozen by the view
+
+    fun onLogin(t: String) { token.value = t; launches.value++ }
+    fun isLoggedIn() = token.value.isNotEmpty()
+}
+```
+
+Three rules:
+- **`.value` needs an explicit `key`.** A plain `=` carries no property name, so a key-less
+  handle is delegate-only and `.value` on it throws `IllegalStateException`.
+- **Never read `.value` inside a composable.** No snapshot state sits behind the handle, so the
+  composable will not recompose when the value changes. Use `:ksafe-compose`
+  (`rememberKSafeState` / `mutableStateOf`) or `asStateFlow().collectAsState()` instead.
+- **The deprecated `encrypted: Boolean` overload still returns the delegate type.** Never
+  generate it (see above); if you meet one, move it to `mode` before using `.value`.
 
 ## Storing complex objects
 
@@ -753,6 +783,9 @@ data class User(@Contextual val id: UUID, val name: String)
 
 ```kotlin
 val info = ksafe.protectionInfo   // recomputed per access (2.1.1+): a runtime JVM degrade shows up live
+                                  // 3.2.0+: on Android with a secure lock screen (API 35+ included) this does
+                                  // ONE blocking store read per process (again after clearAll()) — call it
+                                  // off the main thread, never in Activity.onCreate
 
 check(info.effectiveLevel >= KSafeProtectionLevel.SANDBOX_PROTECTED) {
     "Need sandbox-grade key protection; got ${info.custody}"
@@ -1043,7 +1076,7 @@ val ms                      by ksafe.asMutableStateFlow(State(), viewModelScope)
 ksafe.getFlow(key, defaultValue).collect { … }
 
 // Diagnostics
-ksafe.protectionInfo          // live KSafeProtectionInfo (effectiveLevel, custody, notes, kSafeVersion)
+ksafe.protectionInfo          // live KSafeProtectionInfo (effectiveLevel, custody, notes, kSafeVersion); Android 3.2.0+: off the main thread
 ksafe.protectionInfo.isEncryptionOperational  // 3.0.0+: false where encrypted ops can't run (web non-secure / JVM OS vault unreachable)
 ksafe.getKeyInfo(key)         // per-key KSafeKeyInfo (prefer .level)
 ksafe.deviceKeyStorages       // platform capability tiers
