@@ -244,6 +244,9 @@ val n = ksafe.getDirect("counter", 0)
 // Delete
 ksafe.delete("profile")
 ksafe.deleteDirect("counter")
+
+// Wipe the store — every value and the keys that protected them (logout)
+ksafe.clearAll()                        // suspend
 ```
 
 ### Flows
@@ -278,6 +281,13 @@ themeMode.collect { mode -> applyTheme(mode) }   // reacts to every change, from
 themeMode.set(ThemeMode.DARK)                    // persists, and every collector sees it
 ```
 
+**Without a property** — the same two reads straight on the instance, for any key at any time. `getFlow` is cold and needs no scope; `getStateFlow` is hot and takes one:
+
+```kotlin
+ksafe.getFlow("isLoggedIn", defaultValue = true).collect { loggedIn -> render(loggedIn) }
+val isLoggedIn: StateFlow<Boolean> = ksafe.getStateFlow("isLoggedIn", true, viewModelScope)
+```
+
 ### Compose
 
 Persistent state inside a `@Composable` body. The `rememberSaveable` analogue that also survives app restarts; the key resolves to the property name and no ViewModel is needed. `KSafe` is `@Stable`, so it can be passed as a parameter without breaking skipping. The default mode here is `Plain`, because this is UI state, not a secret. Requires `ksafe-compose`.
@@ -309,7 +319,7 @@ var pin   by ksafe("", mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.
 var theme by ksafe("light", mode = KSafeWriteMode.Plain)                          // step down: no encryption
 ```
 
-The helper classes freeze that mode at the type level, so no call site can forget it or pick the wrong one. They wrap an existing instance and offer every API shape above. With Koin:
+The helper classes freeze that mode at the type level, so no call site can forget it or pick the wrong one. They wrap an existing instance and offer every API shape above — `KSafePlain(ksafe)`, or the accessors `ksafe.plain`, `ksafe.encrypted`, `ksafe.hardwareIsolated`. With Koin:
 
 ```kotlin
 val appModule = module {
@@ -345,6 +355,14 @@ var authInfo by ksafe(AuthInfo())
 authInfo = authInfo.copy(accessToken = "newToken")
 ```
 
+**Nullable values** — `null` is stored as a real value. But a bare `null` default cannot tell Kotlin the type, so name it, on every read shape:
+
+```kotlin
+var token: String? by ksafe(null)                          // typed declaration
+val token = ksafe.get<String?>("token", null)              // explicit type parameter
+ksafe.getFlow<String?>("token", null).collect { … }        // same rule for flows
+```
+
 **Key rotation** — re-encrypt everything under fresh keys, on every platform:
 
 ```kotlin
@@ -365,6 +383,24 @@ val passphrase = ksafe.getOrCreateSecret("main.db")  // generated once, same val
 ```
 
 It refuses to overwrite a secret it cannot read back, so it can never silently orphan your database, and key rotation preserves its value. Sizes, protection tiers, full Room + SQLCipher examples: **[docs/SECURITY_MODEL.md#cryptographic-utilities](docs/SECURITY_MODEL.md#cryptographic-utilities)**.
+
+**Biometric gate** — one call raises the platform's own prompt (Face ID, Touch ID, fingerprint, Windows Hello, passkey) from shared code. Requires `ksafe-biometrics`:
+
+```kotlin
+if (KSafeBiometrics.verifyBiometric("Unlock your wallet")) showSecrets()
+```
+
+Pass `authorizationDuration = BiometricAuthorizationDuration(duration = 60_000L, scope = "payments")` to keep the next minute prompt-free in that scope. Details: **[docs/BIOMETRICS.md](docs/BIOMETRICS.md)**.
+
+**What protection did I actually get** — per store and per key, at runtime:
+
+```kotlin
+ksafe.protectionInfo.effectiveLevel           // the tier the store really runs at
+ksafe.protectionInfo.isEncryptionOperational  // will encrypted reads and writes succeed right now?
+ksafe.getKeyInfo("pin")?.level                // where this one key's material landed
+```
+
+Read it off the main thread on Android. Details: **[docs/PROTECTION_INFO.md](docs/PROTECTION_INFO.md)**.
 
 > **Note:** The property delegate and the direct handle work with **any** KSafe instance — `var x by myKsafe(default)` makes `myKsafe` the storage backend. The bare `ksafe(default)` form requires an in-scope `ksafe` (the conventional name, typically your default instance). See [docs/SETUP.md](docs/SETUP.md#multiple-instances) for the multi-instance pattern.
 
