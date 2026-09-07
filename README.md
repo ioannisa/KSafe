@@ -251,42 +251,59 @@ ksafe.clearAll()                        // suspend
 
 ### Flows
 
-Reactive reads that pick up changes made anywhere: another screen, a background sync, a delegate against the same key. Four shapes, two read-only and two writable:
+Reactive reads that pick up changes made anywhere: another screen, a background sync, a delegate against the same key. Four shapes, and the same two doors as above — the property names the key, or you do:
 
-| Delegate | Type | Reads | Writes | Scope |
-|---|---|---|---|---|
-| `asFlow` | `Flow<T>` | cold | no | none |
-| `asStateFlow` | `StateFlow<T>` | hot, `.value` | no | needed |
-| `asMutableStateFlow` | `MutableStateFlow<T>` | hot, `.value` | `.value = …` persists | needed |
-| `asWritableFlow` | `WritableKSafeFlow<T>` | cold | `set(value)` persists | none |
+| Shape | Type | Hot or cold | Writes | Scope | Same thing, key spelled out |
+|---|---|---|---|---|---|
+| `asFlow` | `Flow<T>` | cold | — | none | `getFlow(key, default)` |
+| `asWritableFlow` | `WritableKSafeFlow<T>` | cold | `set(value)` | none | — |
+| `asStateFlow` | `StateFlow<T>` | hot, `.value` | — | needed | `getStateFlow(key, default, scope)` |
+| `asMutableStateFlow` | `MutableStateFlow<T>` | hot, `.value` | `.value =`, `update {}` | needed | — |
 
-```kotlin
-// Observe here, update anywhere: the instance API feeds the flow
-val isLoggedIn: StateFlow<Boolean> by ksafe.asStateFlow(true, viewModelScope)
-ksafe.putDirect("isLoggedIn", false)                 // every collector sees false
-
-val toggleMode: Flow<Boolean> by ksafe.asFlow(defaultValue = false)   // cold, read-only
-
-// The _state / state pattern, persisted
-private val _state by ksafe.asMutableStateFlow(MoviesState(), viewModelScope)
-val state = _state.asStateFlow()
-```
-
-**WritableFlow** — a writable cold `Flow<T>` with no scope to manage. Collect it like any flow; call `set()` to write. The natural fit for a setting that a screen both shows and edits:
+**Cold** — nothing runs until someone collects, so there is no scope to manage:
 
 ```kotlin
+val toggleMode: Flow<Boolean> by ksafe.asFlow(defaultValue = false)
+
+toggleMode.collect { on -> render(on) }
+ksafe.putDirect("toggleMode", true)          // updated from anywhere — the collector above sees true
+
+// Writable: one declaration you both collect and write through
 val themeMode: WritableKSafeFlow<ThemeMode> by ksafe.asWritableFlow(ThemeMode.DEVICE)
 
-themeMode.collect { mode -> applyTheme(mode) }   // reacts to every change, from anywhere
-themeMode.set(ThemeMode.DARK)                    // persists, and every collector sees it
+themeMode.collect { mode -> applyTheme(mode) }
+themeMode.set(ThemeMode.DARK)                // persists, and every collector sees it
 ```
 
-**Without a property** — the same two reads straight on the instance, for any key at any time. `getFlow` is cold and needs no scope; `getStateFlow` is hot and takes one:
+**Hot** — a current value is always there, and that is what the scope pays for. Something has to sit on the store, watch for changes made elsewhere and push them in; that watcher is a coroutine, and it must die with your ViewModel:
 
 ```kotlin
+val isLoggedIn: StateFlow<Boolean> by ksafe.asStateFlow(true, viewModelScope)
+
+isLoggedIn.value                             // read it any time, with no collector at all
+ksafe.putDirect("isLoggedIn", false)         // every collector sees false
+
+// Writable: the _state / state pattern, persisted
+private val _count by ksafe.asMutableStateFlow(0, viewModelScope)
+val count = _count.asStateFlow()
+
+_count.update { it + 1 }                     // persists
+_count.value = 42                            // persists
+```
+
+**Without the delegate** — the same shapes and the same types, with the key spelled out. Note that a flow is always bound to one key: unlike `put` or `getDirect`, there is no flow over *any* key.
+
+```kotlin
+// Cold: call it inline, as often as you like — a cold Flow starts nothing on its own
 ksafe.getFlow("isLoggedIn", defaultValue = true).collect { loggedIn -> render(loggedIn) }
+
+// Hot: call it ONCE and keep the result — every call runs stateIn() and starts its own watcher
 val isLoggedIn: StateFlow<Boolean> = ksafe.getStateFlow("isLoggedIn", true, viewModelScope)
 ```
+
+For the cold shapes the two forms are interchangeable — pick whichever reads better. For the hot ones they are not: the delegate builds its `StateFlow` once and hands back the same instance forever after, while every call to `getStateFlow` starts a fresh watcher in that scope. Never call it inline, in a loop, or inside a composable.
+
+There is no writable shape without the delegate, and none is needed: to write, use `put` or `putDirect`, and every reader of that key sees it — a delegated flow in a ViewModel, a `getFlow` on another screen, a Compose state. One store, one cache.
 
 ### Compose
 
