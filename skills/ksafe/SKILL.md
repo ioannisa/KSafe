@@ -440,6 +440,11 @@ anywhere (another screen, background sync, another delegate on the same key). `a
 `asStateFlow` are **read-only** (writes go through `put`/`putDirect`); `asWritableFlow` /
 `asMutableStateFlow` are writable.
 
+The explicit-key twins are `getFlow(key, default)` (cold) and `getStateFlow(key, default, scope)`
+(hot); there are no writable twins, since writes go through `put`/`putDirect` anyway. Same types,
+but **only the delegates cache**: every `getStateFlow` call starts another watcher — see
+ANTI-patterns.
+
 ```kotlin
 class Repo(private val ksafe: KSafe) {
     // Cold Flow<T> — read-only. Encrypted by default; pass mode = Plain to opt out.
@@ -913,6 +918,12 @@ it. Can also be set without code: `-Dksafe.appNamespace=…` or env `KSAFE_APP_N
 ❌ **Don't wrap a delegate in `MutableStateFlow`.** KSafe is already reactive — use
    `ksafe.asMutableStateFlow(default, scope)` (writable) or `ksafe.asStateFlow(default,
    scope)` / `ksafe.asFlow(default)` (read-only).
+
+❌ **Don't call `ksafe.getStateFlow(...)` more than once for the same key.** Each call runs
+   `stateIn()` and launches a fresh watcher coroutine in the scope, so an inline call, a call
+   in a loop, or one inside a `@Composable` leaks one watcher per call until that scope dies.
+   Assign it to a `val` once, or use `by ksafe.asStateFlow(default, scope)`, which caches its
+   `StateFlow` on first read. `getFlow` is cold — calling it repeatedly is free.
 
 ❌ **Don't `runBlocking { ksafe.put(...) }`.** Use the delegate, `putDirect` for
    fire-and-forget, or suspend `put` from a coroutine.

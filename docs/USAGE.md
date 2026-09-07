@@ -77,6 +77,13 @@ already hold — where writes use the view's frozen mode.
 
 KSafe has always offered `getFlow()` and `getStateFlow()` with explicit key strings. These delegates extend the same property-name-as-key pattern from the `ksafe(...)` delegate above to Flows and StateFlows — use whichever style you prefer.
 
+> [!WARNING]
+> **Call `getStateFlow` once and keep the result.** Every call runs `stateIn()` and launches its own
+> watcher coroutine in the scope you pass, so calling it inline, in a loop, or inside a composable
+> leaks one watcher per call until that scope is cancelled. The `by ksafe.asStateFlow(...)` delegate
+> is safe by construction — it builds its `StateFlow` on first read and hands back the same instance
+> forever after. `getFlow` is cold and costs nothing: call it as often as you like.
+
 **`asFlow`** returns a cold `Flow<T>` — *cold* means nothing runs until someone collects it, so
 it needs no `CoroutineScope` and costs nothing while unused — ideal for repositories and data
 layers:

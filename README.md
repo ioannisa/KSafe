@@ -220,7 +220,14 @@ ksafe.getFlow("isLoggedIn", defaultValue = true).collect { loggedIn -> render(lo
 val isLoggedIn: StateFlow<Boolean> = ksafe.getStateFlow("isLoggedIn", true, viewModelScope)
 ```
 
-For the cold shapes the two forms are interchangeable — pick whichever reads better. For the hot ones they are not: the delegate builds its `StateFlow` once and hands back the same instance forever after, while every call to `getStateFlow` starts a fresh watcher in that scope. Never call it inline, in a loop, or inside a composable.
+> [!WARNING]
+> **Call `getStateFlow` once and keep the result.** Every call runs `stateIn()` and launches its own
+> watcher coroutine in the scope you pass, so calling it inline, in a loop, or inside a composable
+> leaks one watcher per call until that scope is cancelled. The `by ksafe.asStateFlow(...)` delegate
+> is safe by construction — it builds its `StateFlow` on first read and hands back the same instance
+> forever after. `getFlow` is cold and costs nothing: call it as often as you like.
+
+For the cold shapes the two forms are interchangeable — pick whichever reads better.
 
 There is no writable shape without the delegate, and none is needed: to write, use `put` or `putDirect`, and every reader of that key sees it — a delegated flow in a ViewModel, a `getFlow` on another screen, a Compose state. One store, one cache.
 
