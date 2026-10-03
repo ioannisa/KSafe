@@ -41,6 +41,14 @@ All notable changes to KSafe will be documented in this file.
   stayed, so the note was reported for the life of the store although no unbound key existed. A
   bound mint now removes the record for its alias. The note was diagnostic only: no key was weaker
   than reported.
+- **Desktop biometrics: a pass-through no longer opens a prompt-free window.** On Windows, a
+  permissive `verifyBiometric` call returns `true` without a prompt when Windows Hello is not
+  available or not configured; the same holds on macOS and Windows when the native bridge failed
+  to load. That answer is unchanged, but with an `authorizationDuration` it also filled the
+  authorization cache as if the user had authenticated. If the user then set up Windows Hello in
+  the same session, the next call in that scope returned `true` with no prompt until the duration
+  ran out, although no one had ever authenticated. A pass-through now leaves the cache empty, so
+  the next call prompts.
 
 ## [3.2.0] - 2026-09-07
 

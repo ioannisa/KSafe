@@ -45,19 +45,20 @@ private val desktopBridgeLoaded: Boolean
         DesktopOs.OTHER -> false
     }
 
-/** A prompt path exists here but its bridge failed to load: permissive passes through, strict refuses. */
-private fun bridgeUnavailable(allowFallback: Boolean): Boolean {
-    if (!allowFallback) {
-        val bridge = if (desktopOs == DesktopOs.MAC) "macOS LocalAuthentication" else "Windows Hello"
-        System.err.println(
-            "KSafe biometrics: the $bridge bridge failed to load; strict verifyBiometric " +
-                "(allowDeviceCredentialFallback=false) refused."
-        )
-    }
-    return allowFallback
+/** A prompt path exists here but its bridge failed to load: permissive passes through (`null`),
+ *  strict refuses. */
+private fun bridgeUnavailable(allowFallback: Boolean): Boolean? {
+    if (allowFallback) return null
+    val bridge = if (desktopOs == DesktopOs.MAC) "macOS LocalAuthentication" else "Windows Hello"
+    System.err.println(
+        "KSafe biometrics: the $bridge bridge failed to load; strict verifyBiometric " +
+            "(allowDeviceCredentialFallback=false) refused."
+    )
+    return false
 }
 
-/** The platform prompt, or `null` where no prompt path exists and the pass-through applies. */
+/** The platform prompt, or `null` for a pass-through: no prompt path here, or none usable by a
+ *  permissive call. */
 private suspend fun runDesktopPrompt(reason: String, allowFallback: Boolean): Boolean? {
     desktopPromptOverrideForTest?.let { return it(reason, allowFallback) }
     if (desktopPromptsDisabled()) return null

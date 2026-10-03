@@ -98,6 +98,24 @@ class DesktopBridgeLoadFailureTest {
     }
 
     @Test
+    fun permissivePassThrough_doesNotSeedTheAuthorizationCache() = runBlocking {
+        val duration = BiometricAuthorizationDuration(60_000L, scope = "vault")
+        assertTrue(KSafeBiometrics.verifyBiometric("Auth", duration), "the documented pass-through still answers true")
+
+        val permissiveKey = BiometricAuthSession.cacheKey(duration, allowDeviceCredentialFallback = true)
+        assertFalse(
+            BiometricSessionStore.isFresh(permissiveKey, duration),
+            "a pass-through is not an authentication, so it must leave its cache slot empty",
+        )
+
+        // With a prompt path back, the same scope must still prompt.
+        var prompts = 0
+        desktopPromptOverrideForTest = { _, _ -> prompts++; true }
+        assertTrue(KSafeBiometrics.verifyBiometric("Auth", duration))
+        assertEquals(1, prompts, "the pass-through must not have opened a prompt-free window")
+    }
+
+    @Test
     fun refusedStrictCall_doesNotSeedTheAuthorizationCache() = runBlocking {
         val duration = BiometricAuthorizationDuration(60_000L, scope = "vault")
         assertFalse(KSafeBiometrics.verifyBiometric("Auth", duration, allowDeviceCredentialFallback = false))

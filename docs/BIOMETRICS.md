@@ -250,7 +250,7 @@ Rules worth knowing before you rely on it:
 - It is measured on a monotonic clock, so changing the device clock cannot extend an authorization.
 - Freshness is judged against the duration of the call asking, not the one that filled the slot. A `300_000L` call can ride on a prompt taken four minutes ago in the same scope; a `10_000L` call in that scope will not.
 - Each scope keeps two separate slots, one per mode. An authorization earned in the permissive mode (`allowDeviceCredentialFallback = true`) never satisfies a later strict call, even in the same scope — a PIN success must not open a biometrics-only gate.
-- A pass-through where no prompt path exists — Linux, the desktop opt-out, the web with no platform authenticator — returns `true` without asking anyone, and leaves the cache untouched. A desktop pass-through that does have a prompt path — Windows Hello unavailable or not configured, or a native bridge that failed to load — still fills the slot, and so does the iOS Simulator, which returns `true` before any `LAContext` call.
+- A pass-through returns `true` without asking anyone, so it leaves the cache untouched. That holds where no prompt path exists — Linux, the desktop opt-out, the web with no platform authenticator — and, since 3.3.0, where a desktop prompt path exists but cannot run: Windows Hello unavailable or not configured, or a native bridge that failed to load. The iOS Simulator is the exception: it returns `true` before any `LAContext` call and fills the slot.
 
 ## Scoped Authorization Use Cases
 

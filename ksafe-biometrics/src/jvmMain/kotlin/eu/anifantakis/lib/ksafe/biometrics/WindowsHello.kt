@@ -221,7 +221,7 @@ internal object WindowsHello {
         }
     }
 
-    internal fun classifyResult(resultValue: Int, allowDeviceCredentialFallback: Boolean): Boolean = when (resultValue) {
+    internal fun classifyResult(resultValue: Int, allowDeviceCredentialFallback: Boolean): Boolean? = when (resultValue) {
         VERIFIED -> true
         // Installed but not usable: pass through (permissive) / refuse (strict).
         DEVICE_NOT_PRESENT, NOT_CONFIGURED_FOR_USER, DISABLED_BY_POLICY ->
@@ -232,8 +232,9 @@ internal object WindowsHello {
     /**
      * Shows the Windows Hello prompt and blocks until it resolves; call from a background dispatcher.
      * Fail-closed: once the factory resolves Hello is present, so a later COM failure returns `false`.
+     * `null` is the permissive pass-through where Hello cannot run: no one was authenticated.
      */
-    fun evaluate(reason: String, allowDeviceCredentialFallback: Boolean, timeoutMs: Long = 300_000): Boolean {
+    fun evaluate(reason: String, allowDeviceCredentialFallback: Boolean, timeoutMs: Long = 300_000): Boolean? {
         val rt = runtime ?: return false
         return try {
             withComApartment(rt, onInitFailure = { unavailable(allowDeviceCredentialFallback) }) {
@@ -273,10 +274,10 @@ internal object WindowsHello {
         }
     }
 
-    /** Hello absent on this machine: permissive mode passes through, strict mode refuses. */
-    private fun unavailable(allowDeviceCredentialFallback: Boolean): Boolean {
+    /** Hello absent on this machine: permissive mode passes through (`null`), strict mode refuses. */
+    private fun unavailable(allowDeviceCredentialFallback: Boolean): Boolean? {
         warnUnavailableOnce()
-        return allowDeviceCredentialFallback
+        return if (allowDeviceCredentialFallback) null else false
     }
 
     @Volatile private var warned = false

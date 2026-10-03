@@ -11,6 +11,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -365,15 +366,16 @@ class DesktopBiometricsTest {
     @Test
     fun classifyResult_passesThroughOnlyGenuineUnavailability_blocksRealDenials() {
         // Raw UserConsentVerificationResult codes: 0=Verified, 1=DeviceNotPresent,
-        // 2=NotConfiguredForUser, 3=DisabledByPolicy, 6=Canceled.
-        assertTrue(WindowsHello.classifyResult(0, allowDeviceCredentialFallback = true), "Verified")
-        assertTrue(WindowsHello.classifyResult(0, allowDeviceCredentialFallback = false), "Verified is always true")
+        // 2=NotConfiguredForUser, 3=DisabledByPolicy, 6=Canceled. `null` is the pass-through: the
+        // caller still gets `true`, but no authentication happened, so nothing may be cached.
+        assertEquals(true, WindowsHello.classifyResult(0, allowDeviceCredentialFallback = true), "Verified")
+        assertEquals(true, WindowsHello.classifyResult(0, allowDeviceCredentialFallback = false), "Verified is always true")
         // A real denial blocks even in permissive mode — Hello was shown and refused.
-        assertFalse(WindowsHello.classifyResult(6, allowDeviceCredentialFallback = true), "Canceled must block")
-        assertTrue(WindowsHello.classifyResult(2, allowDeviceCredentialFallback = true), "NotConfigured + permissive → pass")
-        assertFalse(WindowsHello.classifyResult(2, allowDeviceCredentialFallback = false), "NotConfigured + strict → refuse")
-        assertFalse(WindowsHello.classifyResult(1, allowDeviceCredentialFallback = false), "DeviceNotPresent + strict → refuse")
-        assertTrue(WindowsHello.classifyResult(3, allowDeviceCredentialFallback = true), "DisabledByPolicy + permissive → pass")
+        assertEquals(false, WindowsHello.classifyResult(6, allowDeviceCredentialFallback = true), "Canceled must block")
+        assertNull(WindowsHello.classifyResult(2, allowDeviceCredentialFallback = true), "NotConfigured + permissive → pass-through")
+        assertEquals(false, WindowsHello.classifyResult(2, allowDeviceCredentialFallback = false), "NotConfigured + strict → refuse")
+        assertEquals(false, WindowsHello.classifyResult(1, allowDeviceCredentialFallback = false), "DeviceNotPresent + strict → refuse")
+        assertNull(WindowsHello.classifyResult(3, allowDeviceCredentialFallback = true), "DisabledByPolicy + permissive → pass-through")
     }
 
     @Test
