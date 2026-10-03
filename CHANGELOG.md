@@ -2,7 +2,7 @@
 
 All notable changes to KSafe will be documented in this file.
 
-## [3.3.0] - Unreleased
+## [3.3.0] - 2026-10-03
 
 ### Added
 
