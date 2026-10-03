@@ -1296,6 +1296,39 @@ class JvmKeyVaultMigrationTest {
     }
 
     @Test
+    fun degradedMint_doesNotShadowAnOsKeyStillUnderAnOlderNamespace() = withoutSoftwareOptOut {
+        val alias = "user:token"
+
+        // The real key still sits under the derived namespace: its migration has not run yet.
+        val derivedNsVault = FakeOsVault()
+        val beforeCiphertext = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, forced = derivedNsVault),
+        ).encrypt(alias, "before".toByteArray())
+        val osKey = derivedNsVault.store[alias]
+        assertNotNull(osKey, "precondition: the healthy launch minted under the derived namespace")
+
+        val duringCiphertext = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(dataStore, osCandidateForTest = UnlinkableOsVault()),
+        ).encrypt(alias, "during".toByteArray())
+
+        // Healthy again, on the current namespace, which holds nothing for this alias yet.
+        val currentNsVault = FakeOsVault()
+        val healed = JvmSoftwareEncryption(
+            dataStore = dataStore,
+            vaultProvider = JvmKeyVaultProvider(
+                dataStore,
+                forced = currentNsVault,
+                legacyNamespaceCandidateForTest = derivedNsVault,
+            ),
+        )
+        assertContentEquals("before".toByteArray(), healed.decrypt(alias, beforeCiphertext))
+        assertContentEquals("during".toByteArray(), healed.decrypt(alias, duringCiphertext))
+        assertContentEquals(osKey, currentNsVault.store[alias], "the recovered OS key owns the alias")
+    }
+
+    @Test
     fun deliberateOptOut_takesCustodyOfAProvisionalKey() = withoutSoftwareOptOut {
         val alias = "user:token"
         val markerAlias = "$alias.${KSafeReservedKeys.VAULT_SOFTWARE_FALLBACK}"

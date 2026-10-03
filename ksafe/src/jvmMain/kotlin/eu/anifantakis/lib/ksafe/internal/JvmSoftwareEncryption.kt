@@ -306,12 +306,14 @@ internal class JvmSoftwareEncryption(
             // A fallback-minted legacy key must not overwrite a different live OS key: a software
             // session mints into the legacy slot while the real key sits in the OS vault, so keep
             // both. A marker-less legacy key is genuine and still replaces a stale OS copy.
-            val existing = active.get(alias)
             val marker = vaults.legacy.get(fallbackMintMarker(alias))
+            val provisional = marker?.contentEquals(DEGRADED_MINT_MARKER) == true
+            // A provisional key must also yield to a real key that only an older namespace still holds.
+            val existing = active.get(alias) ?: if (provisional) vaults.recoverFromLegacyNamespace(alias) else null
             if (marker != null && existing != null && !existing.contentEquals(legacyBytes)) {
                 // The OS key takes the alias back, but the provisional one is kept, not scrubbed:
                 // decrypt retries with it, so writes from either side of the failure still read.
-                if (marker.contentEquals(DEGRADED_MINT_MARKER)) {
+                if (provisional) {
                     degradedConflictWarning.warn {
                         "KSafe SECURITY WARNING: a session whose OS key vault bridge could " +
                             "not load minted a local key for '$alias' while the OS vault " +

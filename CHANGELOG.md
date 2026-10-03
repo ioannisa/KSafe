@@ -21,6 +21,19 @@ All notable changes to KSafe will be documented in this file.
   their type is fixed where they are declared. The pattern, with a fake for unit tests, is in
   [docs/USAGE.md](docs/USAGE.md#explicit-serializers-330--ksafe-behind-your-own-interface).
 
+### Fixed
+
+- **JVM: a key minted while the OS key vault could not load no longer replaces the real key kept
+  under an older namespace.** When the bridge to the OS key vault failed to load for one session,
+  that session minted a provisional key and kept it locally. On the next healthy launch, KSafe
+  checked only the current namespace for a real key before moving the provisional one into the OS
+  vault. A real key that still sat under an older namespace (the launcher-derived one, or a
+  namespace spelled differently by an older release) was not found, so the provisional key took
+  its place and every value written before that session became permanently unreadable. KSafe now
+  also checks the older namespaces before it moves a provisional key in. When it finds the real
+  key, the real key wins and the provisional key is kept, so values from both sides of the failure
+  still read.
+
 ## [3.2.0] - 2026-09-07
 
 ### Added
