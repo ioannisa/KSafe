@@ -2,6 +2,7 @@ package eu.anifantakis.lib.ksafe
 
 import eu.anifantakis.lib.ksafe.internal.KSafeEncryption
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.builtins.serializer
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
@@ -56,6 +57,25 @@ class JvmPutDirectFailureCallbackTest {
 
         assertFalse(notified.await(100, TimeUnit.MILLISECONDS), "a successful write must not notify")
         assertEquals("good_secret", ksafe.getDirect("token", "none"))
+
+        ksafe.close()
+    }
+
+    @Test
+    fun onWriteFailed_firesForTheExplicitSerializerOverload() {
+        val ksafe = KSafe(
+            fileName = JvmKSafeTest.generateUniqueFileName(),
+            memoryPolicy = KSafeMemoryPolicy.ENCRYPTED,
+            testEngine = MarkerFailEncryption("BAD"),
+        )
+
+        val notified = CountDownLatch(1)
+        ksafe.putDirect("token", "BAD_secret", String.serializer(), KSafeWriteMode.Encrypted()) {
+            notified.countDown()
+        }
+
+        assertTrue(notified.await(10, TimeUnit.SECONDS), "onWriteFailed must reach the explicit overload's caller")
+        assertEquals("none", ksafe.getDirect("token", "none", String.serializer()))
 
         ksafe.close()
     }

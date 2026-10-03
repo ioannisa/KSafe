@@ -306,6 +306,15 @@ val token = ksafe.get<String?>("token", null)              // explicit type para
 ksafe.getFlow<String?>("token", null).collect { … }        // same rule for flows
 ```
 
+**Behind your own interface (3.3.0+)** — every typed call also takes an explicit `KSerializer`, so a generic wrapper you can swap for a fake in unit tests forwards to KSafe:
+
+```kotlin
+override suspend fun <T> get(key: String, defaultValue: T, serializer: KSerializer<T>): T =
+    ksafe.get(key, defaultValue, serializer)
+```
+
+The full pattern, with the fake: **[docs/USAGE.md](docs/USAGE.md#explicit-serializers-330--ksafe-behind-your-own-interface)**.
+
 **Key rotation** — re-encrypt everything under fresh keys, on every platform:
 
 ```kotlin
@@ -355,7 +364,7 @@ Everything else lives in [docs/](docs/). **New here? Start with [USAGE](docs/USA
 
 | Topic | What's inside |
 |-------|---------------|
-| [Complete Usage Guide](docs/USAGE.md) | Every API shape: delegates, flows, Compose state, write modes, mode-typed views, nullables, full ViewModel |
+| [Complete Usage Guide](docs/USAGE.md) | Every API shape: delegates, flows, Compose state, write modes, mode-typed views, nullables, explicit serializers, full ViewModel |
 | [Setup](docs/SETUP.md) | Koin per platform, multi-instance, web `awaitCacheReady()`, custom storage directory, `appNamespace` |
 | [Custom JSON Serialization](docs/SERIALIZATION.md) | `KSerializer`s for `UUID`, `Instant`, and other third-party types |
 | [Biometric Authentication](docs/BIOMETRICS.md) | Face ID / Touch ID / Fingerprint / Windows Hello / WebAuthn — gate any action, auth caching, scoped sessions |

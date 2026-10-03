@@ -187,6 +187,59 @@ class KSafe @PublishedApi internal constructor(
         core.putRaw(key, value, mode, serializer<T>())
     }
 
+    // --- EXPLICIT-SERIALIZER API (non-inline) ---
+    // For a `T` that is not reified, e.g. behind an app interface; shares entries with the reified
+    // calls. A nullable `T` needs a nullable serializer (`String.serializer().nullable`).
+
+    /** [getDirect] with an explicit [serializer]. */
+    fun <T> getDirect(key: String, defaultValue: T, serializer: KSerializer<T>): T {
+        @Suppress("UNCHECKED_CAST")
+        return core.getDirectRaw(key, defaultValue, serializer) as T
+    }
+
+    /** [putDirect] with an explicit [serializer], using [defaultWriteMode]. */
+    fun <T> putDirect(key: String, value: T, serializer: KSerializer<T>) {
+        core.putDirectRaw(key, value, core.defaultEncryptedMode(), serializer)
+    }
+
+    /** [putDirect] with an explicit [serializer] and [mode]. */
+    fun <T> putDirect(key: String, value: T, serializer: KSerializer<T>, mode: KSafeWriteMode) {
+        core.putDirectRaw(key, value, mode, serializer)
+    }
+
+    /** [putDirect] with an explicit [serializer], [mode] and [onWriteFailed]. */
+    fun <T> putDirect(
+        key: String,
+        value: T,
+        serializer: KSerializer<T>,
+        mode: KSafeWriteMode,
+        onWriteFailed: (Throwable) -> Unit,
+    ) {
+        core.putDirectRaw(key, value, mode, serializer, onWriteFailed)
+    }
+
+    /** [get] with an explicit [serializer]. */
+    suspend fun <T> get(key: String, defaultValue: T, serializer: KSerializer<T>): T {
+        @Suppress("UNCHECKED_CAST")
+        return core.getRaw(key, defaultValue, serializer) as T
+    }
+
+    /** [getFlow] with an explicit [serializer]. */
+    fun <T> getFlow(key: String, defaultValue: T, serializer: KSerializer<T>): Flow<T> {
+        @Suppress("UNCHECKED_CAST")
+        return core.getFlowRaw(key, defaultValue, serializer) as Flow<T>
+    }
+
+    /** [put] with an explicit [serializer], using [defaultWriteMode]. */
+    suspend fun <T> put(key: String, value: T, serializer: KSerializer<T>) {
+        core.putRaw(key, value, core.defaultEncryptedMode(), serializer)
+    }
+
+    /** [put] with an explicit [serializer] and [mode]. */
+    suspend fun <T> put(key: String, value: T, serializer: KSerializer<T>, mode: KSafeWriteMode) {
+        core.putRaw(key, value, mode, serializer)
+    }
+
     // --- DEPRECATED OVERLOADS (encrypted: Boolean) ---
 
     /** Use [getDirect] without `encrypted`; the flag is ignored. */
@@ -295,6 +348,14 @@ inline fun <reified T> KSafe.getStateFlow(
     defaultValue: T,
     scope: CoroutineScope,
 ): StateFlow<T> = getStateFlowRaw(key, defaultValue, serializer<T>(), scope)
+
+/** [getStateFlow] with an explicit [serializer], for code whose `T` is not reified. */
+fun <T> KSafe.getStateFlow(
+    key: String,
+    defaultValue: T,
+    serializer: KSerializer<T>,
+    scope: CoroutineScope,
+): StateFlow<T> = getStateFlowRaw(key, defaultValue, serializer, scope)
 
 /** Use [getStateFlow] without `protection`; the parameter is ignored. */
 @Deprecated(

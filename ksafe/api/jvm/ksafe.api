@@ -6,13 +6,21 @@ public final class eu/anifantakis/lib/ksafe/KSafe {
 	public final fun close ()V
 	public final fun delete (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun deleteDirect (Ljava/lang/String;)V
+	public final fun get (Ljava/lang/String;Ljava/lang/Object;Lkotlinx/serialization/KSerializer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun getCore ()Leu/anifantakis/lib/ksafe/internal/KSafeCore;
 	public final fun getDefaultWriteMode ()Leu/anifantakis/lib/ksafe/KSafeWriteMode;
 	public final fun getDeviceKeyStorages ()Ljava/util/Set;
+	public final fun getDirect (Ljava/lang/String;Ljava/lang/Object;Lkotlinx/serialization/KSerializer;)Ljava/lang/Object;
+	public final fun getFlow (Ljava/lang/String;Ljava/lang/Object;Lkotlinx/serialization/KSerializer;)Lkotlinx/coroutines/flow/Flow;
 	public final fun getKeyInfo (Ljava/lang/String;)Leu/anifantakis/lib/ksafe/KSafeKeyInfo;
 	public final fun getOnClearAllCleanup ()Lkotlin/jvm/functions/Function1;
 	public final fun getProtectionInfo ()Leu/anifantakis/lib/ksafe/KSafeProtectionInfo;
 	public final fun getProtectionInfoProvider ()Lkotlin/jvm/functions/Function0;
+	public final fun put (Ljava/lang/String;Ljava/lang/Object;Lkotlinx/serialization/KSerializer;Leu/anifantakis/lib/ksafe/KSafeWriteMode;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun put (Ljava/lang/String;Ljava/lang/Object;Lkotlinx/serialization/KSerializer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun putDirect (Ljava/lang/String;Ljava/lang/Object;Lkotlinx/serialization/KSerializer;)V
+	public final fun putDirect (Ljava/lang/String;Ljava/lang/Object;Lkotlinx/serialization/KSerializer;Leu/anifantakis/lib/ksafe/KSafeWriteMode;)V
+	public final fun putDirect (Ljava/lang/String;Ljava/lang/Object;Lkotlinx/serialization/KSerializer;Leu/anifantakis/lib/ksafe/KSafeWriteMode;Lkotlin/jvm/functions/Function1;)V
 	public final fun rotateKeys (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
@@ -149,6 +157,7 @@ public final class eu/anifantakis/lib/ksafe/KSafeKeyStorage : java/lang/Enum {
 }
 
 public final class eu/anifantakis/lib/ksafe/KSafeKt {
+	public static final fun getStateFlow (Leu/anifantakis/lib/ksafe/KSafe;Ljava/lang/String;Ljava/lang/Object;Lkotlinx/serialization/KSerializer;Lkotlinx/coroutines/CoroutineScope;)Lkotlinx/coroutines/flow/StateFlow;
 	public static final fun getStateFlowRaw (Leu/anifantakis/lib/ksafe/KSafe;Ljava/lang/String;Ljava/lang/Object;Lkotlinx/serialization/KSerializer;Lkotlinx/coroutines/CoroutineScope;)Lkotlinx/coroutines/flow/StateFlow;
 }
 

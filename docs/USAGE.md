@@ -18,6 +18,7 @@ For the 60-second introduction, see the project [README](../README.md). This pag
 - [Cryptographic Secrets (`getOrCreateSecret`)](#cryptographic-secrets-getorcreatesecret)
 - [Key Rotation](#key-rotation)
 - [Nullable Values](#nullable-values)
+- [Explicit Serializers (3.3.0+) — KSafe Behind Your Own Interface](#explicit-serializers-330--ksafe-behind-your-own-interface)
 - [Deleting Data](#deleting-data)
 - [Collecting Security Violations for the UI](#collecting-security-violations-for-the-ui)
 - [Full ViewModel Example](#full-viewmodel-example)
@@ -781,6 +782,64 @@ val user: StateFlow<User?> by ksafe.asStateFlow(null, scope)            // read-
 private val _state by ksafe.asMutableStateFlow<User?>(null, scope)      // read/write MutableStateFlow
 val theme: WritableKSafeFlow<ThemeMode?> by ksafe.asWritableFlow(null)  // read/write Flow, no scope
 ```
+
+## Explicit Serializers (3.3.0+) — KSafe Behind Your Own Interface
+
+Every call above is `inline` with a `reified` type, so the type must be known at the place you call
+KSafe. That rules out a generic layer in between, such as an app-level interface you inject and
+replace with a fake in unit tests: its `T` is not reified, and forwarding it to `ksafe.get` fails
+with "Cannot use 'T' as reified type parameter".
+
+So `get`, `getDirect`, `getFlow`, `getStateFlow`, `put` and `putDirect` each have an overload that
+takes the `KSerializer<T>` right after the value. Same storage, same contracts, same `mode` and
+`onWriteFailed` options: an entry written by one form reads back through the other.
+
+```Kotlin
+ksafe.put("user", user, User.serializer())
+ksafe.putDirect("users", users, ListSerializer(User.serializer()), KSafeWriteMode.Plain)
+val token: String? = ksafe.get("token", null, String.serializer().nullable)
+```
+
+A nullable `T` needs a nullable serializer. The serializer decides, not the default: with
+`String.serializer()` a stored `null` reads back as the default; with
+`String.serializer().nullable` it reads back as `null`.
+
+The pattern this enables:
+
+```Kotlin
+interface SecureStore {
+    suspend fun <T> get(key: String, defaultValue: T, serializer: KSerializer<T>): T
+    suspend fun <T> put(key: String, value: T, serializer: KSerializer<T>)
+}
+
+// Optional: keeps one-line calls such as store.get("age", 0) at your call sites.
+suspend inline fun <reified T> SecureStore.get(key: String, defaultValue: T): T =
+    get(key, defaultValue, serializer())
+suspend inline fun <reified T> SecureStore.put(key: String, value: T) =
+    put(key, value, serializer())
+
+class KSafeSecureStore(private val ksafe: KSafe) : SecureStore {
+    override suspend fun <T> get(key: String, defaultValue: T, serializer: KSerializer<T>): T =
+        ksafe.get(key, defaultValue, serializer)
+    override suspend fun <T> put(key: String, value: T, serializer: KSerializer<T>) =
+        ksafe.put(key, value, serializer)
+}
+
+// Unit tests: no Context, no Keystore, no files.
+class FakeSecureStore : SecureStore {
+    private val values = mutableMapOf<String, Any?>()
+
+    @Suppress("UNCHECKED_CAST")
+    override suspend fun <T> get(key: String, defaultValue: T, serializer: KSerializer<T>): T =
+        if (key in values) values[key] as T else defaultValue
+    override suspend fun <T> put(key: String, value: T, serializer: KSerializer<T>) {
+        values[key] = value
+    }
+}
+```
+
+The mode-typed views and the delegates keep only the reified form, because their type is fixed
+where they are declared. Pass a `mode` to `put` / `putDirect` instead of going through a view.
 
 ## Deleting Data
 

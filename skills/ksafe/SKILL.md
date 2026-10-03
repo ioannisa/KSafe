@@ -387,6 +387,28 @@ val n = ksafe.getDirect("counter", 0)
 Signature order is **key first, then defaultValue**: `get(key, defaultValue)`,
 `getDirect(key, defaultValue)`.
 
+## Behind your own interface — explicit serializers (3.3.0+)
+
+The calls above are `inline` + `reified`, so a non-reified `T` cannot be forwarded to them
+("Cannot use 'T' as reified type parameter"). When the user wants KSafe behind an app-level
+interface (DI, a fake in unit tests, a generic repository), use the overloads that take a
+`KSerializer<T>` right after the value — `get`, `getDirect`, `getFlow`, `getStateFlow`, `put`,
+`putDirect`, with the same `mode` / `onWriteFailed` options. Same storage as the reified calls.
+
+```kotlin
+class KSafeSecureStore(private val ksafe: KSafe) : SecureStore {
+    override suspend fun <T> get(key: String, defaultValue: T, serializer: KSerializer<T>): T =
+        ksafe.get(key, defaultValue, serializer)
+    override suspend fun <T> put(key: String, value: T, serializer: KSerializer<T>) =
+        ksafe.put(key, value, serializer)
+}
+ksafe.putDirect("users", users, ListSerializer(User.serializer()), KSafeWriteMode.Plain)
+val token: String? = ksafe.get("token", null, String.serializer().nullable)  // nullable T → .nullable
+```
+
+The serializer, not the default, decides whether a stored `null` reads back as `null`. Mode
+views and delegates have no serializer overload — pass `mode` to `put`/`putDirect` instead.
+
 ## Write modes
 
 The delegate / `mutableStateOf` / `put` all default to encrypted. Use `mode` for control.
@@ -1078,6 +1100,9 @@ val v = ksafe.get(key, defaultValue);  ksafe.put(key, value);  ksafe.delete(key)
 
 // Direct (fire-and-forget)
 val v = ksafe.getDirect(key, defaultValue);  ksafe.putDirect(key, value);  ksafe.deleteDirect(key)
+
+// Explicit serializer (3.3.0+) — for a non-reified T behind your own interface
+ksafe.get(key, default, serializer);  ksafe.put(key, value, serializer, mode);  ksafe.getDirect(key, default, serializer)
 
 // Reactive (delegates — defaultValue first)
 val f:  Flow<String>        by ksafe.asFlow("Guest")

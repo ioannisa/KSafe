@@ -2,6 +2,25 @@
 
 All notable changes to KSafe will be documented in this file.
 
+## [3.3.0] - Unreleased
+
+### Added
+
+- **Explicit-serializer overloads, so KSafe can sit behind your own interface
+  ([#37](https://github.com/ioannisa/KSafe/issues/37)).** Every typed call was `inline` with a
+  `reified` type, so the type had to be known at the place KSafe was called. A generic layer in
+  between — an app-level `SecureStore` you inject and replace with a fake in unit tests — did not
+  compile ("Cannot use 'T' as reified type parameter"). `get`, `getDirect`, `getFlow`,
+  `getStateFlow`, `put` and `putDirect` now each have a non-inline overload that takes a
+  `KSerializer<T>` right after the value, with the same `mode` and `onWriteFailed` options:
+  `ksafe.put("user", user, User.serializer())`. They run the same code as the reified calls and
+  share their entries, so either form reads what the other wrote. For a nullable `T`, pass a
+  nullable serializer (`String.serializer().nullable`): the serializer, not the default, decides
+  whether a stored `null` reads back as `null`. The reified API is unchanged and the change is
+  binary-compatible (additions only). The mode-typed views and the delegates stay reified, because
+  their type is fixed where they are declared. The pattern, with a fake for unit tests, is in
+  [docs/USAGE.md](docs/USAGE.md#explicit-serializers-330--ksafe-behind-your-own-interface).
+
 ## [3.2.0] - 2026-09-07
 
 ### Added
