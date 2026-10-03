@@ -32,6 +32,7 @@ host.build_configurations.each do |c|
   c.build_settings.merge!(common)
   c.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = "#{BUNDLE_ID}.host"
   c.build_settings['INFOPLIST_KEY_UILaunchScreen_Generation'] = 'YES'
+  c.build_settings['INFOPLIST_KEY_UIApplicationSceneManifest_Generation'] = 'YES'
 end
 tests.build_configurations.each do |c|
   c.build_settings.merge!(common)
