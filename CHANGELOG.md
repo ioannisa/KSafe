@@ -33,6 +33,14 @@ All notable changes to KSafe will be documented in this file.
   also checks the older namespaces before it moves a provisional key in. When it finds the real
   key, the real key wins and the provisional key is kept, so values from both sides of the failure
   still read.
+- **Android: a restored store no longer reports a missing lock-screen binding forever.** On
+  Android 9 to 14 without a secure lock screen, KSafe mints a `requireUnlockedDevice` key without
+  the lock-screen binding and records that in the store, so `protectionInfo.notes` can say
+  `android_lock_screen_absent`. Android Auto Backup and device transfer restore the store but not
+  the Keystore keys. On the new device KSafe minted a properly bound key, but the restored record
+  stayed, so the note was reported for the life of the store although no unbound key existed. A
+  bound mint now removes the record for its alias. The note was diagnostic only: no key was weaker
+  than reported.
 
 ## [3.2.0] - 2026-09-07
 

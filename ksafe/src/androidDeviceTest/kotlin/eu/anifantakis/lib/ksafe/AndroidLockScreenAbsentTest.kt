@@ -16,6 +16,8 @@ import eu.anifantakis.lib.ksafe.internal.DataStoreStorage
 import eu.anifantakis.lib.ksafe.internal.KSafeAliasFormat
 import eu.anifantakis.lib.ksafe.internal.KSafeProtectionNotes
 import eu.anifantakis.lib.ksafe.internal.RelaxedMintMarkerStore
+import eu.anifantakis.lib.ksafe.internal.StorageOp
+import eu.anifantakis.lib.ksafe.internal.StoredValue
 import eu.anifantakis.lib.ksafe.internal.dataStoreBaseFileName
 import eu.anifantakis.lib.ksafe.internal.relaxesUnlockedDeviceRequirement
 import kotlinx.coroutines.CoroutineScope
@@ -289,6 +291,28 @@ class AndroidLockScreenAbsentTest {
         }
         assertFalse(e.mintedWithoutUnlockBinding(alias))
         assertFalse(markerRecordPresent(storage, alias), "deleting the key must delete its marker")
+    }
+
+    /** An Auto Backup restore brings the store back but not the Keystore: the marker of a relaxed
+     *  key that no longer exists must not outlive the unlock-bound key minted in its place. */
+    @Test
+    fun restoredMarker_isRetiredByAFreshUnlockBoundMint() {
+        val storage = newStorage()
+        val alias = uniqueName("ksafe_restored_marker")
+        runBlocking {
+            storage.applyBatch(listOf(StorageOp.Put(RelaxedMintMarkerStore.recordKey(alias), StoredValue.BoolVal(true))))
+        }
+        forceKeep()
+        val e = markingEngine(storage)
+        try {
+            assertTrue(e.mintedWithoutUnlockBinding(alias), "precondition: the restored marker is read back")
+            e.encrypt(alias, "v".encodeToByteArray(), hardwareIsolated = false, requireUnlockedDevice = true)
+            assertEquals(true, e.lastMintUnlockedDeviceRequiredForTest, "precondition: this mint is unlock-bound")
+            assertFalse(e.mintedWithoutUnlockBinding(alias), "the unlock-bound key must retire the stale marker")
+            assertFalse(markerRecordPresent(storage, alias), "the stale record must leave the store too")
+        } finally {
+            e.deleteKey(alias)
+        }
     }
 
     @Test

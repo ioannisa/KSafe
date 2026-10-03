@@ -444,6 +444,9 @@ internal class AndroidKeystoreEncryption(
         if (relaxed) {
             relaxedMintMarkers?.mark(identifier)
             AndroidLockScreen.warnRelaxedMint()
+        } else {
+            // A restored store can still carry the marker of a key the Keystore no longer holds.
+            relaxedMintMarkers?.unmark(identifier)
         }
         return key
     }
