@@ -23,6 +23,17 @@ All notable changes to KSafe will be documented in this file.
 
 ### Fixed
 
+- **JVM: a namespace carry-forward that fails no longer runs the session from the shared store.**
+  With an `appNamespace` set, KSafe copies the existing un-namespaced store into the namespace
+  directory on the first launch. When that copy failed (a full disk, an antivirus lock, a
+  permission error), 3.2.0 ran the session from the un-namespaced store itself. On the default
+  base directory that store is shared by every un-namespaced KSafe app of the same OS user, so the
+  session's writes could overwrite another app's values and its `clearAll()` wiped another app's
+  data. The session now starts empty in its own namespace directory and leaves the shared store
+  untouched. The next launch whose copy succeeds brings the data back and replaces what the
+  session wrote, unless the session called `clearAll()`, which stays in effect. A store that an
+  older namespace spelling of the same app left behind is not shared, so a session still runs
+  from it.
 - **JVM: a key minted while the OS key vault could not load no longer replaces the real key kept
   under an older namespace.** When the bridge to the OS key vault failed to load for one session,
   that session minted a provisional key and kept it locally. On the next healthy launch, KSafe
@@ -275,7 +286,7 @@ counter.value++
   warning, so the next launch carries the whole cohort forward, this session's writes included. For
   that session every read, every write and `clearAll()` therefore act on the source store, which on
   the default base directory is the un-namespaced store shared by every KSafe app of that OS
-  user — a known limitation of this fallback, to be tightened in 3.2.1. A store already stranded
+  user — a known limitation of this fallback, to be tightened in 3.3.0. A store already stranded
   this way by 3.0.0 or 3.1.0 is not repaired: its namespaced store file already exists, so the
   retry still skips it.
 - **Web: `lazyLoad = true` no longer makes every non-suspend read return its default.** The web

@@ -29,10 +29,12 @@ import kotlin.test.fail
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
- * Locks in: a failed namespace carry-forward never promotes the empty namespace directory to
- * authoritative. The session keeps running from the source directory it could not copy out of, so
- * its writes land where the next launch's retry picks them up — instead of a namespaced store file
- * the retry then skips forever (its name exists) while publishing the rest of the cohort.
+ * Locks in: a failed namespace carry-forward never runs the session from the un-namespaced store,
+ * which every un-namespaced KSafe app of the OS user shares, so its writes and `clearAll()` cannot
+ * reach another app's data. The session runs on the empty namespace directory instead, and the
+ * next launch whose copy succeeds replaces what it wrote with the carried-forward store — unless
+ * the session cleared the store, which must stick. The app's own older namespace directory is not
+ * shared, so a session may still run from it.
  */
 @OptIn(ExperimentalEncodingApi::class)
 class JvmNamespaceCarryForwardDegradeTest {
@@ -64,6 +66,23 @@ class JvmNamespaceCarryForwardDegradeTest {
         baseDir = tmp,
         config = KSafeConfig(appNamespace = namespace, keyRotationPolicy = rotation),
     )
+
+    /** The un-namespaced store in [tmp], which every un-namespaced app of the OS user shares. */
+    private fun openShared(fileName: String): KSafe = KSafe(fileName = fileName, baseDir = tmp)
+
+    /** A literal, not the constant: the name is on disk, so renaming it strands old sessions. */
+    private fun degradedMarker(base: String) = File(nsDir(), "$base.ns-degraded")
+
+    private fun importMarker(base: String) = File(nsDir(), base + NAMESPACE_IMPORT_MARKER_SUFFIX)
+
+    private fun readShared(fileName: String, key: String): String {
+        val shared = openShared(fileName)
+        try {
+            return shared.getDirect(key, "")
+        } finally {
+            shared.close()
+        }
+    }
 
     /** An un-namespaced store as a pre-namespace release left it behind. */
     private fun seedUnNamespaced(fileName: String, key: String, value: String) {
@@ -97,7 +116,7 @@ class JvmNamespaceCarryForwardDegradeTest {
     }
 
     @Test
-    fun failedCarryForward_runsThisSessionFromTheSourceDirectory() {
+    fun failedCarryForward_neverRunsTheSessionFromTheSharedStore() {
         val fileName = "nsdeg_a_${System.nanoTime()}"
         val base = base(fileName)
         seedUnNamespaced(fileName, "seeded", "v-seed")
@@ -106,10 +125,7 @@ class JvmNamespaceCarryForwardDegradeTest {
             withCopyFault {
                 val degraded = open(fileName)
                 try {
-                    assertEquals(
-                        "v-seed", degraded.getDirect("seeded", ""),
-                        "a failed carry-forward must keep reading the store it could not copy out of",
-                    )
+                    assertEquals("", degraded.getDirect("seeded", ""), "the session must not read the shared store")
                     runBlocking { degraded.put("sessionA", "v-a", KSafeWriteMode.Plain) }
                 } finally {
                     degraded.close()
@@ -117,23 +133,77 @@ class JvmNamespaceCarryForwardDegradeTest {
             }
         }
 
-        assertFalse(
-            File(nsDir(), "$base$DATASTORE_FILE_SUFFIX").exists(),
-            "a failed carry-forward must not create a namespaced store file the retry would then skip",
-        )
-        assertFalse(
-            File(nsDir(), base + NAMESPACE_IMPORT_MARKER_SUFFIX).exists(),
-            "a failed carry-forward must leave no import marker",
-        )
-        // Presence, not a single sample: a store file is briefly unlinked while the backend
-        // renames its scratch file over it, and close() does not await the writes still draining.
-        awaitTrue("the session's writes must land in the source store") {
-            File(tmp, "$base$DATASTORE_FILE_SUFFIX").exists()
+        assertEquals("", readShared(fileName, "sessionA"), "the session's write must not reach the shared store")
+        assertEquals("v-seed", readShared(fileName, "seeded"))
+        assertTrue(degradedMarker(base).exists(), "the session must be marked as temporary")
+        assertFalse(importMarker(base).exists(), "a failed carry-forward must leave no import marker")
+        assertTrue(log.contains("carry-forward", ignoreCase = true), "the degrade must be reported; stderr was: $log")
+    }
+
+    @Test
+    fun clearAllInADegradedSession_leavesTheSharedStoreAlone() {
+        val fileName = "nsdeg_g_${System.nanoTime()}"
+        seedUnNamespaced(fileName, "seeded", "v-seed")
+
+        withCopyFault {
+            val degraded = open(fileName)
+            try {
+                runBlocking { degraded.clearAll() }
+            } finally {
+                degraded.close()
+            }
         }
-        assertTrue(
-            log.contains("carry-forward", ignoreCase = true),
-            "the degrade must be reported; stderr was: $log",
-        )
+
+        assertEquals("v-seed", readShared(fileName, "seeded"), "another app's store must survive this session's clearAll()")
+    }
+
+    @Test
+    fun clearAllInADegradedSession_isNotUndoneByTheNextLaunch() {
+        val fileName = "nsdeg_h_${System.nanoTime()}"
+        val base = base(fileName)
+        seedUnNamespaced(fileName, "seeded", "v-seed")
+
+        withCopyFault {
+            val degraded = open(fileName)
+            try {
+                runBlocking { degraded.clearAll() }
+            } finally {
+                degraded.close()
+            }
+        }
+
+        nextLaunch()
+        val after = open(fileName)
+        try {
+            assertEquals("", after.getDirect("seeded", ""), "a wipe must stick: the next launch must not carry the store back")
+        } finally {
+            after.close()
+        }
+        assertFalse(degradedMarker(base).exists())
+        assertEquals("v-seed", readShared(fileName, "seeded"), "the shared store keeps its own data")
+    }
+
+    @Test
+    fun failedCarryForward_fromTheAppsOwnOlderNamespaceDir_stillRunsFromIt() {
+        val fileName = "nsdeg_i_${System.nanoTime()}"
+        // "acme app" sanitizes to the canonical "acme_app-<digest>"; older releases used "acme_app".
+        val ownOlderDir = File(tmp, "acme_app").apply { mkdirs() }
+        val seed = KSafe(fileName = fileName, baseDir = ownOlderDir)
+        try {
+            runBlocking { seed.put("seeded", "v-own", KSafeWriteMode.Plain) }
+        } finally {
+            seed.close()
+        }
+
+        withCopyFault {
+            val degraded = KSafe(fileName = fileName, baseDir = tmp, config = KSafeConfig(appNamespace = "acme app"))
+            try {
+                assertEquals("v-own", degraded.getDirect("seeded", ""), "the app's own older directory is not shared")
+            } finally {
+                degraded.close()
+            }
+        }
+        assertTrue(tmp.walkTopDown().none { it.name.endsWith(".ns-degraded") }, "nothing to mark: no temporary session ran")
     }
 
     @Test
@@ -149,12 +219,8 @@ class JvmNamespaceCarryForwardDegradeTest {
         val second = open(fileName)
         try {
             assertFalse(
-                File(nsDir(), "$base$DATASTORE_FILE_SUFFIX").exists(),
-                "a later construction must join the degrade, not snapshot a store the first one is writing",
-            )
-            assertFalse(
-                File(nsDir(), base + NAMESPACE_IMPORT_MARKER_SUFFIX).exists(),
-                "a later construction must not publish the marker that would strand the first one's writes",
+                importMarker(base).exists(),
+                "a later construction must join the degrade, not copy over a store the first one is using",
             )
             runBlocking { first.put("fromFirst", "v-1", KSafeWriteMode.Plain) }
             awaitValue(second, "fromFirst", "v-1")
@@ -165,11 +231,8 @@ class JvmNamespaceCarryForwardDegradeTest {
 
         val third = open(fileName)
         try {
-            assertFalse(
-                File(nsDir(), "$base$DATASTORE_FILE_SUFFIX").exists(),
-                "the memo outlives the instances that caused it: a fresh construction still follows it",
-            )
-            assertEquals("v-1", third.getDirect("fromFirst", ""))
+            assertEquals("v-1", third.getDirect("fromFirst", ""), "the memo outlives the instances that caused it")
+            assertFalse(importMarker(base).exists())
         } finally {
             third.close()
         }
@@ -220,7 +283,7 @@ class JvmNamespaceCarryForwardDegradeTest {
     }
 
     @Test
-    fun retryAfterAFailedCarryForward_importsTheWholeCohortIncludingTheSessionsWrites() {
+    fun nextLaunchAfterADegradedSession_restoresTheCarriedForwardStore() {
         val fileName = "nsdeg_b_${System.nanoTime()}"
         val base = base(fileName)
         seedUnNamespaced(fileName, "seeded", "v-seed")
@@ -237,28 +300,19 @@ class JvmNamespaceCarryForwardDegradeTest {
         nextLaunch()
         val retried = open(fileName)
         try {
-            assertEquals("v-seed", retried.getDirect("seeded", ""), "the seeded value must carry forward")
-            assertEquals(
-                "v-a", retried.getDirect("sessionA", ""),
-                "the degraded session's write must carry forward too",
-            )
+            assertEquals("v-seed", retried.getDirect("seeded", ""), "the carried-forward value must come back")
+            assertEquals("", retried.getDirect("sessionA", ""), "the temporary session's write is replaced")
         } finally {
             retried.close()
         }
-
-        assertTrue(
-            File(nsDir(), base + NAMESPACE_IMPORT_MARKER_SUFFIX).exists(),
-            "the successful retry must leave the one-shot marker",
-        )
-        awaitTrue("the successful retry must publish the store file") {
-            File(nsDir(), "$base$DATASTORE_FILE_SUFFIX").exists()
-        }
+        assertTrue(importMarker(base).exists(), "the successful retry must leave the one-shot marker")
+        assertFalse(degradedMarker(base).exists(), "the temporary session is over")
     }
 
     @Test
     fun failedCarryForward_degradesTheSameWayUnderAMaxAgeRotationPolicy() {
         // MaxAge birth-stamps the generation at startup with no user write, so the store file is
-        // created in whichever directory this session decided to run from.
+        // created in whichever directory this session runs from.
         val fileName = "nsdeg_c_${System.nanoTime()}"
         val base = base(fileName)
         val rotation = KSafeKeyRotationPolicy.MaxAge(30.milliseconds)
@@ -267,32 +321,30 @@ class JvmNamespaceCarryForwardDegradeTest {
         withCopyFault {
             val degraded = open(fileName, rotation)
             try {
-                assertEquals("v-seed", degraded.getDirect("seeded", ""))
-                awaitTrue("the startup birth-stamp must land in the store this session runs from") {
-                    holdsTheBirthStamp(File(tmp, "$base$DATASTORE_FILE_SUFFIX"))
+                awaitTrue("the startup birth-stamp must land in the session's own store") {
+                    holdsTheBirthStamp(File(nsDir(), "$base$DATASTORE_FILE_SUFFIX"))
                 }
             } finally {
                 degraded.close()
             }
         }
-
         assertFalse(
-            File(nsDir(), "$base$DATASTORE_FILE_SUFFIX").exists(),
-            "the startup birth-stamp must not create the namespaced store file either",
+            holdsTheBirthStamp(File(tmp, "$base$DATASTORE_FILE_SUFFIX")),
+            "the startup birth-stamp must not reach the shared store",
         )
 
         nextLaunch()
         val retried = open(fileName, rotation)
         try {
-            assertEquals("v-seed", retried.getDirect("seeded", ""), "the retry must carry the value forward")
+            assertEquals("v-seed", retried.getDirect("seeded", ""), "the session's store file must not block the retry")
         } finally {
             retried.close()
         }
-        assertTrue(File(nsDir(), base + NAMESPACE_IMPORT_MARKER_SUFFIX).exists())
+        assertTrue(importMarker(base).exists())
     }
 
     @Test
-    fun failedCarryForward_doesNotReArmFallbackWinsAgainstTheSessionsNewerValue() {
+    fun nextLaunchAfterADegradedSession_carriesTheFallbackCohortForwardWhole() {
         val fileName = "nsdeg_d_${System.nanoTime()}"
         val base = base(fileName)
         seedUnNamespacedFallback(fileName, "token", "old-value")
@@ -301,11 +353,8 @@ class JvmNamespaceCarryForwardDegradeTest {
             val degraded = open(fileName)
             try {
                 runBlocking {
-                    assertEquals(
-                        "old-value", degraded.get("token", ""),
-                        "the degraded session must drain the fallback it is sitting on",
-                    )
-                    degraded.put("token", "new-value")
+                    assertEquals("", degraded.get("token", ""), "the session must not drain the shared fallback")
+                    degraded.put("token", "session-value")
                 }
             } finally {
                 degraded.close()
@@ -317,14 +366,14 @@ class JvmNamespaceCarryForwardDegradeTest {
         try {
             runBlocking {
                 assertEquals(
-                    "new-value", retried.get("token", ""),
-                    "the retry must not let the stale fallback overwrite the degraded session's write",
+                    "old-value", retried.get("token", ""),
+                    "the cohort must arrive whole from one source, not mixed with the session's files",
                 )
             }
         } finally {
             retried.close()
         }
-        assertTrue(File(nsDir(), base + NAMESPACE_IMPORT_MARKER_SUFFIX).exists())
+        assertTrue(importMarker(base).exists())
     }
 
     /** Seeds an un-namespaced JSON-fallback cohort in [tmp] as the no-`Unsafe` path would write it. */

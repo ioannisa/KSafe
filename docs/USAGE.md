@@ -582,7 +582,7 @@ val ksafe = KSafe(
 
 What it does:
 
-- **JVM** — the store file moves into a subdirectory named after the namespace, and the keys are stored under that namespace in the OS secret store. Data that already existed without a namespace is copied forward on the first launch, so nothing is stranded.
+- **JVM** — the store file moves into a subdirectory named after the namespace, and the keys are stored under that namespace in the OS secret store. Data that already existed without a namespace is copied forward on the first launch, so nothing is stranded. If that copy fails (a full disk, a file lock), that one session starts empty and never touches the un-namespaced store; the next launch whose copy succeeds brings the data back and replaces anything written in between.
 - **Web** — the namespace becomes part of the storage prefix for both the stored values and the encryption-key record, so same-origin stores stay apart.
 
 Leave it `null` on JVM and new keys go to a fixed default namespace called `"shared"` — so two

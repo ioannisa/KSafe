@@ -183,7 +183,7 @@ private fun buildJvmKSafe(
         val srcDirs = listOfNotNull(legacyNamespaceDir, resolvedBaseDir)
         degradedCarryForwardSources[degradeMemoKey(nsDir, baseFileName)]
             ?: if (importStoreFilesOnce(srcDirs, nsDir, baseFileName, copy = storeCopy())) nsDir
-            else carryForwardSourceForThisSession(srcDirs, baseFileName, nsDir)
+            else carryForwardSourceForThisSession(srcDirs, baseFileName, nsDir, sharedDir = resolvedBaseDir)
     } else {
         // A canonicalized-away token may still have data under its old subdir.
         val srcDirs = listOfNotNull(legacyNamespaceDir)
@@ -191,7 +191,7 @@ private fun buildJvmKSafe(
             ?: if (srcDirs.isEmpty() ||
                 importStoreFilesOnce(srcDirs, resolvedBaseDir, baseFileName, copy = storeCopy())
             ) resolvedBaseDir
-            else carryForwardSourceForThisSession(srcDirs, baseFileName, resolvedBaseDir)
+            else carryForwardSourceForThisSession(srcDirs, baseFileName, resolvedBaseDir, sharedDir = null)
     }
 
     // KSafeCore and the fallback migration must compute identical aliases.
@@ -345,6 +345,9 @@ internal fun copyStoreFilesForward(
 /** Named outside clearAll()'s residue sweep: no `<base>.ksafe` prefix, no `.fwd-tmp` suffix. */
 internal const val NAMESPACE_IMPORT_MARKER_SUFFIX: String = ".ns-imported"
 
+/** Marks a session that runs on the empty destination after a failed copy; same naming rule. */
+internal const val NAMESPACE_TEMPORARY_SESSION_SUFFIX: String = ".ns-degraded"
+
 /** Test seam: injects a copy fault into the factory's carry-forward. `null` in production. */
 internal var copyForwardCopyForTest: ((File, File) -> Unit)? = null
 
@@ -362,10 +365,30 @@ internal fun importStoreFilesOnce(
 ): Boolean {
     val marker = File(dstDir, baseFileName + NAMESPACE_IMPORT_MARKER_SUFFIX)
     if (marker.exists()) return true
+    val temporary = File(dstDir, baseFileName + NAMESPACE_TEMPORARY_SESSION_SUFFIX)
+    // The copy skips names already present, so a temporary session's files would block it.
+    if (temporary.exists() && selectCopyForwardSource(srcDirs, baseFileName) != null &&
+        !discardStoreCohort(dstDir, baseFileName)
+    ) return false
     if (!copyStoreFilesForward(srcDirs, dstDir, baseFileName, rename, copy)) return false
     val published = storeCohortSuffixes.any { cohortFilePresent(File(dstDir, baseFileName + it)) }
     if (published) runCatching { marker.createNewFile() }
+    runCatching { temporary.delete() }
     return true
+}
+
+/** Fallback JSON first: it alone re-arms the drain, so a partial discard must not leave it. */
+private fun discardStoreCohort(dir: File, baseFileName: String): Boolean =
+    (storeCohortSuffixes.asReversed().map { baseFileName + it } + "$baseFileName$DATASTORE_FILE_SUFFIX$DATASTORE_SCRATCH_SUFFIX")
+        .all { name -> File(dir, name).let { !it.exists() || it.delete() } }
+
+/** A wipe is the user's last word: the next launch must not carry the store back over it. */
+private fun endTemporarySessionOnWipe(dir: File, baseFileName: String) {
+    val temporary = File(dir, baseFileName + NAMESPACE_TEMPORARY_SESSION_SUFFIX)
+    if (!temporary.exists()) return
+    if (runCatching { File(dir, baseFileName + NAMESPACE_IMPORT_MARKER_SUFFIX).createNewFile() }.isSuccess) {
+        temporary.delete()
+    }
 }
 
 /** Destinations this process already degraded, and the source each runs from. Re-attempting the
@@ -378,19 +401,32 @@ private fun degradeMemoKey(dstDir: File, baseFileName: String): String =
 
 internal fun clearCarryForwardDegradeMemoForTest() = degradedCarryForwardSources.clear()
 
-/** A failed carry-forward must not promote the empty destination — the name-keyed retry would skip
- *  it forever — so this session reads, writes and `clearAll()`s the source store. */
+/** A failed carry-forward runs this session from the source store. Not from [sharedDir]: other
+ *  un-namespaced apps own data there, so the session runs on the empty destination, marked
+ *  temporary, and the next successful carry-forward replaces what it wrote. */
 private fun carryForwardSourceForThisSession(
     srcDirs: List<File>,
     baseFileName: String,
     dstDir: File,
+    sharedDir: File?,
 ): File {
     val src = selectCopyForwardSource(srcDirs, baseFileName) ?: return dstDir
+    if (src == sharedDir) {
+        // Before the store opens: it writes on open, and an unmarked file would block the retry.
+        runCatching { File(dstDir, baseFileName + NAMESPACE_TEMPORARY_SESSION_SUFFIX).createNewFile() }
+        degradedCarryForwardSources[degradeMemoKey(dstDir, baseFileName)] = dstDir
+        System.err.println(
+            "KSafe Warning: the store carry-forward into '${dstDir.absolutePath}' failed; this " +
+                "session starts empty, and the next launch whose carry-forward succeeds replaces " +
+                "what it writes. The shared store in '${src.absolutePath}' is not touched."
+        )
+        return dstDir
+    }
     degradedCarryForwardSources[degradeMemoKey(dstDir, baseFileName)] = src
     System.err.println(
         "KSafe Warning: the store carry-forward into '${dstDir.absolutePath}' failed; " +
             "running from '${src.absolutePath}' until a later launch's carry-forward succeeds; " +
-            "reads, writes and clearAll() act on that shared store until then."
+            "reads, writes and clearAll() act on that store until then."
     )
     return src
 }
@@ -475,7 +511,10 @@ private fun createJvmBackend(
         }
     }
 
-    return JvmBackend(storage, storageScope, engine, clearAllCleanup)
+    return JvmBackend(storage, storageScope, engine) {
+        clearAllCleanup()
+        endTemporarySessionOnWipe(storageDir, baseFileName)
+    }
 }
 
 /** Deletes fallback residue that still holds recoverable secrets: `.migrated` archives, quarantine
