@@ -306,15 +306,6 @@ val token = ksafe.get<String?>("token", null)              // explicit type para
 ksafe.getFlow<String?>("token", null).collect { … }        // same rule for flows
 ```
 
-**Behind your own interface (3.3.0+)** — every typed call also takes an explicit `KSerializer`, so a generic wrapper you can swap for a fake in unit tests forwards to KSafe:
-
-```kotlin
-override suspend fun <T> get(key: String, defaultValue: T, serializer: KSerializer<T>): T =
-    ksafe.get(key, defaultValue, serializer)
-```
-
-The full pattern, with the fake: **[docs/USAGE.md](docs/USAGE.md#explicit-serializers-330--ksafe-behind-your-own-interface)**.
-
 **Key rotation** — re-encrypt everything under fresh keys, on every platform:
 
 ```kotlin
@@ -355,6 +346,52 @@ ksafe.getKeyInfo("pin")?.level                // where this one key's material l
 Read it off the main thread on Android. Details: **[docs/PROTECTION_INFO.md](docs/PROTECTION_INFO.md)**.
 
 > **Note:** The property delegate and the direct handle work with **any** KSafe instance — `var x by myKsafe(default)` makes `myKsafe` the storage backend. The bare `ksafe(default)` form requires an in-scope `ksafe` (the conventional name, typically your default instance). See [docs/SETUP.md](docs/SETUP.md#multiple-instances) for the multi-instance pattern.
+
+### Hiding KSafe behind your own interface (3.3.0+)
+
+Requested in [#37](https://github.com/ioannisa/KSafe/issues/37).
+
+*The goal.* Your repositories depend on an interface you own, not on KSafe. In the app, that interface is backed by KSafe. In plain unit tests, it is a fake that keeps values in a map, so the tests need no device, no Keystore and no Android `Context`.
+
+```kotlin
+// 1. Your own interface: the rest of the app depends only on this
+interface SecureStore {
+    suspend fun <T> get(key: String, defaultValue: T, serializer: KSerializer<T>): T
+    suspend fun <T> put(key: String, value: T, serializer: KSerializer<T>)
+}
+
+// 2. In the app: backed by KSafe
+class KSafeSecureStore(private val ksafe: KSafe) : SecureStore {
+    override suspend fun <T> get(key: String, defaultValue: T, serializer: KSerializer<T>): T =
+        ksafe.get(key, defaultValue, serializer)
+    override suspend fun <T> put(key: String, value: T, serializer: KSerializer<T>) =
+        ksafe.put(key, value, serializer)
+}
+
+// 3. In unit tests: a fake that keeps values in a map
+class FakeSecureStore : SecureStore {
+    private val values = mutableMapOf<String, Any?>()
+
+    @Suppress("UNCHECKED_CAST")
+    override suspend fun <T> get(key: String, defaultValue: T, serializer: KSerializer<T>): T =
+        if (key in values) values[key] as T else defaultValue
+    override suspend fun <T> put(key: String, value: T, serializer: KSerializer<T>) {
+        values[key] = value
+    }
+}
+
+// 4. Your code sees only SecureStore
+class AuthRepository(private val store: SecureStore) {
+    suspend fun accessToken(): String? = store.get("access_token", null, String.serializer().nullable)
+    suspend fun saveAccessToken(token: String) = store.put("access_token", token, String.serializer())
+}
+```
+
+In the app: `AuthRepository(KSafeSecureStore(ksafe))`. In unit tests: `AuthRepository(FakeSecureStore())`.
+
+- Both forms use the same storage: a value saved with `put(key, value, serializer)` reads back with `get(key, default)`, and the other way round.
+- For a nullable type, pass a nullable serializer, as `accessToken()` does above.
+- To keep short calls such as `store.get("age", 0)`, add a `reified` extension to your interface: **[docs/USAGE.md](docs/USAGE.md#explicit-serializers-330--ksafe-behind-your-own-interface)**.
 
 ***
 
