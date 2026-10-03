@@ -3,9 +3,9 @@
 > **Install first.** Full install instructions live in the [README](../README.md#setup). The three published artifacts are:
 >
 > ```kotlin
-> implementation("eu.anifantakis:ksafe:3.1.0")
-> implementation("eu.anifantakis:ksafe-compose:3.1.0")     // ← Compose persisted state (optional)
-> implementation("eu.anifantakis:ksafe-biometrics:3.1.0")  // ← standalone biometric gate (optional)
+> implementation("eu.anifantakis:ksafe:3.3.0")
+> implementation("eu.anifantakis:ksafe-compose:3.3.0")     // ← Compose persisted state (optional)
+> implementation("eu.anifantakis:ksafe-biometrics:3.3.0")  // ← standalone biometric gate (optional)
 > ```
 >
 > `:ksafe-compose` adds `KSafe.mutableStateOf` / `rememberKSafeState`; `:ksafe-biometrics` is an independent process-wide biometric gate (Android, iOS, macOS, JVM Desktop, web) with no dependency on `:ksafe`.

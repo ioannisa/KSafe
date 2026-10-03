@@ -18,7 +18,7 @@ Names you will meet on this page:
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe-biometrics:3.1.0")
+implementation("eu.anifantakis:ksafe-biometrics:3.3.0")
 ```
 
 That's it — no transitive dependency on `:ksafe`. Apps that don't need biometrics leave this artifact out.
@@ -533,7 +533,7 @@ In 2.0 it moved to its own module ([issue #14](https://github.com/ioannisa/KSafe
 
 ```kotlin
 // After (2.0)
-// build.gradle.kts: + implementation("eu.anifantakis:ksafe-biometrics:3.1.0")  // or latest
+// build.gradle.kts: + implementation("eu.anifantakis:ksafe-biometrics:3.3.0")  // or latest
 import eu.anifantakis.lib.ksafe.biometrics.KSafeBiometrics
 import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration
 

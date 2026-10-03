@@ -240,7 +240,7 @@ ksafe.clearBiometricAuth()
 ```kotlin
 // After — biometrics is a static API in :ksafe-biometrics
 // build.gradle.kts:
-//   implementation("eu.anifantakis:ksafe-biometrics:3.1.0")
+//   implementation("eu.anifantakis:ksafe-biometrics:3.3.0")
 
 import eu.anifantakis.lib.ksafe.biometrics.KSafeBiometrics
 import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration
