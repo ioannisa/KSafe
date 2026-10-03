@@ -522,6 +522,21 @@ var theme by prefs("dark")               // delegate: key = property name, write
 val pin by vault.asWritableFlow("", key = "pin")   // .set() writes hardware-isolated
 ```
 
+**Alternative spelling: the shorthand accessors.** `ksafe.plain`, `ksafe.encrypted` and
+`ksafe.hardwareIsolated` return the matching view over the same instance, so one entry with a fixed
+mode needs no separate variable:
+
+```kotlin
+var theme by ksafe.plain("light")         // always Plain
+var token by ksafe.encrypted("")          // always Encrypted, DEFAULT tier, the instance's unlock policy
+var pin   by ksafe.hardwareIsolated("")   // always requests StrongBox / Secure Enclave
+
+ksafe.encrypted.putDirect("session", sessionId)
+```
+
+Each access creates a new, lightweight view. Keep one in a `val`, or inject it as shown below, when
+you use it in many places.
+
 The full write surface is covered — `put`/`putDirect`, the `by view(...)` delegate (whose
 result, given an explicit `key`, is also a direct no-`by` `.value` handle — 3.2.0+),
 `asFlow`/`asWritableFlow`/`asStateFlow`/`asMutableStateFlow`/`getStateFlow`, and (via
@@ -857,6 +872,14 @@ ksafe.clearAll()   // suspend — removes every entry AND its encryption key
 ```
 
 `clearAll()` is destructive and irreversible: it clears the whole store — disk plus the caches of every live instance on this file (on web each instance still owns its own store handle) — and deletes every associated key from the OS key store. The data wipe fails loudly; the key deletions are best-effort — a platform-vault failure is logged rather than thrown, since the values are already gone and surviving key material only matters to out-of-store ciphertext copies (backups, quarantine files).
+
+Before you call `clearAll()` on logout, know what it takes with it:
+
+- **Everything in this store**, including values written through the mode-typed views (`ksafe.plain`, `ksafe.encrypted`, `ksafe.hardwareIsolated`), which share it. A store with a different `fileName` is a separate store and is untouched.
+- **Secrets from [`getOrCreateSecret`](#cryptographic-secrets-getorcreatesecret).** They live in the same store, so a database passphrase kept there is wiped, and the next call creates a different one. A database encrypted with the old passphrase can then no longer be opened. If a logout must not touch it, keep the secret in a store of its own, such as `KSafe(fileName = "secrets")`, and never call `clearAll()` on that one.
+- **Not biometric authorization.** A cached "recently authenticated" window from `:ksafe-biometrics` is not stored data; end it with `KSafeBiometrics.clearBiometricAuth()` (all scopes) or `clearBiometricAuth("payments")` (one scope).
+
+There is no `clear()`: use `delete(key)` for one value and `clearAll()` for everything.
 
 ## Collecting Security Violations for the UI
 

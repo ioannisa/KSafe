@@ -262,7 +262,7 @@ var pin   by ksafe("", mode = KSafeWriteMode.Encrypted(KSafeEncryptedProtection.
 var theme by ksafe("light", mode = KSafeWriteMode.Plain)                          // step down: no encryption
 ```
 
-The helper classes freeze that mode at the type level, so no call site can forget it or pick the wrong one. They wrap an existing instance and offer every API shape above — `KSafePlain(ksafe)`, or the accessors `ksafe.plain`, `ksafe.encrypted`, `ksafe.hardwareIsolated`. With Koin:
+The helper classes freeze that mode at the type level, so no call site can forget it or pick the wrong one. They wrap an existing instance and offer every API shape above — `KSafePlain(ksafe)`, `KSafeEncrypted(ksafe)`, `KSafeHardwareIsolated(ksafe)`. With Koin:
 
 ```kotlin
 val appModule = module {
@@ -282,6 +282,14 @@ class PreferencesViewModel(
 
     fun save(token: String) = secrets.putDirect("token", token)   // instance API, encrypted
 }
+```
+
+**Alternative spelling** — the accessors `ksafe.encrypted`, `ksafe.hardwareIsolated` and `ksafe.plain` create the same helpers on the spot, with no declaration or injection:
+
+```kotlin
+var token by ksafe.encrypted("")          // KSafeEncrypted
+var pin   by ksafe.hardwareIsolated("")   // KSafeHardwareIsolated: StrongBox / Secure Enclave
+var theme by ksafe.plain("light")         // KSafePlain
 ```
 
 `KSafeWriteMode.Encrypted(requireUnlockedDevice = true)` additionally binds the key to the lock screen, so the value cannot be read while the device is locked. On Android 9 to 14 without a secure lock screen the key is minted without that binding, and `ksafe.protectionInfo.notes` says so: [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md#known-limitations).
@@ -346,6 +354,34 @@ ksafe.getKeyInfo("pin")?.level                // where this one key's material l
 Read it off the main thread on Android. Details: **[docs/PROTECTION_INFO.md](docs/PROTECTION_INFO.md)**.
 
 > **Note:** The property delegate and the direct handle work with **any** KSafe instance — `var x by myKsafe(default)` makes `myKsafe` the storage backend. The bare `ksafe(default)` form requires an in-scope `ksafe` (the conventional name, typically your default instance). See [docs/SETUP.md](docs/SETUP.md#multiple-instances) for the multi-instance pattern.
+
+### Deleting data
+
+Three calls remove things, and they do very different jobs:
+
+| Call | What it removes | How far it reaches |
+|---|---|---|
+| `ksafe.delete(key)` / `ksafe.deleteDirect(key)` | one value | one key |
+| `ksafe.clearAll()` | every value in the store **and** the encryption keys that protected them | the whole store (this `fileName`) |
+| `KSafeBiometrics.clearBiometricAuth()` (`:ksafe-biometrics`) | nothing stored — only the "recently authenticated" window | biometric prompts |
+
+```kotlin
+ksafe.delete("profile")            // suspend — returns once the removal is on disk
+ksafe.deleteDirect("counter")      // returns at once; the cache updates now, the disk follows
+
+ksafe.clearAll()                   // suspend — wipes this store: values and keys, irreversibly
+
+KSafeBiometrics.clearBiometricAuth()            // the next gated action prompts again (all scopes)
+KSafeBiometrics.clearBiometricAuth("payments")  // or just one scope
+```
+
+Before you call `clearAll()` on logout, know what it takes with it:
+
+- **Everything in this store**, including values written through `ksafe.plain` / `ksafe.encrypted` / `ksafe.hardwareIsolated`, which share it. Stores with a different `fileName` are untouched.
+- **Secrets from `getOrCreateSecret`.** A database passphrase kept there is gone, and the next call creates a new one, so a database encrypted with the old passphrase can no longer be opened. If a logout must not touch it, keep it in a separate store, such as `KSafe(fileName = "secrets")`.
+- **It cannot be undone.**
+
+There is no `clear()`: use `delete(key)` for one value and `clearAll()` for everything.
 
 ### Hiding KSafe behind your own interface (3.3.0+)
 
