@@ -6,6 +6,7 @@ package eu.anifantakis.lib.ksafe.internal
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -65,7 +66,7 @@ internal actual class KSafeConcurrentMap<V : Any> actual constructor() {
 
 @PublishedApi
 internal actual class KSafeConcurrentSet<T : Any> actual constructor() {
-    private val set: MutableSet<T> = ConcurrentHashMap.newKeySet()
+    private val set: MutableSet<T> = Collections.newSetFromMap(ConcurrentHashMap<T, Boolean>())
     actual fun add(value: T): Boolean = set.add(value)
     actual fun contains(value: T): Boolean = set.contains(value)
     actual fun remove(value: T): Boolean = set.remove(value)

@@ -17,5 +17,5 @@ internal object JvmAesGcm {
 internal class AliasLocks {
     private val locks = ConcurrentHashMap<String, Any>()
 
-    fun forAlias(alias: String): Any = locks.computeIfAbsent(alias) { Any() }
+    fun forAlias(alias: String): Any = locks.getOrPut(alias) { Any() }
 }
