@@ -455,7 +455,7 @@ Everything else lives in [docs/](docs/). **New here? Start with [USAGE](docs/USA
 | [Migration Guide](docs/MIGRATION.md) | Upgrading from older KSafe versions |
 | [Skill for AI Agents](docs/AI_AGENTS.md) | Installing the KSafe skill in Claude Code and other agents, updating it, common pitfalls |
 
-**Compatibility:** Android API 24+ · iOS 13+ · macOS 11+ (`macosArm64`/`macosX64`) · JDK 11+ · WasmGC browsers · Kotlin/JS. Kotlin 2.0+.
+**Compatibility:** Android API 23+ · iOS 13+ · macOS 11+ (`macosArm64`/`macosX64`) · JDK 11+ · WasmGC browsers · Kotlin/JS. Kotlin 2.0+.
 
 ***
 

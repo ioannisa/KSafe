@@ -242,7 +242,7 @@ What it maps to on each platform:
 | Platform | `requireUnlockedDevice = true` | `= false` (default) |
 |---|---|---|
 | Android API 28+ | Key created with `setUnlockedDeviceRequired(true)`; decrypt fails while locked. On API 28-34 with no secure lock screen the key is created without the flag and `protectionInfo.notes` carries `android_lock_screen_absent` until a new key generation re-decides (`rotateKeys()`). | Key usable while locked |
-| Android API 24-27 | Not supported by the platform: the key is created without the flag and nothing is reported, so treat the policy as unenforced there | Same |
+| Android API 23-27 | Not supported by the platform: the key is created without the flag and nothing is reported, so treat the policy as unenforced there | Same |
 | iOS / macOS | Keychain item `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` | `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`: readable while locked, but only after the first unlock since boot |
 | JVM Desktop | No device lock state to enforce; the entry is still recorded as strict, so it skips the plaintext caches and decrypts on every read | Ordinary entry |
 | Web | The flag is dropped at write time; a browser has no device lock | Ordinary entry |
