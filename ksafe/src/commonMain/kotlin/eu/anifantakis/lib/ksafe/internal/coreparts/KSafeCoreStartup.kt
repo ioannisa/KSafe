@@ -22,11 +22,26 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 
+/** Warms an already-persisted DEK off-thread at construction; reads only, never creates a key. */
+internal fun KSafeCore.prewarmPersistedDek() {
+    writeScope.launch {
+        // Read before the first snapshot: on a rotated store this can warm the base generation
+        // instead — a missed warm, not a correctness problem.
+        val gen = currentKeyGeneration.get()
+        try {
+            engine.prewarmDekReadIfPresent(
+                aliasWithGeneration(masterAlias(false), gen),
+                requireUnlockedDevice = false,
+            )
+        } catch (e: Throwable) {
+            if (e is CancellationException) throw e
+        }
+    }
+}
+
 /** Creates both master keys off-thread; failures fall through to the lazy-create path. */
 internal fun KSafeCore.prewarmMasterKeys() {
     writeScope.launch {
-        // Generation read at execute time: on a rotated store this can warm the base
-        // generation instead — a missed warm, not a correctness problem.
         val gen = currentKeyGeneration.get()
         for (requireUnlocked in listOf(false, true)) {
             try {
@@ -38,14 +53,6 @@ internal fun KSafeCore.prewarmMasterKeys() {
             } catch (e: Throwable) {
                 if (e is CancellationException) throw e
             }
-        }
-        try {
-            engine.prewarmDekReadIfPresent(
-                aliasWithGeneration(masterAlias(false), gen),
-                requireUnlockedDevice = false,
-            )
-        } catch (e: Throwable) {
-            if (e is CancellationException) throw e
         }
     }
 }
@@ -73,7 +80,8 @@ internal fun KSafeCore.startBackgroundCollector() {
     }
 }
 
-/** One-shot, best-effort: access-policy migration, orphan sweep, legacy key migration, rotation. */
+/** One-shot, best-effort: access-policy migration, orphan sweep, master-key prewarm, legacy key
+ *  migration, rotation. */
 internal suspend fun KSafeCore.runOneTimeStartupCleanup() {
     if (!startupCleanupDone.compareAndSet(false, true)) return
     swallowingNonCancellation { migrateAccessPolicy(::isUserKeyDirty) }
@@ -84,6 +92,9 @@ internal suspend fun KSafeCore.runOneTimeStartupCleanup() {
         startupSweepFailure = it
     }
     startupSweepFinished.set(true)
+    // Only after the sweep: a master minted over restored ciphertext turns its missing key into a
+    // GCM failure the sweep keeps forever. A failed sweep retries next launch, so mint nothing yet.
+    if (startupSweepFailure == null) prewarmMasterKeys()
     swallowingNonCancellation { engine.migrateLegacyKeysSuspend() }
     maybeScheduleKeyRotation()
 }

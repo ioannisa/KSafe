@@ -11,8 +11,8 @@ import kotlin.test.assertFailsWith
 /**
  * Vectors produced by the third-party CryptoKit provider [AppleAesGcm] replaced (KSafe 3.0.0),
  * decrypted here by the KSafe-owned bridge. A round-trip test agrees with itself by construction, so
- * this is the only check that catches a framing drift — and the cost of that drift is not a broken
- * read but deletion: an entry KSafe cannot decrypt is swept as an orphan.
+ * this is the only check that catches a framing drift — and that drift fails quietly: every existing
+ * entry reads as its default.
  */
 @OptIn(ExperimentalEncodingApi::class)
 class AppleLegacyCiphertextTest {

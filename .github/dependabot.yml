@@ -1,0 +1,24 @@
+# Keep CI automation and Gradle dependencies current without flooding maintainers.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    groups:
+      routine-actions:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "gradle"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    groups:
+      routine-gradle:
+        update-types:
+          - "minor"
+          - "patch"

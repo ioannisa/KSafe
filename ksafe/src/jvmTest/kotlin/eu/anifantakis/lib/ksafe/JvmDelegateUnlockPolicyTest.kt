@@ -25,7 +25,8 @@ class JvmDelegateUnlockPolicyTest {
             requireUnlockedDevice: Boolean?,
             aad: ByteArray?,
         ): ByteArray {
-            if (requireUnlockedDevice != null) requireUnlockByAlias[identifier] = requireUnlockedDevice
+            // The startup prewarm's empty encrypt warms both masters; only a real write counts.
+            if (requireUnlockedDevice != null && data.isNotEmpty()) requireUnlockByAlias[identifier] = requireUnlockedDevice
             return xor.encrypt(identifier, data, hardwareIsolated, requireUnlockedDevice, aad)
         }
 

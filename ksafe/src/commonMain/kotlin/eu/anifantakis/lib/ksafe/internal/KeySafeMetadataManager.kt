@@ -102,7 +102,7 @@ internal object KeySafeMetadataManager {
 
     /**
      * Store identity for the v3 AAD, home-relative: an iOS container UUID or a JVM user home can
-     * move, and an absolute path would then fail every rotated entry — the orphan sweep deletes those.
+     * move, and an absolute path would then make every rotated entry fail closed to its default.
      */
     @PublishedApi
     internal fun stableStoreIdentity(fullPath: String, homePath: String?): String {

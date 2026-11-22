@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Run with `adb shell am instrument -w`. The app is its own target, so there is no test APK. -->
+    <instrumentation
+        android:name=".ShrinkProbe"
+        android:targetPackage="${applicationId}" />
+
+    <application
+        android:allowBackup="false"
+        android:label="KSafe shrink test" />
+
+</manifest>

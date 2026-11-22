@@ -234,8 +234,8 @@ class JvmKSafeTest : KSafeTest() {
     }
 
     /**
-     * Orphaned ciphertext (key lost, e.g. after a backup restore) is cleaned up on startup.
-     * A togglable engine flips to fail-on-decrypt mid-lifecycle to simulate the lost key.
+     * A key lost mid-session (e.g. after a backup restore) reads as the default, and its orphan stays
+     * until the next startup sweep. A togglable engine flips to fail-on-decrypt to simulate the loss.
      */
     @Test
     fun testOrphanedCiphertextIsCleanedUpOnStartup() = runTest {

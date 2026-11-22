@@ -171,11 +171,12 @@ a different PC does not get you the key.
 via JNA bindings to `Security.framework`.
 
 **What the Keychain is.** macOS's per-user encrypted store for credentials and
-small secrets. On Apple Silicon and T2 Intel Macs the keychain's key hierarchy
-is gated by the **Secure Enclave Processor (SEP)** — the master key never
-leaves dedicated hardware. On older Intel Macs without a T2, the keychain is
-encrypted with a key derived from the user's login password (and unlocked at
-login).
+small secrets. The `SecKeychain*` API KSafe uses always targets the
+**file-based** login keychain, `~/Library/Keychains/login.keychain-db`,
+encrypted with a key derived from the user's login password and unlocked at
+login. The Secure Enclave does not guard it: Apple ties Secure Enclave
+protection to the separate *data protection* keychain, which this API never
+reaches ([TN3137](https://developer.apple.com/documentation/technotes/tn3137-on-mac-keychains)).
 
 **How KSafe uses it.**
 
@@ -194,27 +195,34 @@ login).
 > which Apple marks deprecated in favour of the modern `SecItem*`
 > data-protection API. It is still fully functional on current macOS, and is
 > dramatically simpler to bind from JVM (plain C strings + byte buffers vs.
-> constructing CoreFoundation dictionaries). The chosen scope is *standard
-> login/data-protection Keychain, not Secure Enclave for the raw key* — a JVM
-> process cannot reuse KSafe's Kotlin/Native Secure Enclave path anyway, since
-> that path runs entirely outside the JVM.
+> constructing CoreFoundation dictionaries). The chosen scope is *the
+> file-based login Keychain, not the data protection keychain and not the
+> Secure Enclave* — the `SecKeychain*` API cannot reach the data protection
+> keychain, and a JVM process cannot reuse KSafe's Kotlin/Native Secure Enclave
+> path anyway, since that path runs entirely outside the JVM.
 
 **What it defends against:**
 
 - Offline disk theft. The Keychain file (`~/Library/Keychains/login.keychain-db`)
-  is encrypted; without the login password (or, on SEP devices, without the
-  hardware-bound key chain), the key is unrecoverable.
-- Backups, file copies, syncs — same reason.
+  is encrypted; without the login password the key is unrecoverable.
+- Backups, file copies, syncs — for someone who does not know the login
+  password. The keychain file is part of the home folder, so a backup or a
+  copied home folder carries it; with the password it opens on another Mac.
+  (From macOS 26.4 a keychain file may also need a protected entropy file
+  from `/var/db/SystemKeys`.)
 - Other macOS users on the same Mac — separate Keychains.
 
 **What it does NOT defend against:**
 
-- Code running as the same user while logged in. macOS will, *by default*,
-  silently fulfil the lookup. macOS can restrict a Keychain item to the apps on
-  its access-control list (ACL), so only those apps get it without a prompt.
-  KSafe does not set one, so any process running as the same user can request
-  the key. (A first-time unfamiliar caller may trigger a Keychain-access prompt
-  on some configurations.)
+- Code running as the same user while logged in, within limits.
+  `SecKeychainAddGenericPassword` gives the item a default access list that
+  trusts the program that created it, so that program reads it without a
+  prompt; any other program triggers a Keychain-access prompt the user can
+  allow. For a JVM app the trusted program is the executable that started the
+  JVM — a bundled launcher, or the `java` binary itself, which every other
+  Java app run by that binary shares. KSafe sets no custom access list. After
+  an update or a restore changes that executable, the lookup can prompt again;
+  with no one to answer (headless), it fails as "vault unavailable".
 - A root user on the Mac — root can dump Keychain unlock material from RAM.
 
 ---
@@ -399,9 +407,11 @@ touches the real OS secret store. The CI keyvault-integration job clears it
 **Keys already in the OS store stay there.** While the flag is set KSafe never
 opens the OS vault, so a value encrypted under one of those keys reads back as
 its default — and its ciphertext is left intact rather than reclaimed by the
-startup orphan sweep. Remove the flag and those values are readable again,
-unless a write in the meantime minted a competing key for the same alias — the
-conflict described next.
+startup orphan sweep. Removing the flag does not bring `DEFAULT` values back:
+the opted-out session mints its own master key at startup, even if the app
+never writes, and that key wins the conflict described next. Per-entry
+(`HARDWARE_ISOLATED`) values come back unless a write in the meantime minted a
+competing key for the same alias.
 
 **Coming back.** A session that ran opted-out mints its keys in the software
 store. When you remove the flag, KSafe migrates such a key into the OS store —
@@ -528,8 +538,8 @@ vault is OS-backed.
 | Aspect | Windows | macOS | Linux | Software fallback |
 |---|---|---|---|---|
 | Where the key lives | DPAPI-wrapped blob inside the DataStore file | Login Keychain — no key bytes in any KSafe file | Login keyring via the libsecret daemon — no key bytes in any KSafe file | Base64 in the DataStore file, or in `…ksafe-keys.json` |
-| What unlocks it | The Windows login | The login password, or SEP hardware on Apple Silicon / T2 | The login password (PAM-unlocked at login) | Nothing — file permissions only |
-| Key held by a security chip? | No | Yes on Apple Silicon / T2, no on older Intel. KSafe still reports `SANDBOX_PROTECTED`: the JVM has no key hardware of its own, it borrows the Keychain's | No | No |
+| What unlocks it | The Windows login | The login password | The login password (PAM-unlocked at login) | Nothing — file permissions only |
+| Key held by a security chip? | No | No — the file-based login Keychain is not guarded by the Secure Enclave. KSafe reports `SANDBOX_PROTECTED` | No | No |
 | Safe against a stolen disk? | Yes | Yes | Yes | **No** |
 | Safe against a backup or a copied home directory? | Yes | Yes | Yes | **No** |
 | Safe against code running as the same OS user? | No | No (may prompt) | No | No |
@@ -616,9 +626,15 @@ storage serializer (`androidx.datastore.preferences.protobuf.MessageSchema`).
 ### What changes without the module (2.1.1+)
 
 At construction KSafe probes for `sun.misc.Unsafe`; if it's absent it switches
-to a no-`Unsafe` backend instead of letting the protobuf crash. **Only the key
-location changes — the storage engine and the encryption do not:**
+to a no-`Unsafe` backend instead of letting the protobuf crash. **The key
+location and the data file change — the storage library and the encryption do
+not:**
 
+- **The data file** is a different one: `…ksafe.json` instead of the
+  `.preferences_pb` file. The trimmed build never reads the existing
+  `.preferences_pb`, so values written under a full runtime — `Plain` ones too —
+  read as their defaults while it runs. A later build with the module reads
+  them again (see **Adding the module later** below).
 - **Storage** is still Jetpack **`datastore-core`** (the same library behind the
   normal path — same atomic writes, single-process coordinator, corruption
   handling, fsync). Only the *serializer* differs: a custom JSON one
@@ -653,8 +669,9 @@ directory, `0600` on the key file). The realistic exposure is off-host or
 same-user — an unencrypted backup, a copied/synced home directory, a stolen
 drive without full-disk encryption, or a process running as the same OS user.
 The key travels with the data. OS-backed custody closes exactly this: DPAPI
-wraps the key to the Windows login, the macOS Keychain stores it device-bound,
-libsecret keeps it in the login keyring — none recoverable by reading a file. (Same posture KSafe has always documented
+wraps the key to the Windows login, the macOS login Keychain locks it under the
+login password, libsecret keeps it in the login keyring — none recoverable by
+reading a file without the login password. (Same posture KSafe has always documented
 for its software fallback and its pre-2.0 JVM scheme.)
 
 ### Adding the module later migrates your data forward
@@ -751,3 +768,41 @@ A live, end-to-end example lives in the
   `composeApp/src/jvmMain/kotlin/eu/anifantakis/ksafe_demo/main.kt`
   points back here, so a developer who lands in the JVM entrypoint
   first sees the connection.
+
+---
+
+## Shrinking: R8 and ProGuard
+
+KSafe reaches the OS key stores through JNA, which looks up methods and fields by name at run
+time, so a shrinker that removes or renames them cuts KSafe off from the store. The app still
+runs, but KSafe keeps its keys in the data file: `protectionInfo` reports `SOFTWARE` with note
+`jvm_os_vault_unavailable`, and stderr shows a one-time `KSafe SECURITY WARNING` that blames a
+missing OS secret store. With obfuscation on as well (Compose Desktop's
+`proguard { obfuscate.set(true) }`), the store itself fails: DataStore finds its fields by name,
+so writes fail with `Field value_ ... not found` and existing data cannot be read. The KSafe JVM
+jar carries the rules that prevent both, in `META-INF/proguard/ksafe.pro`. R8 reads them from the
+jar by itself. ProGuard does not, and a
+Compose Desktop release build runs ProGuard, so copy
+[`ksafe.pro`](../ksafe/src/jvmMain/resources/META-INF/proguard/ksafe.pro) from the KSafe version
+you use into your project and add it:
+
+```kotlin
+compose.desktop {
+    application {
+        buildTypes.release.proguard {
+            configurationFiles.from(project.file("ksafe.pro"))
+        }
+    }
+}
+```
+
+`ksafe-biometrics` reaches Touch ID and Windows Hello through JNA too, and its jar carries its own
+rules in `META-INF/proguard/ksafe-biometrics.pro`. Add
+[`ksafe-biometrics.pro`](../ksafe-biometrics/src/jvmMain/resources/META-INF/proguard/ksafe-biometrics.pro)
+next to `ksafe.pro` the same way. Without it, a shrunk app breaks in one of two ways:
+
+- With `ksafe.pro` applied, every `verifyBiometric` on macOS throws `IllegalArgumentException`
+  before any prompt, because the Touch ID reply callback was removed (`verifyBiometricDirect`
+  reports `false`).
+- With no KSafe rules at all, the native bridges do not load. `verifyBiometric` in its default,
+  permissive mode then returns `true` without showing a prompt, and in strict mode it refuses.

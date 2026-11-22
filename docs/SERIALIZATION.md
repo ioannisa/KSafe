@@ -6,7 +6,7 @@ If you need to store a type you **don't own** — one you cannot annotate, such 
 
 ## Why is this needed?
 
-KSafe stores anything kotlinx.serialization can turn into JSON. For your own classes that means adding `@Serializable` — see [Storing Complex Objects](USAGE.md#storing-complex-objects) if you have not set the serialization compiler plugin up yet.
+KSafe stores anything kotlinx.serialization can turn into JSON. For your own classes that means adding `@Serializable` — see [Storing Complex Objects](USAGE.md#storing-complex-objects) if you have not set the serialization compiler plugin up yet. A plain enum works without `@Serializable`, with one exception: in an app shrunk by rules that do not keep enum `values()` — R8 on the desktop, or the ProGuard that Compose Desktop release builds run — either mark it `@Serializable` or apply the plugin in the module that stores it. Otherwise its values are found by reflection, which those shrinkers remove, and storing or reading it throws. Android's default `proguard-android-optimize.txt` keeps enum `values()`.
 
 You cannot add `@Serializable` to a class you don't own, such as `java.util.UUID`. For those you write a small `KSerializer`: an object that tells kotlinx.serialization how to write the type as JSON and how to read it back. There are then two ways to use it:
 

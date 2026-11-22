@@ -8,7 +8,9 @@ import org.jetbrains.kotlin.gradle.plugin.KotlinPlatformType
 
 plugins {
     alias(libs.plugins.androidLibrary) apply false
+    alias(libs.plugins.androidApplication) apply false
     alias(libs.plugins.kotlinMultiplatform) apply  false
+    alias(libs.plugins.kotlinJvm) apply false
     alias(libs.plugins.vanniktech.mavenPublish) apply false
     alias(libs.plugins.android.kotlin.multiplatform.library) apply false
     id("org.jetbrains.kotlinx.binary-compatibility-validator") version "0.18.1"
@@ -26,6 +28,8 @@ apiValidation {
     klib {
         enabled = true
     }
+    // Test harnesses, not published modules.
+    ignoredProjects += listOf("jvm-shrink-test", "android-shrink-test", "stability-check")
 }
 
 // The validator only dumps an Android compilation named `release`; the AGP KMP library plugin

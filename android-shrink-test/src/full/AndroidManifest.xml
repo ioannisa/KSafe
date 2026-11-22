@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- An empty host for the biometrics checks; only the probe starts it. -->
+        <activity
+            android:name=".ProbeActivity"
+            android:exported="false" />
+    </application>
+
+</manifest>

@@ -4,10 +4,11 @@ import android.app.KeyguardManager
 import android.content.Context
 import android.os.Build
 import kotlinx.coroutines.runBlocking
+import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
-/** On API 28..34 keystore2 cannot mint a `setUnlockedDeviceRequired` key while no secure lock
- *  screen exists, and there is nothing to lock against there anyway; API 35+ copes on its own. */
+/** API 31..34 cannot mint a `setUnlockedDeviceRequired` key while no secure lock screen exists
+ *  (28..30 relaxed too, as a margin); there is nothing to lock against anyway. API 35+ copes. */
 internal fun relaxesUnlockedDeviceRequirement(sdkInt: Int, deviceSecure: Boolean): Boolean =
     sdkInt in 28..34 && !deviceSecure
 
@@ -74,7 +75,7 @@ internal class RelaxedMintMarkerStore(private val storage: KSafePlatformStorage)
         synchronized(this) {
             marked?.let { return it }
             val snapshot = runCatching { runBlocking { storage.snapshot() } }.getOrElse { return null }
-            val set = ConcurrentHashMap.newKeySet<String>()
+            val set = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
             for (key in snapshot.keys) {
                 if (key.startsWith(RECORD_PREFIX)) set.add(key.removePrefix(RECORD_PREFIX))
             }

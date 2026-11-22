@@ -22,3 +22,6 @@ rootProject.name = "ksafe"
 include(":ksafe")
 include(":ksafe-compose")
 include(":ksafe-biometrics")
+include(":jvm-shrink-test")
+include(":android-shrink-test")
+include(":stability-check")

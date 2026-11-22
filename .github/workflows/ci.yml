@@ -53,6 +53,10 @@ jobs:
       # Android SDK, which is what the android-emulator job's assemble step already relies on.
       - name: JVM + Android ABI check
         run: ./gradlew jvmApiCheck androidApiCheck --stacktrace
+      # KSafe and its mode views must stay stable to the Compose compiler; only their @Stable
+      # markers make them so. Reads the compiler reports of a few composables that take them.
+      - name: Compose stability check
+        run: ./gradlew :stability-check:verifyStability --stacktrace
       # Only the fast, feature-relevant JVM unit test — this job is the quick
       # signal. The full suites of all three modules run in the jvm-full-suite
       # jobs below (blocking), with the stress magnitudes scaled down so a
@@ -396,6 +400,20 @@ jobs:
             python3 -c "import secretstorage; b=secretstorage.dbus_init(); c=secretstorage.get_default_collection(b); print(\"default collection\", c.collection_path, \"locked\", c.is_locked())"
             ./gradlew :ksafe:jvmTest --tests "eu.anifantakis.lib.ksafe.JvmKeyVaultIntegrationTest" --tests "eu.anifantakis.lib.ksafe.Jvm200To210FixtureTest" --tests "eu.anifantakis.lib.ksafe.JvmKeyVaultMigrationTest" --no-daemon --no-configuration-cache --stacktrace
           '
+      # Shrinks a small app that uses KSafe with R8 and with ProGuard, runs it, and fails unless
+      # KSafe still reaches the OS secret store. One JDK is enough: the shrinkers are the subject.
+      - name: Shrinker test (R8 + ProGuard, libsecret)
+        # Also after a failed key-vault step, so one flaky test does not skip the shrinker check.
+        if: ${{ !cancelled() && matrix.java == '21' }}
+        shell: bash
+        run: |
+          dbus-run-session -- bash -lc '
+            set -e
+            eval "$(echo -n \"\" | gnome-keyring-daemon --daemonize --login)"
+            eval "$(echo -n \"\" | gnome-keyring-daemon --start --components=secrets)"
+            sleep 2
+            ./gradlew :jvm-shrink-test:shrinkTest --continue --no-daemon --stacktrace
+          '
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v7
@@ -429,6 +447,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v5
       - name: Key vault integration test (DPAPI)
         run: ./gradlew :ksafe:jvmTest --tests 'eu.anifantakis.lib.ksafe.JvmKeyVaultIntegrationTest' --tests 'eu.anifantakis.lib.ksafe.Jvm200To210FixtureTest' --tests 'eu.anifantakis.lib.ksafe.JvmKeyVaultMigrationTest' --no-daemon --no-configuration-cache --stacktrace
+      - name: Shrinker test (R8 + ProGuard, DPAPI)
+        if: ${{ !cancelled() && matrix.java == '21' }}
+        run: ./gradlew :jvm-shrink-test:shrinkTest --continue --no-daemon --stacktrace
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v7
@@ -459,6 +480,7 @@ jobs:
           java-version: ${{ matrix.java }}
       - uses: gradle/actions/setup-gradle@v5
       - name: Create + unlock a dedicated keychain
+        id: keychain
         run: |
           security create-keychain -p "" build.keychain
           security default-keychain -s build.keychain
@@ -467,6 +489,9 @@ jobs:
           security set-keychain-settings build.keychain
       - name: Key vault integration test (Keychain)
         run: ./gradlew :ksafe:jvmTest --tests 'eu.anifantakis.lib.ksafe.JvmKeyVaultIntegrationTest' --tests 'eu.anifantakis.lib.ksafe.Jvm200To210FixtureTest' --tests 'eu.anifantakis.lib.ksafe.JvmKeyVaultMigrationTest' --no-daemon --no-configuration-cache --stacktrace
+      - name: Shrinker test (R8 + ProGuard, Keychain)
+        if: ${{ !cancelled() && matrix.java == '21' && steps.keychain.outcome == 'success' }}
+        run: ./gradlew :jvm-shrink-test:shrinkTest --continue --no-daemon --stacktrace
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v7
@@ -520,7 +545,8 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Android instrumented on a hosted emulator — with the Firebase job below
-  # disabled, this is the only Android leg CI runs. Emulated Keystore only: the
+  # disabled, this is the only leg that runs the Android instrumented suites
+  # (android-shrink below runs only the R8 probe app). Emulated Keystore only: the
   # real TEE/Keystore, StrongBox and API 28-29 have no CI coverage and are
   # covered by the owner's own device runs before a release.
   #
@@ -584,6 +610,78 @@ jobs:
             emulator-testrunner.log
             */build/reports/androidTests
             */build/outputs/androidTest-results
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Android shrinker test: :android-shrink-test is a small app that uses KSafe, built with R8
+  # and without it. A probe inside it writes delegates, plain, encrypted and hardware-isolated
+  # values, serializable, sealed and enum types, collections and a secret, and reads them back in
+  # a fresh process; each build reads what the other wrote, and both must report the same facts
+  # about the device. The `bare` flavor has KSafe alone and no default rules file, so there is no
+  # blanket -dontwarn androidx.**: R8 gets only the rules KSafe and its dependencies ship. A job
+  # of its own, so a failure in either this or the instrumented suites cannot hide the other.
+  # ---------------------------------------------------------------------------
+  android-shrink:
+    name: Android shrinker test (R8, hosted emulator, API 34)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v5
+      # R8 runs at build time, so a missing class fails here, before any emulator boots.
+      # Compat mode is the same app through R8's older, gentler mode; AGP 10 removes it.
+      - name: Build the probe app (R8 full mode, R8 compat mode, unminified)
+        run: |
+          set -euo pipefail
+          ./gradlew :android-shrink-test:assembleFullRelease :android-shrink-test:assembleFullUnminified :android-shrink-test:assembleBareRelease :android-shrink-test:assembleBareUnminified --stacktrace
+          mkdir -p shrink-apks
+          for flavor in full bare; do
+            cp android-shrink-test/build/outputs/apk/$flavor/release/*.apk shrink-apks/$flavor-release.apk
+            cp android-shrink-test/build/outputs/apk/$flavor/unminified/*.apk shrink-apks/$flavor-unminified.apk
+            cp android-shrink-test/build/outputs/mapping/${flavor}Release/mapping.txt shrink-apks/$flavor-release-mapping.txt
+          done
+          # Compat mode builds into the same folders, so it runs after the copies above.
+          ./gradlew :android-shrink-test:assembleFullRelease :android-shrink-test:assembleBareRelease -Pandroid.enableR8.fullMode=false --stacktrace
+          for flavor in full bare; do
+            cp android-shrink-test/build/outputs/apk/$flavor/release/*.apk shrink-apks/$flavor-compat.apk
+            cp android-shrink-test/build/outputs/mapping/${flavor}Release/mapping.txt shrink-apks/$flavor-compat-mapping.txt
+          done
+      # /dev/kvm is root-only on the runner image; this is the rule the
+      # android-emulator-runner README prescribes.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      # The runner gives each script line to its own `sh`, so the logic lives in the script. The
+      # PIN and the screen that stays on match the instrumented job, so KSafe runs as on a phone.
+      - name: Shrink probe on the emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          emulator-options: "-no-window -gpu swiftshader_indirect -noaudio -no-boot-anim"
+          disable-animations: true
+          script: |
+            adb shell locksettings set-pin 1234
+            adb shell svc power stayon true
+            bash .github/scripts/android-shrink-probe.sh shrink-apks shrink-probe-out "$(sed -n 's/^ksafe.version=//p' gradle.properties)"
+      # outputs/mapping holds missing_rules.txt when R8 fails the build; each build overwrites its
+      # variant's mapping.txt, hence the copies in shrink-apks.
+      - name: Upload probe output + R8 mappings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-shrink-report
+          path: |
+            shrink-probe-out
+            shrink-apks/*-mapping.txt
+            android-shrink-test/build/outputs/mapping
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------

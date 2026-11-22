@@ -287,11 +287,26 @@ class KSafeHardwareIsolated(
         ksafe.asMutableStateFlow(defaultValue, scope, key, mode)
 }
 
-/** A new [KSafePlain] view over this instance on every access. */
+/**
+ * A new [KSafePlain] view over this instance on every access. Before passing it to a composable,
+ * keep it in a property outside composition (a ViewModel or class `val`) or in
+ * `remember(ksafe) { ksafe.plain }`: a local `val` in the composable body builds a new view on
+ * every recomposition, and a new view never lets that composable skip.
+ */
 val KSafe.plain: KSafePlain get() = KSafePlain(this)
 
-/** A new [KSafeEncrypted] view over this instance on every access, using its unlock policy. */
+/**
+ * A new [KSafeEncrypted] view over this instance on every access, using its unlock policy. Before
+ * passing it to a composable, keep it in a property outside composition (a ViewModel or class
+ * `val`) or in `remember(ksafe) { ksafe.encrypted }`: a local `val` in the composable body builds a
+ * new view on every recomposition, and a new view never lets that composable skip.
+ */
 val KSafe.encrypted: KSafeEncrypted get() = KSafeEncrypted(this)
 
-/** A new [KSafeHardwareIsolated] view over this instance on every access, using its unlock policy. */
+/**
+ * A new [KSafeHardwareIsolated] view over this instance on every access, using its unlock policy.
+ * Before passing it to a composable, keep it in a property outside composition (a ViewModel or
+ * class `val`) or in `remember(ksafe) { ksafe.hardwareIsolated }`: a local `val` in the composable
+ * body builds a new view on every recomposition, and a new view never lets that composable skip.
+ */
 val KSafe.hardwareIsolated: KSafeHardwareIsolated get() = KSafeHardwareIsolated(this)

@@ -240,7 +240,7 @@ ksafe.clearBiometricAuth()
 ```kotlin
 // After — biometrics is a static API in :ksafe-biometrics
 // build.gradle.kts:
-//   implementation("eu.anifantakis:ksafe-biometrics:3.3.0")
+//   implementation("eu.anifantakis:ksafe-biometrics:3.3.1")
 
 import eu.anifantakis.lib.ksafe.biometrics.KSafeBiometrics
 import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration
@@ -303,13 +303,17 @@ val docsPath = NSFileManager.defaultManager.URLForDirectory(
 val safe = KSafe(fileName = "vault", directory = docsPath)
 ```
 
-### KSafe data on iOS is effectively device-local
+### iOS backups: what a restore brings back
 
-KSafe's encryption keys live in the Keychain with `…ThisDeviceOnly` accessibility (and Secure Enclave keys never leave the device for `HARDWARE_ISOLATED` writes). Even if the DataStore file is included in an iCloud Backup, its encrypted bytes are undecryptable on a restored device — the keys are not there. So backed-up ciphertext is benign in practice: it's just dead bytes, not exfiltrable secrets.
+KSafe's encryption keys live in the Keychain with `…ThisDeviceOnly` accessibility, and `HARDWARE_ISOLATED` writes add a Secure Enclave key, which never leaves the device. The DataStore file is in iCloud and Finder backups, and so are the `…ThisDeviceOnly` Keychain items, wrapped with the device's UID key. What a restore brings back depends on the device:
 
-The library does **not** set `NSURLIsExcludedFromBackupKey` on the DataStore file. We tried, and it doesn't work reliably: DataStore's atomic-write strategy (write-to-temp then rename) creates a new inode on every flush and clobbers the extended attribute. Reliable file-level exclusion would require architectural gymnastics (a per-instance subdirectory whose directory-level xattr the inner file inherits), and the security guarantee already comes from key locality.
+- **A different device:** the Keychain items cannot be unwrapped there, so encrypted values read as their defaults. The backed-up ciphertext is dead bytes, not exfiltrable secrets.
+- **The same device** (also after Erase All Content and Settings): the Keychain items come back, so `DEFAULT` values decrypt again. Secure Enclave keys do not come back, so `HARDWARE_ISOLATED` values read as their defaults.
+- **`KSafeWriteMode.Plain` values** are ordinary file content and come back on any device.
 
-If you need device-portable preferences (theme, settings, onboarding flags that should follow the user to a new iPhone), use `UserDefaults`. That's the right tool for that semantics. KSafe is for encrypted (or explicitly local plain) storage where the keys do not roam.
+The library does **not** set `NSURLIsExcludedFromBackupKey` on the DataStore file. We tried, and it doesn't work reliably: DataStore's atomic-write strategy (write-to-temp then rename) creates a new inode on every flush and clobbers the extended attribute. Reliable file-level exclusion would require architectural gymnastics (a per-instance subdirectory whose directory-level xattr the inner file inherits); the device-bound keys already stop encrypted values from moving to another device.
+
+Preferences that should follow the user to a new iPhone (theme, settings, onboarding flags) already do when you write them as `KSafeWriteMode.Plain`, exactly like `UserDefaults`. Encrypted values do not: their keys stay on the device.
 
 ***
 

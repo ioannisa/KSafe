@@ -3,9 +3,9 @@
 > **Install first.** Full install instructions live in the [README](../README.md#setup). The three published artifacts are:
 >
 > ```kotlin
-> implementation("eu.anifantakis:ksafe:3.3.0")
-> implementation("eu.anifantakis:ksafe-compose:3.3.0")     // ← Compose persisted state (optional)
-> implementation("eu.anifantakis:ksafe-biometrics:3.3.0")  // ← standalone biometric gate (optional)
+> implementation("eu.anifantakis:ksafe:3.3.1")
+> implementation("eu.anifantakis:ksafe-compose:3.3.1")     // ← Compose persisted state (optional)
+> implementation("eu.anifantakis:ksafe-biometrics:3.3.1")  // ← standalone biometric gate (optional)
 > ```
 >
 > `:ksafe-compose` adds `KSafe.mutableStateOf` / `rememberKSafeState`; `:ksafe-biometrics` is an independent process-wide biometric gate (Android, iOS, macOS, JVM Desktop, web) with no dependency on `:ksafe`.
@@ -402,12 +402,20 @@ val ksafe = KSafe(
     directory = "/path/to/your/dir",
 )
 // If null, KSafe uses NSApplicationSupportDirectory, Apple's location for app data the
-// user should not see. The file is not excluded from iCloud Backup, but the encryption
-// keys never leave the device, so a restored backup holds unreadable bytes — see
-// MIGRATION.md#ksafe-data-on-ios-is-effectively-device-local.
+// user should not see. The file is not excluded from iCloud Backup. Restored to another
+// device, its encrypted values are unreadable; restored to the same device, DEFAULT values
+// decrypt again — see MIGRATION.md#ios-backups-what-a-restore-brings-back.
 // A custom directory also switches off the automatic move of a pre-2.0 file out of the
 // Documents directory (the iOS upgraders note below).
 ```
+
+> **Switching an existing Android store to `noBackupFilesDir`.** KSafe does not move the file. The
+> new location starts empty, and the old file stays in the default directory, where backups still
+> pick it up. Keystore keys are scoped by `fileName` alone, so two instances that differ only in
+> `baseDir` share keys, and `clearAll()` on one deletes keys the other still needs — give the new
+> store its own `fileName` while both exist. Moving the file by hand is safe only for a store that
+> was never rotated: after `rotateKeys()`, each entry's authenticated data names the file's
+> location, so moved entries read as their defaults.
 
 **Web** has no directory concept, so there is no `baseDir` parameter on the web factory. Values live
 in `localStorage` under the `ksafe.<appNamespace@><fileName>:` prefix; the encryption key is a

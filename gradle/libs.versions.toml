@@ -1,7 +1,7 @@
 [versions]
 agp = "9.2.1"
 kotlin = "2.3.21"
-android-minSdk = "24"
+android-minSdk = "23"
 android-compileSdk = "36"
 datastorePreferences = "1.2.1"
 kotlinxCoroutinesCore = "1.11.0"
@@ -13,6 +13,13 @@ junit = "1.3.0"
 runtime = "1.10.3"
 
 jna = "5.19.1"
+# Shrinkers the :jvm-shrink-test module runs over desktop apps. `proguard` stays at the version a
+# Compose Desktop release build runs by default (Compose 1.12.1, also the source of the default rules);
+# `proguardLatest` is the newest release, which apps can opt into.
+r8 = "9.5.23"
+proguard = "7.8.0"
+proguardLatest = "7.10.0"
+composeGradlePlugin = "1.12.1"
 turbine = "1.2.1"
 robolectric = "4.16.1"
 biometric = "1.1.0"
@@ -38,6 +45,11 @@ robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectr
 jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
 jna-platform = { module = "net.java.dev.jna:jna-platform", version.ref = "jna" }
 
+r8 = { module = "com.android.tools:r8", version.ref = "r8" }
+proguard-base = { module = "com.guardsquare:proguard-base", version.ref = "proguard" }
+proguard-base-latest = { module = "com.guardsquare:proguard-base", version.ref = "proguardLatest" }
+compose-gradle-plugin = { module = "org.jetbrains.compose:compose-gradle-plugin", version.ref = "composeGradlePlugin" }
+
 # DataStore Preferences
 androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastorePreferences" }
 androidx-datastore-preferences-core = { module = "androidx.datastore:datastore-preferences-core", version.ref = "datastorePreferences" }
@@ -53,7 +65,9 @@ runtime = { module = "org.jetbrains.compose.runtime:runtime", version.ref = "run
 
 [plugins]
 androidLibrary = { id = "com.android.library", version.ref = "agp" }
+androidApplication = { id = "com.android.application", version.ref = "agp" }
 kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+kotlinJvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 vanniktech-mavenPublish = { id = "com.vanniktech.maven.publish", version = "0.36.0" }
 
 

@@ -37,8 +37,9 @@ class KSafe @PublishedApi internal constructor(
     @PublishedApi internal val onClearAllCleanup: suspend () -> Unit = {},
 ) {
     /**
-     * Key custody this instance is currently running with, including any fallback; recomputed
-     * on every access, so a runtime degrade shows on the next read.
+     * Key custody this instance is currently running with, including any fallback. Evaluated again
+     * on every read, so a runtime degrade shows on the next read. Compose is not notified when it
+     * changes.
      */
     val protectionInfo: KSafeProtectionInfo
         get() = protectionInfoProvider()

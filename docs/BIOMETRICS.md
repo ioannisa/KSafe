@@ -18,7 +18,7 @@ Names you will meet on this page:
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe-biometrics:3.3.0")
+implementation("eu.anifantakis:ksafe-biometrics:3.3.1")
 ```
 
 That's it — no transitive dependency on `:ksafe`. Apps that don't need biometrics leave this artifact out.
@@ -96,6 +96,11 @@ Ask [`biometricsAvailable()`](#checking-availability--biometricsavailable) up fr
 > on stderr; from then on the permissive mode passes through, every strict refusal is logged, and
 > `biometricsAvailable()` reports `false` in either mode. That is not the Linux case, where no
 > prompt path exists at all and both modes pass through.
+>
+> **Shrinking.** R8 and ProGuard break the bridge unless they apply the keep rules in the
+> `ksafe-biometrics` jar, `META-INF/proguard/ksafe-biometrics.pro`. R8 reads them from the jar; a
+> Compose Desktop release build runs ProGuard, which does not, so add the file yourself as
+> [JVM_PROTECTION.md](JVM_PROTECTION.md#shrinking-r8-and-proguard) shows for `ksafe.pro`.
 
 ## Checking availability — `biometricsAvailable()`
 
@@ -533,7 +538,7 @@ In 2.0 it moved to its own module ([issue #14](https://github.com/ioannisa/KSafe
 
 ```kotlin
 // After (2.0)
-// build.gradle.kts: + implementation("eu.anifantakis:ksafe-biometrics:3.3.0")  // or latest
+// build.gradle.kts: + implementation("eu.anifantakis:ksafe-biometrics:3.3.1")  // or latest
 import eu.anifantakis.lib.ksafe.biometrics.KSafeBiometrics
 import eu.anifantakis.lib.ksafe.biometrics.BiometricAuthorizationDuration
 

@@ -25,7 +25,7 @@ import eu.anifantakis.lib.ksafe.internal.coreparts.legacyProtectionRawKey
 import eu.anifantakis.lib.ksafe.internal.coreparts.lockedDecryptRetryBackoffMs
 import eu.anifantakis.lib.ksafe.internal.coreparts.metaRawKey
 import eu.anifantakis.lib.ksafe.internal.coreparts.nullOrDefault
-import eu.anifantakis.lib.ksafe.internal.coreparts.prewarmMasterKeys
+import eu.anifantakis.lib.ksafe.internal.coreparts.prewarmPersistedDek
 import eu.anifantakis.lib.ksafe.internal.coreparts.putEncryptedSuspend
 import eu.anifantakis.lib.ksafe.internal.coreparts.putPlainSuspend
 import eu.anifantakis.lib.ksafe.internal.coreparts.raiseToAtLeast
@@ -1318,6 +1318,7 @@ internal class KSafeCore(
     init {
         startWriteConsumer()
         if (!lazyLoad) startBackgroundCollector()
-        prewarmMasterKeys()
+        // Master keys are minted after the startup sweep; see runOneTimeStartupCleanup.
+        prewarmPersistedDek()
     }
 }

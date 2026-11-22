@@ -72,6 +72,14 @@ kotlin {
             instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
             instrumentationRunnerArguments["clearPackageData"] = "true"
         }
+
+        // Shipped in the AAR, so R8 applies them to every app that uses KSafe.
+        optimization {
+            consumerKeepRules.apply {
+                publish = true
+                file("consumer-rules.pro")
+            }
+        }
     }
     val appleTargets = listOf(
         iosX64(),
@@ -187,23 +195,20 @@ kotlin {
                 api(libs.kotlinx.serialization.json)
                 api(libs.kotlinx.coroutines.core)
 
-                // compileOnly — used solely for the @Stable marker on the KSafe class so
-                // Compose consumers (via :ksafe-compose) get accurate stability inference
-                // and skip recompositions when passing a KSafe instance as a Composable
-                // parameter. @Stable has BINARY retention and no runtime effect, so
-                // non-Compose consumers (Ktor servers, CLI tools, plain JVM) do NOT
-                // need compose-runtime on their classpath at runtime.
+                // compileOnly: only for the @Stable markers on KSafe and its mode views. This module
+                // is not Compose-compiled, so the markers are what make Compose treat those types
+                // as stable (:stability-check guards that). @Stable has BINARY retention and no
+                // runtime effect, so non-Compose consumers (Ktor servers, CLI tools, plain JVM)
+                // need no compose-runtime at run time.
                 //
-                // Kotlin/JS, Kotlin/Native and Kotlin/WASM don't model compileOnly the
-                // same way as JVM — klib metadata requires annotation references to
-                // resolve at consumer compile-time, which triggers
-                // IncorrectCompileOnlyDependencyWarning. We suppress that warning in
-                // gradle.properties (kotlin.suppressGradlePluginWarnings=...). A
-                // non-Compose consumer on those targets would need to declare
-                // compose-runtime themselves to compile against this klib — an
-                // accepted trade-off; promoting this to `api` for those targets would
-                // leak compose-runtime onto every consumer's runtime classpath, which
-                // is exactly what we're avoiding.
+                // On Kotlin/JS, Kotlin/Wasm and Kotlin/Native a compileOnly dependency raises
+                // IncorrectCompileOnlyDependencyWarning, which gradle.properties suppresses. A
+                // consumer on those targets without compose-runtime still compiles and links: the
+                // Kotlin linker drops the missing @Stable and logs "Unusable annotation
+                // 'Stable.<init>' has been removed". A build has to bring @Stable itself only when
+                // partial linkage is off (-Xpartial-linkage=disable) or its messages are fatal (log
+                // level ERROR, or WARNING with warnings as errors on JS/Wasm); the small
+                // androidx.compose.runtime:runtime-annotation is enough.
                 compileOnly(libs.runtime)
             }
         }

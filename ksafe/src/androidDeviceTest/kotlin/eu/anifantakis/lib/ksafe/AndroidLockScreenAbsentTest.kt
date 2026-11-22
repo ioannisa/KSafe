@@ -26,6 +26,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.After
+import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -79,6 +80,11 @@ class AndroidLockScreenAbsentTest {
         AndroidLockScreen.deviceSecureForTest = null
         AndroidLockScreen.sdkIntForTest = null
     }
+
+    /** Below API 28 the platform has no `setUnlockedDeviceRequired`, so no seam can make a mint
+     *  apply the flag, relax it or record a marker. */
+    private fun assumeUnlockFlagPlatform() =
+        assumeTrue("setUnlockedDeviceRequired needs API 28", Build.VERSION.SDK_INT >= 28)
 
     /** An API 28..34 device with no secure lock screen: the band where the mint must relax. */
     private fun forceRelax() {
@@ -252,6 +258,7 @@ class AndroidLockScreenAbsentTest {
      *  and records nothing. */
     @Test
     fun forcedKeep_strictKeyMintsWithTheFlag() {
+        assumeUnlockFlagPlatform()
         forceKeep()
         val storage = newStorage()
         val alias = uniqueName("ksafe_kept_flag")
@@ -276,6 +283,7 @@ class AndroidLockScreenAbsentTest {
      *  back after the device grows a lock screen, and deleted with the key it describes. */
     @Test
     fun relaxedMint_recordsAMarker_andDeleteKeyTakesItWithTheKey() {
+        assumeUnlockFlagPlatform()
         forceRelax()
         val storage = newStorage()
         val alias = uniqueName("ksafe_relaxed_marker")
@@ -297,6 +305,7 @@ class AndroidLockScreenAbsentTest {
      *  key that no longer exists must not outlive the unlock-bound key minted in its place. */
     @Test
     fun restoredMarker_isRetiredByAFreshUnlockBoundMint() {
+        assumeUnlockFlagPlatform()
         val storage = newStorage()
         val alias = uniqueName("ksafe_restored_marker")
         runBlocking {
@@ -334,6 +343,7 @@ class AndroidLockScreenAbsentTest {
      *  goes away only when a new key generation mints an unlock-bound master. */
     @Test
     fun note_survivesALockScreenAppearing_andClearsAtTheNextKeyGeneration() {
+        assumeUnlockFlagPlatform()
         forceRelax()
         val safe = newSafe(uniqueName("lsrotate"))
         runBlocking { safe.put("pin", "1234", KSafeWriteMode.Encrypted(requireUnlockedDevice = true)) }
@@ -352,6 +362,7 @@ class AndroidLockScreenAbsentTest {
      *  `storage.clear()` must still be seen, not hidden behind a view assumed empty. */
     @Test
     fun markerLandingAfterAWipe_staysVisibleToTheView() {
+        assumeUnlockFlagPlatform()
         forceRelax()
         val storage = newStorage()
         val alias = uniqueName("ksafe_wipe_race")
@@ -376,6 +387,7 @@ class AndroidLockScreenAbsentTest {
      *  follow the markers rather than two derived master spellings. */
     @Test
     fun note_coversARelaxedPerEntryKey_notOnlyTheMasters() {
+        assumeUnlockFlagPlatform()
         forceKeep()
         val safe = newSafe(uniqueName("lsentry"))
         // Both masters are minted unlock-bound first, so only the per-entry key below can be marked.

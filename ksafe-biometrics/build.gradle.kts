@@ -14,7 +14,7 @@ kotlin {
     android {
         namespace = "eu.anifantakis.lib.ksafe.biometrics"
         compileSdk = 36
-        minSdk = 24
+        minSdk = 23
 
         @OptIn(ExperimentalKotlinGradlePluginApi::class)
         compilerOptions {

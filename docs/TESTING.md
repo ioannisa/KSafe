@@ -43,7 +43,7 @@ KSafe's tests live in *source sets*. A source set is a directory of Kotlin files
 ./gradlew :ksafe:iosSimulatorArm64Test --tests "*.IosKSafeTest"
 ```
 
-On an emulator, set a lock screen and stop the screen from locking before you run the instrumented suite. KSafe creates keys that require an unlocked device; on API 28 through 34 Android will not create such a key unless a secure lock screen exists, and the key can only be used while the device is unlocked. Without these two calls the emulator quietly takes KSafe's degraded no-lock-screen path, and the failures that follow look like KSafe bugs:
+On an emulator, set a lock screen and stop the screen from locking before you run the instrumented suite. KSafe creates keys that require an unlocked device; Android 12–14 (API 31–34) will not create such a key unless a secure lock screen exists, so on API 28 through 34 KSafe asks for one only when a lock screen is set, and the key can only be used while the device is unlocked. Without these two calls the emulator quietly takes KSafe's degraded no-lock-screen path, and the failures that follow look like KSafe bugs:
 
 ```bash
 adb shell locksettings set-pin 1234
@@ -98,10 +98,11 @@ Before each run, `:ksafe:jvmTest` recursively deletes `build/ksafe-test-home/.eu
 
 ### CI parity guards
 
-Two build gates a pull request has to pass. Both can be run locally, and both fail for reasons an ordinary test run never surfaces.
+Three build gates a pull request has to pass. Each can be run locally, and each fails for reasons an ordinary test run never surfaces.
 
 - **`verifyWebTestParity`** — `./gradlew :ksafe:verifyWebTestParity --continue`. It runs both browser suites itself, then fails the build if Kotlin/JS registered fewer tests than wasmJs for any class wasmJs ran — every `commonTest` and `webTest` class, with a class missing from the Kotlin/JS results counted as zero. The legacy Kotlin/JS runner silently stops registering the trailing `@Test` methods of an oversized class — they are compiled into the bundle but never run, with no failure, skip or error — while wasmJs runs the full set from identical source. This guard makes that silent drop loud. Fix a flagged class by splitting it into smaller focused classes; `KSafeNullableDefaultTest` is the pattern.
 - **`apiCheck`** — `./gradlew apiCheck` compares the public API against the dumps committed under `ksafe*/api/`. After a deliberate API change, run `./gradlew apiDump` on a Mac — only a Mac can compile the Apple targets the klib dump covers — and commit the diff.
+- **`verifyStability`** — `./gradlew :stability-check:verifyStability`, also part of `./gradlew :stability-check:check`; the "Build + fast JVM tests" CI job runs it. `:ksafe` is not compiled with the Compose compiler, so Compose sees `KSafe`, `KSafePlain`, `KSafeEncrypted` and `KSafeHardwareIsolated` as stable only because each carries its own `@Stable`. The unpublished `:stability-check` module compiles composables that take each of them, and a class that holds a `KSafe`, with the Compose compiler's reports turned on. The build fails unless the reports list every one of them as `stable`, and the message quotes the line the report printed instead, such as `unstable ksafe: KSafe`.
 
 ### On-device iOS testing
 
@@ -132,6 +133,44 @@ Full setup (Apple team id, device pinning, provisioning) lives in [`ios-device-t
 ```
 
 Without that system property, `DesktopBiometricsTest.livePrompt_realSystemDialog_optIn` returns immediately, so an unattended run never blocks.
+
+### Shrinker test
+
+```bash
+./gradlew :jvm-shrink-test:shrinkTest
+```
+
+`:jvm-shrink-test` shrinks three small desktop apps with R8 in full mode and with ProGuard set up the way a Compose Desktop release build sets it up: Compose's default ProGuard version, the same with obfuscation on, and the newest ProGuard. It then runs every result.
+
+- **vault** uses `:ksafe`. It fails unless KSafe still keeps its keys in the OS secret store, a value written through a `by ksafe(0)` delegate reads back with `getDirect` under the property's name, and every stored type reads back: data classes, a sealed interface, enums, a value class, a list and a map. Where the shrinker renames classes (R8, obfuscating ProGuard), the unshrunk app also reads what the shrunk one wrote, and the other way round.
+- **compose** uses `:ksafe-compose`: a `mutableStateOf` delegate must save under the property's name and read back in a fresh instance.
+- **biometrics** uses `:ksafe-biometrics` alone, so its rules are tested without `:ksafe`'s. It fails if a native bridge reports a load or call failure, or if JNA can no longer bind the Touch ID reply callback, and its answers must match an unshrunk run on the same host. It never shows a prompt. On every OS it asks `biometricsAvailable()`. On a Mac without Touch ID, such as the macOS CI runner, it also makes a strict `verifyBiometric` request, which the native reply settles at once; on a Mac with Touch ID that request is skipped. On Windows only the availability check runs, and how far its COM round trip gets depends on the runner's Windows Hello. On Linux there is no native bridge: both modes pass through.
+
+This is how the rules in [`ksafe.pro`](../ksafe/src/jvmMain/resources/META-INF/proguard/ksafe.pro) and [`ksafe-biometrics.pro`](../ksafe-biometrics/src/jvmMain/resources/META-INF/proguard/ksafe-biometrics.pro) are tested. A rule for one OS is only checked on that OS: the DPAPI rules on Windows, the Secret Service rules on Linux. The test needs a reachable secret store, so it is not part of `check`; the key-vault CI jobs run it on macOS, Windows and Linux. The apps delete their keys from the store when a run succeeds; a run that fails or is stopped can leave its key there until the next successful run.
+
+`:android-shrink-test` does the same for Android: a small app that uses KSafe, built once with R8 and once without. The `full` flavor adds `ksafe-compose` and `ksafe-biometrics` and uses `proguard-android-optimize.txt`, as a new Android Studio project does. The `bare` flavor has KSafe alone and no default rules file, so there is no blanket `-dontwarn androidx.**`: R8 gets only the rules that KSafe and its dependencies ship, plus the keep rules AGP writes for the manifest. That is how [`consumer-rules.pro`](../ksafe/consumer-rules.pro) is tested. The app adds no keep rules of its own. A probe inside it, run with `adb shell am instrument`, writes one value of each of these kinds: delegates, plain, encrypted and hardware-isolated writes, `@Serializable` classes, a value class, sealed types, enums, lists, maps and a `getOrCreateSecret` secret. It rotates the keys and reads each value back in a new process. Each build reads what the other one wrote. The values must match exactly. Facts that depend on the device, such as `protectionInfo` and `getKeyInfo`, must be the same in both builds, and an R8 build must have renamed the `KSafe` class.
+
+In the `full` flavor the probe also starts an empty `FragmentActivity` and checks that KSafe Biometrics tracks it, which shows its startup provider ran under R8. It asks `biometricsAvailable()`, and calls a strict `verifyBiometric` only where nothing is enrolled for it, so the OS refuses at once and no prompt waits for input; where biometrics are enrolled, the call is skipped. It never calls the permissive `verifyBiometric`, which would show the device credential screen.
+
+Gradle writes each APK under `android-shrink-test/build/outputs/apk/<flavor>/<build type>/`, and `android-shrink-probe.sh` wants them in one folder under short names. If that folder also holds `full-compat.apk` or `bare-compat.apk` (a release built with `-Pandroid.enableR8.fullMode=false`), the script runs R8's compat mode the same way, and fails if a compat APK is the same file as its full-mode one. The compat build writes to the same folders as the full-mode one, so copy the full-mode APKs first. The script installs and removes only its own app, `eu.anifantakis.ksafe.shrinktest.android`. The `android-shrink` CI job runs it on the hosted API 34 emulator.
+
+```bash
+./gradlew :android-shrink-test:assembleFullRelease :android-shrink-test:assembleFullUnminified \
+          :android-shrink-test:assembleBareRelease :android-shrink-test:assembleBareUnminified
+mkdir -p build/shrink-apks
+for flavor in full bare; do
+  for type in release unminified; do
+    cp android-shrink-test/build/outputs/apk/$flavor/$type/*.apk build/shrink-apks/$flavor-$type.apk
+  done
+done
+# Optional: R8 compat mode.
+./gradlew :android-shrink-test:assembleFullRelease :android-shrink-test:assembleBareRelease -Pandroid.enableR8.fullMode=false
+for flavor in full bare; do
+  cp android-shrink-test/build/outputs/apk/$flavor/release/*.apk build/shrink-apks/$flavor-compat.apk
+done
+# With one device or emulator connected:
+.github/scripts/android-shrink-probe.sh build/shrink-apks build/shrink-probe-out "$(sed -n 's/^ksafe.version=//p' gradle.properties)"
+```
 
 ### Key rotation
 

@@ -61,7 +61,10 @@ implementation("eu.anifantakis:ksafe-biometrics:<latest>")   // optional: biomet
 ```
 
 `kotlinx-serialization-json` comes transitively — don't add it yourself. If you store
-`@Serializable` classes, apply the kotlin-serialization plugin in your app.
+`@Serializable` classes, apply the kotlin-serialization plugin in your app. A plain enum stored in
+a desktop app shrunk with R8 or ProGuard needs it too (or `@Serializable` on the enum): without the
+plugin its values are found by reflection, which those shrinkers remove. Android's default
+`proguard-android-optimize.txt` keeps them.
 
 ## Construction
 
@@ -153,6 +156,10 @@ on web). Rules an agent must know:
   everything written through that view; the default constructor inherits
   `KSafe.defaultWriteMode`.
 - Quick local views without DI: `ksafe.plain` / `ksafe.encrypted` / `ksafe.hardwareIsolated`.
+  Each access builds a new view. Before passing one to a composable, keep it in a property
+  outside composition (a ViewModel or class `val`) or in `remember(ksafe) { ksafe.plain }`: a
+  local `val` in the composable body builds a new view on every recomposition, and a new view
+  never lets that composable skip.
 
 Pre-3.1.0 (or when you genuinely want separate files): the older two-instance pattern with
 `named("prefs")` / `named("vault")` qualifiers and explicit `mode = KSafeWriteMode.Plain` per
@@ -217,7 +224,10 @@ val ksafe = KSafe(fileName = "vault", directory = "/path/to/dir")
 ```
 
 Web has no directory concept (no `baseDir`). Don't point `baseDir` at external storage for
-sensitive data on Android.
+sensitive data on Android. Changing `baseDir` on an existing Android store does not move it: the
+new location starts empty, and the old file is still backed up. Keystore keys are scoped by
+`fileName` alone, so give the new store its own `fileName` — two instances that differ only in
+`baseDir` share keys, and `clearAll()` on one deletes the other's.
 
 ## `KSafe.close()` — only when re-creating instances mid-process
 
@@ -868,7 +878,8 @@ data class User(@Contextual val id: UUID, val name: String)
 ## Diagnostics — `KSafe.protectionInfo` and `KSafe.VERSION`
 
 ```kotlin
-val info = ksafe.protectionInfo   // recomputed per access (2.1.1+): a runtime JVM degrade shows up live
+val info = ksafe.protectionInfo   // recomputed per access (2.1.1+): a runtime JVM degrade shows on the next read
+                                  // not Compose state: changing it recomposes nothing
                                   // 3.2.0+: on Android with a secure lock screen (API 35+ included) this does
                                   // ONE blocking store read per process (again after clearAll()) — call it
                                   // off the main thread, never in Activity.onCreate
@@ -962,6 +973,19 @@ in one of two ways, depending on the DataStore build — the write path is `encr
 missing `Unsafe` dropped writes **silently**; one whose protobuf hard-requires it **crashed on
 the first read**. 2.1.1's JSON fallback loads no protobuf, so neither happens — it degrades to
 a software key tier instead of losing data.
+
+**Shrinking (R8 / ProGuard):** JNA finds the vault's methods and fields by name, so a shrunk app
+without KSafe's keep rules runs but drops to the `SOFTWARE` tier (`jvm_os_vault_unavailable`).
+R8 applies the rules from the jar (`META-INF/proguard/ksafe.pro`) by itself. ProGuard does not,
+and Compose Desktop release builds run ProGuard, so copy
+[`ksafe.pro`](https://github.com/ioannisa/KSafe/blob/main/ksafe/src/jvmMain/resources/META-INF/proguard/ksafe.pro)
+into the app and add it:
+`compose.desktop { application { buildTypes.release.proguard { configurationFiles.from(project.file("ksafe.pro")) } } }`.
+With `ksafe-biometrics`, add its
+[`ksafe-biometrics.pro`](https://github.com/ioannisa/KSafe/blob/main/ksafe-biometrics/src/jvmMain/resources/META-INF/proguard/ksafe-biometrics.pro)
+the same way. Without it, next to `ksafe.pro`, every macOS `verifyBiometric` throws
+`IllegalArgumentException` before any prompt; with no KSafe rules at all, a permissive
+`verifyBiometric` returns `true` with no prompt.
 
 ---
 
@@ -1177,7 +1201,7 @@ val ms                      by ksafe.asMutableStateFlow(State(), viewModelScope)
 ksafe.getFlow(key, defaultValue).collect { … }
 
 // Diagnostics
-ksafe.protectionInfo          // live KSafeProtectionInfo (effectiveLevel, custody, notes, kSafeVersion); Android 3.2.0+: off the main thread
+ksafe.protectionInfo          // current KSafeProtectionInfo (effectiveLevel, custody, notes, kSafeVersion); Android 3.2.0+: off the main thread
 ksafe.protectionInfo.isEncryptionOperational  // 3.0.0+: false where encrypted ops can't run (web non-secure / JVM OS vault unreachable)
 ksafe.getKeyInfo(key)         // per-key KSafeKeyInfo (prefer .level)
 ksafe.deviceKeyStorages       // platform capability tiers

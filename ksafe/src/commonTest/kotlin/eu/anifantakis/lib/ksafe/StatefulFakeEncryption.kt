@@ -9,14 +9,17 @@ import eu.anifantakis.lib.ksafe.internal.KSafeInitLock
  * first encrypt, [deleteKey] destroys it, and decrypt throws for a missing or replaced key.
  * [FakeEncryption] derives keys from the alias string and keeps decrypting after deletion, so use
  * this one whenever a test must prove that key destruction makes ciphertext unreadable.
+ *
+ * Every instance numbers its keys from [firstKeyId]. A test that reopens a store with a fresh
+ * engine to model lost keys must start it elsewhere, or the new key reuses the old id and decrypts.
  */
-internal open class StatefulFakeEncryption : KSafeEncryption {
+internal open class StatefulFakeEncryption(firstKeyId: Int = 1) : KSafeEncryption {
 
     // The commit path encrypts a batch's entries concurrently, so the mint must be atomic: an
     // unsynchronized getOrPut can hand two callers different key ids for the same alias.
     private val lock = KSafeInitLock()
 
-    private var nextKeyId = 1
+    private var nextKeyId = firstKeyId
 
     /** Live key material per alias; removed by [deleteKey]. */
     val keysByAlias = mutableMapOf<String, Int>()

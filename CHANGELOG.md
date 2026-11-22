@@ -2,6 +2,124 @@
 
 All notable changes to KSafe will be documented in this file.
 
+## [3.3.1] - 2026-11-23
+
+### Changed
+
+- **Android: the minimum API level is now 23 (Android 6.0), down from 24
+  ([#41](https://github.com/ioannisa/KSafe/pull/41)).** `ksafe`, `ksafe-biometrics` and
+  `ksafe-compose` declare `minSdk 23`, which DataStore 1.2.1 already supports. KSafe called two
+  Java 8 APIs that Android 6.0 lacks (`ConcurrentHashMap.newKeySet()` and `computeIfAbsent`); both
+  now use calls that exist since API 1, with the same thread safety. API 23 behaves like 24–27:
+  there is no StrongBox and no `setUnlockedDeviceRequired`, so `HARDWARE_ISOLATED` uses the regular
+  Keystore and the OS does not enforce `requireUnlockedDevice`.
+
+### Fixed
+
+- **JVM: a shrunk desktop app keeps its keys in the OS secret store.** KSafe reaches the macOS
+  Keychain, Windows DPAPI and the Linux Secret Service through JNA, which finds methods and fields
+  by name at run time. R8 and ProGuard removed or renamed them, so a minified desktop app fell back
+  to keeping its AES keys Base64-encoded in the DataStore file (`protectionInfo` reported
+  `SOFTWARE` with note `jvm_os_vault_unavailable`), with only a one-time stderr warning that blamed
+  a missing OS secret store. The JVM jar now carries keep rules in
+  `META-INF/proguard/ksafe.pro`, and R8 applies them by itself. ProGuard does not read rules from
+  jars, so a Compose Desktop release build lists the file in
+  `buildTypes.release.proguard.configurationFiles`; see
+  [docs/JVM_PROTECTION.md](docs/JVM_PROTECTION.md#shrinking-r8-and-proguard). Data written while
+  the fallback was active stays readable: on first use KSafe moves each of those keys into the OS
+  store. The same file also lets R8 shrink an app without Compose, which stopped on KSafe's
+  compile-only `@Stable` annotation (`Missing class androidx.compose.runtime.Stable`). A new
+  `:jvm-shrink-test` module shrinks a small app with R8 and with Compose-style ProGuard, runs it,
+  and checks the OS store is still in use; the key-vault CI jobs run it on macOS, Windows and
+  Linux.
+- **JVM: an obfuscating ProGuard build keeps reading and writing the store.** DataStore's protobuf
+  finds its fields by name, and the rule that keeps them sits in DataStore's own jar, which ProGuard
+  does not read. With obfuscation on (Compose Desktop's `proguard { obfuscate.set(true) }`) every
+  write failed with `Field value_ ... not found` and existing data could not be read. `ksafe.pro`
+  now carries that rule.
+- **JVM biometrics: a shrunk desktop app keeps the native bridges behind Touch ID and Windows
+  Hello.**
+  `ksafe-biometrics` reaches both through JNA, which R8 and ProGuard broke the same way. In an app
+  without `ksafe`'s rules the native bridge failed to load, so `verifyBiometric` in its default,
+  permissive mode returned `true` without showing a prompt, and in strict mode it refused. Next to
+  `ksafe`, both shrinkers still removed the Touch ID reply callback, so `verifyBiometric` threw
+  `IllegalArgumentException` before any prompt. The jar now carries its own keep rules in
+  `META-INF/proguard/ksafe-biometrics.pro`; a Compose Desktop release build adds it like
+  `ksafe.pro`. `:jvm-shrink-test` checks a biometrics-only app too: its bridges must load and answer
+  as they do unshrunk, and JNA must still bind the Touch ID reply callback, without ever showing a
+  prompt.
+- **Android: R8 no longer fails a release build without Compose on `Missing class
+  androidx.compose.runtime.Stable`.** KSafe marks its classes with Compose's `@Stable`, a
+  compile-only annotation. R8 stopped the release build of an app that had neither Compose's
+  annotations on its classpath (Compose brings them, and so does `androidx.activity` 1.12 and
+  later) nor a default rules file such as `proguard-android-optimize.txt`, whose
+  `-dontwarn androidx.**` hid the error. The Android AAR now ships a consumer rule (`proguard.txt`)
+  that tells R8 the class may be missing, as the JVM jar's `ksafe.pro` already does. A new
+  `:android-shrink-test` app, built with and without R8, writes and reads back delegates, plain,
+  encrypted and hardware-isolated values, `@Serializable` classes, sealed types, enums,
+  collections and a secret; the `android-shrink` CI job runs it on an emulator.
+- **A store restored without its keys has its encrypted entries removed again
+  ([#40](https://github.com/ioannisa/KSafe/issues/40)).** When the store file comes back without
+  its keys (Android Auto Backup or a device-to-device transfer, an iOS backup restored onto another
+  iPhone, a JVM data file copied without its key), startup created a new master key before the
+  orphan sweep ran. The sweep then saw a GCM bad-tag failure instead of a missing key, so it kept
+  `DEFAULT` entries, and usually strict ones too: unreadable for good, still listed by
+  `getKeyInfo`, until overwritten. Startup now creates master keys only after the sweep, so these
+  entries are removed, as the documentation describes. One window remains: an encrypted write that
+  lands before the sweep finishes still creates the key first, and the entries it orphans stay.
+
+### Documentation
+
+- **A plain enum in a shrunk desktop app.** Without `@Serializable` on the enum, or the
+  serialization plugin in the module that stores it, kotlinx.serialization finds the enum's values
+  by reflection, and R8 on the desktop and the ProGuard that Compose Desktop release builds run
+  remove them, so storing or reading it throws. Android's default `proguard-android-optimize.txt`
+  keeps them. [docs/SERIALIZATION.md](docs/SERIALIZATION.md) and the README now say so.
+- **Corrections to three earlier entries about Compose.** The 3.2.0 entry "a `KSafeReference` read
+  inside a composable is no longer skipped over" is wrong. No release shipped `KSafeReference`
+  with `@Stable`, and with strong skipping on (the Compose default) a composable that receives the
+  same handle still skips when its parent recomposes, because Compose compares that parameter by
+  identity. Its `value` has no snapshot state behind it, so in composition read it through
+  `rememberKSafeState` from `:ksafe-compose`, or call `collectAsState()` on a `StateFlow` (from
+  `getStateFlow`, or a `by ksafe.asStateFlow(default, scope)` property). The 2.1.0 *Build* entry is
+  wrong where it says Native, JS and Wasm consumers without Compose must declare
+  `compose-runtime`: they compile and link, and the Kotlin linker drops the missing `@Stable` with
+  the note `Unusable annotation 'Stable.<init>' has been removed`. Only a build that turns partial
+  linkage off (`-Xpartial-linkage=disable`) or makes its messages fatal (log level `ERROR`, or
+  `WARNING` with warnings as errors on JS and Wasm) has to bring `@Stable` itself, and the small
+  `androidx.compose.runtime:runtime-annotation` is enough. The 1.4.0 entry says
+  `UiSecurityViolation` ensures Compose stability: `SecurityViolation` is an enum, Compose treats
+  every enum as stable, and a list of either is compared the same way, so the wrapper changes
+  nothing for skipping. The README, [docs/USAGE.md](docs/USAGE.md),
+  [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md) and the KDoc now say what `@Stable` covers (the
+  `KSafe` instance, not its stored values) and that `ksafe.plain` is a new view on every access.
+- **What a restore or a lost key does, per platform.** The docs said the startup sweep removes
+  every entry restored without its key, that an iOS backup never brings a key back, and that
+  `…ThisDeviceOnly` applies on macOS. A backup restored onto the same iPhone brings the Keychain
+  items back, so `DEFAULT` values decrypt again, while Secure Enclave keys never return; macOS uses
+  the file-based login Keychain, where that attribute has no effect.
+  [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md#reinstall-and-restore-behavior),
+  [docs/MIGRATION.md](docs/MIGRATION.md#ios-backups-what-a-restore-brings-back),
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/JVM_PROTECTION.md](docs/JVM_PROTECTION.md)
+  now say what comes back on each platform and which entries the sweep keeps, and
+  [docs/SETUP.md](docs/SETUP.md) says that an Android store moved to `noBackupFilesDir` needs its
+  own `fileName`.
+
+### Tests
+
+- **Restore without keys.** `JvmRestoreWithoutKeysSweepTest` (every memory policy, with and without
+  `lazyLoad`) and the device test `AndroidRestoreWithoutKeysTest` reopen a store whose keys are
+  gone. They check that the startup sweep reclaims `DEFAULT`, strict and `HARDWARE_ISOLATED`
+  entries, and that a fresh write survives a restart.
+- **Device tests on API 23 to 27.** Six `AndroidLockScreenAbsentTest` tests need
+  `setUnlockedDeviceRequired`, which arrived in API 28; they now skip below it, so the device suite
+  passes on Android 6.0 to 8.1.
+- **Compose stability guard.** The unpublished `:stability-check` module compiles composables that
+  take `KSafe`, `KSafePlain`, `KSafeEncrypted` and `KSafeHardwareIsolated`, and a class that holds
+  a `KSafe`, with Compose compiler reports on. Its `verifyStability` task fails the build unless
+  the reports list each of them as `stable`; the "Build + fast JVM tests" CI job runs it. See
+  [docs/TESTING.md](docs/TESTING.md#ci-parity-guards).
+
 ## [3.3.0] - 2026-10-03
 
 ### Added

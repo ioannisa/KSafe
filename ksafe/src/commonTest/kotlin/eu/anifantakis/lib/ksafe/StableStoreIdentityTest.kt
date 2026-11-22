@@ -8,7 +8,7 @@ import kotlin.test.assertNotEquals
 /**
  * Locks in: the v3 AAD store identity is home-relative, so an OS-relocated home — the iOS container
  * UUID changes on every App Store update, a JVM user home can move — yields the same identity. An
- * absolute path would fail every rotated entry's AAD after an update, and the sweep would reap it.
+ * absolute path would fail every rotated entry's AAD after an update: each would read as default.
  */
 class StableStoreIdentityTest {
 

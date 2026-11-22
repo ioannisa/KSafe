@@ -457,10 +457,10 @@ val n = ksafe.getDirect("counter", 0)
 
 | API | Read | Write | Best For |
 |-----|------|-------|----------|
-| `getDirect`/`putDirect` | 0.0015 ms | 0.0010 ms | UI thread, fire-and-forget, cache reads |
-| `get`/`put` (suspend) | 0.0024 ms | 0.86 ms | Guaranteed persistence; multiple concurrent callers |
+| `getDirect`/`putDirect` | 0.0005 ms | 0.0042 ms | UI thread, fire-and-forget, cache reads |
+| `get`/`put` (suspend) | 0.0046 ms | 0.66 ms | Guaranteed persistence; multiple concurrent callers |
 
-> Numbers from the unencrypted-operations table in [BENCHMARKS.md](BENCHMARKS.md) (Direct API row, rounded; Samsung Galaxy S24 Ultra), measured on KSafe 2.1.2. That document states which later versions the figures still describe, and gives the methodology, the hardware, and the full table.
+> Numbers from the unencrypted-operations table in [BENCHMARKS.md](BENCHMARKS.md) (rounded; Samsung Galaxy S24 Ultra, release build), measured on KSafe 3.3.0. That document gives the methodology, the hardware, and the full table.
 
 ## Write Mode API (Per-Entry Unlock Policy)
 
@@ -470,7 +470,7 @@ Every write carries a *mode* that says how the value is stored:
 - `KSafeWriteMode.Encrypted(protection, requireUnlockedDevice)` — encrypted with AES-GCM under a key KSafe keeps in the platform key store. This is the default.
   - `protection = KSafeEncryptedProtection.DEFAULT` — the platform's normal key store: Android Keystore, Apple Keychain, the OS vault on JVM Desktop, a browser-origin key on Web.
   - `protection = KSafeEncryptedProtection.HARDWARE_ISOLATED` — asks for the device's dedicated security chip (StrongBox on Android, Secure Enclave on Apple). A request, not a guarantee: where that hardware is missing the write lands in the same store as `DEFAULT`. To see which happened, read `getKeyInfo(key)?.level` for one entry, or `protectionInfo` for the custody the whole instance negotiated.
-  - `requireUnlockedDevice = true` — the entry's key is usable only while the device is unlocked. Enforced on Android and Apple; JVM and Web have no device lock and store an ordinary encrypted entry. On Android 28–34, removing the lock screen can silently delete such keys (the value then reads back as its default), so treat it as hardening, not a portable guarantee.
+  - `requireUnlockedDevice = true` — the entry's key is usable only while the device is unlocked. Enforced on Android and Apple; JVM and Web have no device lock and store an ordinary encrypted entry. On Android 12–14 (API 31–34), removing the lock screen silently deletes such keys (the value then reads back as its default), and a face unlock may not re-authorize them, so treat it as hardening, not a portable guarantee.
 
 Reads take no mode: KSafe records how each entry was written and decrypts it accordingly.
 
@@ -871,7 +871,7 @@ To wipe **everything** in an instance at once:
 ksafe.clearAll()   // suspend — removes every entry AND its encryption key
 ```
 
-`clearAll()` is destructive and irreversible: it clears the whole store — disk plus the caches of every live instance on this file (on web each instance still owns its own store handle) — and deletes every associated key from the OS key store. The data wipe fails loudly; the key deletions are best-effort — a platform-vault failure is logged rather than thrown, since the values are already gone and surviving key material only matters to out-of-store ciphertext copies (backups, quarantine files).
+`clearAll()` is destructive and irreversible: it clears the whole store — disk plus the caches of every live instance on this file (on web each instance still owns its own store handle) — and deletes the store's master keys plus the per-entry key of every entry it still records. A key whose entry is already gone is not found and stays, for example a Keychain key left over from an earlier install on iOS. The data wipe fails loudly; the key deletions are best-effort — a platform-vault failure is logged rather than thrown, since the values are already gone and surviving key material only matters to out-of-store ciphertext copies (backups, quarantine files).
 
 Before you call `clearAll()` on logout, know what it takes with it:
 
@@ -922,7 +922,7 @@ class SecurityViewModel : ViewModel() {
 }
 ```
 
-The `ksafe-compose` module ships `UiSecurityViolation` — an `@Immutable` wrapper around `SecurityViolation` — so Compose can skip recomposition; prefer it over the raw enum in composable state. The policy actions (`IGNORE` — the default, where the check never runs — `WARN`, and `BLOCK`, which throws from the factory call), the preset policies, and the detection methods are documented in **[docs/SECURITY_MODEL.md](SECURITY_MODEL.md)**.
+`SecurityViolation` is an enum, and Compose treats every enum as stable, so the raw values work in composable state as they are. `ksafe-compose` also ships `UiSecurityViolation`, an `@Immutable` data class that holds one `SecurityViolation`; it does not change how Compose skips. For a list, the list type decides: a plain `List` of either type is unstable, so Compose compares it by identity, while the `SnapshotStateList` that `mutableStateListOf` returns is stable. The policy actions (`IGNORE` — the default, where the check never runs — `WARN`, and `BLOCK`, which throws from the factory call), the preset policies, and the detection methods are documented in **[docs/SECURITY_MODEL.md](SECURITY_MODEL.md)**.
 
 ## Full ViewModel Example
 

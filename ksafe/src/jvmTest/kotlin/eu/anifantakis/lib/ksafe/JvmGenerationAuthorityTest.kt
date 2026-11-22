@@ -5,6 +5,7 @@ import eu.anifantakis.lib.ksafe.internal.KSafePlatformStorage
 import eu.anifantakis.lib.ksafe.internal.KeySafeMetadataManager
 import eu.anifantakis.lib.ksafe.internal.StorageOp
 import eu.anifantakis.lib.ksafe.internal.StoredValue
+import eu.anifantakis.lib.ksafe.internal.coreparts.prewarmMasterKeys
 import eu.anifantakis.lib.ksafe.internal.coreparts.processWrites
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -651,6 +652,8 @@ class JvmGenerationAuthorityTest {
             storage.seed(keygenKey to StoredValue.Text(future))
             val core = buildCore(storage, engine)
             core.startupCleanupDone.set(true)
+            // Skipping the startup cleanup skips its master-key prewarm too, so run it here.
+            core.prewarmMasterKeys()
             withTimeout(10.seconds) {
                 while (!engine.liveAliases().containsAll(listOf("master", "master_locked"))) delay(10)
             }

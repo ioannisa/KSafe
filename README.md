@@ -65,9 +65,9 @@ KSafe in action across many scenarios: **[KSafeDemo — Compose Multiplatform ap
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:3.3.0")
-implementation("eu.anifantakis:ksafe-compose:3.3.0")     // ← Compose state (optional)
-implementation("eu.anifantakis:ksafe-biometrics:3.3.0")  // ← Biometric auth (optional)
+implementation("eu.anifantakis:ksafe:3.3.1")
+implementation("eu.anifantakis:ksafe-compose:3.3.1")     // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe-biometrics:3.3.1")  // ← Biometric auth (optional)
 ```
 
 > Skip `ksafe-compose` if you don't use Jetpack Compose or `mutableStateOf` persistence.
@@ -78,7 +78,7 @@ implementation("eu.anifantakis:ksafe-biometrics:3.3.0")  // ← Biometric auth (
 
 ### 2 - Apply the kotlinx-serialization plugin
 
-Required only if you store `@Serializable` data classes. Add it to `libs.versions.toml`:
+Required if you store `@Serializable` classes. Also apply it where you store a plain enum in a desktop app shrunk with R8 or ProGuard: without the plugin the enum's values are found by reflection, which those shrinkers remove (Android's default `proguard-android-optimize.txt` keeps them). Add it to `libs.versions.toml`:
 ```toml
 [versions]
 kotlin = "2.2.21"
@@ -122,6 +122,8 @@ actual val platformModule = module {
 Multi-instance setups, web `awaitCacheReady()`, custom storage directories, key namespacing for Desktop/Web (`appNamespace`), and AES key-size configuration: **[docs/SETUP.md](docs/SETUP.md)**.
 
 > **Compose Desktop release builds:** add `modules("jdk.unsupported", "java.management")` to `nativeDistributions` for OS-backed key custody — why, and what happens without it: [docs/JVM_PROTECTION.md](docs/JVM_PROTECTION.md#compose-desktop-release-distributables-jdkunsupported).
+>
+> **Shrinking a desktop app:** R8 picks up the keep rules of KSafe and KSafe Biometrics from their jars; ProGuard, which Compose Desktop release builds run, needs `ksafe.pro` (and `ksafe-biometrics.pro`) added by hand: [docs/JVM_PROTECTION.md](docs/JVM_PROTECTION.md#shrinking-r8-and-proguard). On Android there are no keep rules to add: R8 reads KSafe's rule from the AAR.
 
 ---
 
@@ -149,7 +151,7 @@ counter.value++
 
 ### Through the KSafe instance
 
-No variable per key. You address any key, at any time, straight on the instance. Each operation comes in two forms: a `suspend` one that waits for the disk flush, and a `Direct` one that returns at once, serves reads from the hot cache and flushes writes in the background (about 1000x faster for bulk work).
+No variable per key. You address any key, at any time, straight on the instance. Each operation comes in two forms: a `suspend` one that waits for the disk flush, and a `Direct` one that returns at once, serves reads from the hot cache and flushes writes in the background (about 150x faster for bulk writes).
 
 ```kotlin
 // Put
@@ -233,7 +235,7 @@ There is no writable shape without the delegate, and none is needed: to write, u
 
 ### Compose
 
-Persistent state inside a `@Composable` body. The `rememberSaveable` analogue that also survives app restarts; the key resolves to the property name and no ViewModel is needed. `KSafe` is `@Stable`, so it can be passed as a parameter without breaking skipping. The default mode here is `Plain`, because this is UI state, not a secret. Requires `ksafe-compose`.
+Persistent state inside a `@Composable` body. The `rememberSaveable` analogue that also survives app restarts; the key resolves to the property name and no ViewModel is needed. The default mode here is `Plain`, because this is UI state, not a secret. Requires `ksafe-compose`.
 
 ```kotlin
 @Composable
@@ -242,6 +244,8 @@ fun TabbedScreen(ksafe: KSafe) {
     // ...
 }
 ```
+
+`KSafe` is `@Stable`: a composable that receives the same instance can be skipped, and a class that holds one stays stable. The marker covers the instance, not the stored values, so `getDirect` and `protectionInfo` never trigger recomposition — read values in the UI through `rememberKSafeState`, or through a `StateFlow` built once outside composition (`getStateFlow` in a ViewModel, or a `by ksafe.asStateFlow(...)` property) and collected with `collectAsState()`, and hoist `ksafe.plain` (a new view on every access) before passing it down.
 
 ### State
 
@@ -343,15 +347,19 @@ if (KSafeBiometrics.verifyBiometric("Unlock your wallet")) showSecrets()
 
 Pass `authorizationDuration = BiometricAuthorizationDuration(duration = 60_000L, scope = "payments")` to keep the next minute prompt-free in that scope. Details: **[docs/BIOMETRICS.md](docs/BIOMETRICS.md)**.
 
-**What protection did I actually get** — per store and per key, at runtime:
+**What protection did I actually get** — per device, per store and per key, at runtime:
 
 ```kotlin
+ksafe.deviceKeyStorages                       // key stores this device has, e.g. {HARDWARE_BACKED, HARDWARE_ISOLATED}
 ksafe.protectionInfo.effectiveLevel           // the tier the store really runs at
+ksafe.protectionInfo.notes                    // stable codes that explain it, e.g. "android_strongbox_absent"
 ksafe.protectionInfo.isEncryptionOperational  // will encrypted reads and writes succeed right now?
+ksafe.getKeyInfo("pin")?.protection           // the tier this key's write asked for
 ksafe.getKeyInfo("pin")?.level                // where this one key's material landed
+KSafe.VERSION                                 // the linked KSafe version, e.g. "3.3.1"
 ```
 
-Read it off the main thread on Android. Details: **[docs/PROTECTION_INFO.md](docs/PROTECTION_INFO.md)**.
+`protectionInfo.kSafeVersion` carries the same version, so one snapshot gives you version, custody and notes for a bug report or a log line. A missing StrongBox or Secure Enclave never throws: KSafe falls back to the TEE or the Keychain and reports it here. No setting makes it fail instead. To require the chip, check `KSafeKeyStorage.HARDWARE_ISOLATED in ksafe.deviceKeyStorages` before you write and `getKeyInfo(key)?.level` after. `deviceKeyStorages` uses a coarser scale: it says `{SOFTWARE}` on JVM desktop and web even when `effectiveLevel` is `SANDBOX_PROTECTED`, so don't compare it with the other two. Ignore `notes` codes you don't know; new ones can appear in a minor release. Read these off the main thread on Android. Details: **[docs/PROTECTION_INFO.md](docs/PROTECTION_INFO.md)**.
 
 > **Note:** The property delegate and the direct handle work with **any** KSafe instance — `var x by myKsafe(default)` makes `myKsafe` the storage backend. The bare `ksafe(default)` form requires an in-scope `ksafe` (the conventional name, typically your default instance). See [docs/SETUP.md](docs/SETUP.md#multiple-instances) for the multi-instance pattern.
 
@@ -444,7 +452,7 @@ Everything else lives in [docs/](docs/). **New here? Start with [USAGE](docs/USA
 | [Security Model](docs/SECURITY_MODEL.md) | Runtime security policy (root/debugger/emulator), encryption internals, threat model, crypto utilities (`getOrCreateSecret`, `secureRandomBytes`) |
 | [Key Rotation](docs/KEY_ROTATION.md) | `rotateKeys()` and the `MaxAge` policy: crash-safe, resumable, compliance notes |
 | [Protection Info](docs/PROTECTION_INFO.md) | `KSafe.protectionInfo` diagnostics: effective key custody, `isEncryptionOperational`, gating patterns |
-| [JVM Key Protection](docs/JVM_PROTECTION.md) | Windows DPAPI / macOS Keychain / Linux Secret Service, software fallback, `jdk.unsupported` |
+| [JVM Key Protection](docs/JVM_PROTECTION.md) | Windows DPAPI / macOS Keychain / Linux Secret Service, software fallback, `jdk.unsupported`, R8 / ProGuard |
 | [Memory Policy](docs/MEMORY.md) | RAM-exposure trade-offs: `LAZY_PLAIN_TEXT`, `PLAIN_TEXT`, `ENCRYPTED`, `ENCRYPTED_WITH_TIMED_CACHE` |
 | [Encryption Proof](docs/ENCRYPTION_PROOF.md) | Automated proof tests + commands to inspect the raw stored bytes yourself |
 | [Performance Benchmarks](docs/BENCHMARKS.md) | Full tables, cold-start numbers, methodology |
@@ -455,7 +463,7 @@ Everything else lives in [docs/](docs/). **New here? Start with [USAGE](docs/USA
 | [Migration Guide](docs/MIGRATION.md) | Upgrading from older KSafe versions |
 | [Skill for AI Agents](docs/AI_AGENTS.md) | Installing the KSafe skill in Claude Code and other agents, updating it, common pitfalls |
 
-**Compatibility:** Android API 24+ · iOS 13+ · macOS 11+ (`macosArm64`/`macosX64`) · JDK 11+ · WasmGC browsers · Kotlin/JS. Kotlin 2.0+.
+**Compatibility:** Android API 23+ · iOS 13+ · macOS 11+ (`macosArm64`/`macosX64`) · JDK 11+ · WasmGC browsers · Kotlin/JS. Kotlin 2.0+.
 
 ***
 
