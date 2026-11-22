@@ -13,7 +13,7 @@ plugins {
     alias(libs.plugins.kotlinJvm) apply false
     alias(libs.plugins.vanniktech.mavenPublish) apply false
     alias(libs.plugins.android.kotlin.multiplatform.library) apply false
-    id("org.jetbrains.kotlinx.binary-compatibility-validator") version "0.18.1"
+    id("org.jetbrains.kotlinx.binary-compatibility-validator") version "0.18.2"
 }
 
 // Locks the public ABI of every published module: `apiCheck` (wired into `check` and run in
