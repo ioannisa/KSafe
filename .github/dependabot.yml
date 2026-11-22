@@ -1,4 +1,5 @@
-# Keep CI automation and Gradle dependencies current without flooding maintainers.
+# Keeps the GitHub Actions that CI uses current. Library and toolchain dependencies are
+# upgraded by hand with each release, because they change what KSafe's users get.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
@@ -8,17 +9,6 @@ updates:
     open-pull-requests-limit: 3
     groups:
       routine-actions:
-        update-types:
-          - "minor"
-          - "patch"
-
-  - package-ecosystem: "gradle"
-    directory: "/"
-    schedule:
-      interval: "monthly"
-    open-pull-requests-limit: 3
-    groups:
-      routine-gradle:
         update-types:
           - "minor"
           - "patch"
