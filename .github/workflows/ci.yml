@@ -138,7 +138,7 @@ jobs:
       # check run, so the step needs no write permission and cannot red the job.
       - name: Test summary (incl. skipped)
         if: always()
-        uses: mikepenz/action-junit-report@v5
+        uses: mikepenz/action-junit-report@v6
         continue-on-error: true
         with:
           report_paths: '*/build/test-results/jvmTest/TEST-*.xml'
@@ -183,7 +183,7 @@ jobs:
           -PksafeStressScale=0.05 -PksafeTestLog --continue --stacktrace
       - name: Test summary (incl. skipped)
         if: always()
-        uses: mikepenz/action-junit-report@v5
+        uses: mikepenz/action-junit-report@v6
         continue-on-error: true
         with:
           report_paths: '*/build/test-results/jvmTest/TEST-*.xml'
@@ -233,7 +233,7 @@ jobs:
           --continue --no-daemon --no-configuration-cache --stacktrace
       - name: Test summary (incl. skipped)
         if: always()
-        uses: mikepenz/action-junit-report@v5
+        uses: mikepenz/action-junit-report@v6
         continue-on-error: true
         with:
           report_paths: '*/build/test-results/jvmTest/TEST-*.xml'
@@ -593,7 +593,7 @@ jobs:
             timeout 30m ./gradlew :ksafe:connectedAndroidDeviceTest :ksafe-compose:connectedAndroidDeviceTest :ksafe-biometrics:connectedAndroidDeviceTest --continue --stacktrace
       - name: Test summary (incl. skipped)
         if: always()
-        uses: mikepenz/action-junit-report@v5
+        uses: mikepenz/action-junit-report@v6
         continue-on-error: true
         with:
           report_paths: '*/build/outputs/androidTest-results/**/TEST-*.xml'
