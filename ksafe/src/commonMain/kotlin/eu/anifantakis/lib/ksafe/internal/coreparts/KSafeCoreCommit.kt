@@ -47,6 +47,8 @@ private fun KSafeCore.encryptedEntryRecordOps(op: EncryptingWrite, base64: Strin
 /** Moves a sibling core's cached entry onto a committed rotation, or it keeps decrypting through a
  *  master the sweep will reclaim. CAS'd, so the sibling's own writes survive. */
 private fun KSafeCore.adoptRotatedEntry(op: PendingWrite.Rotate, newBase64: String) {
+    // Fence before any early return: this core's collector can be holding a pre-rotation snapshot.
+    rotatedAwayCiphertext[op.userKey] = op.expectedOldCiphertext
     val ownerAtStart = writeOwners[op.userKey]
     val old = encMetaMap[op.userKey] ?: return
     if (old.keyGeneration >= op.keyGeneration ||
@@ -476,6 +478,9 @@ internal suspend fun KSafeCore.processWrites(batchIn: List<PendingWrite>) {
             is PendingWrite.Rotate -> if (op.userKey in appliedRotations) {
                 op.applied.set(true)
                 val newBase64 = KSafeBase64.encode(encryptedCiphertext[op.userKey]!!)
+                // Fence before the swap: a merge samples the slot before it checks the fence, so
+                // it either skips this entry or loses its CAS to the swap.
+                rotatedAwayCiphertext[op.userKey] = op.expectedOldCiphertext
                 // Prove the entry untouched before bumping RAM meta: a plaintext-policy cache never
                 // holds the old ciphertext, so its CAS can never match — anchor on write ownership
                 // instead, since rotation never claims a key.

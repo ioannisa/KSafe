@@ -2,6 +2,28 @@
 
 All notable changes to KSafe will be documented in this file.
 
+## [3.3.2] - 2026-11-23
+
+### Fixed
+
+- **Values read right after a key rotation no longer come back as their defaults.** The
+  background collector merges each disk snapshot into the memory cache. A snapshot taken before
+  `rotateKeys()` (or an automatic rotation) could be merged after it, or in the middle of it, and
+  put the old ciphertext back next to the new key generation. Until the next snapshot arrived,
+  every read of that entry returned its default, and an app that wrote such a default back lost
+  the stored value. Only keys the process had read but not written were exposed, under every
+  memory policy that keeps ciphertext in RAM (`LAZY_PLAIN_TEXT`, the default, `ENCRYPTED` and
+  `ENCRYPTED_WITH_TIMED_CACHE`). The data on disk was always correct. A merge now skips an entry
+  while its snapshot still holds the ciphertext a rotation replaced; any later change, such as a
+  sibling instance's write, is merged as before. 3.3.0 behaves the same; the Android shrink test
+  found it on CI.
+
+### Tests
+
+- **Rotation against a stale merge.** `JvmRotationStaleMergeTest` merges a pre-rotation snapshot
+  after a rotation and in the middle of one, under every memory policy, and checks that a newer
+  write from a sibling instance still reaches the cache.
+
 ## [3.3.1] - 2026-11-23
 
 ### Changed

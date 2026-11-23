@@ -65,9 +65,9 @@ KSafe in action across many scenarios: **[KSafeDemo — Compose Multiplatform ap
 
 ```kotlin
 // commonMain or Android-only build.gradle(.kts)
-implementation("eu.anifantakis:ksafe:3.3.1")
-implementation("eu.anifantakis:ksafe-compose:3.3.1")     // ← Compose state (optional)
-implementation("eu.anifantakis:ksafe-biometrics:3.3.1")  // ← Biometric auth (optional)
+implementation("eu.anifantakis:ksafe:3.3.2")
+implementation("eu.anifantakis:ksafe-compose:3.3.2")     // ← Compose state (optional)
+implementation("eu.anifantakis:ksafe-biometrics:3.3.2")  // ← Biometric auth (optional)
 ```
 
 > Skip `ksafe-compose` if you don't use Jetpack Compose or `mutableStateOf` persistence.
@@ -356,7 +356,7 @@ ksafe.protectionInfo.notes                    // stable codes that explain it, e
 ksafe.protectionInfo.isEncryptionOperational  // will encrypted reads and writes succeed right now?
 ksafe.getKeyInfo("pin")?.protection           // the tier this key's write asked for
 ksafe.getKeyInfo("pin")?.level                // where this one key's material landed
-KSafe.VERSION                                 // the linked KSafe version, e.g. "3.3.1"
+KSafe.VERSION                                 // the linked KSafe version, e.g. "3.3.2"
 ```
 
 `protectionInfo.kSafeVersion` carries the same version, so one snapshot gives you version, custody and notes for a bug report or a log line. A missing StrongBox or Secure Enclave never throws: KSafe falls back to the TEE or the Keychain and reports it here. No setting makes it fail instead. To require the chip, check `KSafeKeyStorage.HARDWARE_ISOLATED in ksafe.deviceKeyStorages` before you write and `getKeyInfo(key)?.level` after. `deviceKeyStorages` uses a coarser scale: it says `{SOFTWARE}` on JVM desktop and web even when `effectiveLevel` is `SANDBOX_PROTECTED`, so don't compare it with the other two. Ignore `notes` codes you don't know; new ones can appear in a minor release. Read these off the main thread on Android. Details: **[docs/PROTECTION_INFO.md](docs/PROTECTION_INFO.md)**.

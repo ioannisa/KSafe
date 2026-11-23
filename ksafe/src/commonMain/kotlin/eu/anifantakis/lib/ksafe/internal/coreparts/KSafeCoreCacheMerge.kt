@@ -46,6 +46,15 @@ internal suspend fun KSafeCore.updateCacheOnce(snapshot: Map<String, StoredValue
     fun isDirtyForUserKeyLive(userKey: String): Boolean =
         isDirtyForUserKey(userKey) || isUserKeyDirty(userKey)
 
+    // A rotation never marks keys dirty, so a snapshot taken before its commit is fenced by the
+    // ciphertext it replaced. Checked after sampling a slot, like the dirty flag.
+    fun predatesRotation(userKey: String, ciphertext: String?): Boolean =
+        ciphertext != null && rotatedAwayCiphertext[userKey] == ciphertext
+
+    fun snapshotCiphertext(userKey: String): String? =
+        (snapshot[valueRawKey(userKey)] as? StoredValue.Text)?.value
+            ?: (snapshot[legacyEncryptedRawKey(userKey)] as? StoredValue.Text)?.value
+
     val metadataEntries = snapshot.map { (rawKey, storedValue) ->
         rawKey to (storedValue as? StoredValue.Text)?.value
     }
@@ -59,6 +68,7 @@ internal suspend fun KSafeCore.updateCacheOnce(snapshot: Map<String, StoredValue
         if (KeySafeMetadataManager.parseProtection(rawMeta) == null) continue
         val observed = encMetaMap[userKey]
         if (isDirtyForUserKeyLive(userKey)) continue
+        if (predatesRotation(userKey, snapshotCiphertext(userKey))) continue
         cacheMergeMetaStoreHook?.invoke(userKey)
         encMetaMap.storeUnclaimed(userKey, observed, encMetaFromRaw(rawMeta))
     }
@@ -106,7 +116,7 @@ internal suspend fun KSafeCore.updateCacheOnce(snapshot: Map<String, StoredValue
             if (cacheHoldsCiphertext || strict) {
                 // Live re-check: a write landing after the snapshot must not lose to the disk value.
                 val previousCiphertext = memoryCache[cacheKey]
-                if (!isUserKeyDirty(userKey)) {
+                if (!isUserKeyDirty(userKey) && !predatesRotation(userKey, encryptedString)) {
                     cacheMergeStoreHook?.invoke(userKey)
                     val stored = memoryCache.storeUnclaimed(cacheKey, previousCiphertext, encryptedString)
                     // Changed ciphertext means an external write (fresh IV per encrypt) — evict,
@@ -143,7 +153,7 @@ internal suspend fun KSafeCore.updateCacheOnce(snapshot: Map<String, StoredValue
                             )
                             // Live re-check after the slow decrypt: a write that landed meanwhile wins.
                             val observed = memoryCache[p.cacheKey]
-                            if (!isUserKeyDirty(p.userKey)) {
+                            if (!isUserKeyDirty(p.userKey) && !predatesRotation(p.userKey, p.ciphertextB64)) {
                                 cacheMergeStoreHook?.invoke(p.userKey)
                                 memoryCache.storeUnclaimed(p.cacheKey, observed, plain.decodeToString())
                             }

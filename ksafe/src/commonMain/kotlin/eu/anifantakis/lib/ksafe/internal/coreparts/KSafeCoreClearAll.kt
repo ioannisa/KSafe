@@ -40,6 +40,7 @@ internal suspend fun KSafeCore.performClearAll() {
     plaintextCache.clear()
     protectionMap.clear()
     encMetaMap.clear()
+    rotatedAwayCiphertext.clear()
     // Only entries that used a per-entry alias: a no-op delete can destroy a sibling store's key.
     for ((userKey, literal) in protectionSnapshot) {
         val protection = KeySafeMetadataManager.parseProtection(literal) ?: continue
@@ -84,5 +85,6 @@ internal fun KSafeCore.onSiblingClearAll() {
     plaintextCache.clear()
     protectionMap.clear()
     encMetaMap.clear()
+    rotatedAwayCiphertext.clear()
     currentKeyGeneration.set(1)
 }

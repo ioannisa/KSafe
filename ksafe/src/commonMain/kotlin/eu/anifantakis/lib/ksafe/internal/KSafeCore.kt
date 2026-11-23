@@ -213,6 +213,10 @@ internal class KSafeCore(
     @PublishedApi
     internal val dirtyKeys = KSafeConcurrentSet<String>()
 
+    /** Per user key, the ciphertext a committed rotation replaced. A snapshot that still holds it
+     *  predates the rotation, so merging it would put back a ciphertext the new metadata can't read. */
+    internal val rotatedAwayCiphertext = KSafeConcurrentMap<String>()
+
     internal val writeScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     internal val collectorScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
